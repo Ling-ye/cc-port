@@ -7,15 +7,26 @@ description: Publish, register, install and sync AI agent resources (skills, MCP
 
 LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、规则 -- 跨 Cursor 和 Claude Code 两个平台。通过 MCP 工具（或 `lpm` CLI）完成发布、登记、安装、同步等操作。
 
+## 快速上手（三步）
+
+```
+1. lpm init                              # 生成 ~/.config/lpm/config.toml
+2. 编辑 config.toml 填 owner（或设 $env:LPM_GITHUB_TOKEN 环境变量）
+3. lpm publish <skill目录> --private -y  # 发布到 GitHub 私有仓库
+```
+
 ## 配置
 
-所有配置从 `~/.config/lpm/config.toml` 读取（`lpm init` 可生成模板）。核心字段：
+所有配置从 `~/.config/lpm/config.toml` 读取（`lpm init` 生成模板）。
 
-- `[github].token` -- GitHub PAT（也可用 `LPM_GITHUB_TOKEN` 环境变量，优先级更高）
-- `[github].owner` -- 发布仓库时的 GitHub 用户名或组织名
-- `[github].repo_prefix` -- 新建仓库的名称前缀，默认 `cursor-skill-`
-- `[github].default_private` -- 默认仓库可见性
-- `[platforms.cursor]` / `[platforms.claude-code]` -- 各平台的 skills 目录、mcp.json 路径
+| 字段 | 说明 |
+|------|------|
+| `[github].token` | GitHub PAT，也可用 `LPM_GITHUB_TOKEN` 环境变量代替（优先级更高） |
+| `[github].owner` | 发布仓库时的 GitHub 用户名或组织名 |
+| `[github].repo_prefix` | 新建仓库的名称前缀，默认 `cursor-skill-` |
+| `[github].default_private` | 默认仓库可见性 |
+| `[platforms.cursor]` | Cursor 平台的 skills 目录、mcp.json 路径 |
+| `[platforms.claude-code]` | Claude Code 平台配置（可选启用） |
 
 ## 意图 -> 工具映射
 
@@ -34,17 +45,19 @@ LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、�
 
 不确定时，先问一个澄清问题再操作。
 
-## 前置检查（每台新机器执行一次）
+## 前置检查
 
 操作 GitHub 前先确认：
 
-1. `lpm` 已安装（`pip install -e <LPM 仓库>`）
+1. `lpm` 已安装（`pip install -e .` 在 LPM 仓库目录下）
 2. `git` 在 PATH 中
 3. GitHub PAT 已配置（二选一）：
    - 环境变量 `LPM_GITHUB_TOKEN`（推荐）
    - config.toml 中的 `[github].token`
 
 token 缺失时不要静默失败 -- 指引用户设环境变量或编辑 config.toml。
+
+运行 `lpm doctor` 可一次性检查上述所有项。
 
 ## 资源类型
 
@@ -57,9 +70,15 @@ token 缺失时不要静默失败 -- 指引用户设环境变量或编辑 config
 ### 发布本地 skill
 
 1. 确认目录包含有效的 `SKILL.md`（frontmatter 含 `name` 和 `description`）
-2. 确认可见性：问用户 "公开还是私有？"
+2. 确认可见性：问用户"公开还是私有？"（或使用 `--private` / `--public` 跳过询问）
 3. 调用 `publish_local_skill(path=<绝对路径>, private=<bool>)`
 4. 提醒用户 commit 并 push `registry.yaml`
+
+实际示例：
+```
+lpm publish D:\Code\yourself-skill-master-uploadtest --private -y
+# -> Published create-yourself (skill) -> https://github.com/Ling-ye/cursor-skill-create-yourself.git (private, created)
+```
 
 ### 登记 MCP 服务器
 
@@ -71,9 +90,9 @@ add_mcp_server(name="github", github_url="https://github.com/...",
 
 ### 新电脑迁移
 
-1. 确认 LPM 仓库已 clone 并 install
-2. 确认 token 已配置（config.toml 或环境变量）
-3. 调用 `sync_skills()`，自动安装到所有启用平台
+1. clone LPM 仓库并 `pip install -e .`
+2. `lpm init` 生成配置，填好 token 和 owner
+3. `lpm sync` 自动安装所有资源到启用的平台
 
 ### 修改可见性
 
@@ -89,9 +108,9 @@ add_mcp_server(name="github", github_url="https://github.com/...",
 ## CLI 命令速查
 
 ```
-lpm init [--claude-code] [-f]
-lpm doctor
-lpm publish <path> [--name --description --private/--public --kind --mcp-config -y]
+lpm init [--claude-code] [-f]        # 生成配置文件
+lpm doctor                           # 检查环境
+lpm publish <path> [--private/--public --kind --mcp-config -y]
 lpm set-visibility <name> {public|private}
 lpm add <github-url> [--subdir --ref --name --kind --mcp-config]
 lpm sync [--only NAME --kind TYPE --platform NAME]
