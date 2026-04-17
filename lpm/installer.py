@@ -64,7 +64,7 @@ def _clone_path(config: Config, entry: RegistryItem) -> Path:
     """
     if not entry.subdir:
         return _install_path(config, entry)
-    return _install_root(config) / ".skillhub" / "clones" / entry.name
+    return _install_root(config) / ".lpm" / "clones" / entry.name
 
 
 # ---- Platform-aware install helpers ---- #
@@ -77,7 +77,6 @@ def _install_skill_to_platform(
     target_dir = platform.resolve_install_path("skill", entry.install_target_name())
     if target_dir is None:
         return None
-    # If source is the same as target, nothing to copy
     try:
         if source_path.resolve() == target_dir.resolve():
             return target_dir
@@ -173,7 +172,6 @@ def sync_one(
     auth_url = git_ops.with_token(entry.repo, auth_token)
 
     try:
-        # MCP-only items (with no repo to clone, just config injection)
         if entry.kind == "mcp" and entry.mcp_config and not _needs_clone(entry):
             platforms_installed = _distribute_to_platforms(
                 config, entry, clone_path, platform_filter=platform_filter
@@ -204,7 +202,6 @@ def sync_one(
         if git_ops.is_repo(clone_path):
             git_ops.set_remote(clone_path, "origin", entry.repo)
 
-        # Distribute to all enabled platforms
         platforms_installed = _distribute_to_platforms(
             config, entry, clone_path, platform_filter=platform_filter
         )
@@ -227,9 +224,6 @@ def sync_one(
 def _needs_clone(entry: RegistryItem) -> bool:
     """Determine if this item needs a git clone or is config-only."""
     if entry.kind == "mcp" and entry.mcp_config:
-        # If the repo is just a placeholder for a pure-config MCP entry,
-        # we still clone to get any supporting files. But if repo looks
-        # like a real repo, we clone it.
         return True
     return True
 
@@ -298,7 +292,6 @@ def uninstall_one(entry: RegistryItem, *, config: Config) -> bool:
             shutil.rmtree(p, ignore_errors=True)
             removed = True
 
-    # Also remove from all enabled platforms
     for plat in config.platforms.enabled():
         if entry.kind == "skill":
             target = plat.resolve_install_path("skill", entry.install_target_name())

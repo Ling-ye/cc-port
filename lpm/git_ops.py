@@ -60,9 +60,9 @@ def commit(path: Path, message: str, allow_empty: bool = False) -> None:
         args.append("--allow-empty")
     env_args = [
         "-c",
-        "user.email=skillhub@local",
+        "user.email=lpm@local",
         "-c",
-        "user.name=SkillHub",
+        "user.name=LingyePluginMarketplace",
     ]
     _run([*env_args, *args], cwd=path)
 

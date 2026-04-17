@@ -3,14 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "skillhub"
-version = "0.2.0"
+name = "lingyepluginmarketplace"
+version = "0.3.0"
 description = "Multi-platform registry, publisher and installer for AI coding agent resources (skills, MCP servers, rules) across Cursor and Claude Code."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "SkillHub contributors" }]
-keywords = ["cursor", "skills", "mcp", "agent", "registry"]
+authors = [{ name = "Lingye" }]
+keywords = ["cursor", "skills", "mcp", "agent", "registry", "lingye"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -39,15 +39,15 @@ dev = [
 ]
 
 [project.scripts]
-skillhub = "skillhub.cli:app"
-skillhub-mcp = "skillhub.mcp_server:main"
+lpm = "lpm.cli:app"
+lpm-mcp = "lpm.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/your-name/SkillHub"
-Issues = "https://github.com/your-name/SkillHub/issues"
+Homepage = "https://github.com/Lingye/LingyePluginMarketplace"
+Issues = "https://github.com/Lingye/LingyePluginMarketplace/issues"
 
 [tool.setuptools.packages.find]
-include = ["skillhub*"]
+include = ["lpm*"]
 exclude = ["tests*", "examples*"]
 
 [tool.ruff]

@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from skillhub.config import Config, GithubConfig, InstallConfig
-from skillhub.github_client import CreatedRepo
-from skillhub.platforms import PlatformsConfig
-from skillhub.publisher import (
+from lpm.config import Config, GithubConfig, InstallConfig
+from lpm.github_client import CreatedRepo
+from lpm.platforms import PlatformsConfig
+from lpm.publisher import (
     VisibilityMismatchError,
     _parse_owner_repo,
     publish_local_skill,
@@ -46,7 +46,7 @@ def registry_path(tmp_path: Path) -> Path:
 
 
 def _patch_clients(monkeypatch, *, existing_private: bool | None, public_repo: bool):
-    from skillhub import publisher as pub_mod
+    from lpm import publisher as pub_mod
 
     fake_client = MagicMock()
     fake_client.authenticated_login.return_value = "alice"
@@ -156,13 +156,13 @@ def test_publish_saves_kind_in_registry(monkeypatch, cfg, fake_skill, registry_p
     )
     assert result.entry.kind == "skill"
 
-    from skillhub.registry import load_registry
+    from lpm.registry import load_registry
     reg = load_registry(registry_path)
     assert reg.items[0].kind == "skill"
 
 
 def test_set_skill_visibility(monkeypatch, cfg, registry_path):
-    from skillhub import publisher as pub_mod
+    from lpm import publisher as pub_mod
 
     registry_path.write_text(
         "version: 2\n"

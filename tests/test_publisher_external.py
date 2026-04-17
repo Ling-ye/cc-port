@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from skillhub.publisher import add_external_skill, remove_skill
-from skillhub.registry import load_registry
+from lpm.publisher import add_external_skill, remove_skill
+from lpm.registry import load_registry
 
 
 def test_add_and_remove_external(registry_path: Path) -> None:

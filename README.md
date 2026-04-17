@@ -1,8 +1,8 @@
-# SkillHub
+# LingyePluginMarketplace (LPM)
 
-> AI 编程助手的资源中央仓库 —— 一行命令把 skill、MCP 服务器、规则同步到任意一台新电脑。
+> AI 编程助手的资源中央仓库 -- 一行命令把 skill、MCP 服务器、规则同步到任意一台新电脑。
 
-SkillHub 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种入口，跨 **Cursor** 和 **Claude Code** 管理三种资源：
+LPM 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种入口，跨 **Cursor** 和 **Claude Code** 管理三种资源：
 
 | 资源类型 | 说明 | 安装位置 |
 |---------|------|---------|
@@ -12,9 +12,9 @@ SkillHub 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种�
 
 核心场景：
 
-1. **发布** — 把本地目录一键发布为独立的 GitHub 仓库
-2. **登记** — 把别人的 skill / MCP 配置记入清单
-3. **迁移** — 换电脑时 `skillhub sync` 一条命令，所有资源自动落地
+1. **发布** -- 把本地目录一键发布为独立的 GitHub 仓库
+2. **登记** -- 把别人的 skill / MCP 配置记入清单
+3. **迁移** -- 换电脑时 `lpm sync` 一条命令，所有资源自动落地
 
 所有资源清单存在 [`registry.yaml`](registry.yaml) 中，跟着 git 一起走。
 
@@ -24,20 +24,20 @@ SkillHub 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种�
 
 | 能力 | 命令 / MCP 工具 | 说明 |
 |------|----------------|------|
-| 发布本地资源 | `skillhub publish <path> [--kind]` | 校验 → 建仓 → push → 写入清单 |
-| 修改可见性 | `skillhub set-visibility <name> public\|private` | 公开或转私有 |
-| 登记第三方 skill | `skillhub add <github-url>` | 记 URL + ref |
-| 登记 MCP 服务器 | `skillhub add <url> --kind mcp --mcp-config '{...}'` | 记 MCP 配置 |
-| 同步全部 | `skillhub sync` | 安装到所有启用平台 |
-| 按平台同步 | `skillhub sync --platform cursor` | 只装到指定平台 |
-| 按类型同步 | `skillhub sync --kind mcp` | 只同步 MCP 配置 |
-| 更新单个 | `skillhub update <name>` | 强制同步一条 |
-| 查看状态 | `skillhub status` | 对比本地/远端 commit |
-| 列出清单 | `skillhub list [--kind]` | 按类型过滤 |
-| 查看平台 | `skillhub platforms` | 显示平台和路径 |
-| 移除 | `skillhub remove <name> [--uninstall]` | 可选同时删本地文件 |
-| 环境检查 | `skillhub doctor` | 检查 git / token / 平台 |
-| 安装自身 | `skillhub install-self` | 复制到所有启用平台 |
+| 发布本地资源 | `lpm publish <path> [--kind]` | 校验 -> 建仓 -> push -> 写入清单 |
+| 修改可见性 | `lpm set-visibility <name> public\|private` | 公开或转私有 |
+| 登记第三方 skill | `lpm add <github-url>` | 记 URL + ref |
+| 登记 MCP 服务器 | `lpm add <url> --kind mcp --mcp-config '{...}'` | 记 MCP 配置 |
+| 同步全部 | `lpm sync` | 安装到所有启用平台 |
+| 按平台同步 | `lpm sync --platform cursor` | 只装到指定平台 |
+| 按类型同步 | `lpm sync --kind mcp` | 只同步 MCP 配置 |
+| 更新单个 | `lpm update <name>` | 强制同步一条 |
+| 查看状态 | `lpm status` | 对比本地/远端 commit |
+| 列出清单 | `lpm list [--kind]` | 按类型过滤 |
+| 查看平台 | `lpm platforms` | 显示平台和路径 |
+| 移除 | `lpm remove <name> [--uninstall]` | 可选同时删本地文件 |
+| 环境检查 | `lpm doctor` | 检查 git / token / 平台 |
+| 安装自身 | `lpm install-self` | 复制到所有启用平台 |
 
 ---
 
@@ -46,17 +46,17 @@ SkillHub 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种�
 前置要求：Python >= 3.10、`git` 已装好。
 
 ```bash
-git clone https://github.com/<你的用户名>/SkillHub.git
-cd SkillHub
+git clone https://github.com/Lingye/LingyePluginMarketplace.git
+cd LingyePluginMarketplace
 pip install -e .
 ```
 
 安装后有两个命令：
 
-- `skillhub` — 终端 CLI
-- `skillhub-mcp` — MCP server（Cursor / Claude Code 调用）
+- `lpm` -- 终端 CLI
+- `lpm-mcp` -- MCP server（Cursor / Claude Code 调用）
 
-> Windows 如果提示找不到命令，把 pip 提示的 `Scripts` 目录加到 `PATH`，或用 `python -m skillhub.cli ...` 代替。
+> Windows 如果提示找不到命令，把 pip 提示的 `Scripts` 目录加到 `PATH`，或用 `python -m lpm.cli ...` 代替。
 
 ---
 
@@ -66,13 +66,13 @@ pip install -e .
 
 ```bash
 # 1. 生成配置文件（默认只启用 Cursor）
-skillhub init
+lpm init
 
 # 同时启用 Claude Code：
-skillhub init --claude-code
+lpm init --claude-code
 ```
 
-`init` 会在 `~/.config/skillhub/config.toml` 生成一个带注释的模板：
+`init` 会在 `~/.config/lpm/config.toml` 生成一个带注释的模板：
 
 ```toml
 [github]
@@ -90,20 +90,20 @@ rules_dir = ""
 
 ```bash
 # 2. 编辑 config.toml，填好 token 和 owner
-#    Windows: %USERPROFILE%\.config\skillhub\config.toml
-#    macOS/Linux: ~/.config/skillhub/config.toml
+#    Windows: %USERPROFILE%\.config\lpm\config.toml
+#    macOS/Linux: ~/.config/lpm/config.toml
 ```
 
-填好后运行 `skillhub doctor` 验证。
+填好后运行 `lpm doctor` 验证。
 
 ### token 也可以用环境变量
 
 ```bash
 # Linux / macOS
-export SKILLHUB_GITHUB_TOKEN=ghp_xxxxxxxx
+export LPM_GITHUB_TOKEN=ghp_xxxxxxxx
 
 # Windows PowerShell
-$env:SKILLHUB_GITHUB_TOKEN = "ghp_xxxxxxxx"
+$env:LPM_GITHUB_TOKEN = "ghp_xxxxxxxx"
 ```
 
 环境变量优先于 config.toml 中的 `token` 字段。
@@ -126,11 +126,11 @@ skills_dir = "~/.claude/skills"
 mcp_json = "~/.claude.json"
 ```
 
-`skillhub sync` 安装到所有启用平台，也可以用 `--platform` 限定：
+`lpm sync` 安装到所有启用平台，也可以用 `--platform` 限定：
 
 ```bash
-skillhub sync --platform cursor
-skillhub sync --platform claude-code
+lpm sync --platform cursor
+lpm sync --platform claude-code
 ```
 
 ---
@@ -140,15 +140,15 @@ skillhub sync --platform claude-code
 ### 发布本地 skill
 
 ```bash
-# 最短路径 — 跳过询问，用默认可见性
-skillhub publish D:\dev\my-skill -y
+# 最短路径 -- 跳过询问，用默认可见性
+lpm publish D:\dev\my-skill -y
 
 # 明确指定
-skillhub publish D:\dev\my-skill --public
-skillhub publish D:\dev\my-skill --private
+lpm publish D:\dev\my-skill --public
+lpm publish D:\dev\my-skill --private
 
 # 发布 MCP 服务器配置
-skillhub publish D:\dev\my-mcp --kind mcp \
+lpm publish D:\dev\my-mcp --kind mcp \
   --mcp-config '{"command":"node","args":["server.js"]}'
 ```
 
@@ -156,40 +156,40 @@ skillhub publish D:\dev\my-mcp --kind mcp \
 
 ```bash
 # Skill
-skillhub add https://github.com/someone/awesome-skill
+lpm add https://github.com/someone/awesome-skill
 
 # MCP 服务器
-skillhub add https://github.com/someone/mcp-server --kind mcp \
+lpm add https://github.com/someone/mcp-server --kind mcp \
   --mcp-config '{"command":"npx","args":["-y","@someone/mcp-server"]}'
 
 # 仓库子目录
-skillhub add https://github.com/anthropics/skills --subdir pdf --ref main
+lpm add https://github.com/anthropics/skills --subdir pdf --ref main
 ```
 
 ### 换电脑一键迁移
 
 ```bash
-git clone https://github.com/<你的用户名>/SkillHub.git
-cd SkillHub
+git clone https://github.com/Lingye/LingyePluginMarketplace.git
+cd LingyePluginMarketplace
 pip install -e .
-skillhub init              # 生成配置模板
+lpm init              # 生成配置模板
 # 编辑 config.toml 填好 token 和 owner（或设环境变量）
-skillhub install-self      # 安装 SkillHub 自身到各平台
-skillhub sync              # 所有资源自动落地
+lpm install-self      # 安装 LPM 自身到各平台
+lpm sync              # 所有资源自动落地
 ```
 
 ### 日常维护
 
 ```bash
-skillhub list                        # 查看清单
-skillhub list --kind mcp             # 只看 MCP
-skillhub status                      # 查看上游更新
-skillhub sync                        # 拉取所有更新
-skillhub update my-skill             # 更新单个
-skillhub remove my-skill             # 从清单移除
-skillhub remove my-skill --uninstall # 连本地文件一起删
-skillhub platforms                   # 查看平台配置
-skillhub doctor                      # 排查问题
+lpm list                        # 查看清单
+lpm list --kind mcp             # 只看 MCP
+lpm status                      # 查看上游更新
+lpm sync                        # 拉取所有更新
+lpm update my-skill             # 更新单个
+lpm remove my-skill             # 从清单移除
+lpm remove my-skill --uninstall # 连本地文件一起删
+lpm platforms                   # 查看平台配置
+lpm doctor                      # 排查问题
 ```
 
 ---
@@ -203,8 +203,8 @@ skillhub doctor                      # 排查问题
 ```json
 {
   "mcpServers": {
-    "skillhub": {
-      "command": "skillhub-mcp"
+    "lpm": {
+      "command": "lpm-mcp"
     }
   }
 }
@@ -213,7 +213,7 @@ skillhub doctor                      # 排查问题
 ### Claude Code
 
 ```bash
-claude mcp add skillhub -- skillhub-mcp
+claude mcp add lpm -- lpm-mcp
 ```
 
 重启 IDE 后 Agent 可用以下工具：
@@ -283,18 +283,18 @@ items:
 ## 仓库结构
 
 ```
-SkillHub/
+LingyePluginMarketplace/
 ├── registry.yaml                 # 资源清单
 ├── pyproject.toml
 ├── examples/config.example.toml
-├── skillhub/                     # 主包
-│   ├── cli.py                    # skillhub CLI
-│   ├── mcp_server.py             # skillhub-mcp MCP server
-│   ├── publisher.py              # 本地资源 → GitHub 仓库
-│   ├── installer.py              # registry → 各平台目录
+├── lpm/                          # 主包
+│   ├── cli.py                    # lpm CLI
+│   ├── mcp_server.py             # lpm-mcp MCP server
+│   ├── publisher.py              # 本地资源 -> GitHub 仓库
+│   ├── installer.py              # registry -> 各平台目录
 │   ├── mcp_installer.py          # 读写 mcp.json
 │   ├── platforms.py              # 多平台抽象
-│   ├── registry.py               # registry.yaml 读写 + v1→v2 迁移
+│   ├── registry.py               # registry.yaml 读写 + v1->v2 迁移
 │   ├── validator.py              # 资源校验
 │   ├── github_client.py          # PyGithub 封装
 │   ├── git_ops.py                # git 子进程封装
@@ -309,9 +309,9 @@ SkillHub/
 
 ## 安全说明
 
-- **token 永远不入库** — `registry.yaml` 只存 HTTPS URL；push/pull 时 token 临时注入，操作完立即还原
-- **配置文件权限** — `skillhub init` 写完后尝试 `chmod 600`
-- **可脱离配置文件** — 只设 `SKILLHUB_GITHUB_TOKEN` 环境变量也能用
+- **token 永远不入库** -- `registry.yaml` 只存 HTTPS URL；push/pull 时 token 临时注入，操作完立即还原
+- **配置文件权限** -- `lpm init` 写完后尝试 `chmod 600`
+- **可脱离配置文件** -- 只设 `LPM_GITHUB_TOKEN` 环境变量也能用
 
 ---
 
@@ -319,11 +319,11 @@ SkillHub/
 
 ```bash
 pip install -e ".[dev]"
-ruff check skillhub tests
+ruff check lpm tests
 pytest -q
 ```
 
-CI 在 Linux + Windows × Python 3.10 / 3.11 / 3.12 上运行。
+CI 在 Linux + Windows x Python 3.10 / 3.11 / 3.12 上运行。
 
 ---
 

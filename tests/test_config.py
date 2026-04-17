@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from skillhub.config import Config, GithubConfig, InstallConfig, load_config, write_config
-from skillhub.platforms import PlatformProfile, PlatformsConfig
+from lpm.config import Config, GithubConfig, InstallConfig, load_config, write_config
+from lpm.platforms import PlatformProfile, PlatformsConfig
 
 
 def test_write_and_load_with_platforms(tmp_path: Path) -> None:
@@ -44,7 +44,7 @@ def test_load_without_platforms(tmp_path: Path) -> None:
 
 def test_load_nonexistent_config(tmp_path: Path, monkeypatch) -> None:
     """Loading a nonexistent config should return sensible defaults."""
-    monkeypatch.delenv("SKILLHUB_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("LPM_GITHUB_TOKEN", raising=False)
     loaded = load_config(tmp_path / "nonexistent.toml")
     assert loaded.github.token == ""
     assert len(loaded.platforms.profiles) == 1

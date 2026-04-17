@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from skillhub.validator import SkillValidationError, parse_skill
+from lpm.validator import SkillValidationError, parse_skill
 
 
 def _write(p: Path, body: str) -> None:

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from skillhub.models import Registry, RegistryItem
-from skillhub.registry import load_registry, save_registry
+from lpm.models import Registry, RegistryItem
+from lpm.registry import load_registry, save_registry
 
 
 def test_round_trip(tmp_path: Path) -> None:
@@ -131,7 +131,6 @@ def test_mcp_config_validation() -> None:
             mcp_config={"env": {"FOO": "bar"}},
         )
 
-    # Valid: command-based
     item = RegistryItem(
         name="good-mcp",
         kind="mcp",
@@ -140,7 +139,6 @@ def test_mcp_config_validation() -> None:
     )
     assert item.mcp_config["command"] == "npx"
 
-    # Valid: url-based
     item2 = RegistryItem(
         name="http-mcp",
         kind="mcp",

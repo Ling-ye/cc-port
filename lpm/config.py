@@ -1,7 +1,7 @@
 """User configuration handling.
 
-Loads ``~/.config/skillhub/config.toml``.  The GitHub token may also come from
-the ``SKILLHUB_GITHUB_TOKEN`` environment variable (which takes precedence).
+Loads ``~/.config/lpm/config.toml``.  The GitHub token may also come from
+the ``LPM_GITHUB_TOKEN`` environment variable (which takes precedence).
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ else:  # pragma: no cover - py310 fallback
 
 from .platforms import PlatformsConfig, load_platforms_from_dict
 
-CONFIG_ENV_VAR = "SKILLHUB_GITHUB_TOKEN"
-CONFIG_PATH_ENV_VAR = "SKILLHUB_CONFIG"
-DEFAULT_CONFIG_RELATIVE = Path(".config/skillhub/config.toml")
+CONFIG_ENV_VAR = "LPM_GITHUB_TOKEN"
+CONFIG_PATH_ENV_VAR = "LPM_CONFIG"
+DEFAULT_CONFIG_RELATIVE = Path(".config/lpm/config.toml")
 DEFAULT_INSTALL_TARGET = "~/.cursor/skills"
 DEFAULT_REPO_PREFIX = "cursor-skill-"
 
@@ -91,11 +91,11 @@ def load_config(path: Path | None = None) -> Config:
 
 
 def write_config(cfg: Config, path: Path | None = None) -> Path:
-    """Write a config TOML file (used by ``skillhub init``)."""
+    """Write a config TOML file (used by ``lpm init``)."""
     out = path or default_config_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# SkillHub config — edit this file, then run `skillhub doctor` to verify.",
+        "# LingyePluginMarketplace config -- edit this file, then run `lpm doctor` to verify.",
         "",
         "[github]",
         "# GitHub Personal Access Token (repo scope). You can also set the",

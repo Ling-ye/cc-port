@@ -1,4 +1,4 @@
-"""SkillHub command-line interface (Typer + Rich)."""
+"""LingyePluginMarketplace command-line interface (Typer + Rich)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from .registry import find_registry_path, load_registry
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="SkillHub: publish, register and sync skills, MCP servers and rules across Cursor and Claude Code.",
+    help="LingyePluginMarketplace: publish, register and sync skills, MCP servers and rules across Cursor and Claude Code.",
 )
 console = Console()
 
@@ -51,14 +51,14 @@ def cmd_init(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config."),
     claude_code: bool = typer.Option(False, "--claude-code", help="Also enable Claude Code platform."),
 ) -> None:
-    """Generate the SkillHub config file with sensible defaults.
+    """Generate the LPM config file with sensible defaults.
 
     Usage:
-        skillhub init                # generate config (Cursor only)
-        skillhub init --claude-code  # generate config (Cursor + Claude Code)
+        lpm init                # generate config (Cursor only)
+        lpm init --claude-code  # generate config (Cursor + Claude Code)
 
-    Then edit ~/.config/skillhub/config.toml to fill in your token and owner.
-    Or set the SKILLHUB_GITHUB_TOKEN environment variable instead.
+    Then edit ~/.config/lpm/config.toml to fill in your token and owner.
+    Or set the LPM_GITHUB_TOKEN environment variable instead.
     """
     path = default_config_path()
     if path.exists() and not force:
@@ -81,8 +81,8 @@ def cmd_init(
     console.print("Next steps:")
     console.print(f"  1. Edit [bold]{written}[/bold] to fill in your [bold]token[/bold] and [bold]owner[/bold]")
     console.print(f"     Or set env var: [bold]$env:{CONFIG_ENV_VAR} = \"ghp_xxx\"[/bold]")
-    console.print("  2. Run [bold]skillhub doctor[/bold] to verify")
-    console.print("  3. Run [bold]skillhub publish <path> -y[/bold] to publish")
+    console.print("  2. Run [bold]lpm doctor[/bold] to verify")
+    console.print("  3. Run [bold]lpm publish <path> -y[/bold] to publish")
 
 
 # ---- publish ---- #
@@ -247,9 +247,9 @@ def cmd_list(
     if kind:
         items = [i for i in items if i.kind == kind]
     if not items:
-        console.print("[yellow]Registry is empty.[/yellow] Use `skillhub publish` or `skillhub add`.")
+        console.print("[yellow]Registry is empty.[/yellow] Use `lpm publish` or `lpm add`.")
         return
-    table = Table(title=f"SkillHub registry ({find_registry_path()})")
+    table = Table(title=f"LPM registry ({find_registry_path()})")
     table.add_column("Name", style="bold")
     table.add_column("Kind")
     table.add_column("Source")
@@ -347,7 +347,7 @@ def cmd_status(
     if not rows:
         console.print("[yellow]Registry is empty.[/yellow]")
         return
-    table = Table(title="SkillHub status")
+    table = Table(title="LPM status")
     table.add_column("Name")
     table.add_column("Installed")
     table.add_column("Local")
@@ -387,7 +387,7 @@ def cmd_doctor() -> None:
         console.print("[green]GitHub token: configured[/green]")
     else:
         console.print(
-            f"[yellow]No GitHub token configured.[/yellow] Set ${CONFIG_ENV_VAR} or run `skillhub init`."
+            f"[yellow]No GitHub token configured.[/yellow] Set ${CONFIG_ENV_VAR} or run `lpm init`."
         )
 
     target = cfg.install.target_path
@@ -406,7 +406,6 @@ def cmd_doctor() -> None:
     else:
         console.print(f"[yellow]Config not found at[/yellow] {default_config_path()}")
 
-    # Platform checks
     console.print("\n[bold]Platforms[/bold]")
     for plat in cfg.platforms.profiles:
         status = "[green]enabled[/green]" if plat.enabled else "[dim]disabled[/dim]"
@@ -484,10 +483,10 @@ def cmd_install_self(
     ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files."),
 ) -> None:
-    """Install SkillHub's own SKILL.md to all enabled platforms.
+    """Install LPM's own SKILL.md to all enabled platforms.
 
     Copies the project's SKILL.md (and any companion .md files at repo root)
-    into each platform's skills directory under a ``skillhub/`` subdirectory.
+    into each platform's skills directory under a ``lpm/`` subdirectory.
     """
     cfg = _load()
     project_root = _find_project_root()
@@ -502,17 +501,16 @@ def cmd_install_self(
         if p.is_file():
             candidates.append(p)
 
-    # Determine target dirs: explicit target, or all enabled platforms
     if target:
-        target_dirs = [target.expanduser() / "skillhub"]
+        target_dirs = [target.expanduser() / "lpm"]
     else:
         target_dirs = []
         for plat in cfg.platforms.enabled():
             sp = plat.skills_path()
             if sp:
-                target_dirs.append(sp / "skillhub")
+                target_dirs.append(sp / "lpm")
         if not target_dirs:
-            target_dirs = [cfg.install.target_path / "skillhub"]
+            target_dirs = [cfg.install.target_path / "lpm"]
 
     total_copied: list[str] = []
     for dest in target_dirs:
@@ -526,14 +524,14 @@ def cmd_install_self(
             total_copied.append(str(out))
 
     if total_copied:
-        console.print("[green]Installed SkillHub skill files:[/green]")
+        console.print("[green]Installed LPM skill files:[/green]")
         for p in total_copied:
             console.print(f"  - {p}")
         console.print(
             "\nNext: register the MCP server in your platform's MCP config. Example for Cursor:\n"
-            '  ~/.cursor/mcp.json -> {"mcpServers": {"skillhub": {"command": "skillhub-mcp"}}}\n'
+            '  ~/.cursor/mcp.json -> {"mcpServers": {"lpm": {"command": "lpm-mcp"}}}\n'
             "Example for Claude Code:\n"
-            '  claude mcp add skillhub -- skillhub-mcp\n'
+            '  claude mcp add lpm -- lpm-mcp\n'
             "Then restart your IDE."
         )
     else:
@@ -547,7 +545,7 @@ def cmd_install_self(
 def cmd_platforms() -> None:
     """Show configured platforms and their directories."""
     cfg = _load()
-    table = Table(title="SkillHub platforms")
+    table = Table(title="LPM platforms")
     table.add_column("Platform", style="bold")
     table.add_column("Enabled")
     table.add_column("Skills Dir")
@@ -586,7 +584,7 @@ def cmd_update(name: str = typer.Argument(...)) -> None:
 
 
 def _find_project_root() -> Path:
-    """Locate the SkillHub project root by walking up from this file."""
+    """Locate the LPM project root by walking up from this file."""
     here = Path(__file__).resolve()
     for candidate in [here.parent, *here.parents]:
         if (candidate / "SKILL.md").is_file() and (candidate / "pyproject.toml").is_file():

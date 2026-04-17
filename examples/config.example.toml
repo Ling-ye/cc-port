@@ -1,14 +1,14 @@
-# SkillHub configuration file.
-# Copy this to ~/.config/skillhub/config.toml and fill in your values.
-# On Windows it lives at %USERPROFILE%\.config\skillhub\config.toml.
+# LingyePluginMarketplace configuration file.
+# Copy this to ~/.config/lpm/config.toml and fill in your values.
+# On Windows it lives at %USERPROFILE%\.config\lpm\config.toml.
 
 [github]
 # Personal Access Token with `repo` scope. You can also set the
-# SKILLHUB_GITHUB_TOKEN environment variable instead, which takes precedence.
+# LPM_GITHUB_TOKEN environment variable instead, which takes precedence.
 token = "ghp_replace_me"
 
 # Owner (user or org) under which new repositories will be created.
-# If empty, SkillHub uses the account that owns the token.
+# If empty, LPM uses the account that owns the token.
 owner = ""
 
 # Optional prefix prepended to every newly created repo, e.g.
@@ -23,7 +23,7 @@ default_private = false
 target = "~/.cursor/skills"
 
 # ---- Platform configuration ----
-# Enable one or more AI coding platforms. SkillHub installs skills, MCP
+# Enable one or more AI coding platforms. LPM installs skills, MCP
 # server configs, and rules into each enabled platform's directories.
 
 [platforms.cursor]

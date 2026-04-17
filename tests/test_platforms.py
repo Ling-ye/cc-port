@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skillhub.platforms import (
+from lpm.platforms import (
     PLATFORM_PRESETS,
     PlatformProfile,
     PlatformsConfig,

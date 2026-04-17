@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from skillhub.git_ops import with_token
+from lpm.git_ops import with_token
 
 
 def test_with_token_https() -> None:

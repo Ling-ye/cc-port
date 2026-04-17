@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from skillhub.config import Config, GithubConfig, InstallConfig
-from skillhub.installer import SyncAction, status_all, sync_all
-from skillhub.models import Registry, RegistryItem
-from skillhub.platforms import PlatformProfile, PlatformsConfig
+from lpm.config import Config, GithubConfig, InstallConfig
+from lpm.installer import SyncAction, status_all, sync_all
+from lpm.models import Registry, RegistryItem
+from lpm.platforms import PlatformProfile, PlatformsConfig
 
 
 @pytest.fixture
@@ -84,7 +84,6 @@ def test_sync_with_kind_filter(tmp_path: Path, cfg: Config) -> None:
             mcp_config={"command": "test"},
         ),
     ])
-    # Only sync skills (will fail because no real repo, but we check filtering)
     results = sync_all(config=cfg, registry=reg, kind="mcp")
     assert len(results) == 1
     assert results[0].name == "m1"

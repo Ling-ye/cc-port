@@ -1,4 +1,4 @@
-"""SkillHub MCP server.
+"""LingyePluginMarketplace MCP server.
 
 Exposes the same operations as the CLI as MCP tools, so an AI coding agent
 (Cursor or Claude Code) can publish, register, and sync skills, MCP servers,
@@ -17,7 +17,7 @@ from .config import load_config
 from .installer import status_all, sync_all, sync_one, uninstall_one
 from .registry import find_registry_path, load_registry
 
-mcp = FastMCP("SkillHub")
+mcp = FastMCP("LingyePluginMarketplace")
 
 
 @mcp.tool()

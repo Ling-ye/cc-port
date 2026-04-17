@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from skillhub.mcp_installer import (
+from lpm.mcp_installer import (
     has_mcp_server,
     inject_mcp_server,
     list_mcp_servers,

@@ -24,8 +24,8 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config --global user.email "ci@skillhub"
-          git config --global user.name "skillhub-ci"
+          git config --global user.email "ci@lpm"
+          git config --global user.name "lpm-ci"
 
       - name: Install
         run: |
@@ -33,7 +33,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check skillhub tests
+        run: ruff check lpm tests
 
       - name: Test
         run: pytest -q
