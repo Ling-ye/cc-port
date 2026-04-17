@@ -19,7 +19,7 @@ def test_write_and_load_with_platforms(tmp_path: Path) -> None:
         ]),
     )
     write_config(cfg, cfg_path)
-    text = cfg_path.read_text()
+    text = cfg_path.read_text(encoding="utf-8")
     assert "[platforms.cursor]" in text
     assert "[platforms.claude-code]" in text
 
@@ -42,8 +42,9 @@ def test_load_without_platforms(tmp_path: Path) -> None:
     assert loaded.platforms.profiles[0].name == "cursor"
 
 
-def test_load_nonexistent_config(tmp_path: Path) -> None:
+def test_load_nonexistent_config(tmp_path: Path, monkeypatch) -> None:
     """Loading a nonexistent config should return sensible defaults."""
+    monkeypatch.delenv("SKILLHUB_GITHUB_TOKEN", raising=False)
     loaded = load_config(tmp_path / "nonexistent.toml")
     assert loaded.github.token == ""
     assert len(loaded.platforms.profiles) == 1

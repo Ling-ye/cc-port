@@ -5,59 +5,63 @@ description: Publish, register, install and sync AI agent resources (skills, MCP
 
 # SkillHub
 
-SkillHub manages a personal registry of AI coding agent resources — skills, MCP server configurations, and rules — across multiple platforms (Cursor and Claude Code). Use the SkillHub MCP tools (or the `skillhub` CLI as fallback) for any task involving publishing, registering, installing, syncing, or auditing these resources.
+SkillHub 管理 AI 编程助手的资源注册表 —— skills、MCP 服务器配置、规则 —— 跨 Cursor 和 Claude Code 两个平台。通过 MCP 工具（或 `skillhub` CLI）完成发布、登记、安装、同步等操作。
 
-## When to use
+## 配置
 
-Map user intent to tools:
+所有配置从 `~/.config/skillhub/config.toml` 读取（`skillhub init` 可生成模板）。核心字段：
 
-| User intent | Tool |
-|---|---|
-| "publish / upload / share this local skill" / "把这个 skill 发布到 GitHub" | `publish_local_skill` |
-| "make my repo public/private" / "把我的仓库改成公开/私有" | `set_skill_visibility` |
-| "add / register / track this skill repo" / "登记 / 收藏这个 skill" | `add_external_skill` (kind="skill") |
-| "add / register this MCP server" / "添加这个 MCP 服务器" | `add_mcp_server` or `add_external_skill` (kind="mcp") |
-| "install all my resources" / "new machine setup" / "新电脑装一下我的技能" | `sync_skills` |
-| "are my resources up to date" / "看哪些有更新" | `skill_status` |
-| "update <name>" | `update_skill` |
-| "remove / unregister <name>" | `remove_skill` |
-| "list / show my resources" / "看下注册了哪些" | `list_items` or `list_skills` |
-| "show platforms" / "看下平台配置" | `list_platforms` |
+- `[github].token` — GitHub PAT（也可用 `SKILLHUB_GITHUB_TOKEN` 环境变量，优先级更高）
+- `[github].owner` — 发布仓库时的 GitHub 用户名或组织名
+- `[github].repo_prefix` — 新建仓库的名称前缀，默认 `cursor-skill-`
+- `[github].default_private` — 默认仓库可见性
+- `[platforms.cursor]` / `[platforms.claude-code]` — 各平台的 skills 目录、mcp.json 路径
 
-If unsure which one applies, ask one clarifying question before acting.
+## 意图 → 工具映射
 
-## Pre-flight (run once per new environment)
+| 用户意图 | MCP 工具 |
+|---------|---------|
+| "发布 / 上传这个 skill 到 GitHub" | `publish_local_skill` |
+| "把仓库改成公开/私有" | `set_skill_visibility` |
+| "登记 / 收藏这个 skill 仓库" | `add_external_skill` (kind="skill") |
+| "添加一个 MCP 服务器" | `add_mcp_server` 或 `add_external_skill` (kind="mcp") |
+| "把所有资源装到本机 / 新电脑迁移" | `sync_skills` |
+| "看哪些有更新" | `skill_status` |
+| "更新某个资源" | `update_skill` |
+| "删除 / 取消注册某个资源" | `remove_skill` |
+| "列出已注册的资源" | `list_items` 或 `list_skills` |
+| "查看平台配置" | `list_platforms` |
 
-Before any GitHub-touching operation, verify:
+不确定时，先问一个澄清问题再操作。
 
-1. The `skillhub` package is installed (`pip install -e <SkillHub repo>`).
-2. `git` is on PATH.
-3. A GitHub PAT with `repo` scope is available via either:
-   - `SKILLHUB_GITHUB_TOKEN` environment variable (preferred), OR
-   - `~/.config/skillhub/config.toml` written by `skillhub init`.
+## 前置检查（每台新机器执行一次）
 
-When the token is missing, do NOT silently fail — instruct the user to either export the env var or run `skillhub init`.
+操作 GitHub 前先确认：
 
-## Resource types
+1. `skillhub` 已安装（`pip install -e <SkillHub 仓库>`）
+2. `git` 在 PATH 中
+3. GitHub PAT 已配置（二选一）：
+   - 环境变量 `SKILLHUB_GITHUB_TOKEN`（推荐）
+   - config.toml 中的 `[github].token`
 
-SkillHub manages three types of resources:
+token 缺失时不要静默失败 —— 指引用户设环境变量或编辑 config.toml。
 
-- **skill** — Agent skill directories containing `SKILL.md` (installed to each platform's skills directory)
-- **mcp** — MCP server configurations (injected into each platform's mcp.json)
-- **rule** — Rule/convention files (installed to each platform's rules directory)
+## 资源类型
 
-## Workflows
+- **skill** — 包含 `SKILL.md` 的 Agent 技能目录，安装到各平台 skills 目录
+- **mcp** — MCP 服务器配置（command/args/env），注入到各平台 mcp.json
+- **rule** — 编码规则和约定文件，安装到各平台 rules 目录
 
-### 1. Publish a local skill
+## 典型工作流
 
-1. Confirm the directory contains a valid `SKILL.md` with `name` and `description` frontmatter.
-2. **Confirm visibility (REQUIRED).** Ask: "Should this repo be public or private?"
-3. Call `publish_local_skill(path=<absolute path>, private=<bool>)`.
-4. Remind the user to **commit and push `registry.yaml`**.
+### 发布本地 skill
 
-### 2. Register an MCP server
+1. 确认目录包含有效的 `SKILL.md`（frontmatter 含 `name` 和 `description`）
+2. 确认可见性：问用户 "公开还是私有？"
+3. 调用 `publish_local_skill(path=<绝对路径>, private=<bool>)`
+4. 提醒用户 commit 并 push `registry.yaml`
 
-Use `add_mcp_server` for the simplest flow:
+### 登记 MCP 服务器
 
 ```
 add_mcp_server(name="github", github_url="https://github.com/...",
@@ -65,28 +69,27 @@ add_mcp_server(name="github", github_url="https://github.com/...",
                env={"GITHUB_TOKEN": "${GITHUB_TOKEN}"})
 ```
 
-Or use `add_external_skill(kind="mcp", mcp_config={...})` for full control.
+### 新电脑迁移
 
-### 3. Migrate to a new machine
+1. 确认 SkillHub 仓库已 clone 并 install
+2. 确认 token 已配置（config.toml 或环境变量）
+3. 调用 `sync_skills()`，自动安装到所有启用平台
 
-1. Confirm SkillHub repo is cloned and installed.
-2. Confirm a token is configured.
-3. Call `sync_skills()`. It installs to all enabled platforms (Cursor + Claude Code).
+### 修改可见性
 
-### 4. Change visibility
+`set_skill_visibility(name=..., private=<bool>)`，仅限 `owned` 资源。
 
-Use `set_skill_visibility(name=..., private=<bool>)`. Only works for `owned` items.
+## 硬性规则
 
-## Hard rules
+- **token 永远不入库。** registry.yaml 和日志只存纯 HTTPS URL。
+- **资源名称**：小写字母/数字/连字符，最长 64 字符。
+- **发布后不要重新 git init。** 后续修改走正常 `git commit && git push`。
+- **优先用 MCP 工具。** 只在 MCP 不可用时回退到 CLI。
 
-- **Tokens never enter committed files.**
-- **Item names**: lowercase letters/digits/hyphens, max 64 chars.
-- **Don't re-init a published repo.**
-- **Prefer MCP tools over shell.** Only fall back to CLI when MCP is unreachable.
-
-## CLI fallback
+## CLI 命令速查
 
 ```
+skillhub init [--claude-code] [-f]
 skillhub doctor
 skillhub publish <path> [--name --description --private/--public --kind --mcp-config -y]
 skillhub set-visibility <name> {public|private}

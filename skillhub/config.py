@@ -95,9 +95,16 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
     out = path or default_config_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = [
+        "# SkillHub config — edit this file, then run `skillhub doctor` to verify.",
+        "",
         "[github]",
+        "# GitHub Personal Access Token (repo scope). You can also set the",
+        f"# {CONFIG_ENV_VAR} environment variable instead (takes precedence).",
         f'token = "{_escape(cfg.github.token)}"',
+        "",
+        "# GitHub user or org to create repos under. Leave empty to auto-detect from token.",
         f'owner = "{_escape(cfg.github.owner)}"',
+        "",
         f'repo_prefix = "{_escape(cfg.github.repo_prefix)}"',
         f"default_private = {str(cfg.github.default_private).lower()}",
         "",

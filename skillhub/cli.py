@@ -49,82 +49,40 @@ def _load() -> Config:
 @app.command("init")
 def cmd_init(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config."),
+    claude_code: bool = typer.Option(False, "--claude-code", help="Also enable Claude Code platform."),
 ) -> None:
-    """Interactively create the SkillHub config file."""
+    """Generate the SkillHub config file with sensible defaults.
+
+    Usage:
+        skillhub init                # generate config (Cursor only)
+        skillhub init --claude-code  # generate config (Cursor + Claude Code)
+
+    Then edit ~/.config/skillhub/config.toml to fill in your token and owner.
+    Or set the SKILLHUB_GITHUB_TOKEN environment variable instead.
+    """
     path = default_config_path()
     if path.exists() and not force:
         console.print(f"[yellow]Config already exists at[/yellow] {path}")
-        if not typer.confirm("Overwrite?", default=False):
-            raise typer.Exit(0)
+        console.print(f"  Use [bold]--force[/bold] to overwrite, or edit it directly: {path}")
+        raise typer.Exit(0)
 
-    console.print("[bold]Configuring SkillHub[/bold]")
-    token = typer.prompt(
-        f"GitHub Personal Access Token (or leave empty to use ${CONFIG_ENV_VAR})",
-        default="",
-        hide_input=True,
-        show_default=False,
-    ).strip()
-    owner = typer.prompt(
-        "GitHub owner for new repos (empty = your authenticated user)",
-        default="",
-        show_default=False,
-    ).strip()
-    repo_prefix = typer.prompt("Prefix for new repos", default="cursor-skill-").strip()
-    default_private = typer.confirm("Make new repos private by default?", default=False)
-    install_target = typer.prompt(
-        "Install target directory (legacy fallback)", default="~/.cursor/skills"
-    ).strip() or "~/.cursor/skills"
-
-    # Platform selection
-    console.print("\n[bold]Platform configuration[/bold]")
-    enable_cursor = typer.confirm("Enable Cursor?", default=True)
-    enable_claude = typer.confirm("Enable Claude Code?", default=False)
-
-    profiles: list[PlatformProfile] = []
-    if enable_cursor:
-        cursor_skills = typer.prompt(
-            "  Cursor skills directory", default="~/.cursor/skills"
-        ).strip()
-        cursor_mcp = typer.prompt(
-            "  Cursor mcp.json path", default="~/.cursor/mcp.json"
-        ).strip()
-        profiles.append(build_platform("cursor", {
-            "enabled": True,
-            "skills_dir": cursor_skills,
-            "mcp_json": cursor_mcp,
-        }))
-    if enable_claude:
-        claude_skills = typer.prompt(
-            "  Claude Code skills directory", default="~/.claude/skills"
-        ).strip()
-        claude_mcp = typer.prompt(
-            "  Claude Code MCP config path", default="~/.claude.json"
-        ).strip()
-        profiles.append(build_platform("claude-code", {
-            "enabled": True,
-            "skills_dir": claude_skills,
-            "mcp_json": claude_mcp,
-        }))
-
-    if not profiles:
-        profiles.append(build_platform("cursor", {"enabled": True}))
+    profiles: list[PlatformProfile] = [build_platform("cursor", {"enabled": True})]
+    if claude_code:
+        profiles.append(build_platform("claude-code", {"enabled": True}))
 
     cfg = Config(
-        github=GithubConfig(
-            token=token,
-            owner=owner,
-            repo_prefix=repo_prefix,
-            default_private=default_private,
-        ),
-        install=InstallConfig(target=install_target),
+        github=GithubConfig(),
+        install=InstallConfig(),
         platforms=PlatformsConfig(profiles=profiles),
     )
     written = write_config(cfg)
-    console.print(f"[green]Config written to[/green] {written}")
-    if not token:
-        console.print(
-            f"[yellow]No token saved.[/yellow] Set [bold]{CONFIG_ENV_VAR}[/bold] in your shell to use GitHub features."
-        )
+    console.print(f"[green]Config generated at[/green] {written}")
+    console.print()
+    console.print("Next steps:")
+    console.print(f"  1. Edit [bold]{written}[/bold] to fill in your [bold]token[/bold] and [bold]owner[/bold]")
+    console.print(f"     Or set env var: [bold]$env:{CONFIG_ENV_VAR} = \"ghp_xxx\"[/bold]")
+    console.print("  2. Run [bold]skillhub doctor[/bold] to verify")
+    console.print("  3. Run [bold]skillhub publish <path> -y[/bold] to publish")
 
 
 # ---- publish ---- #
