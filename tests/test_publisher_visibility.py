@@ -9,6 +9,7 @@ import pytest
 
 from skillhub.config import Config, GithubConfig, InstallConfig
 from skillhub.github_client import CreatedRepo
+from skillhub.platforms import PlatformsConfig
 from skillhub.publisher import (
     VisibilityMismatchError,
     _parse_owner_repo,
@@ -22,6 +23,7 @@ def cfg(tmp_path: Path) -> Config:
     return Config(
         github=GithubConfig(token="t", owner="alice", repo_prefix="cursor-skill-"),
         install=InstallConfig(target=str(tmp_path / "install")),
+        platforms=PlatformsConfig(),
     )
 
 
@@ -39,16 +41,11 @@ def fake_skill(tmp_path: Path) -> Path:
 @pytest.fixture
 def registry_path(tmp_path: Path) -> Path:
     p = tmp_path / "registry.yaml"
-    p.write_text("version: 1\nskills: []\n", encoding="utf-8")
+    p.write_text("version: 2\nitems: []\n", encoding="utf-8")
     return p
 
 
 def _patch_clients(monkeypatch, *, existing_private: bool | None, public_repo: bool):
-    """Replace GithubClient in publisher module with a stub.
-
-    `existing_private` = None → repo will be created (not pre-existing).
-    `public_repo` = whether the (new or existing) repo ends up public.
-    """
     from skillhub import publisher as pub_mod
 
     fake_client = MagicMock()
@@ -119,7 +116,7 @@ def test_publish_visibility_mismatch_raises(monkeypatch, cfg, fake_skill, regist
         publish_local_skill(
             fake_skill,
             config=cfg,
-            private=True,  # request private, but repo exists as public
+            private=True,
             registry_path=registry_path,
         )
     assert ei.value.current_private is False
@@ -144,19 +141,34 @@ def test_publish_default_uses_config(monkeypatch, fake_skill, registry_path, tmp
     cfg = Config(
         github=GithubConfig(token="t", owner="alice", default_private=True),
         install=InstallConfig(target=str(tmp_path / "i")),
+        platforms=PlatformsConfig(),
     )
     fake = _patch_clients(monkeypatch, existing_private=None, public_repo=False)
     publish_local_skill(fake_skill, config=cfg, registry_path=registry_path)
     assert fake.ensure_repo.call_args.kwargs["private"] is True
 
 
+def test_publish_saves_kind_in_registry(monkeypatch, cfg, fake_skill, registry_path):
+    """Published skill should be stored with kind=skill in registry."""
+    _patch_clients(monkeypatch, existing_private=None, public_repo=True)
+    result = publish_local_skill(
+        fake_skill, config=cfg, private=False, registry_path=registry_path
+    )
+    assert result.entry.kind == "skill"
+
+    from skillhub.registry import load_registry
+    reg = load_registry(registry_path)
+    assert reg.items[0].kind == "skill"
+
+
 def test_set_skill_visibility(monkeypatch, cfg, registry_path):
     from skillhub import publisher as pub_mod
 
     registry_path.write_text(
-        "version: 1\n"
-        "skills:\n"
+        "version: 2\n"
+        "items:\n"
         "  - name: demo\n"
+        "    kind: skill\n"
         "    repo: https://github.com/alice/cursor-skill-demo\n"
         "    source: owned\n"
         "    subdir: \"\"\n"
@@ -183,9 +195,10 @@ def test_set_skill_visibility(monkeypatch, cfg, registry_path):
 
 def test_set_skill_visibility_rejects_external(monkeypatch, cfg, registry_path):
     registry_path.write_text(
-        "version: 1\n"
-        "skills:\n"
+        "version: 2\n"
+        "items:\n"
         "  - name: third\n"
+        "    kind: skill\n"
         "    repo: https://github.com/foo/bar\n"
         "    source: external\n"
         "    subdir: \"\"\n"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -27,18 +28,22 @@ from .installer import (
     sync_one,
     uninstall_one,
 )
+from .platforms import PlatformProfile, PlatformsConfig, build_platform
 from .registry import find_registry_path, load_registry
 
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="SkillHub: publish, register and sync Cursor Agent Skills.",
+    help="SkillHub: publish, register and sync skills, MCP servers and rules across Cursor and Claude Code.",
 )
 console = Console()
 
 
 def _load() -> Config:
     return load_config()
+
+
+# ---- init ---- #
 
 
 @app.command("init")
@@ -60,15 +65,49 @@ def cmd_init(
         show_default=False,
     ).strip()
     owner = typer.prompt(
-        "GitHub owner for new skill repos (empty = your authenticated user)",
+        "GitHub owner for new repos (empty = your authenticated user)",
         default="",
         show_default=False,
     ).strip()
-    repo_prefix = typer.prompt("Prefix for new skill repos", default="cursor-skill-").strip()
-    default_private = typer.confirm("Make new skill repos private by default?", default=False)
+    repo_prefix = typer.prompt("Prefix for new repos", default="cursor-skill-").strip()
+    default_private = typer.confirm("Make new repos private by default?", default=False)
     install_target = typer.prompt(
-        "Install target directory", default="~/.cursor/skills"
+        "Install target directory (legacy fallback)", default="~/.cursor/skills"
     ).strip() or "~/.cursor/skills"
+
+    # Platform selection
+    console.print("\n[bold]Platform configuration[/bold]")
+    enable_cursor = typer.confirm("Enable Cursor?", default=True)
+    enable_claude = typer.confirm("Enable Claude Code?", default=False)
+
+    profiles: list[PlatformProfile] = []
+    if enable_cursor:
+        cursor_skills = typer.prompt(
+            "  Cursor skills directory", default="~/.cursor/skills"
+        ).strip()
+        cursor_mcp = typer.prompt(
+            "  Cursor mcp.json path", default="~/.cursor/mcp.json"
+        ).strip()
+        profiles.append(build_platform("cursor", {
+            "enabled": True,
+            "skills_dir": cursor_skills,
+            "mcp_json": cursor_mcp,
+        }))
+    if enable_claude:
+        claude_skills = typer.prompt(
+            "  Claude Code skills directory", default="~/.claude/skills"
+        ).strip()
+        claude_mcp = typer.prompt(
+            "  Claude Code MCP config path", default="~/.claude.json"
+        ).strip()
+        profiles.append(build_platform("claude-code", {
+            "enabled": True,
+            "skills_dir": claude_skills,
+            "mcp_json": claude_mcp,
+        }))
+
+    if not profiles:
+        profiles.append(build_platform("cursor", {"enabled": True}))
 
     cfg = Config(
         github=GithubConfig(
@@ -78,6 +117,7 @@ def cmd_init(
             default_private=default_private,
         ),
         install=InstallConfig(target=install_target),
+        platforms=PlatformsConfig(profiles=profiles),
     )
     written = write_config(cfg)
     console.print(f"[green]Config written to[/green] {written}")
@@ -87,30 +127,51 @@ def cmd_init(
         )
 
 
+# ---- publish ---- #
+
+
 @app.command("publish")
 def cmd_publish(
     path: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True),
-    name: str | None = typer.Option(None, "--name", help="Override the skill name."),
+    name: str | None = typer.Option(None, "--name", help="Override the item name."),
     description: str | None = typer.Option(None, "--description"),
+    kind: str = typer.Option("skill", "--kind", "-k", help="Resource type: skill | mcp | rule."),
     private: bool | None = typer.Option(
         None,
         "--private/--public",
-        help="Repo visibility. If omitted, you'll be prompted (or pass --yes to use the configured default).",
+        help="Repo visibility. If omitted, you'll be prompted.",
     ),
     yes: bool = typer.Option(
         False,
         "--yes",
         "-y",
-        help="Skip the interactive visibility prompt and use --private/--public or the config default.",
+        help="Skip the interactive visibility prompt.",
     ),
     update_visibility: bool = typer.Option(
         False,
         "--update-visibility",
-        help="If the GitHub repo already exists with a different visibility, change it to match.",
+        help="If the GitHub repo already exists with a different visibility, change it.",
+    ),
+    mcp_config_json: str | None = typer.Option(
+        None,
+        "--mcp-config",
+        help='MCP server config as JSON string (for --kind mcp), e.g. \'{"command":"npx","args":["-y","@mcp/test"]}\'.',
     ),
 ) -> None:
-    """Publish a local skill directory to a new GitHub repository."""
+    """Publish a local directory to a new GitHub repository."""
     cfg = _load()
+
+    if kind not in {"skill", "mcp", "rule"}:
+        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule.")
+        raise typer.Exit(2)
+
+    mcp_config = None
+    if mcp_config_json:
+        try:
+            mcp_config = json.loads(mcp_config_json)
+        except json.JSONDecodeError as exc:
+            console.print(f"[red]Invalid --mcp-config JSON:[/red] {exc}")
+            raise typer.Exit(2) from exc
 
     if private is None and not yes:
         default = cfg.github.default_private
@@ -134,6 +195,8 @@ def cmd_publish(
             description=description,
             private=private,
             update_visibility=update_visibility,
+            kind=kind,
+            mcp_config=mcp_config,
         )
     except publisher.VisibilityMismatchError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -141,29 +204,55 @@ def cmd_publish(
 
     visibility = "[red]private[/red]" if result.private else "[green]public[/green]"
     state = "created" if result.created else "updated"
-    msg = f"[green]Published[/green] {result.name} -> {result.repo_url} ({visibility}, {state})"
+    msg = f"[green]Published[/green] {result.name} ({kind}) -> {result.repo_url} ({visibility}, {state})"
     if result.visibility_changed:
         msg += " [yellow](visibility changed)[/yellow]"
     console.print(msg)
 
 
+# ---- add ---- #
+
+
 @app.command("add")
 def cmd_add(
-    github_url: str = typer.Argument(..., help="HTTPS or SSH GitHub URL of the skill repo."),
+    github_url: str = typer.Argument(..., help="HTTPS or SSH GitHub URL of the repo."),
     name: str | None = typer.Option(None, "--name"),
     subdir: str | None = typer.Option(None, "--subdir", help="Path inside the repo to install."),
     ref: str = typer.Option("main", "--ref"),
     description: str = typer.Option("", "--description"),
+    kind: str = typer.Option("skill", "--kind", "-k", help="Resource type: skill | mcp | rule."),
+    mcp_config_json: str | None = typer.Option(
+        None,
+        "--mcp-config",
+        help='MCP server config as JSON string (for --kind mcp).',
+    ),
 ) -> None:
-    """Register an external (third-party) skill in the registry."""
+    """Register an external (third-party) resource in the registry."""
+    if kind not in {"skill", "mcp", "rule"}:
+        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule.")
+        raise typer.Exit(2)
+
+    mcp_config = None
+    if mcp_config_json:
+        try:
+            mcp_config = json.loads(mcp_config_json)
+        except json.JSONDecodeError as exc:
+            console.print(f"[red]Invalid --mcp-config JSON:[/red] {exc}")
+            raise typer.Exit(2) from exc
+
     entry = publisher.add_external_skill(
         github_url,
         name=name,
         subdir=subdir,
         ref=ref,
         description=description,
+        kind=kind,
+        mcp_config=mcp_config,
     )
-    console.print(f"[green]Added[/green] {entry.name} ({entry.repo}@{entry.ref})")
+    console.print(f"[green]Added[/green] {entry.name} ({entry.kind}) ({entry.repo}@{entry.ref})")
+
+
+# ---- remove ---- #
 
 
 @app.command("remove")
@@ -173,29 +262,38 @@ def cmd_remove(
         False, "--uninstall", help="Also delete the local installation."
     ),
 ) -> None:
-    """Remove a skill from the registry."""
+    """Remove an item from the registry."""
     cfg = _load()
     registry = load_registry()
     entry = registry.get(name)
     removed = publisher.remove_skill(name)
     if removed is None:
-        console.print(f"[yellow]No skill named[/yellow] {name}")
+        console.print(f"[yellow]No item named[/yellow] {name}")
         raise typer.Exit(1)
     if uninstall and entry is not None:
         uninstall_one(entry, config=cfg)
     console.print(f"[green]Removed[/green] {name}")
 
 
+# ---- list ---- #
+
+
 @app.command("list")
-def cmd_list() -> None:
-    """List skills in the registry along with their local installation state."""
+def cmd_list(
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Filter by resource type."),
+) -> None:
+    """List items in the registry along with their local installation state."""
     cfg = _load()
     registry = load_registry()
-    if not registry.skills:
+    items = registry.items
+    if kind:
+        items = [i for i in items if i.kind == kind]
+    if not items:
         console.print("[yellow]Registry is empty.[/yellow] Use `skillhub publish` or `skillhub add`.")
         return
     table = Table(title=f"SkillHub registry ({find_registry_path()})")
     table.add_column("Name", style="bold")
+    table.add_column("Kind")
     table.add_column("Source")
     table.add_column("Repo")
     table.add_column("Ref")
@@ -203,7 +301,7 @@ def cmd_list() -> None:
     table.add_column("Visibility")
     table.add_column("Installed")
     install_root = cfg.install.target_path
-    for s in registry.skills:
+    for s in items:
         installed = (install_root / s.install_target_name()).exists()
         visibility_cell = "-"
         if s.source == "owned" and cfg.github.token:
@@ -220,8 +318,10 @@ def cmd_list() -> None:
                     )
             except Exception:
                 visibility_cell = "?"
+        kind_style = {"skill": "cyan", "mcp": "magenta", "rule": "yellow"}.get(s.kind, "")
         table.add_row(
             s.name,
+            f"[{kind_style}]{s.kind}[/{kind_style}]" if kind_style else s.kind,
             s.source,
             s.repo,
             s.ref,
@@ -232,13 +332,18 @@ def cmd_list() -> None:
     console.print(table)
 
 
+# ---- sync ---- #
+
+
 @app.command("sync")
 def cmd_sync(
-    only: list[str] = typer.Option(None, "--only", help="Restrict to one or more skill names."),
+    only: list[str] = typer.Option(None, "--only", help="Restrict to one or more item names."),
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Only sync items of this type."),
+    platform: str | None = typer.Option(None, "--platform", "-p", help="Only sync to this platform."),
 ) -> None:
-    """Install or update every skill in the registry."""
+    """Install or update every item in the registry."""
     cfg = _load()
-    results = sync_all(config=cfg, only=only or None)
+    results = sync_all(config=cfg, only=only or None, kind=kind, platform_filter=platform)
     if not results:
         console.print("[yellow]Nothing to sync.[/yellow]")
         return
@@ -246,6 +351,7 @@ def cmd_sync(
     table.add_column("Name")
     table.add_column("Action")
     table.add_column("Path")
+    table.add_column("Platforms")
     table.add_column("Detail")
     style = {
         SyncAction.INSTALLED: "green",
@@ -262,6 +368,7 @@ def cmd_sync(
             r.name,
             f"[{style[r.action]}]{r.action.value}[/{style[r.action]}]",
             str(r.install_path),
+            ", ".join(r.platforms_installed) or "-",
             r.detail,
         )
     console.print(table)
@@ -269,11 +376,16 @@ def cmd_sync(
         raise typer.Exit(1)
 
 
+# ---- status ---- #
+
+
 @app.command("status")
-def cmd_status() -> None:
-    """Show local vs remote commit status for each skill."""
+def cmd_status(
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Filter by resource type."),
+) -> None:
+    """Show local vs remote commit status for each item."""
     cfg = _load()
-    rows = status_all(config=cfg)
+    rows = status_all(config=cfg, kind=kind)
     if not rows:
         console.print("[yellow]Registry is empty.[/yellow]")
         return
@@ -294,9 +406,12 @@ def cmd_status() -> None:
     console.print(table)
 
 
+# ---- doctor ---- #
+
+
 @app.command("doctor")
 def cmd_doctor() -> None:
-    """Check that the environment is ready (git, token, permissions)."""
+    """Check that the environment is ready (git, token, permissions, platforms)."""
     cfg = _load()
     issues: list[str] = []
 
@@ -333,30 +448,57 @@ def cmd_doctor() -> None:
     else:
         console.print(f"[yellow]Config not found at[/yellow] {default_config_path()}")
 
+    # Platform checks
+    console.print("\n[bold]Platforms[/bold]")
+    for plat in cfg.platforms.profiles:
+        status = "[green]enabled[/green]" if plat.enabled else "[dim]disabled[/dim]"
+        console.print(f"  {plat.name}: {status}")
+        if plat.enabled:
+            sp = plat.skills_path()
+            if sp:
+                try:
+                    sp.mkdir(parents=True, exist_ok=True)
+                    console.print(f"    skills_dir: [green]{sp}[/green]")
+                except OSError:
+                    console.print(f"    skills_dir: [red]{sp} (not writable)[/red]")
+                    issues.append(f"{plat.name} skills_dir")
+            mp = plat.mcp_json_path()
+            if mp:
+                console.print(f"    mcp_json: {mp} {'[green](exists)[/green]' if mp.is_file() else '[dim](not yet created)[/dim]'}")
+            rp = plat.rules_path()
+            if rp:
+                console.print(f"    rules_dir: {rp}")
+
     if issues:
         raise typer.Exit(1)
 
 
+# ---- uninstall ---- #
+
+
 @app.command("uninstall")
 def cmd_uninstall(name: str = typer.Argument(...)) -> None:
-    """Remove a skill's local files (without touching the registry)."""
+    """Remove an item's local files (without touching the registry)."""
     cfg = _load()
     registry = load_registry()
     entry = registry.get(name)
     if entry is None:
-        console.print(f"[yellow]No skill named[/yellow] {name}")
+        console.print(f"[yellow]No item named[/yellow] {name}")
         raise typer.Exit(1)
     removed = uninstall_one(entry, config=cfg)
     msg = "Uninstalled" if removed else "Nothing to remove"
     console.print(f"[green]{msg}[/green] {name}")
 
 
+# ---- set-visibility ---- #
+
+
 @app.command("set-visibility")
 def cmd_set_visibility(
-    name: str = typer.Argument(..., help="Name of an `owned` skill in the registry."),
+    name: str = typer.Argument(..., help="Name of an `owned` item in the registry."),
     visibility: str = typer.Argument(..., help="`public` or `private`."),
 ) -> None:
-    """Change the GitHub visibility of an owned skill repository (public <-> private)."""
+    """Change the GitHub visibility of an owned repository (public <-> private)."""
     cfg = _load()
     v = visibility.strip().lower()
     if v not in {"public", "private"}:
@@ -372,20 +514,22 @@ def cmd_set_visibility(
     console.print(f"[green]Updated[/green] {result['full_name']} -> {label}")
 
 
+# ---- install-self ---- #
+
+
 @app.command("install-self")
 def cmd_install_self(
     target: Path | None = typer.Option(
         None,
         "--target",
-        help="Override install root (defaults to the configured install target).",
+        help="Override install root (defaults to all enabled platform skill dirs).",
     ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files."),
 ) -> None:
-    """Install SkillHub's own SKILL.md so the Cursor Agent learns when to use it.
+    """Install SkillHub's own SKILL.md to all enabled platforms.
 
     Copies the project's SKILL.md (and any companion .md files at repo root)
-    into <install-target>/skillhub/. Run this once per new machine after
-    `pip install -e .`.
+    into each platform's skills directory under a ``skillhub/`` subdirectory.
     """
     cfg = _load()
     project_root = _find_project_root()
@@ -394,36 +538,93 @@ def cmd_install_self(
         console.print(f"[red]SKILL.md not found at[/red] {skill_md}")
         raise typer.Exit(1)
 
-    install_root = target.expanduser() if target else cfg.install.target_path
-    dest = install_root / "skillhub"
-    dest.mkdir(parents=True, exist_ok=True)
-
-    copied: list[str] = []
     candidates = [skill_md]
     for extra in ("reference.md", "examples.md"):
         p = project_root / extra
         if p.is_file():
             candidates.append(p)
 
-    for src in candidates:
-        out = dest / src.name
-        if out.exists() and not force:
-            console.print(f"[yellow]skip[/yellow] {out} (use --force to overwrite)")
-            continue
-        shutil.copy2(src, out)
-        copied.append(str(out))
+    # Determine target dirs: explicit target, or all enabled platforms
+    if target:
+        target_dirs = [target.expanduser() / "skillhub"]
+    else:
+        target_dirs = []
+        for plat in cfg.platforms.enabled():
+            sp = plat.skills_path()
+            if sp:
+                target_dirs.append(sp / "skillhub")
+        if not target_dirs:
+            target_dirs = [cfg.install.target_path / "skillhub"]
 
-    if copied:
+    total_copied: list[str] = []
+    for dest in target_dirs:
+        dest.mkdir(parents=True, exist_ok=True)
+        for src in candidates:
+            out = dest / src.name
+            if out.exists() and not force:
+                console.print(f"[yellow]skip[/yellow] {out} (use --force to overwrite)")
+                continue
+            shutil.copy2(src, out)
+            total_copied.append(str(out))
+
+    if total_copied:
         console.print("[green]Installed SkillHub skill files:[/green]")
-        for p in copied:
+        for p in total_copied:
             console.print(f"  - {p}")
         console.print(
-            "\nNext: register the MCP server in [bold]~/.cursor/mcp.json[/bold] "
-            'with `{"mcpServers": {"skillhub": {"command": "skillhub-mcp"}}}` '
-            "and restart Cursor."
+            "\nNext: register the MCP server in your platform's MCP config. Example for Cursor:\n"
+            '  ~/.cursor/mcp.json -> {"mcpServers": {"skillhub": {"command": "skillhub-mcp"}}}\n'
+            "Example for Claude Code:\n"
+            '  claude mcp add skillhub -- skillhub-mcp\n'
+            "Then restart your IDE."
         )
     else:
-        console.print("[yellow]Nothing copied. SKILL.md already installed.[/yellow]")
+        console.print("[yellow]Nothing copied. SKILL.md already installed on all platforms.[/yellow]")
+
+
+# ---- platforms ---- #
+
+
+@app.command("platforms")
+def cmd_platforms() -> None:
+    """Show configured platforms and their directories."""
+    cfg = _load()
+    table = Table(title="SkillHub platforms")
+    table.add_column("Platform", style="bold")
+    table.add_column("Enabled")
+    table.add_column("Skills Dir")
+    table.add_column("MCP Config")
+    table.add_column("Rules Dir")
+    for plat in cfg.platforms.profiles:
+        table.add_row(
+            plat.name,
+            "[green]yes[/green]" if plat.enabled else "[dim]no[/dim]",
+            plat.skills_dir or "-",
+            plat.mcp_json or "-",
+            plat.rules_dir or "-",
+        )
+    console.print(table)
+
+
+# ---- update ---- #
+
+
+@app.command("update")
+def cmd_update(name: str = typer.Argument(...)) -> None:
+    """Force-sync a single item."""
+    cfg = _load()
+    registry = load_registry()
+    entry = registry.get(name)
+    if entry is None:
+        console.print(f"[yellow]No item named[/yellow] {name}")
+        raise typer.Exit(1)
+    result = sync_one(entry, config=cfg)
+    color = "green" if result.action is not SyncAction.FAILED else "red"
+    console.print(f"[{color}]{result.action.value}[/{color}] {name} -> {result.install_path}")
+    if result.platforms_installed:
+        console.print(f"  Platforms: {', '.join(result.platforms_installed)}")
+    if result.detail:
+        console.print(result.detail)
 
 
 def _find_project_root() -> Path:
@@ -433,22 +634,6 @@ def _find_project_root() -> Path:
         if (candidate / "SKILL.md").is_file() and (candidate / "pyproject.toml").is_file():
             return candidate
     return here.parent.parent
-
-
-@app.command("update")
-def cmd_update(name: str = typer.Argument(...)) -> None:
-    """Force-sync a single skill."""
-    cfg = _load()
-    registry = load_registry()
-    entry = registry.get(name)
-    if entry is None:
-        console.print(f"[yellow]No skill named[/yellow] {name}")
-        raise typer.Exit(1)
-    result = sync_one(entry, config=cfg)
-    color = "green" if result.action is not SyncAction.FAILED else "red"
-    console.print(f"[{color}]{result.action.value}[/{color}] {name} -> {result.install_path}")
-    if result.detail:
-        console.print(result.detail)
 
 
 def main() -> None:  # pragma: no cover

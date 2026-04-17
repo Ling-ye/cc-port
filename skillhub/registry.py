@@ -27,6 +27,20 @@ def find_registry_path(start: Path | None = None) -> Path:
     return cur / DEFAULT_REGISTRY_FILENAME
 
 
+def _migrate_v1_to_v2(data: dict) -> dict:
+    """Convert a v1 registry (with ``skills`` list) to v2 (with ``items`` list).
+
+    Each entry gets ``kind: skill`` added.  The original data dict is not
+    mutated.
+    """
+    items = []
+    for entry in data.get("skills", []) or []:
+        migrated = dict(entry)
+        migrated.setdefault("kind", "skill")
+        items.append(migrated)
+    return {"version": 2, "items": items}
+
+
 def load_registry(path: Path | None = None) -> Registry:
     p = path or find_registry_path()
     if not p.is_file():
@@ -35,15 +49,31 @@ def load_registry(path: Path | None = None) -> Registry:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
         raise ValueError(f"Registry file {p} must contain a YAML mapping at the root.")
+
+    version = data.get("version", 1)
+    if version < 2:
+        data = _migrate_v1_to_v2(data)
+
+    # Normalize: accept both "skills" and "items" key in the raw YAML
+    if "skills" in data and "items" not in data:
+        data["items"] = data.pop("skills")
+
     return Registry.model_validate(data)
 
 
 def save_registry(registry: Registry, path: Path | None = None) -> Path:
-    """Atomically write the registry to disk and return the path written."""
+    """Atomically write the registry (always as v2 format) to disk."""
     p = path or find_registry_path()
     p.parent.mkdir(parents=True, exist_ok=True)
 
     payload = registry.model_dump(mode="json")
+    # Ensure we always write version 2
+    payload["version"] = 2
+    # Drop None mcp_config entries to keep the YAML clean
+    for item in payload.get("items", []):
+        if item.get("mcp_config") is None:
+            item.pop("mcp_config", None)
+
     text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
 
     fd, tmp_name = tempfile.mkstemp(prefix=".registry-", suffix=".yaml", dir=str(p.parent))

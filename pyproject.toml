@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skillhub"
-version = "0.1.0"
-description = "Open-source registry, publisher and installer for Cursor Agent Skills, with both CLI and MCP server interfaces."
+version = "0.2.0"
+description = "Multi-platform registry, publisher and installer for AI coding agent resources (skills, MCP servers, rules) across Cursor and Claude Code."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

@@ -7,18 +7,33 @@
 # SKILLHUB_GITHUB_TOKEN environment variable instead, which takes precedence.
 token = "ghp_replace_me"
 
-# Owner (user or org) under which new skill repositories will be created.
+# Owner (user or org) under which new repositories will be created.
 # If empty, SkillHub uses the account that owns the token.
 owner = ""
 
-# Optional prefix prepended to every newly created skill repo, e.g.
-# "cursor-skill-" produces github.com/<owner>/cursor-skill-<skill-name>.
+# Optional prefix prepended to every newly created repo, e.g.
+# "cursor-skill-" produces github.com/<owner>/cursor-skill-<name>.
 repo_prefix = "cursor-skill-"
 
 # Default visibility for newly created repositories.
 default_private = false
 
 [install]
-# Where `skillhub sync` installs each skill. The path is expanded with
-# pathlib.Path.expanduser(), so `~` works on every platform.
+# Fallback directory used when no platform-specific skills_dir is configured.
 target = "~/.cursor/skills"
+
+# ---- Platform configuration ----
+# Enable one or more AI coding platforms. SkillHub installs skills, MCP
+# server configs, and rules into each enabled platform's directories.
+
+[platforms.cursor]
+enabled = true
+skills_dir = "~/.cursor/skills"
+mcp_json = "~/.cursor/mcp.json"
+rules_dir = ""
+
+[platforms.claude-code]
+enabled = false
+skills_dir = "~/.claude/skills"
+mcp_json = "~/.claude.json"
+rules_dir = ""

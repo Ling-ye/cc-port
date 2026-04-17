@@ -1,7 +1,8 @@
 """SkillHub MCP server.
 
-Exposes the same operations as the CLI as MCP tools, so a Cursor agent can
-publish, register, and sync skills directly from chat.
+Exposes the same operations as the CLI as MCP tools, so an AI coding agent
+(Cursor or Claude Code) can publish, register, and sync skills, MCP servers,
+and rules directly from chat.
 """
 
 from __future__ import annotations
@@ -20,20 +21,55 @@ mcp = FastMCP("SkillHub")
 
 
 @mcp.tool()
-def list_skills() -> dict[str, Any]:
-    """List all skills currently registered in registry.yaml."""
+def list_items(kind: str | None = None) -> dict[str, Any]:
+    """List all items (skills, MCP servers, rules) registered in registry.yaml.
+
+    Args:
+        kind: Optional filter by resource type: "skill", "mcp", or "rule".
+    """
     cfg = load_config()
     registry = load_registry()
     install_root = cfg.install.target_path
+    items = registry.items
+    if kind:
+        items = [i for i in items if i.kind == kind]
     return {
         "registry_path": str(find_registry_path()),
         "install_target": str(install_root),
-        "skills": [
+        "platforms": [
+            {"name": p.name, "enabled": p.enabled, "skills_dir": p.skills_dir, "mcp_json": p.mcp_json}
+            for p in cfg.platforms.profiles
+        ],
+        "items": [
             {
                 **s.model_dump(),
                 "installed": (install_root / s.install_target_name()).exists(),
             }
-            for s in registry.skills
+            for s in items
+        ],
+    }
+
+
+@mcp.tool()
+def list_skills() -> dict[str, Any]:
+    """List all skills currently registered in registry.yaml (backward-compatible alias)."""
+    return list_items(kind="skill")
+
+
+@mcp.tool()
+def list_platforms() -> dict[str, Any]:
+    """Show all configured platforms and their installation directories."""
+    cfg = load_config()
+    return {
+        "platforms": [
+            {
+                "name": p.name,
+                "enabled": p.enabled,
+                "skills_dir": p.skills_dir,
+                "mcp_json": p.mcp_json,
+                "rules_dir": p.rules_dir,
+            }
+            for p in cfg.platforms.profiles
         ],
     }
 
@@ -45,22 +81,23 @@ def publish_local_skill(
     description: str | None = None,
     private: bool | None = None,
     update_visibility: bool = False,
+    kind: str = "skill",
+    mcp_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate a local skill directory, create a dedicated GitHub repository
-    for it under the configured owner, push the contents, and record it in
-    registry.yaml.
+    """Validate a local directory, create a dedicated GitHub repository for it
+    under the configured owner, push the contents, and record it in registry.yaml.
 
     Args:
-        path: Absolute or user-relative path to the skill directory containing SKILL.md.
-        name: Optional override for the skill name (defaults to SKILL.md frontmatter).
+        path: Absolute or user-relative path to the directory.
+        name: Optional override for the name (defaults to SKILL.md frontmatter for skills).
         description: Optional override for the description.
         private: Repo visibility. True = private, False = public, None = use the
             user's configured default. ALWAYS confirm this with the user before
             calling unless they have explicitly stated their preference.
         update_visibility: If the GitHub repo already exists with a different
-            visibility than `private`, set this to True to flip it. Defaults to
-            False, which raises an error on mismatch (so we never silently
-            change visibility without consent).
+            visibility, set this to True to flip it.
+        kind: Resource type: "skill", "mcp", or "rule".
+        mcp_config: MCP server configuration dict (required when kind="mcp").
     """
     cfg = load_config()
     try:
@@ -71,6 +108,8 @@ def publish_local_skill(
             description=description,
             private=private,
             update_visibility=update_visibility,
+            kind=kind,
+            mcp_config=mcp_config,
         )
     except publisher.VisibilityMismatchError as exc:
         return {
@@ -79,10 +118,11 @@ def publish_local_skill(
             "full_name": exc.full_name,
             "current_private": exc.current_private,
             "requested_private": exc.requested_private,
-            "hint": "Re-run with update_visibility=True to change it, or pass private= matching the current state.",
+            "hint": "Re-run with update_visibility=True to change it.",
         }
     return {
         "name": result.name,
+        "kind": kind,
         "repo_url": result.repo_url,
         "full_name": result.full_name,
         "created_repo": result.created,
@@ -95,10 +135,10 @@ def publish_local_skill(
 
 @mcp.tool()
 def set_skill_visibility(name: str, private: bool) -> dict[str, Any]:
-    """Change the GitHub visibility of an `owned` skill repository.
+    """Change the GitHub visibility of an ``owned`` repository.
 
     Args:
-        name: Name of an `owned` skill in the registry.
+        name: Name of an ``owned`` item in the registry.
         private: True = make the repo private, False = make it public.
     """
     cfg = load_config()
@@ -115,15 +155,19 @@ def add_external_skill(
     subdir: str | None = None,
     ref: str = "main",
     description: str = "",
+    kind: str = "skill",
+    mcp_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Register a third-party skill repository in registry.yaml.
+    """Register a third-party resource in registry.yaml.
 
     Args:
         github_url: HTTPS or SSH URL of the upstream repo.
         name: Optional explicit name (defaults inferred from URL or subdir).
-        subdir: Optional path inside the repo where SKILL.md lives.
+        subdir: Optional path inside the repo where the resource lives.
         ref: Branch/tag/commit to track.
         description: Optional human description.
+        kind: Resource type: "skill", "mcp", or "rule".
+        mcp_config: MCP server configuration dict (for kind="mcp").
     """
     entry = publisher.add_external_skill(
         github_url,
@@ -131,32 +175,93 @@ def add_external_skill(
         subdir=subdir,
         ref=ref,
         description=description,
+        kind=kind,
+        mcp_config=mcp_config,
+    )
+    return entry.model_dump()
+
+
+@mcp.tool()
+def add_mcp_server(
+    name: str,
+    github_url: str,
+    command: str | None = None,
+    args: list[str] | None = None,
+    url: str | None = None,
+    env: dict[str, str] | None = None,
+    subdir: str | None = None,
+    ref: str = "main",
+    description: str = "",
+) -> dict[str, Any]:
+    """Register an MCP server in the registry (convenience wrapper).
+
+    Either ``command`` (stdio) or ``url`` (http) must be provided.
+
+    Args:
+        name: Name for the MCP server entry.
+        github_url: GitHub repository containing the MCP server.
+        command: Command to start the server (stdio transport).
+        args: Arguments for the command.
+        url: HTTP URL for the server (http transport).
+        env: Environment variables for the server.
+        subdir: Subdirectory in the repo.
+        ref: Branch/tag to track.
+        description: Human description.
+    """
+    mcp_config: dict[str, Any] = {}
+    if command:
+        mcp_config["command"] = command
+        if args:
+            mcp_config["args"] = args
+    elif url:
+        mcp_config["type"] = "http"
+        mcp_config["url"] = url
+    else:
+        return {"error": "Either 'command' or 'url' must be provided."}
+
+    if env:
+        mcp_config["env"] = env
+
+    entry = publisher.add_external_skill(
+        github_url,
+        name=name,
+        subdir=subdir,
+        ref=ref,
+        description=description,
+        kind="mcp",
+        mcp_config=mcp_config,
     )
     return entry.model_dump()
 
 
 @mcp.tool()
 def remove_skill(name: str, uninstall: bool = False) -> dict[str, Any]:
-    """Remove a skill from the registry. Optionally also delete its local installation."""
+    """Remove an item from the registry. Optionally also delete its local installation."""
     cfg = load_config()
     registry = load_registry()
     entry = registry.get(name)
     removed = publisher.remove_skill(name)
-    detail = {"removed": removed.model_dump() if removed else None, "uninstalled": False}
+    detail: dict[str, Any] = {"removed": removed.model_dump() if removed else None, "uninstalled": False}
     if uninstall and entry is not None:
         detail["uninstalled"] = uninstall_one(entry, config=cfg)
     return detail
 
 
 @mcp.tool()
-def sync_skills(only: list[str] | None = None) -> dict[str, Any]:
-    """Install or update every skill in the registry under the configured target.
+def sync_skills(
+    only: list[str] | None = None,
+    kind: str | None = None,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """Install or update items in the registry across all enabled platforms.
 
     Args:
-        only: Optional list of skill names to restrict the sync to.
+        only: Optional list of item names to restrict the sync to.
+        kind: Optional filter by resource type ("skill", "mcp", "rule").
+        platform: Optional: only sync to this specific platform.
     """
     cfg = load_config()
-    results = sync_all(config=cfg, only=only)
+    results = sync_all(config=cfg, only=only, kind=kind, platform_filter=platform)
     return {
         "install_target": str(cfg.install.target_path),
         "results": [
@@ -164,6 +269,7 @@ def sync_skills(only: list[str] | None = None) -> dict[str, Any]:
                 "name": r.name,
                 "action": r.action.value,
                 "install_path": str(r.install_path),
+                "platforms": r.platforms_installed,
                 "detail": r.detail,
             }
             for r in results
@@ -173,29 +279,34 @@ def sync_skills(only: list[str] | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 def update_skill(name: str) -> dict[str, Any]:
-    """Force-sync a single skill by name."""
+    """Force-sync a single item by name."""
     cfg = load_config()
     registry = load_registry()
     entry = registry.get(name)
     if entry is None:
-        return {"error": f"No skill named {name!r} in registry."}
+        return {"error": f"No item named {name!r} in registry."}
     result = sync_one(entry, config=cfg)
     return {
         "name": result.name,
         "action": result.action.value,
         "install_path": str(result.install_path),
+        "platforms": result.platforms_installed,
         "detail": result.detail,
     }
 
 
 @mcp.tool()
-def skill_status() -> dict[str, Any]:
-    """Report local vs remote commit status for every registered skill."""
+def skill_status(kind: str | None = None) -> dict[str, Any]:
+    """Report local vs remote commit status for registered items.
+
+    Args:
+        kind: Optional filter by resource type ("skill", "mcp", "rule").
+    """
     cfg = load_config()
-    rows = status_all(config=cfg)
+    rows = status_all(config=cfg, kind=kind)
     return {
         "install_target": str(cfg.install.target_path),
-        "skills": [
+        "items": [
             {
                 "name": s.name,
                 "installed": s.installed,

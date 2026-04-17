@@ -25,6 +25,14 @@ def skill_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def registry_path(tmp_path: Path) -> Path:
     p = tmp_path / "registry.yaml"
+    p.write_text("version: 2\nitems: []\n", encoding="utf-8")
+    return p
+
+
+@pytest.fixture
+def registry_v1_path(tmp_path: Path) -> Path:
+    """A v1-format registry for migration testing."""
+    p = tmp_path / "registry.yaml"
     p.write_text("version: 1\nskills: []\n", encoding="utf-8")
     return p
 

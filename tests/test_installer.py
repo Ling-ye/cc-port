@@ -6,7 +6,8 @@ import pytest
 
 from skillhub.config import Config, GithubConfig, InstallConfig
 from skillhub.installer import SyncAction, status_all, sync_all
-from skillhub.models import Registry, SkillEntry
+from skillhub.models import Registry, RegistryItem
+from skillhub.platforms import PlatformProfile, PlatformsConfig
 
 
 @pytest.fixture
@@ -14,25 +15,30 @@ def cfg(tmp_path: Path) -> Config:
     return Config(
         github=GithubConfig(token=""),
         install=InstallConfig(target=str(tmp_path / "skills")),
+        platforms=PlatformsConfig(profiles=[
+            PlatformProfile(
+                name="cursor",
+                enabled=True,
+                skills_dir=str(tmp_path / "cursor-skills"),
+            ),
+        ]),
     )
 
 
 def _registry_with_local_repo(local_path: Path) -> Registry:
-    """Build a Registry that points at a local file path.
-
-    The strict URL validator only allows GitHub URLs, so we bypass it via
-    `model_construct` for testing against a local bare repo.
-    """
+    """Build a Registry that points at a local file path."""
     return Registry(
-        skills=[
-            SkillEntry.model_construct(
+        items=[
+            RegistryItem.model_construct(
                 name="upstream-skill",
+                kind="skill",
                 repo=str(local_path),
                 source="external",
                 subdir="",
                 ref="main",
                 install_dir="",
                 description="",
+                mcp_config=None,
             )
         ]
     )
@@ -52,8 +58,8 @@ def test_sync_clones_and_is_idempotent(tmp_path: Path, cfg: Config, fake_remote_
 
 def test_status_when_not_installed(tmp_path: Path, cfg: Config) -> None:
     reg = Registry(
-        skills=[
-            SkillEntry(
+        items=[
+            RegistryItem(
                 name="missing",
                 repo="https://github.com/foo/bar",
                 source="external",
@@ -64,3 +70,21 @@ def test_status_when_not_installed(tmp_path: Path, cfg: Config) -> None:
     rows = status_all(config=cfg, registry=reg)
     assert rows[0].installed is False
     assert rows[0].local_commit is None
+
+
+def test_sync_with_kind_filter(tmp_path: Path, cfg: Config) -> None:
+    reg = Registry(items=[
+        RegistryItem(
+            name="s1", kind="skill",
+            repo="https://github.com/foo/s1", source="external",
+        ),
+        RegistryItem(
+            name="m1", kind="mcp",
+            repo="https://github.com/foo/m1", source="external",
+            mcp_config={"command": "test"},
+        ),
+    ])
+    # Only sync skills (will fail because no real repo, but we check filtering)
+    results = sync_all(config=cfg, registry=reg, kind="mcp")
+    assert len(results) == 1
+    assert results[0].name == "m1"

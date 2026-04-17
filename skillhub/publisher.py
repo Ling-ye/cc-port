@@ -1,17 +1,21 @@
-"""Publish a local skill directory to a new GitHub repository."""
+"""Publish a local resource directory to a new GitHub repository."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from . import git_ops
 from .config import Config
 from .github_client import GithubClient
-from .models import Registry, SkillEntry
+from .models import ItemKind, Registry, RegistryItem
 from .registry import load_registry, save_registry
 from .validator import parse_skill
+
+# Keep backward-compatible alias
+SkillEntry = RegistryItem
 
 
 @dataclass
@@ -24,7 +28,7 @@ class PublishResult:
     private: bool
     visibility_changed: bool
     visibility_mismatch: bool
-    entry: SkillEntry
+    entry: RegistryItem
 
 
 class VisibilityMismatchError(RuntimeError):
@@ -59,21 +63,28 @@ def publish_local_skill(
     private: bool | None = None,
     update_visibility: bool = False,
     registry_path: Path | None = None,
+    kind: ItemKind = "skill",
+    mcp_config: dict[str, Any] | None = None,
 ) -> PublishResult:
     """Validate, create repo, push, and record in the registry.
 
     Args:
         private: True = private repo, False = public, None = use config default.
         update_visibility: When True and an existing repo has a different
-            visibility than requested, flip it via the GitHub API. When False
-            and there is a mismatch, `VisibilityMismatchError` is raised before
-            anything is pushed.
+            visibility than requested, flip it via the GitHub API.
+        kind: Resource type to publish (skill, mcp, rule).
+        mcp_config: MCP server configuration dict (only for kind=mcp).
     """
     skill_dir = Path(path).expanduser().resolve()
-    meta = parse_skill(skill_dir)
 
-    skill_name = _slug(name or meta.name)
-    skill_description = (description or meta.description).strip()
+    if kind == "skill":
+        meta = parse_skill(skill_dir)
+        skill_name = _slug(name or meta.name)
+        skill_description = (description or meta.description).strip()
+    else:
+        skill_name = _slug(name or skill_dir.name)
+        skill_description = (description or "").strip()
+
     requested_private = config.github.default_private if private is None else private
 
     if not config.github.token:
@@ -111,14 +122,16 @@ def publish_local_skill(
     pushed = _git_publish(skill_dir, repo.https_url, repo.default_branch, config.github.token)
 
     registry = load_registry(registry_path)
-    entry = SkillEntry(
+    entry = RegistryItem(
         name=skill_name,
+        kind=kind,
         repo=repo.https_url,
         source="owned",
         subdir="",
         ref=repo.default_branch,
         install_dir="",
         description=skill_description,
+        mcp_config=mcp_config,
     )
     registry.upsert(entry)
     save_registry(registry, registry_path)
@@ -143,10 +156,7 @@ def set_skill_visibility(
     private: bool,
     registry_path: Path | None = None,
 ) -> dict:
-    """Flip an `owned` skill's GitHub repo visibility (public <-> private).
-
-    Returns the new state for both the registry entry and the GitHub repo.
-    """
+    """Flip an ``owned`` item's GitHub repo visibility (public <-> private)."""
     if not config.github.token:
         from .github_client import GithubAuthError
 
@@ -157,11 +167,11 @@ def set_skill_visibility(
     registry = load_registry(registry_path)
     entry = registry.get(name)
     if entry is None:
-        raise ValueError(f"No skill named {name!r} in registry.")
+        raise ValueError(f"No item named {name!r} in registry.")
     if entry.source != "owned":
         raise ValueError(
-            f"Skill {name!r} is registered as {entry.source!r}; "
-            "visibility can only be changed for `owned` skills."
+            f"Item {name!r} is registered as {entry.source!r}; "
+            "visibility can only be changed for `owned` items."
         )
 
     owner, repo_name = _parse_owner_repo(entry.repo)
@@ -182,7 +192,7 @@ def _parse_owner_repo(github_url: str) -> tuple[str, str]:
     if cleaned.startswith("git@github.com:"):
         path = cleaned.split(":", 1)[1]
     elif cleaned.startswith("https://github.com/"):
-        path = cleaned[len("https://github.com/") :]
+        path = cleaned[len("https://github.com/"):]
     else:
         raise ValueError(f"Cannot parse owner/repo from {github_url!r}.")
     parts = path.split("/")
@@ -192,10 +202,7 @@ def _parse_owner_repo(github_url: str) -> tuple[str, str]:
 
 
 def _git_publish(skill_dir: Path, https_url: str, branch: str, token: str) -> bool:
-    """Initialize (if needed), commit, and push the skill directory.
-
-    Returns True if a push was performed (i.e. there was anything to send).
-    """
+    """Initialize (if needed), commit, and push the skill directory."""
     if not git_ops.is_repo(skill_dir):
         git_ops.init_repo(skill_dir, default_branch=branch)
 
@@ -221,17 +228,21 @@ def add_external_skill(
     ref: str = "main",
     description: str = "",
     registry_path: Path | None = None,
-) -> SkillEntry:
-    """Register a third-party skill repository in the registry."""
+    kind: ItemKind = "skill",
+    mcp_config: dict[str, Any] | None = None,
+) -> RegistryItem:
+    """Register a third-party resource in the registry."""
     inferred_name = name or _infer_name_from_url(github_url, subdir)
-    entry = SkillEntry(
+    entry = RegistryItem(
         name=_slug(inferred_name),
+        kind=kind,
         repo=github_url.rstrip("/"),
         source="external",
         subdir=(subdir or "").strip().strip("/"),
         ref=ref or "main",
         install_dir="",
         description=description.strip(),
+        mcp_config=mcp_config,
     )
     registry = load_registry(registry_path)
     registry.upsert(entry)
@@ -243,7 +254,7 @@ def remove_skill(
     name: str,
     *,
     registry_path: Path | None = None,
-) -> SkillEntry | None:
+) -> RegistryItem | None:
     registry = load_registry(registry_path)
     removed = registry.remove(name)
     if removed is not None:

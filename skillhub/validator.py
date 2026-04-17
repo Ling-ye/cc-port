@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import frontmatter
 
-from .models import SKILL_NAME_RE
+from .models import ITEM_NAME_RE, ItemKind
+
+# Keep old name for backward compat
+SKILL_NAME_RE = ITEM_NAME_RE
 
 
 class SkillValidationError(ValueError):
-    """Raised when a local skill directory does not meet SKILL.md requirements."""
+    """Raised when a local skill directory does not meet requirements."""
 
 
 @dataclass
@@ -22,10 +26,10 @@ class SkillMetadata:
 
 
 def find_skill_md(skill_dir: Path) -> Path:
-    """Locate SKILL.md inside `skill_dir`.
+    """Locate SKILL.md inside ``skill_dir``.
 
-    Accepts either `<skill_dir>/SKILL.md` or a directory containing exactly one
-    nested SKILL.md (one level deep) for convenience.
+    Accepts either ``<skill_dir>/SKILL.md`` or a directory containing exactly
+    one nested SKILL.md (one level deep) for convenience.
     """
     direct = skill_dir / "SKILL.md"
     if direct.is_file():
@@ -52,7 +56,7 @@ def parse_skill(skill_dir: Path) -> SkillMetadata:
 
     if not name:
         raise SkillValidationError(f"{skill_md}: frontmatter is missing required field `name`.")
-    if not SKILL_NAME_RE.match(name):
+    if not ITEM_NAME_RE.match(name):
         raise SkillValidationError(
             f"{skill_md}: name {name!r} must be lowercase letters/digits/hyphens, max 64 chars."
         )
@@ -66,3 +70,33 @@ def parse_skill(skill_dir: Path) -> SkillMetadata:
         )
 
     return SkillMetadata(name=name, description=description, skill_md_path=skill_md)
+
+
+def validate_mcp_config(mcp_config: dict[str, Any] | None) -> None:
+    """Validate an MCP server configuration dict."""
+    if mcp_config is None:
+        raise SkillValidationError("MCP items require an mcp_config dict.")
+    if not mcp_config.get("command") and not mcp_config.get("url"):
+        raise SkillValidationError(
+            "mcp_config must contain either 'command' (stdio) or 'url' (http)."
+        )
+
+
+def validate_rule_dir(rule_dir: Path) -> None:
+    """Validate that a rule directory contains at least one .md file."""
+    rule_dir = rule_dir.expanduser().resolve()
+    if not rule_dir.is_dir():
+        raise SkillValidationError(f"{rule_dir} is not a directory.")
+    md_files = list(rule_dir.glob("*.md"))
+    if not md_files:
+        raise SkillValidationError(f"No .md files found in {rule_dir}.")
+
+
+def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None = None) -> None:
+    """Dispatch validation based on item kind."""
+    if kind == "skill":
+        parse_skill(path)
+    elif kind == "mcp":
+        validate_mcp_config(mcp_config)
+    elif kind == "rule":
+        validate_rule_dir(path)

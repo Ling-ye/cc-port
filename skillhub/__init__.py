@@ -1,3 +1,3 @@
-"""SkillHub: Cursor Agent Skill registry, publisher and installer."""
+"""SkillHub: multi-platform registry, publisher and installer for AI coding agent resources."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
