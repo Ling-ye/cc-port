@@ -1,0 +1,24 @@
+# SkillHub configuration file.
+# Copy this to ~/.config/skillhub/config.toml and fill in your values.
+# On Windows it lives at %USERPROFILE%\.config\skillhub\config.toml.
+
+[github]
+# Personal Access Token with `repo` scope. You can also set the
+# SKILLHUB_GITHUB_TOKEN environment variable instead, which takes precedence.
+token = "ghp_replace_me"
+
+# Owner (user or org) under which new skill repositories will be created.
+# If empty, SkillHub uses the account that owns the token.
+owner = ""
+
+# Optional prefix prepended to every newly created skill repo, e.g.
+# "cursor-skill-" produces github.com/<owner>/cursor-skill-<skill-name>.
+repo_prefix = "cursor-skill-"
+
+# Default visibility for newly created repositories.
+default_private = false
+
+[install]
+# Where `skillhub sync` installs each skill. The path is expanded with
+# pathlib.Path.expanduser(), so `~` works on every platform.
+target = "~/.cursor/skills"

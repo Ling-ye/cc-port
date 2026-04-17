@@ -1,0 +1,111 @@
+"""User configuration handling.
+
+Loads `~/.config/skillhub/config.toml`. The GitHub token may also come from the
+`SKILLHUB_GITHUB_TOKEN` environment variable (which takes precedence).
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - py310 fallback
+    import tomli as tomllib
+
+CONFIG_ENV_VAR = "SKILLHUB_GITHUB_TOKEN"
+CONFIG_PATH_ENV_VAR = "SKILLHUB_CONFIG"
+DEFAULT_CONFIG_RELATIVE = Path(".config/skillhub/config.toml")
+DEFAULT_INSTALL_TARGET = "~/.cursor/skills"
+DEFAULT_REPO_PREFIX = "cursor-skill-"
+
+
+@dataclass
+class GithubConfig:
+    token: str = ""
+    owner: str = ""
+    repo_prefix: str = DEFAULT_REPO_PREFIX
+    default_private: bool = False
+
+
+@dataclass
+class InstallConfig:
+    target: str = DEFAULT_INSTALL_TARGET
+
+    @property
+    def target_path(self) -> Path:
+        return Path(self.target).expanduser()
+
+
+@dataclass
+class Config:
+    github: GithubConfig = field(default_factory=GithubConfig)
+    install: InstallConfig = field(default_factory=InstallConfig)
+    source_path: Path | None = None
+
+
+def default_config_path() -> Path:
+    override = os.environ.get(CONFIG_PATH_ENV_VAR)
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / DEFAULT_CONFIG_RELATIVE
+
+
+def load_config(path: Path | None = None) -> Config:
+    cfg_path = path or default_config_path()
+    data: dict = {}
+    if cfg_path.is_file():
+        with cfg_path.open("rb") as f:
+            data = tomllib.load(f)
+
+    gh_data = data.get("github", {}) or {}
+    install_data = data.get("install", {}) or {}
+
+    cfg = Config(
+        github=GithubConfig(
+            token=str(gh_data.get("token", "") or ""),
+            owner=str(gh_data.get("owner", "") or ""),
+            repo_prefix=str(gh_data.get("repo_prefix", DEFAULT_REPO_PREFIX) or ""),
+            default_private=bool(gh_data.get("default_private", False)),
+        ),
+        install=InstallConfig(
+            target=str(install_data.get("target", DEFAULT_INSTALL_TARGET) or DEFAULT_INSTALL_TARGET),
+        ),
+        source_path=cfg_path if cfg_path.is_file() else None,
+    )
+
+    env_token = os.environ.get(CONFIG_ENV_VAR, "").strip()
+    if env_token:
+        cfg.github.token = env_token
+
+    return cfg
+
+
+def write_config(cfg: Config, path: Path | None = None) -> Path:
+    """Write a config TOML file (used by `skillhub init`)."""
+    out = path or default_config_path()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "[github]",
+        f'token = "{_escape(cfg.github.token)}"',
+        f'owner = "{_escape(cfg.github.owner)}"',
+        f'repo_prefix = "{_escape(cfg.github.repo_prefix)}"',
+        f"default_private = {str(cfg.github.default_private).lower()}",
+        "",
+        "[install]",
+        f'target = "{_escape(cfg.install.target)}"',
+        "",
+    ]
+    out.write_text("\n".join(lines), encoding="utf-8")
+    try:
+        os.chmod(out, 0o600)
+    except OSError:  # pragma: no cover - non-POSIX filesystems
+        pass
+    return out
+
+
+def _escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')

@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skillhub"
+version = "0.1.0"
+description = "Open-source registry, publisher and installer for Cursor Agent Skills, with both CLI and MCP server interfaces."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "SkillHub contributors" }]
+keywords = ["cursor", "skills", "mcp", "agent", "registry"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+    "PyGithub>=2.3",
+    "python-frontmatter>=1.1",
+    "fastmcp>=0.2",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+skillhub = "skillhub.cli:app"
+skillhub-mcp = "skillhub.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/your-name/SkillHub"
+Issues = "https://github.com/your-name/SkillHub/issues"
+
+[tool.setuptools.packages.find]
+include = ["skillhub*"]
+exclude = ["tests*", "examples*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# B008: Typer relies on `typer.Argument(...)` / `typer.Option(...)` in defaults.
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
