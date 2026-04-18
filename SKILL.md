@@ -125,6 +125,80 @@ lpm search --tag testing       # 按标签过滤
 lpm search fastapi --remote    # 同时搜索 GitHub
 ```
 
+## 在其他项目中引入 LPM
+
+LPM 可以作为 Python 库、Git Submodule 或 Cursor Skill 三种方式引入到其他项目中，按需选用或组合使用。
+
+### 方式一：pip install from Git（作为 Python 包）
+
+无需 clone 源码，直接从 Git 安装为 Python 包：
+
+```bash
+# 安装最新版
+pip install git+https://github.com/Ling-ye/SkillHub.git
+
+# 锁定到特定版本/分支/commit
+pip install git+https://github.com/Ling-ye/SkillHub.git@main
+pip install git+https://github.com/Ling-ye/SkillHub.git@v0.4.0
+```
+
+在目标项目的依赖中声明：
+
+```
+# requirements.txt
+lingyepluginmarketplace @ git+https://github.com/Ling-ye/SkillHub.git@main
+```
+
+```toml
+# pyproject.toml
+dependencies = [
+    "lingyepluginmarketplace @ git+https://github.com/Ling-ye/SkillHub.git@main",
+]
+```
+
+安装后代码中可 `import lpm`，`lpm` 和 `lpm-mcp` 命令行工具自动可用。
+
+### 方式二：Git Submodule（嵌入源码）
+
+将 LPM 仓库作为子模块嵌入到目标项目中，代码可见、可编辑、版本锁定：
+
+```bash
+cd <你的项目>
+git submodule add https://github.com/Ling-ye/SkillHub.git libs/lpm
+git commit -m "add LPM as submodule"
+
+# 安装为可编辑包
+pip install -e libs/lpm
+```
+
+团队成员 clone 时需要加 `--recurse-submodules`：
+
+```bash
+git clone --recurse-submodules <你的项目仓库>
+```
+
+### 方式三：作为 Cursor Skill 引入
+
+LPM 自带 `SKILL.md`，可直接作为 Cursor Skill 被 AI Agent 自动发现和使用：
+
+```bash
+# 通过 lpm 自身登记并链接
+lpm add https://github.com/Ling-ye/SkillHub.git --tag lpm --category tool-management
+cd <你的项目>
+lpm link --only lpm
+```
+
+也可以手动在项目的 `.cursor/skills/` 下创建 symlink 指向 LPM 目录，Agent 会自动读取 SKILL.md。
+
+### 推荐组合
+
+| 需求 | 方案 | 效果 |
+|------|------|------|
+| 代码中调用 LPM API | 方式一（pip install） | `import lpm`，CLI 命令可用 |
+| 需要修改 LPM 源码 | 方式二（submodule） | 源码嵌入，可直接编辑 |
+| AI Agent 自动使用 LPM | 方式三（skill） | Agent 读取 SKILL.md 自动调用 |
+| 完整集成（推荐） | 方式一 + 方式三 | 既是库又是 skill |
+
 ### 修改可见性
 
 `set_skill_visibility(name=..., private=<bool>)`，仅限 `owned` 资源。
