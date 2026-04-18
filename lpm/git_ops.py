@@ -49,15 +49,22 @@ def _cleanup_askpass(extra_env: dict[str, str]) -> None:
             pass
 
 
+_NO_PROMPT_ENV: dict[str, str] = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "never",
+}
+"""Baseline env overrides that prevent git from ever opening credential popups."""
+
+
 def _run(
     args: list[str],
     cwd: Path | None = None,
     check: bool = True,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    env = None
+    env = {**os.environ, **_NO_PROMPT_ENV}
     if extra_env:
-        env = {**os.environ, **extra_env}
+        env.update(extra_env)
     try:
         return subprocess.run(
             ["git", *args],
@@ -207,11 +214,13 @@ def probe_remote(url: str, ref: str = "main", *, timeout: int = 15) -> bool:
     authentication failures, or non-existent repositories.
     """
     try:
+        env = {**os.environ, **_NO_PROMPT_ENV}
         result = subprocess.run(
             ["git", "ls-remote", "--exit-code", url, ref],
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

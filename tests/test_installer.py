@@ -2,27 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from lpm.config import Config, GithubConfig, InstallConfig
+from lpm.config import Config
 from lpm.installer import SyncAction, status_all, sync_all
 from lpm.models import Registry, RegistryItem
-from lpm.platforms import PlatformProfile, PlatformsConfig
-
-
-@pytest.fixture
-def cfg(tmp_path: Path) -> Config:
-    return Config(
-        github=GithubConfig(token=""),
-        install=InstallConfig(target=str(tmp_path / "skills")),
-        platforms=PlatformsConfig(profiles=[
-            PlatformProfile(
-                name="cursor",
-                enabled=True,
-                skills_dir=str(tmp_path / "cursor-skills"),
-            ),
-        ]),
-    )
 
 
 def _registry_with_local_repo(local_path: Path) -> Registry:

@@ -8,45 +8,16 @@ from unittest.mock import patch
 
 import pytest
 
-from lpm.config import Config, GithubConfig, InstallConfig
+from lpm.config import Config
 from lpm.git_ops import looks_like_repo_gone, probe_remote
 from lpm.installer import (
-    CheckResult,
     SyncAction,
     check_all,
     check_one,
     sync_all,
 )
 from lpm.models import Registry, RegistryItem
-from lpm.platforms import PlatformProfile, PlatformsConfig
 from lpm.publisher import RepoUnreachableError, add_external_skill
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def cfg(tmp_path: Path) -> Config:
-    return Config(
-        github=GithubConfig(token=""),
-        install=InstallConfig(target=str(tmp_path / "skills")),
-        platforms=PlatformsConfig(profiles=[
-            PlatformProfile(
-                name="cursor",
-                enabled=True,
-                skills_dir=str(tmp_path / "cursor-skills"),
-            ),
-        ]),
-    )
-
-
-@pytest.fixture
-def registry_path(tmp_path: Path) -> Path:
-    p = tmp_path / "registry.yaml"
-    p.write_text("version: 2\nitems: []\n", encoding="utf-8")
-    return p
 
 
 def _make_registry(*names: str) -> Registry:
