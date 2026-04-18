@@ -1,11 +1,11 @@
 ---
 name: lpm
-description: Publish, register, install and sync AI agent resources (skills, MCP servers, rules) across Cursor and Claude Code through the LingyePluginMarketplace MCP server. Use when the user wants to publish a local skill or MCP config to GitHub, register a third-party resource, install or update all resources on a new machine, check for updates, or migrate their agent environment. Triggers include phrases like "publish/upload/share this skill", "add/track/collect this skill repo", "install my skills on this machine", "sync skills", "migrate skills", "add MCP server", "register MCP", "lpm", "发布 skill", "上传 skill", "登记 skill", "迁移技能", "同步技能", "添加 MCP 服务器".
+description: Publish, register, install, sync and discover AI agent resources (skills, MCP servers, rules) across Cursor, Claude Code and other AI coding platforms through the LPM MCP server. Use when the user wants to publish a local skill or MCP config to GitHub, register a third-party resource, install or update all resources on a new machine, check for updates, migrate their agent environment, link skills to a project for auto-discovery, or search for available skills. Triggers include phrases like "publish/upload/share this skill", "add/track/collect this skill repo", "install my skills on this machine", "sync skills", "migrate skills", "add MCP server", "register MCP", "link skills", "search skills", "lpm", "发布 skill", "上传 skill", "登记 skill", "迁移技能", "同步技能", "搜索技能", "链接技能", "添加 MCP 服务器".
 ---
 
-# LingyePluginMarketplace (LPM)
+# LPM (LingyePluginMarketplace)
 
-LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、规则 -- 跨 Cursor 和 Claude Code 两个平台。通过 MCP 工具（或 `lpm` CLI）完成发布、登记、安装、同步等操作。
+LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、规则 -- 跨多个 AI 编程平台（Cursor、Claude Code、Windsurf、Codex 等）。通过 MCP 工具（或 `lpm` CLI）完成发布、登记、安装、同步、搜索、项目级链接等操作。
 
 ## 快速上手（三步）
 
@@ -27,6 +27,7 @@ LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、�
 | `[github].default_private` | 默认仓库可见性 |
 | `[platforms.cursor]` | Cursor 平台的 skills 目录、mcp.json 路径 |
 | `[platforms.claude-code]` | Claude Code 平台配置（可选启用） |
+| `[platforms.<任意名>]` | 自定义平台，只需填 skills_dir / mcp_json / rules_dir |
 
 ## 意图 -> 工具映射
 
@@ -42,6 +43,7 @@ LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、�
 | "删除 / 取消注册某个资源" | `remove_skill` |
 | "列出已注册的资源" | `list_items` 或 `list_skills` |
 | "查看平台配置" | `list_platforms` |
+| "检查仓库可达性" | `check_items` |
 
 不确定时，先问一个澄清问题再操作。
 
@@ -65,6 +67,16 @@ token 缺失时不要静默失败 -- 指引用户设环境变量或编辑 config
 - **mcp** -- MCP 服务器配置（command/args/env），注入到各平台 mcp.json
 - **rule** -- 编码规则和约定文件，安装到各平台 rules 目录
 
+## 元数据字段
+
+发布和登记时可附加元数据，便于搜索和管理：
+
+- `--tag python --tag testing` -- 标签（可重复，用于搜索过滤）
+- `--category software-dev` -- 分类
+- `--version 1.0.0` -- 语义化版本
+- `--author Lingye` -- 作者
+- `--license MIT` -- 许可证
+
 ## 典型工作流
 
 ### 发布本地 skill
@@ -76,7 +88,7 @@ token 缺失时不要静默失败 -- 指引用户设环境变量或编辑 config
 
 实际示例：
 ```
-lpm publish D:\Code\yourself-skill-master-uploadtest --private -y
+lpm publish D:\Code\yourself-skill-master-uploadtest --private -y --tag python --category productivity
 # -> Published create-yourself (skill) -> https://github.com/Ling-ye/cursor-skill-create-yourself.git (private, created)
 ```
 
@@ -94,13 +106,32 @@ add_mcp_server(name="github", github_url="https://github.com/...",
 2. `lpm init` 生成配置，填好 token 和 owner
 3. `lpm sync` 自动安装所有资源到启用的平台
 
+### 项目中使用已收集的 skill
+
+```
+cd <项目目录>
+lpm link                      # 链接所有 skill 到当前项目
+lpm link --tag python          # 只链接带 python 标签的
+lpm link --only my-skill       # 只链接指定 skill
+```
+
+执行后 AI agent 会自动发现 `.cursor/rules/lpm-skills.md` 中索引的 skill，遇到匹配场景时主动加载。
+
+### 搜索资源
+
+```
+lpm search python              # 本地注册表搜索
+lpm search --tag testing       # 按标签过滤
+lpm search fastapi --remote    # 同时搜索 GitHub
+```
+
 ### 修改可见性
 
 `set_skill_visibility(name=..., private=<bool>)`，仅限 `owned` 资源。
 
 ## 硬性规则
 
-- **token 永远不入库。** registry.yaml 和日志只存纯 HTTPS URL。
+- **token 永远不入库。** registry.yaml 和日志只存纯 HTTPS URL。git 操作通过 GIT_ASKPASS 传递 token，不写入 .git/config。
 - **资源名称**：小写字母/数字/连字符，最长 64 字符。
 - **发布后不要重新 git init。** 后续修改走正常 `git commit && git push`。
 - **优先用 MCP 工具。** 只在 MCP 不可用时回退到 CLI。
@@ -110,11 +141,15 @@ add_mcp_server(name="github", github_url="https://github.com/...",
 ```
 lpm init [--claude-code] [-f]        # 生成配置文件
 lpm doctor                           # 检查环境
-lpm publish <path> [--private/--public --kind --mcp-config -y]
+lpm publish <path> [--private/--public --kind --mcp-config --tag --category --version --author --license -y]
 lpm set-visibility <name> {public|private}
-lpm add <github-url> [--subdir --ref --name --kind --mcp-config]
+lpm add <github-url> [--subdir --ref --name --kind --mcp-config --tag --category]
+lpm search [query] [--tag --kind --category --remote]
+lpm link [--project --only --tag --kind]
+lpm unlink [--project]
 lpm sync [--only NAME --kind TYPE --platform NAME]
 lpm status [--kind TYPE]
+lpm check [--kind --prune --uninstall]
 lpm list [--kind TYPE]
 lpm update <name>
 lpm remove <name> [--uninstall]

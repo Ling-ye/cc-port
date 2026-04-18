@@ -14,6 +14,7 @@ def test_add_and_remove_external(registry_path: Path) -> None:
         ref="main",
         description="PDF tools",
         registry_path=registry_path,
+        skip_verify=True,
     )
     assert entry.name == "pdf"
     assert entry.subdir == "pdf"
@@ -35,6 +36,7 @@ def test_add_mcp_external(registry_path: Path) -> None:
         kind="mcp",
         mcp_config={"command": "npx", "args": ["-y", "@mcp/github"]},
         registry_path=registry_path,
+        skip_verify=True,
     )
     assert entry.kind == "mcp"
     assert entry.mcp_config["command"] == "npx"
@@ -47,6 +49,7 @@ def test_inferred_name(registry_path: Path) -> None:
     entry = add_external_skill(
         "https://github.com/foo/bar.git",
         registry_path=registry_path,
+        skip_verify=True,
     )
     assert entry.name == "bar"
 
@@ -57,7 +60,8 @@ def test_add_with_v1_registry(registry_v1_path: Path) -> None:
         "https://github.com/foo/new-skill",
         name="new",
         registry_path=registry_v1_path,
+        skip_verify=True,
     )
     assert entry.name == "new"
     reg = load_registry(registry_v1_path)
-    assert reg.version == 2
+    assert reg.version == 3

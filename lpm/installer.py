@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from .config import Config
 from .mcp_installer import inject_mcp_server, remove_mcp_server
 from .models import Registry, RegistryItem
 from .platforms import PlatformProfile
-from .registry import load_registry
+from .registry import load_registry, save_registry
 
 # Backward-compatible alias
 SkillEntry = RegistryItem
@@ -24,6 +25,7 @@ class SyncAction(str, Enum):
     UNCHANGED = "unchanged"
     FAILED = "failed"
     SKIPPED = "skipped"
+    REPO_GONE = "repo_gone"
 
 
 @dataclass
@@ -169,7 +171,6 @@ def sync_one(
     clone_path.parent.mkdir(parents=True, exist_ok=True)
 
     auth_token = token or config.github.token or None
-    auth_url = git_ops.with_token(entry.repo, auth_token)
 
     try:
         if entry.kind == "mcp" and entry.mcp_config and not _needs_clone(entry):
@@ -184,23 +185,19 @@ def sync_one(
             )
 
         if not git_ops.is_repo(clone_path):
-            git_ops.clone(auth_url, clone_path, ref=entry.ref)
+            git_ops.clone(entry.repo, clone_path, ref=entry.ref, token=auth_token)
             if entry.subdir:
                 git_ops.sparse_checkout(clone_path, entry.subdir)
             action = SyncAction.INSTALLED
         else:
             before = git_ops.head_commit(clone_path)
-            git_ops.set_remote(clone_path, "origin", auth_url)
-            git_ops.pull(clone_path, ref=entry.ref)
             git_ops.set_remote(clone_path, "origin", entry.repo)
+            git_ops.pull(clone_path, ref=entry.ref, token=auth_token)
             after = git_ops.head_commit(clone_path)
             action = SyncAction.UPDATED if before != after else SyncAction.UNCHANGED
 
         if entry.subdir:
             _materialize_subdir(clone_path, entry.subdir, install_path)
-
-        if git_ops.is_repo(clone_path):
-            git_ops.set_remote(clone_path, "origin", entry.repo)
 
         platforms_installed = _distribute_to_platforms(
             config, entry, clone_path, platform_filter=platform_filter
@@ -213,18 +210,27 @@ def sync_one(
             platforms_installed=platforms_installed,
         )
     except git_ops.GitError as exc:
+        action = SyncAction.FAILED
+        detail = str(exc)
+        if git_ops.looks_like_repo_gone(detail):
+            action = SyncAction.REPO_GONE
+            detail = f"Repository appears to have been deleted or is inaccessible: {detail}"
         return SyncResult(
             name=entry.name,
             install_path=install_path,
-            action=SyncAction.FAILED,
-            detail=str(exc),
+            action=action,
+            detail=detail,
         )
 
 
 def _needs_clone(entry: RegistryItem) -> bool:
-    """Determine if this item needs a git clone or is config-only."""
-    if entry.kind == "mcp" and entry.mcp_config:
-        return True
+    """Determine if this item needs a git clone or is config-only.
+
+    Pure MCP config entries (kind=mcp with mcp_config but no subdir and no
+    repo-hosted source code to install) can be distributed without cloning.
+    """
+    if entry.kind == "mcp" and entry.mcp_config and not entry.subdir:
+        return False
     return True
 
 
@@ -310,6 +316,73 @@ def uninstall_one(entry: RegistryItem, *, config: Config) -> bool:
                 removed = True
 
     return removed
+
+
+@dataclass
+class CheckResult:
+    name: str
+    kind: str
+    repo: str
+    reachable: bool
+
+
+def check_one(
+    entry: RegistryItem,
+    *,
+    token: str | None = None,
+) -> CheckResult:
+    """Probe whether the remote repository for *entry* is reachable."""
+    probe_url = git_ops.with_token(entry.repo, token) if token else entry.repo
+    reachable = git_ops.probe_remote(probe_url, entry.ref)
+
+    entry.reachable = reachable
+    entry.last_checked = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    return CheckResult(
+        name=entry.name,
+        kind=entry.kind,
+        repo=entry.repo,
+        reachable=reachable,
+    )
+
+
+def check_all(
+    *,
+    config: Config,
+    registry: Registry | None = None,
+    registry_path: Path | None = None,
+    kind: str | None = None,
+    prune: bool = False,
+    uninstall: bool = False,
+) -> tuple[list[CheckResult], list[str]]:
+    """Check reachability of every item in the registry.
+
+    Returns ``(results, pruned_names)``.  When *prune* is True, unreachable
+    entries are removed from the registry (and optionally uninstalled).
+    The ``last_checked`` / ``reachable`` metadata is always persisted.
+    """
+    reg = registry or load_registry(registry_path)
+    token = config.github.token or None
+    results: list[CheckResult] = []
+    pruned: list[str] = []
+    dirty = False
+
+    for entry in list(reg.items):
+        if kind and entry.kind != kind:
+            continue
+        cr = check_one(entry, token=token)
+        dirty = True
+        results.append(cr)
+        if prune and not cr.reachable:
+            if uninstall:
+                uninstall_one(entry, config=config)
+            reg.remove(entry.name)
+            pruned.append(entry.name)
+
+    if dirty or pruned:
+        save_registry(reg, registry_path)
+
+    return results, pruned
 
 
 def _materialize_subdir(clone_path: Path, subdir: str, install_path: Path) -> None:

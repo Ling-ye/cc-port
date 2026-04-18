@@ -27,12 +27,11 @@ def find_registry_path(start: Path | None = None) -> Path:
     return cur / DEFAULT_REGISTRY_FILENAME
 
 
-def _migrate_v1_to_v2(data: dict) -> dict:
-    """Convert a v1 registry (with ``skills`` list) to v2 (with ``items`` list).
+CURRENT_REGISTRY_VERSION = 3
 
-    Each entry gets ``kind: skill`` added.  The original data dict is not
-    mutated.
-    """
+
+def _migrate_v1_to_v2(data: dict) -> dict:
+    """Convert a v1 registry (with ``skills`` list) to v2 (with ``items`` list)."""
     items = []
     for entry in data.get("skills", []) or []:
         migrated = dict(entry)
@@ -41,10 +40,17 @@ def _migrate_v1_to_v2(data: dict) -> dict:
     return {"version": 2, "items": items}
 
 
+def _migrate_v2_to_v3(data: dict) -> dict:
+    """v2 -> v3: new optional metadata fields; no structural change needed."""
+    data = dict(data)
+    data["version"] = 3
+    return data
+
+
 def load_registry(path: Path | None = None) -> Registry:
     p = path or find_registry_path()
     if not p.is_file():
-        return Registry()
+        return Registry(version=CURRENT_REGISTRY_VERSION)
     with p.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
@@ -53,26 +59,34 @@ def load_registry(path: Path | None = None) -> Registry:
     version = data.get("version", 1)
     if version < 2:
         data = _migrate_v1_to_v2(data)
+    if version < 3:
+        data = _migrate_v2_to_v3(data)
 
-    # Normalize: accept both "skills" and "items" key in the raw YAML
     if "skills" in data and "items" not in data:
         data["items"] = data.pop("skills")
 
     return Registry.model_validate(data)
 
 
+# Fields to omit from YAML output when empty/None
+_OMIT_WHEN_EMPTY: set[str] = {
+    "mcp_config", "last_checked", "reachable", "private",
+    "version", "author", "tags", "category", "license",
+}
+
+
 def save_registry(registry: Registry, path: Path | None = None) -> Path:
-    """Atomically write the registry (always as v2 format) to disk."""
+    """Atomically write the registry to disk (always as current version)."""
     p = path or find_registry_path()
     p.parent.mkdir(parents=True, exist_ok=True)
 
     payload = registry.model_dump(mode="json")
-    # Ensure we always write version 2
-    payload["version"] = 2
-    # Drop None mcp_config entries to keep the YAML clean
+    payload["version"] = CURRENT_REGISTRY_VERSION
     for item in payload.get("items", []):
-        if item.get("mcp_config") is None:
-            item.pop("mcp_config", None)
+        for key in _OMIT_WHEN_EMPTY:
+            val = item.get(key)
+            if val is None or val == "" or val == []:
+                item.pop(key, None)
 
     text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
 

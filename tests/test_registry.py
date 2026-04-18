@@ -74,7 +74,7 @@ def test_v1_migration(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     reg = load_registry(p)
-    assert reg.version == 2
+    assert reg.version == 3
     assert len(reg.items) == 1
     assert reg.items[0].kind == "skill"
     assert reg.items[0].name == "old-skill"

@@ -65,6 +65,11 @@ def publish_local_skill(
     registry_path: Path | None = None,
     kind: ItemKind = "skill",
     mcp_config: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    category: str = "",
+    version: str = "",
+    author: str = "",
+    item_license: str = "",
 ) -> PublishResult:
     """Validate, create repo, push, and record in the registry.
 
@@ -132,6 +137,12 @@ def publish_local_skill(
         install_dir="",
         description=skill_description,
         mcp_config=mcp_config,
+        private=repo.private,
+        tags=tags or [],
+        category=category,
+        version=version,
+        author=author or config.github.owner,
+        license=item_license,
     )
     registry.upsert(entry)
     save_registry(registry, registry_path)
@@ -177,6 +188,10 @@ def set_skill_visibility(
     owner, repo_name = _parse_owner_repo(entry.repo)
     client = GithubClient(config.github.token)
     repo = client.set_repo_visibility(owner, repo_name, private=private)
+
+    entry.private = repo.private
+    save_registry(registry, registry_path)
+
     return {
         "name": name,
         "repo": entry.repo,
@@ -202,7 +217,10 @@ def _parse_owner_repo(github_url: str) -> tuple[str, str]:
 
 
 def _git_publish(skill_dir: Path, https_url: str, branch: str, token: str) -> bool:
-    """Initialize (if needed), commit, and push the skill directory."""
+    """Initialize (if needed), commit, and push the skill directory.
+
+    Authentication uses GIT_ASKPASS so the token never touches .git/config.
+    """
     if not git_ops.is_repo(skill_dir):
         git_ops.init_repo(skill_dir, default_branch=branch)
 
@@ -213,11 +231,21 @@ def _git_publish(skill_dir: Path, https_url: str, branch: str, token: str) -> bo
         if "nothing to commit" not in str(exc).lower():
             raise
 
-    authed = git_ops.with_token(https_url, token)
-    git_ops.set_remote(skill_dir, "origin", authed)
-    git_ops.push(skill_dir, remote="origin", branch=branch, set_upstream=True)
     git_ops.set_remote(skill_dir, "origin", https_url)
+    git_ops.push(skill_dir, remote="origin", branch=branch, set_upstream=True, token=token)
     return True
+
+
+class RepoUnreachableError(RuntimeError):
+    """Raised when a remote repository cannot be reached during pre-verification."""
+
+    def __init__(self, repo: str, ref: str):
+        self.repo = repo
+        self.ref = ref
+        super().__init__(
+            f"Repository {repo} (ref={ref}) is unreachable. "
+            f"Pass --no-verify (CLI) or skip_verify=True to skip this check."
+        )
 
 
 def add_external_skill(
@@ -230,19 +258,38 @@ def add_external_skill(
     registry_path: Path | None = None,
     kind: ItemKind = "skill",
     mcp_config: dict[str, Any] | None = None,
+    skip_verify: bool = False,
+    token: str | None = None,
+    tags: list[str] | None = None,
+    category: str = "",
 ) -> RegistryItem:
-    """Register a third-party resource in the registry."""
+    """Register a third-party resource in the registry.
+
+    When *skip_verify* is False (the default), the remote repository is probed
+    with ``git ls-remote`` before writing the entry.  Set *skip_verify* to True
+    to allow offline or private-without-token registrations.
+    """
+    repo_url = github_url.rstrip("/")
+    effective_ref = ref or "main"
+
+    if not skip_verify:
+        probe_url = git_ops.with_token(repo_url, token) if token else repo_url
+        if not git_ops.probe_remote(probe_url, effective_ref):
+            raise RepoUnreachableError(repo_url, effective_ref)
+
     inferred_name = name or _infer_name_from_url(github_url, subdir)
     entry = RegistryItem(
         name=_slug(inferred_name),
         kind=kind,
-        repo=github_url.rstrip("/"),
+        repo=repo_url,
         source="external",
         subdir=(subdir or "").strip().strip("/"),
-        ref=ref or "main",
+        ref=effective_ref,
         install_dir="",
         description=description.strip(),
         mcp_config=mcp_config,
+        tags=tags or [],
+        category=category,
     )
     registry = load_registry(registry_path)
     registry.upsert(entry)

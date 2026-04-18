@@ -1,8 +1,7 @@
-"""LingyePluginMarketplace MCP server.
+"""LPM (LingyePluginMarketplace) MCP server.
 
 Exposes the same operations as the CLI as MCP tools, so an AI coding agent
-(Cursor or Claude Code) can publish, register, and sync skills, MCP servers,
-and rules directly from chat.
+can publish, register, and sync skills, MCP servers, and rules directly from chat.
 """
 
 from __future__ import annotations
@@ -14,10 +13,10 @@ from fastmcp import FastMCP
 
 from . import publisher
 from .config import load_config
-from .installer import status_all, sync_all, sync_one, uninstall_one
+from .installer import check_all, status_all, sync_all, sync_one, uninstall_one
 from .registry import find_registry_path, load_registry
 
-mcp = FastMCP("LingyePluginMarketplace")
+mcp = FastMCP("LPM")
 
 
 @mcp.tool()
@@ -157,8 +156,12 @@ def add_external_skill(
     description: str = "",
     kind: str = "skill",
     mcp_config: dict[str, Any] | None = None,
+    skip_verify: bool = False,
 ) -> dict[str, Any]:
     """Register a third-party resource in registry.yaml.
+
+    The remote repository is verified to be reachable before adding.
+    Set ``skip_verify=True`` to skip this check (e.g. for offline use).
 
     Args:
         github_url: HTTPS or SSH URL of the upstream repo.
@@ -168,16 +171,23 @@ def add_external_skill(
         description: Optional human description.
         kind: Resource type: "skill", "mcp", or "rule".
         mcp_config: MCP server configuration dict (for kind="mcp").
+        skip_verify: Skip remote repository reachability check.
     """
-    entry = publisher.add_external_skill(
-        github_url,
-        name=name,
-        subdir=subdir,
-        ref=ref,
-        description=description,
-        kind=kind,
-        mcp_config=mcp_config,
-    )
+    cfg = load_config()
+    try:
+        entry = publisher.add_external_skill(
+            github_url,
+            name=name,
+            subdir=subdir,
+            ref=ref,
+            description=description,
+            kind=kind,
+            mcp_config=mcp_config,
+            skip_verify=skip_verify,
+            token=cfg.github.token or None,
+        )
+    except publisher.RepoUnreachableError as exc:
+        return {"error": "repo_unreachable", "message": str(exc)}
     return entry.model_dump()
 
 
@@ -192,6 +202,7 @@ def add_mcp_server(
     subdir: str | None = None,
     ref: str = "main",
     description: str = "",
+    skip_verify: bool = False,
 ) -> dict[str, Any]:
     """Register an MCP server in the registry (convenience wrapper).
 
@@ -207,7 +218,9 @@ def add_mcp_server(
         subdir: Subdirectory in the repo.
         ref: Branch/tag to track.
         description: Human description.
+        skip_verify: Skip remote repository reachability check.
     """
+    cfg = load_config()
     mcp_config: dict[str, Any] = {}
     if command:
         mcp_config["command"] = command
@@ -222,16 +235,50 @@ def add_mcp_server(
     if env:
         mcp_config["env"] = env
 
-    entry = publisher.add_external_skill(
-        github_url,
-        name=name,
-        subdir=subdir,
-        ref=ref,
-        description=description,
-        kind="mcp",
-        mcp_config=mcp_config,
-    )
+    try:
+        entry = publisher.add_external_skill(
+            github_url,
+            name=name,
+            subdir=subdir,
+            ref=ref,
+            description=description,
+            kind="mcp",
+            mcp_config=mcp_config,
+            skip_verify=skip_verify,
+            token=cfg.github.token or None,
+        )
+    except publisher.RepoUnreachableError as exc:
+        return {"error": "repo_unreachable", "message": str(exc)}
     return entry.model_dump()
+
+
+@mcp.tool()
+def check_items(
+    kind: str | None = None,
+    prune: bool = False,
+    uninstall: bool = False,
+) -> dict[str, Any]:
+    """Check reachability of all registered repositories.
+
+    Reports which items point to repos that no longer exist.
+    Set ``prune=True`` to automatically remove dead entries.
+
+    Args:
+        kind: Optional filter by resource type ("skill", "mcp", "rule").
+        prune: Remove unreachable items from the registry.
+        uninstall: Also delete local files when pruning.
+    """
+    cfg = load_config()
+    results, pruned = check_all(
+        config=cfg, kind=kind, prune=prune, uninstall=uninstall,
+    )
+    return {
+        "items": [
+            {"name": r.name, "kind": r.kind, "repo": r.repo, "reachable": r.reachable}
+            for r in results
+        ],
+        "pruned": pruned,
+    }
 
 
 @mcp.tool()

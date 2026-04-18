@@ -23,6 +23,7 @@ from .config import (
 )
 from .installer import (
     SyncAction,
+    check_all,
     status_all,
     sync_all,
     sync_one,
@@ -34,7 +35,7 @@ from .registry import find_registry_path, load_registry
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="LingyePluginMarketplace: publish, register and sync skills, MCP servers and rules across Cursor and Claude Code.",
+    help="LPM (LingyePluginMarketplace): publish, register and sync skills, MCP servers and rules across AI coding platforms.",
 )
 console = Console()
 
@@ -115,6 +116,11 @@ def cmd_publish(
         "--mcp-config",
         help='MCP server config as JSON string (for --kind mcp), e.g. \'{"command":"npx","args":["-y","@mcp/test"]}\'.',
     ),
+    tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for discovery (repeatable)."),
+    category: str = typer.Option("", "--category", "-c", help="Category, e.g. 'software-dev'."),
+    version: str = typer.Option("", "--version", "-v", help="Semantic version, e.g. '1.0.0'."),
+    author: str = typer.Option("", "--author", help="Author name."),
+    item_license: str = typer.Option("", "--license", help="SPDX license id, e.g. 'MIT'."),
 ) -> None:
     """Publish a local directory to a new GitHub repository."""
     cfg = _load()
@@ -155,6 +161,11 @@ def cmd_publish(
             update_visibility=update_visibility,
             kind=kind,
             mcp_config=mcp_config,
+            tags=tags or None,
+            category=category,
+            version=version,
+            author=author,
+            item_license=item_license,
         )
     except publisher.VisibilityMismatchError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -179,13 +190,21 @@ def cmd_add(
     ref: str = typer.Option("main", "--ref"),
     description: str = typer.Option("", "--description"),
     kind: str = typer.Option("skill", "--kind", "-k", help="Resource type: skill | mcp | rule."),
+    no_verify: bool = typer.Option(
+        False,
+        "--no-verify",
+        help="Skip remote repository reachability check.",
+    ),
     mcp_config_json: str | None = typer.Option(
         None,
         "--mcp-config",
         help='MCP server config as JSON string (for --kind mcp).',
     ),
+    tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for discovery (repeatable)."),
+    category: str = typer.Option("", "--category", "-c", help="Category, e.g. 'productivity'."),
 ) -> None:
     """Register an external (third-party) resource in the registry."""
+    cfg = _load()
     if kind not in {"skill", "mcp", "rule"}:
         console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule.")
         raise typer.Exit(2)
@@ -198,15 +217,23 @@ def cmd_add(
             console.print(f"[red]Invalid --mcp-config JSON:[/red] {exc}")
             raise typer.Exit(2) from exc
 
-    entry = publisher.add_external_skill(
-        github_url,
-        name=name,
-        subdir=subdir,
-        ref=ref,
-        description=description,
-        kind=kind,
-        mcp_config=mcp_config,
-    )
+    try:
+        entry = publisher.add_external_skill(
+            github_url,
+            name=name,
+            subdir=subdir,
+            ref=ref,
+            description=description,
+            kind=kind,
+            mcp_config=mcp_config,
+            skip_verify=no_verify,
+            token=cfg.github.token or None,
+            tags=tags or None,
+            category=category,
+        )
+    except publisher.RepoUnreachableError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     console.print(f"[green]Added[/green] {entry.name} ({entry.kind}) ({entry.repo}@{entry.ref})")
 
 
@@ -258,24 +285,22 @@ def cmd_list(
     table.add_column("Subdir")
     table.add_column("Visibility")
     table.add_column("Installed")
+    table.add_column("Reachable")
     install_root = cfg.install.target_path
     for s in items:
         installed = (install_root / s.install_target_name()).exists()
-        visibility_cell = "-"
-        if s.source == "owned" and cfg.github.token:
-            try:
-                from .github_client import GithubClient
-                from .publisher import _parse_owner_repo
-
-                owner, repo_name = _parse_owner_repo(s.repo)
-                client = GithubClient(cfg.github.token)
-                gh_repo = client.get_repo(owner, repo_name)
-                if gh_repo is not None:
-                    visibility_cell = (
-                        "[red]private[/red]" if gh_repo.private else "[green]public[/green]"
-                    )
-            except Exception:
-                visibility_cell = "?"
+        if s.private is True:
+            visibility_cell = "[red]private[/red]"
+        elif s.private is False:
+            visibility_cell = "[green]public[/green]"
+        else:
+            visibility_cell = "-"
+        if s.reachable is True:
+            reachable_cell = "[green]yes[/green]"
+        elif s.reachable is False:
+            reachable_cell = "[red]no[/red]"
+        else:
+            reachable_cell = "[dim]-[/dim]"
         kind_style = {"skill": "cyan", "mcp": "magenta", "rule": "yellow"}.get(s.kind, "")
         table.add_row(
             s.name,
@@ -286,8 +311,104 @@ def cmd_list(
             s.subdir or "-",
             visibility_cell,
             "yes" if installed else "no",
+            reachable_cell,
         )
     console.print(table)
+
+
+# ---- search ---- #
+
+
+@app.command("search")
+def cmd_search(
+    query: str = typer.Argument("", help="Search query (matches name, description, tags)."),
+    tags_filter: list[str] = typer.Option([], "--tag", "-t", help="Filter by tag (repeatable)."),
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Filter by resource type."),
+    category: str | None = typer.Option(None, "--category", "-c", help="Filter by category."),
+    remote: bool = typer.Option(False, "--remote", "-r", help="Also search GitHub for SKILL.md repos."),
+) -> None:
+    """Search the local registry (and optionally GitHub) for resources.
+
+    Examples:
+        lpm search python
+        lpm search --tag testing --kind skill
+        lpm search fastapi --remote
+    """
+    registry = load_registry()
+    items = registry.items
+
+    if kind:
+        items = [i for i in items if i.kind == kind]
+    if category:
+        items = [i for i in items if i.category and category.lower() in i.category.lower()]
+    if tags_filter:
+        tag_set = {t.lower() for t in tags_filter}
+        items = [i for i in items if tag_set & {t.lower() for t in i.tags}]
+    if query:
+        q = query.lower()
+        items = [
+            i for i in items
+            if q in i.name.lower()
+            or q in i.description.lower()
+            or any(q in t.lower() for t in i.tags)
+        ]
+
+    if items:
+        table = Table(title="Local results")
+        table.add_column("Name", style="bold")
+        table.add_column("Kind")
+        table.add_column("Description")
+        table.add_column("Tags")
+        table.add_column("Category")
+        for s in items:
+            kind_style = {"skill": "cyan", "mcp": "magenta", "rule": "yellow"}.get(s.kind, "")
+            table.add_row(
+                s.name,
+                f"[{kind_style}]{s.kind}[/{kind_style}]" if kind_style else s.kind,
+                (s.description[:60] + "...") if len(s.description) > 60 else s.description or "-",
+                ", ".join(s.tags) if s.tags else "-",
+                s.category or "-",
+            )
+        console.print(table)
+    else:
+        console.print("[yellow]No local matches.[/yellow]")
+
+    if remote:
+        _search_github(query or "SKILL.md")
+
+
+def _search_github(query: str) -> None:
+    """Search GitHub for repos containing SKILL.md (best-effort)."""
+    try:
+        import urllib.parse
+        import urllib.request
+
+        search_q = urllib.parse.quote(f"{query} filename:SKILL.md")
+        url = f"https://api.github.com/search/repositories?q={search_q}&per_page=10&sort=stars"
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github.v3+json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            import json as _json
+
+            data = _json.loads(resp.read())
+
+        repos = data.get("items", [])
+        if not repos:
+            console.print("[yellow]No remote results on GitHub.[/yellow]")
+            return
+
+        table = Table(title="GitHub results (add with `lpm add <url>`)")
+        table.add_column("Repository", style="bold")
+        table.add_column("Stars")
+        table.add_column("Description")
+        for r in repos:
+            table.add_row(
+                r.get("html_url", ""),
+                str(r.get("stargazers_count", 0)),
+                (r.get("description") or "-")[:70],
+            )
+        console.print(table)
+    except Exception as exc:
+        console.print(f"[yellow]GitHub search failed:[/yellow] {exc}")
 
 
 # ---- sync ---- #
@@ -317,11 +438,15 @@ def cmd_sync(
         SyncAction.UNCHANGED: "dim",
         SyncAction.SKIPPED: "yellow",
         SyncAction.FAILED: "red",
+        SyncAction.REPO_GONE: "red bold",
     }
     failures = 0
+    repo_gone = 0
     for r in results:
         if r.action is SyncAction.FAILED:
             failures += 1
+        elif r.action is SyncAction.REPO_GONE:
+            repo_gone += 1
         table.add_row(
             r.name,
             f"[{style[r.action]}]{r.action.value}[/{style[r.action]}]",
@@ -330,7 +455,12 @@ def cmd_sync(
             r.detail,
         )
     console.print(table)
-    if failures:
+    if repo_gone:
+        console.print(
+            f"\n[yellow]{repo_gone} repo(s) appear to have been deleted.[/yellow] "
+            "Run [bold]lpm check --prune[/bold] to clean up."
+        )
+    if failures or repo_gone:
         raise typer.Exit(1)
 
 
@@ -362,6 +492,63 @@ def cmd_status(
             "[red]yes[/red]" if s.has_update else "no",
         )
     console.print(table)
+
+
+# ---- check ---- #
+
+
+@app.command("check")
+def cmd_check(
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Filter by resource type."),
+    prune: bool = typer.Option(False, "--prune", help="Remove unreachable items from the registry."),
+    uninstall: bool = typer.Option(
+        False, "--uninstall", help="Also delete local files when pruning."
+    ),
+) -> None:
+    """Check reachability of all registered repositories.
+
+    Reports which items point to repositories that no longer exist or are
+    inaccessible.  Use ``--prune`` to automatically remove dead entries.
+    """
+    cfg = _load()
+    results, pruned = check_all(
+        config=cfg, kind=kind, prune=prune, uninstall=uninstall
+    )
+    if not results:
+        console.print("[yellow]Registry is empty.[/yellow]")
+        return
+
+    table = Table(title="LPM Health Check")
+    table.add_column("Name", style="bold")
+    table.add_column("Kind")
+    table.add_column("Repo")
+    table.add_column("Status")
+    unreachable = 0
+    for r in results:
+        if r.reachable:
+            status = "[green]reachable[/green]"
+        else:
+            unreachable += 1
+            status = "[red]NOT FOUND[/red]"
+        kind_style = {"skill": "cyan", "mcp": "magenta", "rule": "yellow"}.get(r.kind, "")
+        table.add_row(
+            r.name,
+            f"[{kind_style}]{r.kind}[/{kind_style}]" if kind_style else r.kind,
+            r.repo,
+            status,
+        )
+    console.print(table)
+
+    if pruned:
+        console.print(f"\n[green]Pruned {len(pruned)} unreachable item(s):[/green] {', '.join(pruned)}")
+    elif unreachable:
+        console.print(
+            f"\n[yellow]{unreachable} unreachable item(s) found.[/yellow] "
+            "Run [bold]lpm check --prune[/bold] to remove them."
+        )
+
+    if unreachable and not prune:
+        raise typer.Exit(1)
 
 
 # ---- doctor ---- #
@@ -581,6 +768,64 @@ def cmd_update(name: str = typer.Argument(...)) -> None:
         console.print(f"  Platforms: {', '.join(result.platforms_installed)}")
     if result.detail:
         console.print(result.detail)
+
+
+# ---- link / unlink ---- #
+
+
+@app.command("link")
+def cmd_link(
+    project: Path = typer.Option(
+        ".", "--project", "-p", help="Project root directory (defaults to CWD).",
+    ),
+    only: list[str] = typer.Option(None, "--only", help="Only link specific items."),
+    tags_filter: list[str] = typer.Option(None, "--tag", "-t", help="Only link items with these tags."),
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Only link items of this type."),
+) -> None:
+    """Link registry skills into a project for AI auto-discovery.
+
+    Creates .cursor/rules/lpm-skills.md (Cursor Rule index) and symlinks
+    in .cursor/skills/ pointing to globally-installed skill directories.
+    AI agents reading the rule file will automatically know which skills
+    are available and when to use them.
+    """
+    from .linker import link
+
+    cfg = _load()
+    project_path = project.resolve()
+
+    linked, rule_path = link(
+        project_path, cfg, only=only or None, tags=tags_filter or None, kind=kind
+    )
+
+    console.print(f"[green]Rule index:[/green] {rule_path}")
+    if linked:
+        console.print(f"[green]Linked {len(linked)} skill(s):[/green] {', '.join(linked)}")
+    else:
+        console.print("[yellow]No skill symlinks created (skills may not be installed yet).[/yellow]")
+    console.print(
+        "\nAI agents in this project will now auto-discover linked skills."
+    )
+
+
+@app.command("unlink")
+def cmd_unlink(
+    project: Path = typer.Option(
+        ".", "--project", "-p", help="Project root directory (defaults to CWD).",
+    ),
+) -> None:
+    """Remove all LPM links and the skill index from a project."""
+    from .linker import unlink
+
+    project_path = project.resolve()
+    removed, rule_removed = unlink(project_path)
+
+    if removed:
+        console.print(f"[green]Removed {len(removed)} symlink(s):[/green] {', '.join(removed)}")
+    if rule_removed:
+        console.print("[green]Removed[/green] lpm-skills.md rule file")
+    if not removed and not rule_removed:
+        console.print("[yellow]Nothing to unlink.[/yellow]")
 
 
 def _find_project_root() -> Path:

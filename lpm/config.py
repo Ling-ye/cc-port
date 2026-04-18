@@ -1,4 +1,4 @@
-"""User configuration handling.
+"""LPM user configuration.
 
 Loads ``~/.config/lpm/config.toml``.  The GitHub token may also come from
 the ``LPM_GITHUB_TOKEN`` environment variable (which takes precedence).
@@ -95,7 +95,7 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
     out = path or default_config_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# LingyePluginMarketplace config -- edit this file, then run `lpm doctor` to verify.",
+        "# LPM (LingyePluginMarketplace) config -- edit this file, then run `lpm doctor` to verify.",
         "",
         "[github]",
         "# GitHub Personal Access Token (repo scope). You can also set the",

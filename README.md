@@ -1,8 +1,8 @@
-# LingyePluginMarketplace (LPM)
+# LPM (LingyePluginMarketplace)
 
 > AI 编程助手的资源中央仓库 -- 一行命令把 skill、MCP 服务器、规则同步到任意一台新电脑。
 
-LPM 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种入口，跨 **Cursor** 和 **Claude Code** 管理三种资源：
+LPM 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种入口，跨 **Cursor**、**Claude Code**、**Windsurf**、**Codex** 等 AI 编程平台管理三种资源：
 
 | 资源类型 | 说明 | 安装位置 |
 |---------|------|---------|
@@ -15,6 +15,8 @@ LPM 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种入口
 1. **发布** -- 把本地目录一键发布为独立的 GitHub 仓库
 2. **登记** -- 把别人的 skill / MCP 配置记入清单
 3. **迁移** -- 换电脑时 `lpm sync` 一条命令，所有资源自动落地
+4. **项目发现** -- `lpm link` 让项目中的 AI agent 自动识别已收集的 skill
+5. **搜索** -- `lpm search` 在本地清单和 GitHub 上搜索可用资源
 
 所有资源清单存在 [`registry.yaml`](registry.yaml) 中，跟着 git 一起走。
 
@@ -28,12 +30,16 @@ LPM 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种入口
 | 修改可见性 | `lpm set-visibility <name> public\|private` | 公开或转私有 |
 | 登记第三方 skill | `lpm add <github-url>` | 记 URL + ref |
 | 登记 MCP 服务器 | `lpm add <url> --kind mcp --mcp-config '{...}'` | 记 MCP 配置 |
+| 搜索资源 | `lpm search [query] [--tag --remote]` | 本地过滤 + GitHub 搜索 |
+| 链接到项目 | `lpm link [--tag --only]` | 生成 skill 索引 + symlink |
+| 取消链接 | `lpm unlink` | 清理项目中的 LPM 链接 |
 | 同步全部 | `lpm sync` | 安装到所有启用平台 |
 | 按平台同步 | `lpm sync --platform cursor` | 只装到指定平台 |
 | 按类型同步 | `lpm sync --kind mcp` | 只同步 MCP 配置 |
 | 更新单个 | `lpm update <name>` | 强制同步一条 |
 | 查看状态 | `lpm status` | 对比本地/远端 commit |
 | 列出清单 | `lpm list [--kind]` | 按类型过滤 |
+| 健康检查 | `lpm check [--prune]` | 检查仓库可达性 |
 | 查看平台 | `lpm platforms` | 显示平台和路径 |
 | 移除 | `lpm remove <name> [--uninstall]` | 可选同时删本地文件 |
 | 环境检查 | `lpm doctor` | 检查 git / token / 平台 |
@@ -113,7 +119,7 @@ $env:LPM_GITHUB_TOKEN = "ghp_xxxxxxxx"
 
 ## 多平台支持
 
-config.toml 中可以配置多个平台：
+config.toml 中可以配置多个平台。内置预设包括 Cursor、Claude Code、Windsurf、Codex，也可自定义任意平台：
 
 ```toml
 [platforms.cursor]
@@ -125,6 +131,12 @@ mcp_json = "~/.cursor/mcp.json"
 enabled = true
 skills_dir = "~/.claude/skills"
 mcp_json = "~/.claude.json"
+
+# 自定义平台 -- 填好路径即可，无需改代码
+[platforms.my-tool]
+enabled = true
+skills_dir = "~/my-tool/skills"
+mcp_json = "~/my-tool/mcp.json"
 ```
 
 `lpm sync` 安装到所有启用平台，也可以用 `--platform` 限定：
@@ -147,6 +159,11 @@ lpm publish D:\dev\my-skill -y
 # 明确指定公开/私有
 lpm publish D:\dev\my-skill --public
 lpm publish D:\dev\my-skill --private
+
+# 带元数据发布
+lpm publish D:\dev\my-skill --private -y \
+  --tag python --tag fastapi --category software-dev \
+  --version 1.0.0 --author Lingye --license MIT
 
 # 发布 MCP 服务器配置
 lpm publish D:\dev\my-mcp --kind mcp \
@@ -173,7 +190,7 @@ git push
 
 ```bash
 # Skill
-lpm add https://github.com/someone/awesome-skill
+lpm add https://github.com/someone/awesome-skill --tag python --category productivity
 
 # MCP 服务器
 lpm add https://github.com/someone/mcp-server --kind mcp \
@@ -182,6 +199,40 @@ lpm add https://github.com/someone/mcp-server --kind mcp \
 # 仓库子目录
 lpm add https://github.com/anthropics/skills --subdir pdf --ref main
 ```
+
+### 搜索资源
+
+```bash
+# 搜索本地注册表
+lpm search python
+lpm search --tag testing --kind skill
+lpm search --category software-dev
+
+# 同时搜索 GitHub 上包含 SKILL.md 的仓库
+lpm search fastapi --remote
+```
+
+### 项目中链接 skill（自动发现）
+
+```bash
+cd <你的项目目录>
+
+# 链接所有已安装的 skill 到当前项目
+lpm link
+
+# 只链接特定标签或类型
+lpm link --tag python
+lpm link --only my-skill
+
+# 清理链接
+lpm unlink
+```
+
+`lpm link` 会在项目中创建：
+- `.cursor/rules/lpm-skills.md` -- Cursor Rule 索引文件，AI agent 读取后自动知道有哪些 skill 可用
+- `.cursor/skills/<name>` -- 指向全局安装目录的 symlink
+
+这样 AI 在处理项目时会自动参考可用的 skill，遇到匹配场景时主动加载对应的 SKILL.md。
 
 ### 换电脑一键迁移
 
@@ -201,6 +252,8 @@ lpm sync              # 所有资源自动落地
 lpm list                        # 查看清单
 lpm list --kind mcp             # 只看 MCP
 lpm status                      # 查看上游更新
+lpm check                       # 检查仓库可达性
+lpm check --prune               # 自动移除不可达的条目
 lpm sync                        # 拉取所有更新
 lpm update my-skill             # 更新单个
 lpm remove my-skill             # 从清单移除
@@ -239,10 +292,11 @@ claude mcp add lpm -- lpm-mcp
 |------|------|
 | `list_items(kind?)` / `list_skills()` | 列出资源 |
 | `list_platforms()` | 查看平台配置 |
-| `publish_local_skill(path, kind?, private?)` | 发布 |
+| `publish_local_skill(path, kind?, private?, tags?, category?)` | 发布 |
 | `set_skill_visibility(name, private)` | 修改可见性 |
-| `add_external_skill(github_url, kind?, mcp_config?)` | 登记 |
+| `add_external_skill(github_url, kind?, mcp_config?, tags?)` | 登记 |
 | `add_mcp_server(name, github_url, command?, url?)` | 登记 MCP 服务器 |
+| `check_items(kind?, prune?)` | 检查仓库可达性 |
 | `remove_skill(name, uninstall?)` | 移除 |
 | `sync_skills(only?, kind?, platform?)` | 同步 |
 | `update_skill(name)` | 更新单个 |
@@ -260,23 +314,23 @@ claude mcp add lpm -- lpm-mcp
 
 ## registry.yaml 格式
 
-清单是单一事实源，v2 格式。当前仓库的实际内容：
+清单是单一事实源，v3 格式（v1/v2 自动迁移）。示例：
 
 ```yaml
-version: 2
+version: 3
 items:
   - name: create-yourself
     kind: skill
     repo: https://github.com/Ling-ye/cursor-skill-create-yourself.git
     source: owned
-    subdir: ""
+    subdir: ''
     ref: main
     description: "Why distill others when you can distill yourself? ..."
-```
+    tags: [python, ai]
+    category: productivity
+    author: Lingye
+    private: true
 
-更多示例：
-
-```yaml
   - name: github-mcp
     kind: mcp
     repo: https://github.com/someone/mcp-server-github
@@ -287,6 +341,7 @@ items:
       args: ["-y", "@modelcontextprotocol/server-github"]
       env:
         GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+    tags: [github, git]
 
   - name: anthropic-pdf
     kind: skill
@@ -296,7 +351,16 @@ items:
     ref: main
 ```
 
-旧版 v1 格式（`version: 1` + `skills` 列表）读取时自动升级为 v2。
+新增的元数据字段（均可选，空值不写入文件）：
+
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| `version` | 语义化版本 | `"1.2.0"` |
+| `author` | 作者 | `"Lingye"` |
+| `tags` | 标签列表 | `[python, testing]` |
+| `category` | 分类 | `"software-dev"` |
+| `license` | SPDX 许可证 | `"MIT"` |
+| `private` | 缓存的 GitHub 可见性 | `true` |
 
 ---
 
@@ -312,16 +376,17 @@ SkillHub/
 │   ├── mcp_server.py             # lpm-mcp MCP server
 │   ├── publisher.py              # 本地资源 -> GitHub 仓库
 │   ├── installer.py              # registry -> 各平台目录
+│   ├── linker.py                 # 项目级 skill 链接和自动发现
 │   ├── mcp_installer.py          # 读写 mcp.json
-│   ├── platforms.py              # 多平台抽象
-│   ├── registry.py               # registry.yaml 读写 + v1->v2 迁移
+│   ├── platforms.py              # 多平台抽象（可扩展）
+│   ├── registry.py               # registry.yaml 读写 + v1->v2->v3 迁移
 │   ├── validator.py              # 资源校验
 │   ├── github_client.py          # PyGithub 封装
-│   ├── git_ops.py                # git 子进程封装
+│   ├── git_ops.py                # git 子进程封装（GIT_ASKPASS 安全认证）
 │   ├── config.py                 # 配置和 token 加载
-│   ├── models.py                 # Pydantic 数据模型
+│   ├── models.py                 # Pydantic 数据模型（含元数据）
 │   └── __init__.py
-├── tests/                        # pytest 测试（57 个）
+├── tests/                        # pytest 测试
 └── .github/workflows/ci.yml      # CI
 ```
 
@@ -329,7 +394,7 @@ SkillHub/
 
 ## 安全说明
 
-- **token 永远不入库** -- `registry.yaml` 只存 HTTPS URL；push/pull 时 token 临时注入，操作完立即还原
+- **token 永远不入库** -- `registry.yaml` 只存 HTTPS URL；git 操作通过 `GIT_ASKPASS` 传递 token，不写入 `.git/config`
 - **配置文件权限** -- `lpm init` 写完后尝试 `chmod 600`
 - **可脱离配置文件** -- 只设 `LPM_GITHUB_TOKEN` 环境变量也能用
 - **不要在聊天中发送 token** -- 如果不慎暴露，立即到 GitHub Settings 撤销并重新生成

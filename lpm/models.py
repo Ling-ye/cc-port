@@ -40,6 +40,27 @@ class RegistryItem(BaseModel):
         description="MCP server configuration (command/args/env). Only used when kind=mcp.",
     )
 
+    # --- Rich metadata (v3) ---
+    version: str = Field(default="", description="Semantic version, e.g. '1.2.0'.")
+    author: str = Field(default="", description="Author or maintainer name.")
+    tags: list[str] = Field(default_factory=list, description="Search tags, e.g. ['python', 'testing'].")
+    category: str = Field(default="", description="Category, e.g. 'software-dev', 'productivity'.")
+    license: str = Field(default="", description="SPDX license identifier, e.g. 'MIT'.")
+    private: bool | None = Field(
+        default=None,
+        description="Cached GitHub repo visibility. True=private, False=public.",
+    )
+
+    # --- Health-check metadata ---
+    last_checked: str | None = Field(
+        default=None,
+        description="ISO-8601 timestamp of last reachability check.",
+    )
+    reachable: bool | None = Field(
+        default=None,
+        description="Whether the repo was reachable at last check.",
+    )
+
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
@@ -83,9 +104,9 @@ SkillEntry = RegistryItem
 
 
 class Registry(BaseModel):
-    """Top-level registry document (supports v1 and v2 formats)."""
+    """Top-level registry document (supports v1, v2 and v3 formats)."""
 
-    version: int = 2
+    version: int = 3
     items: list[RegistryItem] = Field(default_factory=list)
 
     def __init__(self, **data: Any) -> None:

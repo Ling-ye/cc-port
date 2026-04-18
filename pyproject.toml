@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lingyepluginmarketplace"
-version = "0.3.0"
-description = "Multi-platform registry, publisher and installer for AI coding agent resources (skills, MCP servers, rules) across Cursor and Claude Code."
+version = "0.4.0"
+description = "LPM (LingyePluginMarketplace): multi-platform registry, publisher and installer for AI coding agent resources (skills, MCP servers, rules) across AI coding platforms."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

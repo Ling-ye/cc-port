@@ -1,3 +1,3 @@
-"""LingyePluginMarketplace: multi-platform registry, publisher and installer for AI coding agent resources."""
+"""LPM (LingyePluginMarketplace): multi-platform registry, publisher and installer for AI coding agent resources."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

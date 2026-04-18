@@ -1,11 +1,22 @@
-version: 2
+version: 3
 items:
-- name: create-yourself
+- name: s1
   kind: skill
-  repo: https://github.com/Ling-ye/cursor-skill-create-yourself.git
-  source: owned
+  repo: https://github.com/test/s1
+  source: external
   subdir: ''
   ref: main
   install_dir: ''
-  description: Why distill others when you can distill yourself? Deconstruct your
-    chat history, diaries, and photos into a runnable digital self. | 与其蒸馏别人，不如蒸馏自己。欢迎加入数字永生！
+  description: ''
+- name: m1
+  kind: mcp
+  repo: https://github.com/test/m1
+  source: external
+  subdir: ''
+  ref: main
+  install_dir: ''
+  description: ''
+  mcp_config:
+    command: test
+  last_checked: '2026-04-18T03:38:47+00:00'
+  reachable: true

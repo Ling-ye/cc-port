@@ -1,8 +1,11 @@
-"""Platform profiles for Cursor, Claude Code, and custom targets.
+"""Platform profiles for AI coding tools.
 
 Each platform declares where skills, MCP configs, and rules should be
 installed.  The user enables one or more platforms in their config.toml
 under ``[platforms.<name>]`` sections.
+
+Built-in presets cover popular tools; custom platforms can be added purely
+via config.toml without changing code.
 """
 
 from __future__ import annotations
@@ -48,6 +51,12 @@ class PlatformProfile:
 
 
 # ---- Built-in platform presets ---- #
+# Users can add arbitrary platforms via config.toml without touching this dict.
+# Example:
+#   [platforms.windsurf]
+#   enabled = true
+#   skills_dir = "~/.windsurf/skills"
+#   mcp_json = "~/.windsurf/mcp.json"
 
 PLATFORM_PRESETS: dict[str, PlatformProfile] = {
     "cursor": PlatformProfile(
@@ -64,11 +73,29 @@ PLATFORM_PRESETS: dict[str, PlatformProfile] = {
         mcp_json="~/.claude.json",
         rules_dir="",
     ),
+    "windsurf": PlatformProfile(
+        name="windsurf",
+        enabled=False,
+        skills_dir="~/.windsurf/skills",
+        mcp_json="~/.windsurf/mcp.json",
+        rules_dir="",
+    ),
+    "codex": PlatformProfile(
+        name="codex",
+        enabled=False,
+        skills_dir="~/.codex/skills",
+        mcp_json="",
+        rules_dir="",
+    ),
 }
 
 
 def build_platform(name: str, overrides: dict[str, Any] | None = None) -> PlatformProfile:
-    """Create a PlatformProfile, starting from a preset if one exists."""
+    """Create a PlatformProfile, starting from a preset if one exists.
+
+    Any ``name`` not in PLATFORM_PRESETS creates a blank profile, allowing
+    users to add custom platforms purely via config.toml.
+    """
     preset = PLATFORM_PRESETS.get(name)
     base = PlatformProfile(name=name) if preset is None else PlatformProfile(
         name=preset.name,
