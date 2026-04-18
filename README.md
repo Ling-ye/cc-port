@@ -52,8 +52,8 @@ LPM 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种入口
 前置要求：Python >= 3.10、`git` 已装好。
 
 ```bash
-git clone https://github.com/Ling-ye/SkillHub.git
-cd SkillHub
+git clone https://github.com/Ling-ye/LingyePluginMarketplace.git
+cd LingyePluginMarketplace
 pip install -e .
 ```
 
@@ -237,8 +237,8 @@ lpm unlink
 ### 换电脑一键迁移
 
 ```bash
-git clone https://github.com/Ling-ye/SkillHub.git
-cd SkillHub
+git clone https://github.com/Ling-ye/LingyePluginMarketplace.git
+cd LingyePluginMarketplace
 pip install -e .
 lpm init              # 生成配置模板
 # 编辑 config.toml 填好 token 和 owner（或设环境变量）
@@ -274,24 +274,24 @@ LPM 可以作为 Python 库、Git Submodule 或 Cursor Skill 三种方式引入�
 
 ```bash
 # 安装最新版
-pip install git+https://github.com/Ling-ye/SkillHub.git
+pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git
 
 # 锁定到特定版本/分支/commit
-pip install git+https://github.com/Ling-ye/SkillHub.git@main
-pip install git+https://github.com/Ling-ye/SkillHub.git@v0.4.0
+pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main
+pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git@v0.4.0
 ```
 
 在目标项目的依赖中声明：
 
 ```
 # requirements.txt
-lingyepluginmarketplace @ git+https://github.com/Ling-ye/SkillHub.git@main
+lingyepluginmarketplace @ git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main
 ```
 
 ```toml
 # pyproject.toml
 dependencies = [
-    "lingyepluginmarketplace @ git+https://github.com/Ling-ye/SkillHub.git@main",
+    "lingyepluginmarketplace @ git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main",
 ]
 ```
 
@@ -301,7 +301,7 @@ dependencies = [
 
 ```bash
 cd <你的项目>
-git submodule add https://github.com/Ling-ye/SkillHub.git libs/lpm
+git submodule add https://github.com/Ling-ye/LingyePluginMarketplace.git libs/lpm
 git commit -m "add LPM as submodule"
 
 # 安装为可编辑包
@@ -320,7 +320,7 @@ LPM 自带 `SKILL.md`，可直接作为 Cursor Skill 被 AI Agent 自动发现�
 
 ```bash
 # 通过 lpm 自身登记并链接
-lpm add https://github.com/Ling-ye/SkillHub.git --tag lpm --category tool-management
+lpm add https://github.com/Ling-ye/LingyePluginMarketplace.git --tag lpm --category tool-management
 cd <你的项目>
 lpm link --only lpm
 ```
@@ -441,7 +441,7 @@ items:
 ## 仓库结构
 
 ```
-SkillHub/
+LingyePluginMarketplace/
 ├── registry.yaml                 # 资源清单（真实数据）
 ├── pyproject.toml
 ├── examples/config.example.toml

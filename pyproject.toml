@@ -43,8 +43,8 @@ lpm = "lpm.cli:app"
 lpm-mcp = "lpm.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/Lingye/LingyePluginMarketplace"
-Issues = "https://github.com/Lingye/LingyePluginMarketplace/issues"
+Homepage = "https://github.com/Ling-ye/LingyePluginMarketplace"
+Issues = "https://github.com/Ling-ye/LingyePluginMarketplace/issues"
 
 [tool.setuptools.packages.find]
 include = ["lpm*"]
