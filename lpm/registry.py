@@ -16,9 +16,20 @@ DEFAULT_REGISTRY_FILENAME = "registry.yaml"
 def find_registry_path(start: Path | None = None) -> Path:
     """Walk upwards from `start` looking for registry.yaml.
 
+    When `start` is omitted, the default registry lives in the configured
+    private resource repository, not in the LPM tool repository.
+
     Falls back to `<cwd>/registry.yaml` if none is found, so a missing file
     can still be created in place.
     """
+    if start is None:
+        try:
+            from .config import load_config
+
+            return load_config().resources.local_path_value / DEFAULT_REGISTRY_FILENAME
+        except Exception:
+            pass
+
     cur = (start or Path.cwd()).resolve()
     for candidate in [cur, *cur.parents]:
         p = candidate / DEFAULT_REGISTRY_FILENAME
@@ -27,7 +38,7 @@ def find_registry_path(start: Path | None = None) -> Path:
     return cur / DEFAULT_REGISTRY_FILENAME
 
 
-CURRENT_REGISTRY_VERSION = 3
+CURRENT_REGISTRY_VERSION = 4
 
 
 def _migrate_v1_to_v2(data: dict) -> dict:
@@ -47,6 +58,13 @@ def _migrate_v2_to_v3(data: dict) -> dict:
     return data
 
 
+def _migrate_v3_to_v4(data: dict) -> dict:
+    """v3 -> v4: local monorepo resources can carry a relative ``path``."""
+    data = dict(data)
+    data["version"] = 4
+    return data
+
+
 def load_registry(path: Path | None = None) -> Registry:
     p = path or find_registry_path()
     if not p.is_file():
@@ -61,6 +79,8 @@ def load_registry(path: Path | None = None) -> Registry:
         data = _migrate_v1_to_v2(data)
     if version < 3:
         data = _migrate_v2_to_v3(data)
+    if version < 4:
+        data = _migrate_v3_to_v4(data)
 
     if "skills" in data and "items" not in data:
         data["items"] = data.pop("skills")
@@ -71,7 +91,7 @@ def load_registry(path: Path | None = None) -> Registry:
 # Fields to omit from YAML output when empty/None
 _OMIT_WHEN_EMPTY: set[str] = {
     "mcp_config", "last_checked", "reachable", "private",
-    "version", "author", "tags", "category", "license",
+    "version", "author", "tags", "category", "license", "path",
 }
 
 

@@ -29,15 +29,31 @@ from .installer import (
     sync_one,
     uninstall_one,
 )
+from .local_resources import export_claude_plugin, import_local_resource
 from .platforms import PlatformProfile, PlatformsConfig, build_platform
 from .registry import find_registry_path, load_registry
+from .resource_detection import (
+    ResourceDetectionError,
+    detect_local_resource_type,
+    detect_remote_resource,
+)
+from .resource_repo import (
+    init_resource_repo,
+    inspect_resource_repo,
+    pull_resource_repo,
+    push_resource_repo,
+    use_resource_repo,
+)
 
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help="LPM (LingyePluginMarketplace): publish, register and sync skills, MCP servers and rules across AI coding platforms.",
 )
+resource_app = typer.Typer(help="Manage the private LPM resource repository.")
+app.add_typer(resource_app, name="resource")
 console = Console()
+VALID_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
 
 
 def _load() -> Config:
@@ -82,8 +98,115 @@ def cmd_init(
     console.print("Next steps:")
     console.print(f"  1. Edit [bold]{written}[/bold] to fill in your [bold]token[/bold] and [bold]owner[/bold]")
     console.print(f"     Or set env var: [bold]$env:{CONFIG_ENV_VAR} = \"ghp_xxx\"[/bold]")
-    console.print("  2. Run [bold]lpm doctor[/bold] to verify")
-    console.print("  3. Run [bold]lpm publish <path> -y[/bold] to publish")
+    console.print("  2. Run [bold]lpm resource init[/bold] to create/connect your private resource repo")
+    console.print("  3. Run [bold]lpm doctor[/bold] to verify")
+
+
+# ---- resource repo ---- #
+
+
+@resource_app.command("init")
+def cmd_resource_init(
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Private GitHub resource repo name. Defaults to config or LingyeAIResources.",
+    ),
+) -> None:
+    """Create/connect the private resource repo and generate its structure."""
+    cfg = _load()
+    repo_name = name
+    if repo_name is None and not cfg.resources.repo_url:
+        repo_name = typer.prompt("Resource repository name", default=cfg.resources.repo_name)
+    try:
+        info = init_resource_repo(name=repo_name, config=cfg)
+    except Exception as exc:
+        console.print(f"[red]Resource init failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_info(info)
+
+
+@resource_app.command("use")
+def cmd_resource_use(
+    target: str = typer.Argument(..., help="Existing local path or Git URL for the resource repo."),
+) -> None:
+    """Bind LPM to an existing private resource repository."""
+    try:
+        info = use_resource_repo(target, config=_load())
+    except Exception as exc:
+        console.print(f"[red]Resource use failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_info(info)
+
+
+@resource_app.command("status")
+def cmd_resource_status() -> None:
+    """Show private resource repository configuration and git state."""
+    _print_resource_info(inspect_resource_repo(_load()))
+
+
+@resource_app.command("pull")
+def cmd_resource_pull() -> None:
+    """Pull the private resource repository after checking it is clean."""
+    try:
+        info = pull_resource_repo(_load())
+    except Exception as exc:
+        console.print(f"[red]Resource pull failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_info(info)
+
+
+@resource_app.command("push")
+def cmd_resource_push(
+    message: str = typer.Option("lpm: update resources", "--message", "-m"),
+) -> None:
+    """Commit local resource changes if needed and push the private repo."""
+    try:
+        info = push_resource_repo(message=message, config=_load())
+    except Exception as exc:
+        console.print(f"[red]Resource push failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_info(info)
+
+
+def _print_resource_info(info: object) -> None:
+    table = Table(title="LPM resource repository")
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    for field in (
+        "repo_name",
+        "local_path",
+        "registry_path",
+        "repo_url",
+        "remote_url",
+        "branch",
+        "current_branch",
+        "exists",
+        "is_git_repo",
+        "dirty",
+    ):
+        value = getattr(info, field)
+        table.add_row(field, str(value))
+    console.print(table)
+
+
+def _maybe_push_resource_repo(cfg: Config, *, push: bool, no_push: bool) -> None:
+    if push and no_push:
+        console.print("[red]Choose only one of --push or --no-push.[/red]")
+        raise typer.Exit(2)
+    should_push = push
+    if not push and not no_push:
+        should_push = typer.confirm("Push changes to your private resource repo now?", default=False)
+    if not should_push:
+        console.print("[yellow]Not pushed.[/yellow] Run `lpm resource push` when ready.")
+        return
+    try:
+        info = push_resource_repo(config=cfg)
+    except Exception as exc:
+        console.print(f"[red]Resource push failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]Pushed[/green] {info.local_path}")
 
 
 # ---- publish ---- #
@@ -94,7 +217,9 @@ def cmd_publish(
     path: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True),
     name: str | None = typer.Option(None, "--name", help="Override the item name."),
     description: str | None = typer.Option(None, "--description"),
-    kind: str = typer.Option("skill", "--kind", "-k", help="Resource type: skill | mcp | rule."),
+    kind: str = typer.Option(
+        "skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."
+    ),
     private: bool | None = typer.Option(
         None,
         "--private/--public",
@@ -125,8 +250,8 @@ def cmd_publish(
     """Publish a local directory to a new GitHub repository."""
     cfg = _load()
 
-    if kind not in {"skill", "mcp", "rule"}:
-        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule.")
+    if kind not in VALID_KINDS:
+        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin.")
         raise typer.Exit(2)
 
     mcp_config = None
@@ -189,7 +314,9 @@ def cmd_add(
     subdir: str | None = typer.Option(None, "--subdir", help="Path inside the repo to install."),
     ref: str = typer.Option("main", "--ref"),
     description: str = typer.Option("", "--description"),
-    kind: str = typer.Option("skill", "--kind", "-k", help="Resource type: skill | mcp | rule."),
+    kind: str = typer.Option(
+        "skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."
+    ),
     no_verify: bool = typer.Option(
         False,
         "--no-verify",
@@ -205,8 +332,8 @@ def cmd_add(
 ) -> None:
     """Register an external (third-party) resource in the registry."""
     cfg = _load()
-    if kind not in {"skill", "mcp", "rule"}:
-        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule.")
+    if kind not in VALID_KINDS:
+        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin.")
         raise typer.Exit(2)
 
     mcp_config = None
@@ -235,6 +362,132 @@ def cmd_add(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     console.print(f"[green]Added[/green] {entry.name} ({entry.kind}) ({entry.repo}@{entry.ref})")
+
+
+@app.command("collect")
+def cmd_collect(
+    github_url: str = typer.Argument(..., help="HTTPS or SSH GitHub URL of the repo."),
+    resource_type: str | None = typer.Option(
+        None,
+        "--type",
+        help="Override detected type: skill, mcp, rule, prompt, plugin.",
+    ),
+    name: str | None = typer.Option(None, "--name", help="Override the resource name."),
+    push: bool = typer.Option(False, "--push", help="Push private resource repo without asking."),
+    no_push: bool = typer.Option(False, "--no-push", help="Do not push private resource repo."),
+) -> None:
+    """Collect a third-party resource by recording its upstream URL only."""
+    cfg = _load()
+    try:
+        detected = detect_remote_resource(
+            github_url,
+            explicit_type=resource_type,
+            token=cfg.github.token or None,
+        )
+        entry = publisher.add_external_skill(
+            detected.repo_url,
+            name=name or detected.name_hint,
+            subdir=detected.subdir,
+            ref=detected.ref,
+            kind=detected.kind,
+            skip_verify=False,
+            token=cfg.github.token or None,
+            tags=detected.tags,
+        )
+    except (ValueError, ResourceDetectionError, publisher.RepoUnreachableError) as exc:
+        console.print(f"[red]Collect failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"[green]Collected[/green] {entry.name} ({entry.kind}) -> {entry.repo}"
+        f"{f'/{entry.subdir}' if entry.subdir else ''}"
+    )
+    _maybe_push_resource_repo(cfg, push=push, no_push=no_push)
+
+
+@app.command("upload")
+def cmd_upload(
+    path: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=True),
+    resource_type: str | None = typer.Option(
+        None,
+        "--type",
+        help="Override detected type: skill, mcp, rule, prompt, plugin.",
+    ),
+    name: str | None = typer.Option(None, "--name", help="Override the resource name."),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing local resource."),
+    push: bool = typer.Option(False, "--push", help="Push private resource repo without asking."),
+    no_push: bool = typer.Option(False, "--no-push", help="Do not push private resource repo."),
+) -> None:
+    """Upload a local resource into the private resource repo."""
+    cfg = _load()
+    try:
+        kind = detect_local_resource_type(path, explicit_type=resource_type)
+        result = import_local_resource(
+            path,
+            kind=kind,
+            name=name,
+            overwrite=force,
+        )
+    except Exception as exc:
+        console.print(f"[red]Upload failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"[green]Uploaded[/green] {result.entry.name} ({result.entry.kind}) -> {result.entry.path}"
+    )
+    _maybe_push_resource_repo(cfg, push=push, no_push=no_push)
+
+
+@app.command("import-local")
+def cmd_import_local(
+    path: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=True),
+    name: str | None = typer.Option(None, "--name", help="Override the item name."),
+    description: str | None = typer.Option(None, "--description"),
+    kind: str = typer.Option("skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."),
+    category: str = typer.Option("", "--category", "-c", help="Stored under <kind>/<category>/<name>."),
+    tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for discovery (repeatable)."),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing local resource."),
+    mcp_config_json: str | None = typer.Option(None, "--mcp-config", help="MCP server config JSON."),
+) -> None:
+    """Copy a local resource into this repository and register it."""
+    if kind not in VALID_KINDS:
+        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin.")
+        raise typer.Exit(2)
+
+    mcp_config = None
+    if mcp_config_json:
+        try:
+            mcp_config = json.loads(mcp_config_json)
+        except json.JSONDecodeError as exc:
+            console.print(f"[red]Invalid --mcp-config JSON:[/red] {exc}")
+            raise typer.Exit(2) from exc
+
+    try:
+        result = import_local_resource(
+            path,
+            kind=kind,
+            name=name,
+            description=description,
+            category=category,
+            tags=tags or None,
+            overwrite=force,
+            mcp_config=mcp_config,
+        )
+    except Exception as exc:
+        console.print(f"[red]Import failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]Imported[/green] {result.entry.name} ({result.entry.kind}) -> {result.entry.path}"
+    )
+
+
+@app.command("export-plugin")
+def cmd_export_plugin(
+    name: str | None = typer.Option(None, "--name", help="Plugin name (defaults to repo folder name)."),
+) -> None:
+    """Generate .claude-plugin/plugin.json for local skills in this repository."""
+    path = export_claude_plugin(plugin_name=name)
+    console.print(f"[green]Generated[/green] {path}")
 
 
 # ---- remove ---- #
@@ -418,11 +671,38 @@ def _search_github(query: str) -> None:
 def cmd_sync(
     only: list[str] = typer.Option(None, "--only", help="Restrict to one or more item names."),
     kind: str | None = typer.Option(None, "--kind", "-k", help="Only sync items of this type."),
+    tags_filter: list[str] = typer.Option(None, "--tag", "-t", help="Only sync items with these tags."),
+    include_mcp: bool = typer.Option(False, "--include-mcp", help="Also sync MCP configs."),
+    include_rule: bool = typer.Option(False, "--include-rule", help="Also sync rules."),
+    include_prompt: bool = typer.Option(False, "--include-prompt", help="Also sync prompts."),
+    include_plugin: bool = typer.Option(False, "--include-plugin", help="Also sync plugins."),
+    all_kinds: bool = typer.Option(False, "--all-kinds", help="Sync every resource kind."),
     platform: str | None = typer.Option(None, "--platform", "-p", help="Only sync to this platform."),
 ) -> None:
-    """Install or update every item in the registry."""
+    """Install or update registry items.
+
+    By default this syncs skills only. MCP/rule/prompt/plugin resources are
+    opt-in because they can modify tool configuration or agent behavior.
+    """
     cfg = _load()
-    results = sync_all(config=cfg, only=only or None, kind=kind, platform_filter=platform)
+    include_kinds = set()
+    if include_mcp:
+        include_kinds.add("mcp")
+    if include_rule:
+        include_kinds.add("rule")
+    if include_prompt:
+        include_kinds.add("prompt")
+    if include_plugin:
+        include_kinds.add("plugin")
+    results = sync_all(
+        config=cfg,
+        only=only or None,
+        kind=kind,
+        tags=tags_filter or None,
+        include_optional=all_kinds,
+        include_kinds=include_kinds,
+        platform_filter=platform,
+    )
     if not results:
         console.print("[yellow]Nothing to sync.[/yellow]")
         return
@@ -587,6 +867,12 @@ def cmd_doctor() -> None:
 
     reg_path = find_registry_path()
     console.print(f"[green]Registry:[/green] {reg_path}")
+    resource_info = inspect_resource_repo(cfg)
+    console.print(f"[green]Resource repo:[/green] {resource_info.local_path}")
+    if not resource_info.exists:
+        console.print("[yellow]Resource repo is not initialized.[/yellow] Run `lpm resource init`.")
+    elif not resource_info.is_git_repo:
+        console.print("[yellow]Resource repo exists but is not a git repository.[/yellow]")
 
     if cfg.source_path:
         console.print(f"[green]Config:[/green] {cfg.source_path}")

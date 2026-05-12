@@ -12,18 +12,25 @@ ITEM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 # Keep old name as alias for backward compatibility
 SKILL_NAME_RE = ITEM_NAME_RE
 
-ItemKind = Literal["skill", "mcp", "rule"]
+ItemKind = Literal["skill", "mcp", "rule", "prompt", "plugin"]
 
 
 class RegistryItem(BaseModel):
     """A single resource (skill, MCP server config, or rule) in registry.yaml."""
 
     name: str = Field(..., description="Lower-case, hyphenated unique identifier (<=64 chars).")
-    kind: ItemKind = Field(default="skill", description="Resource type: skill | mcp | rule.")
-    repo: str = Field(..., description="HTTPS GitHub URL of the repository.")
-    source: Literal["owned", "external"] = Field(
+    kind: ItemKind = Field(
+        default="skill",
+        description="Resource type: skill | mcp | rule | prompt | plugin.",
+    )
+    repo: str = Field(default="", description="HTTPS GitHub URL of the repository.")
+    source: Literal["owned", "external", "local"] = Field(
         default="owned",
-        description="`owned` = published by us; `external` = third-party.",
+        description="`owned`/`local` = stored in this resource repo; `external` = third-party.",
+    )
+    path: str = Field(
+        default="",
+        description="Relative path inside this resource repo for local/owned items.",
     )
     subdir: str = Field(
         default="",
@@ -74,8 +81,20 @@ class RegistryItem(BaseModel):
     @classmethod
     def _validate_repo(cls, v: str) -> str:
         v = v.strip().rstrip("/")
+        if not v:
+            return ""
         if not (v.startswith("https://github.com/") or v.startswith("git@github.com:")):
             raise ValueError(f"Repo URL must be a GitHub HTTPS or SSH URL, got {v!r}.")
+        return v
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, v: str) -> str:
+        v = (v or "").strip().replace("\\", "/").strip("/")
+        if not v:
+            return ""
+        if v.startswith("/") or ".." in v.split("/"):
+            raise ValueError("path must be a relative path without '..' segments.")
         return v
 
     @field_validator("subdir")
@@ -88,6 +107,10 @@ class RegistryItem(BaseModel):
 
     @model_validator(mode="after")
     def _validate_mcp_config(self) -> RegistryItem:
+        if self.source == "external" and not self.repo:
+            raise ValueError("external items require a repo URL.")
+        if self.source in {"local", "owned"} and not self.repo and not self.path:
+            raise ValueError("local/owned items require either path or repo.")
         if self.kind == "mcp" and self.mcp_config is not None:
             has_command = bool(self.mcp_config.get("command"))
             has_url = bool(self.mcp_config.get("url"))

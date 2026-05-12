@@ -20,9 +20,12 @@ from .platforms import PlatformsConfig, load_platforms_from_dict
 
 CONFIG_ENV_VAR = "LPM_GITHUB_TOKEN"
 CONFIG_PATH_ENV_VAR = "LPM_CONFIG"
+RESOURCE_HOME_ENV_VAR = "LPM_RESOURCE_HOME"
 DEFAULT_CONFIG_RELATIVE = Path(".config/lpm/config.toml")
 DEFAULT_INSTALL_TARGET = "~/.cursor/skills"
 DEFAULT_REPO_PREFIX = "cursor-skill-"
+DEFAULT_RESOURCE_REPO_NAME = "LingyeAIResources"
+DEFAULT_RESOURCE_BRANCH = "main"
 
 
 @dataclass
@@ -43,9 +46,24 @@ class InstallConfig:
 
 
 @dataclass
+class ResourcesConfig:
+    repo_name: str = DEFAULT_RESOURCE_REPO_NAME
+    repo_url: str = ""
+    local_path: str = ""
+    branch: str = DEFAULT_RESOURCE_BRANCH
+
+    @property
+    def local_path_value(self) -> Path:
+        if self.local_path:
+            return Path(self.local_path).expanduser()
+        return Path.home() / (self.repo_name or DEFAULT_RESOURCE_REPO_NAME)
+
+
+@dataclass
 class Config:
     github: GithubConfig = field(default_factory=GithubConfig)
     install: InstallConfig = field(default_factory=InstallConfig)
+    resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     platforms: PlatformsConfig = field(default_factory=PlatformsConfig)
     source_path: Path | None = None
 
@@ -66,6 +84,7 @@ def load_config(path: Path | None = None) -> Config:
 
     gh_data = data.get("github", {}) or {}
     install_data = data.get("install", {}) or {}
+    resources_data = data.get("resources", {}) or {}
 
     plat_cfg = load_platforms_from_dict(data)
 
@@ -79,6 +98,15 @@ def load_config(path: Path | None = None) -> Config:
         install=InstallConfig(
             target=str(install_data.get("target", DEFAULT_INSTALL_TARGET) or DEFAULT_INSTALL_TARGET),
         ),
+        resources=ResourcesConfig(
+            repo_name=str(
+                resources_data.get("repo_name", DEFAULT_RESOURCE_REPO_NAME)
+                or DEFAULT_RESOURCE_REPO_NAME
+            ),
+            repo_url=str(resources_data.get("repo_url", "") or ""),
+            local_path=str(resources_data.get("local_path", "") or ""),
+            branch=str(resources_data.get("branch", DEFAULT_RESOURCE_BRANCH) or DEFAULT_RESOURCE_BRANCH),
+        ),
         platforms=plat_cfg,
         source_path=cfg_path if cfg_path.is_file() else None,
     )
@@ -86,6 +114,10 @@ def load_config(path: Path | None = None) -> Config:
     env_token = os.environ.get(CONFIG_ENV_VAR, "").strip()
     if env_token:
         cfg.github.token = env_token
+
+    env_resource_home = os.environ.get(RESOURCE_HOME_ENV_VAR, "").strip()
+    if env_resource_home:
+        cfg.resources.local_path = env_resource_home
 
     return cfg
 
@@ -110,6 +142,13 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         "",
         "[install]",
         f'target = "{_escape(cfg.install.target)}"',
+        "",
+        "[resources]",
+        "# Private data repository for your selected skills/rules/prompts/MCP/plugins.",
+        f'repo_name = "{_escape(cfg.resources.repo_name)}"',
+        f'repo_url = "{_escape(cfg.resources.repo_url)}"',
+        f'local_path = "{_escape(cfg.resources.local_path)}"',
+        f'branch = "{_escape(cfg.resources.branch)}"',
         "",
     ]
 

@@ -13,10 +13,13 @@ from .config import Config
 from .mcp_installer import inject_mcp_server, remove_mcp_server
 from .models import Registry, RegistryItem
 from .platforms import PlatformProfile
-from .registry import load_registry, save_registry
+from .registry import find_registry_path, load_registry, save_registry
+from .secrets import sanitize_mcp_config_for_storage
 
 # Backward-compatible alias
 SkillEntry = RegistryItem
+DEFAULT_SYNC_KINDS = {"skill"}
+OPTIONAL_SYNC_KINDS = {"mcp", "rule", "prompt", "plugin"}
 
 
 class SyncAction(str, Enum):
@@ -98,7 +101,7 @@ def _install_mcp_to_platform(
     mcp_path = platform.mcp_json_path()
     if mcp_path is None or entry.mcp_config is None:
         return None
-    inject_mcp_server(mcp_path, entry.name, entry.mcp_config)
+    inject_mcp_server(mcp_path, entry.name, sanitize_mcp_config_for_storage(entry.mcp_config))
     return mcp_path
 
 
@@ -146,7 +149,7 @@ def _distribute_to_platforms(
             result_path = _install_skill_to_platform(source, plat, entry)
         elif entry.kind == "mcp":
             result_path = _install_mcp_to_platform(plat, entry)
-        elif entry.kind == "rule":
+        elif entry.kind in {"rule", "prompt"}:
             result_path = _install_rule_to_platform(source, plat, entry)
 
         if result_path is not None:
@@ -164,6 +167,7 @@ def sync_one(
     config: Config,
     token: str | None = None,
     platform_filter: str | None = None,
+    registry_root: Path | None = None,
 ) -> SyncResult:
     install_path = _install_path(config, entry)
     clone_path = _clone_path(config, entry)
@@ -173,6 +177,47 @@ def sync_one(
     auth_token = token or config.github.token or None
 
     try:
+        if _is_local_resource(entry):
+            source_path = _local_source_path(entry, registry_root=registry_root)
+            if not source_path.exists():
+                return SyncResult(
+                    name=entry.name,
+                    install_path=source_path,
+                    action=SyncAction.FAILED,
+                    detail=f"Local resource path does not exist: {source_path}",
+                )
+            if entry.kind == "mcp":
+                platforms_installed = _distribute_to_platforms(
+                    config, entry, source_path, platform_filter=platform_filter
+                )
+                return SyncResult(
+                    name=entry.name,
+                    install_path=source_path,
+                    action=SyncAction.INSTALLED,
+                    platforms_installed=platforms_installed,
+                )
+
+            if install_path.exists():
+                if install_path.is_dir():
+                    shutil.rmtree(install_path, ignore_errors=True)
+                else:
+                    install_path.unlink()
+            install_path.parent.mkdir(parents=True, exist_ok=True)
+            if source_path.is_dir():
+                shutil.copytree(source_path, install_path, ignore=shutil.ignore_patterns(".git"))
+            else:
+                install_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, install_path)
+            platforms_installed = _distribute_to_platforms(
+                config, entry, install_path, platform_filter=platform_filter
+            )
+            return SyncResult(
+                name=entry.name,
+                install_path=install_path,
+                action=SyncAction.INSTALLED,
+                platforms_installed=platforms_installed,
+            )
+
         if entry.kind == "mcp" and entry.mcp_config and not _needs_clone(entry):
             platforms_installed = _distribute_to_platforms(
                 config, entry, clone_path, platform_filter=platform_filter
@@ -234,6 +279,15 @@ def _needs_clone(entry: RegistryItem) -> bool:
     return True
 
 
+def _is_local_resource(entry: RegistryItem) -> bool:
+    return bool(entry.path) and entry.source in {"local", "owned"}
+
+
+def _local_source_path(entry: RegistryItem, *, registry_root: Path | None = None) -> Path:
+    root = registry_root or find_registry_path().parent
+    return (root / entry.path).resolve()
+
+
 def sync_all(
     *,
     config: Config,
@@ -241,16 +295,36 @@ def sync_all(
     registry_path: Path | None = None,
     only: list[str] | None = None,
     kind: str | None = None,
+    tags: list[str] | None = None,
+    include_optional: bool = False,
+    include_kinds: set[str] | None = None,
     platform_filter: str | None = None,
 ) -> list[SyncResult]:
-    reg = registry or load_registry(registry_path)
+    effective_registry_path = registry_path or (find_registry_path() if registry is None else None)
+    reg = registry or load_registry(effective_registry_path)
+    registry_root = effective_registry_path.parent if effective_registry_path else None
+    tag_set = {t.lower() for t in tags or []}
+    allowed_kinds = _allowed_sync_kinds(
+        kind=kind,
+        include_optional=include_optional,
+        include_kinds=include_kinds,
+    )
     results: list[SyncResult] = []
     for entry in reg.items:
         if only and entry.name not in only:
             continue
-        if kind and entry.kind != kind:
+        if entry.kind not in allowed_kinds:
             continue
-        results.append(sync_one(entry, config=config, platform_filter=platform_filter))
+        if tag_set and not (tag_set & {t.lower() for t in entry.tags}):
+            continue
+        results.append(
+            sync_one(
+                entry,
+                config=config,
+                platform_filter=platform_filter,
+                registry_root=registry_root,
+            )
+        )
     return results
 
 
@@ -261,17 +335,43 @@ def status_all(
     registry_path: Path | None = None,
     kind: str | None = None,
 ) -> list[SkillStatus]:
-    reg = registry or load_registry(registry_path)
+    effective_registry_path = registry_path or (find_registry_path() if registry is None else None)
+    reg = registry or load_registry(effective_registry_path)
+    registry_root = effective_registry_path.parent if effective_registry_path else None
     out: list[SkillStatus] = []
     for entry in reg.items:
         if kind and entry.kind != kind:
             continue
-        out.append(_skill_status(entry, config))
+        out.append(_skill_status(entry, config, registry_root=registry_root))
     return out
 
 
-def _skill_status(entry: RegistryItem, config: Config) -> SkillStatus:
+def _allowed_sync_kinds(
+    *,
+    kind: str | None,
+    include_optional: bool,
+    include_kinds: set[str] | None,
+) -> set[str]:
+    if kind:
+        return {kind}
+    if include_optional:
+        return DEFAULT_SYNC_KINDS | OPTIONAL_SYNC_KINDS
+    return DEFAULT_SYNC_KINDS | (include_kinds or set())
+
+
+def _skill_status(
+    entry: RegistryItem, config: Config, *, registry_root: Path | None = None
+) -> SkillStatus:
     install_path = _install_path(config, entry)
+    if _is_local_resource(entry):
+        return SkillStatus(
+            name=entry.name,
+            install_path=install_path,
+            installed=install_path.exists(),
+            local_commit=None,
+            remote_commit=None,
+            has_update=False,
+        )
     clone_path = _clone_path(config, entry)
     installed = install_path.exists()
     local = git_ops.head_commit(clone_path) if git_ops.is_repo(clone_path) else None
@@ -309,7 +409,7 @@ def uninstall_one(entry: RegistryItem, *, config: Config) -> bool:
             if mcp_path:
                 if remove_mcp_server(mcp_path, entry.name):
                     removed = True
-        elif entry.kind == "rule":
+        elif entry.kind in {"rule", "prompt"}:
             target = plat.resolve_install_path("rule", entry.install_target_name())
             if target and target.exists():
                 shutil.rmtree(target, ignore_errors=True)
@@ -330,8 +430,20 @@ def check_one(
     entry: RegistryItem,
     *,
     token: str | None = None,
+    registry_root: Path | None = None,
 ) -> CheckResult:
     """Probe whether the remote repository for *entry* is reachable."""
+    if _is_local_resource(entry):
+        reachable = _local_source_path(entry, registry_root=registry_root).exists()
+        entry.reachable = reachable
+        entry.last_checked = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return CheckResult(
+            name=entry.name,
+            kind=entry.kind,
+            repo=entry.path,
+            reachable=reachable,
+        )
+
     probe_url = git_ops.with_token(entry.repo, token) if token else entry.repo
     reachable = git_ops.probe_remote(probe_url, entry.ref)
 
@@ -361,7 +473,9 @@ def check_all(
     entries are removed from the registry (and optionally uninstalled).
     The ``last_checked`` / ``reachable`` metadata is always persisted.
     """
-    reg = registry or load_registry(registry_path)
+    effective_registry_path = registry_path or (find_registry_path() if registry is None else None)
+    reg = registry or load_registry(effective_registry_path)
+    registry_root = effective_registry_path.parent if effective_registry_path else None
     token = config.github.token or None
     results: list[CheckResult] = []
     pruned: list[str] = []
@@ -370,7 +484,7 @@ def check_all(
     for entry in list(reg.items):
         if kind and entry.kind != kind:
             continue
-        cr = check_one(entry, token=token)
+        cr = check_one(entry, token=token, registry_root=registry_root)
         dirty = True
         results.append(cr)
         if prune and not cr.reachable:
@@ -379,8 +493,8 @@ def check_all(
             reg.remove(entry.name)
             pruned.append(entry.name)
 
-    if dirty or pruned:
-        save_registry(reg, registry_path)
+    if (dirty or pruned) and effective_registry_path is not None:
+        save_registry(reg, effective_registry_path)
 
     return results, pruned
 

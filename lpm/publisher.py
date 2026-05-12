@@ -12,6 +12,7 @@ from .config import Config
 from .github_client import GithubClient
 from .models import ItemKind, Registry, RegistryItem
 from .registry import load_registry, save_registry
+from .secrets import sanitize_mcp_config_for_storage
 from .validator import parse_skill
 
 # Keep backward-compatible alias
@@ -136,7 +137,7 @@ def publish_local_skill(
         ref=repo.default_branch,
         install_dir="",
         description=skill_description,
-        mcp_config=mcp_config,
+        mcp_config=sanitize_mcp_config_for_storage(mcp_config),
         private=repo.private,
         tags=tags or [],
         category=category,
@@ -287,7 +288,7 @@ def add_external_skill(
         ref=effective_ref,
         install_dir="",
         description=description.strip(),
-        mcp_config=mcp_config,
+        mcp_config=sanitize_mcp_config_for_storage(mcp_config),
         tags=tags or [],
         category=category,
     )

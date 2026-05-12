@@ -14,7 +14,9 @@ from fastmcp import FastMCP
 from . import publisher
 from .config import load_config
 from .installer import check_all, status_all, sync_all, sync_one, uninstall_one
+from .local_resources import export_claude_plugin, import_local_resource
 from .registry import find_registry_path, load_registry
+from .secrets import redact_item_dump
 
 mcp = FastMCP("LPM")
 
@@ -40,10 +42,12 @@ def list_items(kind: str | None = None) -> dict[str, Any]:
             for p in cfg.platforms.profiles
         ],
         "items": [
-            {
-                **s.model_dump(),
-                "installed": (install_root / s.install_target_name()).exists(),
-            }
+            redact_item_dump(
+                {
+                    **s.model_dump(),
+                    "installed": (install_root / s.install_target_name()).exists(),
+                }
+            )
             for s in items
         ],
     }
@@ -128,7 +132,7 @@ def publish_local_skill(
         "pushed": result.pushed,
         "private": result.private,
         "visibility_changed": result.visibility_changed,
-        "entry": result.entry.model_dump(),
+        "entry": redact_item_dump(result.entry.model_dump()),
     }
 
 
@@ -157,6 +161,8 @@ def add_external_skill(
     kind: str = "skill",
     mcp_config: dict[str, Any] | None = None,
     skip_verify: bool = False,
+    tags: list[str] | None = None,
+    category: str = "",
 ) -> dict[str, Any]:
     """Register a third-party resource in registry.yaml.
 
@@ -169,9 +175,11 @@ def add_external_skill(
         subdir: Optional path inside the repo where the resource lives.
         ref: Branch/tag/commit to track.
         description: Optional human description.
-        kind: Resource type: "skill", "mcp", or "rule".
+        kind: Resource type: "skill", "mcp", "rule", "prompt", or "plugin".
         mcp_config: MCP server configuration dict (for kind="mcp").
         skip_verify: Skip remote repository reachability check.
+        tags: Optional tags for selective sync and discovery.
+        category: Optional category label.
     """
     cfg = load_config()
     try:
@@ -185,10 +193,82 @@ def add_external_skill(
             mcp_config=mcp_config,
             skip_verify=skip_verify,
             token=cfg.github.token or None,
+            tags=tags,
+            category=category,
         )
     except publisher.RepoUnreachableError as exc:
         return {"error": "repo_unreachable", "message": str(exc)}
-    return entry.model_dump()
+    return redact_item_dump(entry.model_dump())
+
+
+@mcp.tool()
+def collect_resource(
+    github_url: str,
+    name: str | None = None,
+    subdir: str | None = None,
+    ref: str = "main",
+    description: str = "",
+    kind: str = "skill",
+    mcp_config: dict[str, Any] | None = None,
+    skip_verify: bool = False,
+    tags: list[str] | None = None,
+    category: str = "",
+) -> dict[str, Any]:
+    """Collect a third-party resource by recording its upstream URL only."""
+    return add_external_skill(
+        github_url=github_url,
+        name=name,
+        subdir=subdir,
+        ref=ref,
+        description=description,
+        kind=kind,
+        mcp_config=mcp_config,
+        skip_verify=skip_verify,
+        tags=tags,
+        category=category,
+    )
+
+
+@mcp.tool()
+def import_local_resource_tool(
+    path: str,
+    name: str | None = None,
+    description: str | None = None,
+    kind: str = "skill",
+    category: str = "",
+    tags: list[str] | None = None,
+    overwrite: bool = False,
+    mcp_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Copy a local resource into this LPM repository and register it."""
+    try:
+        result = import_local_resource(
+            Path(path),
+            kind=kind,
+            name=name,
+            description=description,
+            category=category,
+            tags=tags,
+            overwrite=overwrite,
+            mcp_config=mcp_config,
+        )
+    except Exception as exc:  # noqa: BLE001 - MCP tools return errors as data
+        return {"error": str(exc)}
+    return {
+        "entry": redact_item_dump(result.entry.model_dump()),
+        "source_path": str(result.source_path),
+        "stored_path": str(result.stored_path),
+    }
+
+
+@mcp.tool()
+def export_plugin(name: str | None = None) -> dict[str, Any]:
+    """Generate .claude-plugin/plugin.json for local skills in this repository."""
+    try:
+        path = export_claude_plugin(plugin_name=name)
+    except Exception as exc:  # noqa: BLE001 - MCP tools return errors as data
+        return {"error": str(exc)}
+    return {"path": str(path)}
 
 
 @mcp.tool()
@@ -249,7 +329,7 @@ def add_mcp_server(
         )
     except publisher.RepoUnreachableError as exc:
         return {"error": "repo_unreachable", "message": str(exc)}
-    return entry.model_dump()
+    return redact_item_dump(entry.model_dump())
 
 
 @mcp.tool()
@@ -288,7 +368,10 @@ def remove_skill(name: str, uninstall: bool = False) -> dict[str, Any]:
     registry = load_registry()
     entry = registry.get(name)
     removed = publisher.remove_skill(name)
-    detail: dict[str, Any] = {"removed": removed.model_dump() if removed else None, "uninstalled": False}
+    detail: dict[str, Any] = {
+        "removed": redact_item_dump(removed.model_dump()) if removed else None,
+        "uninstalled": False,
+    }
     if uninstall and entry is not None:
         detail["uninstalled"] = uninstall_one(entry, config=cfg)
     return detail
@@ -298,6 +381,9 @@ def remove_skill(name: str, uninstall: bool = False) -> dict[str, Any]:
 def sync_skills(
     only: list[str] | None = None,
     kind: str | None = None,
+    tags: list[str] | None = None,
+    include_optional: bool = False,
+    include_kinds: list[str] | None = None,
     platform: str | None = None,
 ) -> dict[str, Any]:
     """Install or update items in the registry across all enabled platforms.
@@ -305,10 +391,21 @@ def sync_skills(
     Args:
         only: Optional list of item names to restrict the sync to.
         kind: Optional filter by resource type ("skill", "mcp", "rule").
+        tags: Optional tag filter for selective restore.
+        include_optional: Sync all optional kinds too.
+        include_kinds: Optional resource kinds to sync in addition to skills.
         platform: Optional: only sync to this specific platform.
     """
     cfg = load_config()
-    results = sync_all(config=cfg, only=only, kind=kind, platform_filter=platform)
+    results = sync_all(
+        config=cfg,
+        only=only,
+        kind=kind,
+        tags=tags,
+        include_optional=include_optional,
+        include_kinds=set(include_kinds or []),
+        platform_filter=platform,
+    )
     return {
         "install_target": str(cfg.install.target_path),
         "results": [

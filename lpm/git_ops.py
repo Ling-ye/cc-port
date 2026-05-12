@@ -193,6 +193,22 @@ def current_remote_url(path: Path, remote: str = "origin") -> str | None:
     return res.stdout.strip() or None
 
 
+def current_branch(path: Path) -> str | None:
+    res = _run(["branch", "--show-current"], cwd=path, check=False)
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip() or None
+
+
+def checkout_branch(path: Path, branch: str) -> None:
+    _run(["checkout", "-B", branch], cwd=path)
+
+
+def status_short(path: Path) -> str:
+    res = _run(["status", "--short"], cwd=path, check=False)
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
 def head_commit(path: Path) -> str | None:
     res = _run(["rev-parse", "HEAD"], cwd=path, check=False)
     if res.returncode != 0:

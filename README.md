@@ -1,55 +1,52 @@
 # LPM (LingyePluginMarketplace)
 
-> AI 编程助手的资源中央仓库 -- 一行命令把 skill、MCP 服务器、规则同步到任意一台新电脑。
+LPM is an open-source command-line tool for managing personal AI coding resources across machines and agent platforms.
 
-LPM 是一个开源工具，同时提供 **CLI** 和 **MCP server** 两种入口，跨 **Cursor**、**Claude Code**、**Windsurf**、**Codex** 等 AI 编程平台管理三种资源：
+It separates the public tool from private user data:
 
-| 资源类型 | 说明 | 安装位置 |
-|---------|------|---------|
-| **Skill** | 包含 `SKILL.md` 的 Agent 技能目录 | 各平台 skills 目录 |
-| **MCP Server** | MCP 服务器配置（command/args/env） | 注入各平台 mcp.json |
-| **Rule** | 编码规则和约定文件 | 各平台 rules 目录 |
+- **LPM repository**: open-source tool code, documentation, and examples.
+- **Resource repository**: your private Git repository containing selected skills, rules, prompts, MCP configs, plugins, and `registry.yaml`.
 
-核心场景：
+This design lets LPM itself stay public while your personal resources remain private and portable.
 
-1. **发布** -- 把本地目录一键发布为独立的 GitHub 仓库
-2. **登记** -- 把别人的 skill / MCP 配置记入清单
-3. **迁移** -- 换电脑时 `lpm sync` 一条命令，所有资源自动落地
-4. **项目发现** -- `lpm link` 让项目中的 AI agent 自动识别已收集的 skill
-5. **搜索** -- `lpm search` 在本地清单和 GitHub 上搜索可用资源
+## Features
 
-所有资源清单存在 [`registry.yaml`](registry.yaml) 中，跟着 git 一起走。
+- Collect third-party open-source resources by reference, without copying upstream projects.
+- Upload local resources into your private resource repository.
+- Restore selected resources on a new machine with `lpm sync`.
+- Support multiple resource kinds: `skill`, `mcp`, `rule`, `prompt`, and `plugin`.
+- Keep MCP secrets out of Git by storing environment placeholders such as `${GITHUB_TOKEN}`.
+- Manage the private resource repository through `lpm resource ...` commands.
+- Provide both CLI and MCP server entry points.
 
----
+## Repository Model
 
-## 功能一览
+The public LPM repository should not contain personal resources. A separate private repository stores user data:
 
-| 能力 | 命令 / MCP 工具 | 说明 |
-|------|----------------|------|
-| 发布本地资源 | `lpm publish <path> [--kind]` | 校验 -> 建仓 -> push -> 写入清单 |
-| 修改可见性 | `lpm set-visibility <name> public\|private` | 公开或转私有 |
-| 登记第三方 skill | `lpm add <github-url>` | 记 URL + ref |
-| 登记 MCP 服务器 | `lpm add <url> --kind mcp --mcp-config '{...}'` | 记 MCP 配置 |
-| 搜索资源 | `lpm search [query] [--tag --remote]` | 本地过滤 + GitHub 搜索 |
-| 链接到项目 | `lpm link [--tag --only]` | 生成 skill 索引 + symlink |
-| 取消链接 | `lpm unlink` | 清理项目中的 LPM 链接 |
-| 同步全部 | `lpm sync` | 安装到所有启用平台 |
-| 按平台同步 | `lpm sync --platform cursor` | 只装到指定平台 |
-| 按类型同步 | `lpm sync --kind mcp` | 只同步 MCP 配置 |
-| 更新单个 | `lpm update <name>` | 强制同步一条 |
-| 查看状态 | `lpm status` | 对比本地/远端 commit |
-| 列出清单 | `lpm list [--kind]` | 按类型过滤 |
-| 健康检查 | `lpm check [--prune]` | 检查仓库可达性 |
-| 查看平台 | `lpm platforms` | 显示平台和路径 |
-| 移除 | `lpm remove <name> [--uninstall]` | 可选同时删本地文件 |
-| 环境检查 | `lpm doctor` | 检查 git / token / 平台 |
-| 安装自身 | `lpm install-self` | 复制到所有启用平台 |
+```text
+<your-resource-repo>/
+  README.md
+  registry.yaml
+  skills/
+  rules/
+  prompts/
+  mcp/
+  plugins/
+  .claude-plugin/
+    plugin.json
+```
 
----
+The resource repository name is user-defined. If none is provided, LPM uses `LingyeAIResources` as the default name and `~/<repo_name>` as the local path.
 
-## 安装
+## Installation
 
-前置要求：Python >= 3.10、`git` 已装好。
+Requirements:
+
+- Python 3.10+
+- Git
+- A GitHub token if you want LPM to create or push a private resource repository
+
+Install from a local checkout:
 
 ```bash
 git clone https://github.com/Ling-ye/LingyePluginMarketplace.git
@@ -57,35 +54,154 @@ cd LingyePluginMarketplace
 pip install -e .
 ```
 
-安装后有两个命令：
-
-- `lpm` -- 终端 CLI
-- `lpm-mcp` -- MCP server（Cursor / Claude Code 调用）
-
-> Windows 如果提示找不到命令，把 pip 提示的 `Scripts` 目录加到 `PATH`，或用 `python -m lpm.cli ...` 代替。
-
----
-
-## 首次配置
-
-### 三步搞定
+Generate the user config:
 
 ```bash
-# 1. 生成配置文件（默认只启用 Cursor）
 lpm init
-
-# 同时启用 Claude Code：
-lpm init --claude-code
 ```
 
-`init` 会在 `~/.config/lpm/config.toml` 生成一个带注释的模板：
+Configure a GitHub token either in `~/.config/lpm/config.toml` or through an environment variable:
+
+```bash
+# macOS / Linux
+export LPM_GITHUB_TOKEN=ghp_xxxxx
+
+# Windows PowerShell
+$env:LPM_GITHUB_TOKEN = "ghp_xxxxx"
+```
+
+## Quick Start
+
+Create or connect a private resource repository:
+
+```bash
+lpm resource init --name MyAIResources
+```
+
+Or bind an existing one:
+
+```bash
+lpm resource use https://github.com/<you>/MyAIResources.git
+```
+
+Collect an open-source skill by reference:
+
+```bash
+lpm collect https://github.com/juliusbrussee/caveman
+```
+
+Collect a resource located in a GitHub subdirectory:
+
+```bash
+lpm collect https://github.com/anthropics/skills/tree/main/pdf
+```
+
+Upload a local resource into your private repository:
+
+```bash
+lpm upload D:\MySkills\review-skill
+```
+
+If automatic type detection is not enough, specify the type:
+
+```bash
+lpm upload D:\Prompts\review.md --type prompt
+lpm upload D:\MCP\lark.yaml --type mcp
+```
+
+After `collect` or `upload`, LPM asks whether to push the private resource repository. You can also choose explicitly:
+
+```bash
+lpm collect https://github.com/juliusbrussee/caveman --push
+lpm upload D:\MySkills\review-skill --no-push
+```
+
+## Restore on a New Machine
+
+Install LPM and connect your private resource repository:
+
+```bash
+git clone https://github.com/Ling-ye/LingyePluginMarketplace.git
+cd LingyePluginMarketplace
+pip install -e .
+lpm init
+lpm resource use https://github.com/<you>/MyAIResources.git
+lpm resource pull
+lpm sync
+```
+
+By default, `lpm sync` restores skills only. Other resource kinds are opt-in because they can modify tool configuration or agent behavior:
+
+```bash
+lpm sync --include-mcp
+lpm sync --include-rule
+lpm sync --include-prompt
+lpm sync --include-plugin
+lpm sync --all-kinds
+```
+
+## Resource Commands
+
+```bash
+lpm resource init --name MyAIResources
+lpm resource use <path-or-git-url>
+lpm resource status
+lpm resource pull
+lpm resource push
+```
+
+`lpm resource init` creates or connects a private GitHub repository, generates the standard directory structure, creates a `README.md`, and writes the resource repository configuration.
+
+## Daily Commands
+
+```bash
+lpm collect <github-url-or-tree-url>
+lpm upload <local-path>
+lpm sync
+lpm list
+lpm status
+lpm check
+lpm remove <name>
+```
+
+Examples:
+
+```bash
+lpm collect https://github.com/juliusbrussee/caveman
+lpm collect https://github.com/anthropics/skills/tree/main/pdf
+lpm upload D:\MySkills\review-skill --type skill
+lpm upload D:\Prompts\review.md --type prompt
+lpm resource push
+```
+
+## Resource Type Detection
+
+LPM detects resource type automatically when possible:
+
+| Type | Detection |
+| --- | --- |
+| `skill` | Directory contains `SKILL.md` |
+| `plugin` | Directory contains `.claude-plugin/plugin.json` or `.codex-plugin/plugin.json` |
+| `mcp` | `mcp.yaml`, `mcp.yml`, or `mcp.json` |
+| `rule` | Markdown file or directory name contains `rule` / `rules` |
+| `prompt` | Markdown file that is not detected as a rule |
+
+Use `--type` when the type cannot be inferred.
+
+## Configuration
+
+LPM reads `~/.config/lpm/config.toml` by default. The important sections are:
 
 ```toml
 [github]
-token = ""                     # 填你的 GitHub PAT，或改用环境变量
-owner = ""                     # 填你的 GitHub 用户名（如 "Ling-ye"）
-repo_prefix = "cursor-skill-"
-default_private = false
+token = ""
+owner = ""
+
+[resources]
+repo_name = "LingyeAIResources"
+repo_url = ""
+local_path = ""
+branch = "main"
 
 [platforms.cursor]
 enabled = true
@@ -94,255 +210,17 @@ mcp_json = "~/.cursor/mcp.json"
 rules_dir = ""
 ```
 
-```bash
-# 2. 编辑 config.toml，填好 token 和 owner
-#    Windows: %USERPROFILE%\.config\lpm\config.toml
-#    macOS/Linux: ~/.config/lpm/config.toml
+`LPM_RESOURCE_HOME` can override the local resource repository path.
 
-# 3. 验证配置
-lpm doctor
-```
+## MCP Server
 
-### token 也可以用环境变量
+LPM also provides an MCP server:
 
 ```bash
-# Linux / macOS
-export LPM_GITHUB_TOKEN=ghp_xxxxxxxx
-
-# Windows PowerShell
-$env:LPM_GITHUB_TOKEN = "ghp_xxxxxxxx"
+lpm-mcp
 ```
 
-环境变量优先于 config.toml 中的 `token` 字段。两种方式选一种即可。
-
----
-
-## 多平台支持
-
-config.toml 中可以配置多个平台。内置预设包括 Cursor、Claude Code、Windsurf、Codex，也可自定义任意平台：
-
-```toml
-[platforms.cursor]
-enabled = true
-skills_dir = "~/.cursor/skills"
-mcp_json = "~/.cursor/mcp.json"
-
-[platforms.claude-code]
-enabled = true
-skills_dir = "~/.claude/skills"
-mcp_json = "~/.claude.json"
-
-# 自定义平台 -- 填好路径即可，无需改代码
-[platforms.my-tool]
-enabled = true
-skills_dir = "~/my-tool/skills"
-mcp_json = "~/my-tool/mcp.json"
-```
-
-`lpm sync` 安装到所有启用平台，也可以用 `--platform` 限定：
-
-```bash
-lpm sync --platform cursor
-lpm sync --platform claude-code
-```
-
----
-
-## 日常使用
-
-### 发布本地 skill
-
-```bash
-# 最短路径 -- 跳过询问，用默认可见性
-lpm publish D:\dev\my-skill -y
-
-# 明确指定公开/私有
-lpm publish D:\dev\my-skill --public
-lpm publish D:\dev\my-skill --private
-
-# 带元数据发布
-lpm publish D:\dev\my-skill --private -y \
-  --tag python --tag fastapi --category software-dev \
-  --version 1.0.0 --author Lingye --license MIT
-
-# 发布 MCP 服务器配置
-lpm publish D:\dev\my-mcp --kind mcp \
-  --mcp-config '{"command":"node","args":["server.js"]}'
-```
-
-实际示例（已验证）：
-
-```bash
-lpm publish D:\Code\yourself-skill-master-uploadtest --private -y
-# Published create-yourself (skill) -> https://github.com/Ling-ye/cursor-skill-create-yourself.git (private, created)
-```
-
-发布后 `registry.yaml` 自动更新，记得 commit 并 push：
-
-```bash
-cd <LPM仓库目录>
-git add registry.yaml
-git commit -m "add create-yourself skill"
-git push
-```
-
-### 登记第三方资源
-
-```bash
-# Skill
-lpm add https://github.com/someone/awesome-skill --tag python --category productivity
-
-# MCP 服务器
-lpm add https://github.com/someone/mcp-server --kind mcp \
-  --mcp-config '{"command":"npx","args":["-y","@someone/mcp-server"]}'
-
-# 仓库子目录
-lpm add https://github.com/anthropics/skills --subdir pdf --ref main
-```
-
-### 搜索资源
-
-```bash
-# 搜索本地注册表
-lpm search python
-lpm search --tag testing --kind skill
-lpm search --category software-dev
-
-# 同时搜索 GitHub 上包含 SKILL.md 的仓库
-lpm search fastapi --remote
-```
-
-### 项目中链接 skill（自动发现）
-
-```bash
-cd <你的项目目录>
-
-# 链接所有已安装的 skill 到当前项目
-lpm link
-
-# 只链接特定标签或类型
-lpm link --tag python
-lpm link --only my-skill
-
-# 清理链接
-lpm unlink
-```
-
-`lpm link` 会在项目中创建：
-- `.cursor/rules/lpm-skills.md` -- Cursor Rule 索引文件，AI agent 读取后自动知道有哪些 skill 可用
-- `.cursor/skills/<name>` -- 指向全局安装目录的 symlink
-
-这样 AI 在处理项目时会自动参考可用的 skill，遇到匹配场景时主动加载对应的 SKILL.md。
-
-### 换电脑一键迁移
-
-```bash
-git clone https://github.com/Ling-ye/LingyePluginMarketplace.git
-cd LingyePluginMarketplace
-pip install -e .
-lpm init              # 生成配置模板
-# 编辑 config.toml 填好 token 和 owner（或设环境变量）
-lpm install-self      # 安装 LPM 自身到各平台
-lpm sync              # 所有资源自动落地
-```
-
-### 日常维护
-
-```bash
-lpm list                        # 查看清单
-lpm list --kind mcp             # 只看 MCP
-lpm status                      # 查看上游更新
-lpm check                       # 检查仓库可达性
-lpm check --prune               # 自动移除不可达的条目
-lpm sync                        # 拉取所有更新
-lpm update my-skill             # 更新单个
-lpm remove my-skill             # 从清单移除
-lpm remove my-skill --uninstall # 连本地文件一起删
-lpm platforms                   # 查看平台配置
-lpm doctor                      # 排查问题
-```
-
----
-
-## 在其他项目中引入 LPM
-
-LPM 可以作为 Python 库、Git Submodule 或 Cursor Skill 三种方式引入到其他项目中，按需选用或组合使用。
-
-### 方式一：pip install from Git（作为 Python 包）
-
-无需 clone 源码，直接从 Git 安装为 Python 包，安装后 `import lpm` 可用，`lpm` 和 `lpm-mcp` 命令行工具也自动注册：
-
-```bash
-# 安装最新版
-pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git
-
-# 锁定到特定版本/分支/commit
-pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main
-pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git@v0.4.0
-```
-
-在目标项目的依赖中声明：
-
-```
-# requirements.txt
-lingyepluginmarketplace @ git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main
-```
-
-```toml
-# pyproject.toml
-dependencies = [
-    "lingyepluginmarketplace @ git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main",
-]
-```
-
-### 方式二：Git Submodule（嵌入源码）
-
-将 LPM 仓库作为子模块嵌入到目标项目中，代码可见、可编辑、版本锁定在特定 commit：
-
-```bash
-cd <你的项目>
-git submodule add https://github.com/Ling-ye/LingyePluginMarketplace.git libs/lpm
-git commit -m "add LPM as submodule"
-
-# 安装为可编辑包
-pip install -e libs/lpm
-```
-
-团队成员 clone 时需要加 `--recurse-submodules`：
-
-```bash
-git clone --recurse-submodules <你的项目仓库>
-```
-
-### 方式三：作为 Cursor Skill 引入
-
-LPM 自带 `SKILL.md`，可直接作为 Cursor Skill 被 AI Agent 自动发现和使用：
-
-```bash
-# 通过 lpm 自身登记并链接
-lpm add https://github.com/Ling-ye/LingyePluginMarketplace.git --tag lpm --category tool-management
-cd <你的项目>
-lpm link --only lpm
-```
-
-也可以手动在项目的 `.cursor/skills/` 下创建 symlink 指向 LPM 目录，Agent 会自动读取 SKILL.md。
-
-### 推荐组合
-
-| 需求 | 方案 | 效果 |
-|------|------|------|
-| 代码中调用 LPM API | 方式一（pip install） | `import lpm`，CLI 命令可用 |
-| 需要修改 LPM 源码 | 方式二（submodule） | 源码嵌入，可直接编辑 |
-| AI Agent 自动使用 LPM | 方式三（skill） | Agent 读取 SKILL.md 自动调用 |
-| 完整集成（推荐） | 方式一 + 方式三 | 既是库又是 skill |
-
----
-
-## MCP Server 注册
-
-### Cursor
-
-编辑 `~/.cursor/mcp.json`：
+For Cursor, add it to `~/.cursor/mcp.json`:
 
 ```json
 {
@@ -354,139 +232,35 @@ lpm link --only lpm
 }
 ```
 
-### Claude Code
+For Claude Code:
 
 ```bash
 claude mcp add lpm -- lpm-mcp
 ```
 
-重启 IDE 后 Agent 可用以下工具：
+## Security Notes
 
-| 工具 | 作用 |
-|------|------|
-| `list_items(kind?)` / `list_skills()` | 列出资源 |
-| `list_platforms()` | 查看平台配置 |
-| `publish_local_skill(path, kind?, private?, tags?, category?)` | 发布 |
-| `set_skill_visibility(name, private)` | 修改可见性 |
-| `add_external_skill(github_url, kind?, mcp_config?, tags?)` | 登记 |
-| `add_mcp_server(name, github_url, command?, url?)` | 登记 MCP 服务器 |
-| `check_items(kind?, prune?)` | 检查仓库可达性 |
-| `remove_skill(name, uninstall?)` | 移除 |
-| `sync_skills(only?, kind?, platform?)` | 同步 |
-| `update_skill(name)` | 更新单个 |
-| `skill_status(kind?)` | 查看更新状态 |
+- Keep your resource repository private if it contains personal resources or metadata.
+- Do not commit real tokens or secrets.
+- MCP `env` values are stored as placeholders such as `${API_KEY}`.
+- GitHub authentication uses `GIT_ASKPASS` so tokens are not written to `.git/config`.
+- The public LPM repository ignores `registry.yaml`, `skills/`, `rules/`, `prompts/`, `mcp/`, `plugins/`, and `.claude-plugin/`.
 
-对 Agent 说：
+## Development
 
-> "把桌面上的 my-pdf-skill 发布到 GitHub，公开仓库"
-> "添加 https://github.com/anthropics/skills 的 pdf 子目录"
-> "添加一个 GitHub MCP 服务器"
-> "同步所有资源"
-> "只把 skill 同步到 Claude Code"
-
----
-
-## registry.yaml 格式
-
-清单是单一事实源，v3 格式（v1/v2 自动迁移）。示例：
-
-```yaml
-version: 3
-items:
-  - name: create-yourself
-    kind: skill
-    repo: https://github.com/Ling-ye/cursor-skill-create-yourself.git
-    source: owned
-    subdir: ''
-    ref: main
-    description: "Why distill others when you can distill yourself? ..."
-    tags: [python, ai]
-    category: productivity
-    author: Lingye
-    private: true
-
-  - name: github-mcp
-    kind: mcp
-    repo: https://github.com/someone/mcp-server-github
-    source: external
-    ref: main
-    mcp_config:
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-github"]
-      env:
-        GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
-    tags: [github, git]
-
-  - name: anthropic-pdf
-    kind: skill
-    repo: https://github.com/anthropics/skills
-    source: external
-    subdir: pdf
-    ref: main
-```
-
-新增的元数据字段（均可选，空值不写入文件）：
-
-| 字段 | 说明 | 示例 |
-|------|------|------|
-| `version` | 语义化版本 | `"1.2.0"` |
-| `author` | 作者 | `"Lingye"` |
-| `tags` | 标签列表 | `[python, testing]` |
-| `category` | 分类 | `"software-dev"` |
-| `license` | SPDX 许可证 | `"MIT"` |
-| `private` | 缓存的 GitHub 可见性 | `true` |
-
----
-
-## 仓库结构
-
-```
-LingyePluginMarketplace/
-├── registry.yaml                 # 资源清单（真实数据）
-├── pyproject.toml
-├── examples/config.example.toml
-├── lpm/                          # 主包
-│   ├── cli.py                    # lpm CLI
-│   ├── mcp_server.py             # lpm-mcp MCP server
-│   ├── publisher.py              # 本地资源 -> GitHub 仓库
-│   ├── installer.py              # registry -> 各平台目录
-│   ├── linker.py                 # 项目级 skill 链接和自动发现
-│   ├── mcp_installer.py          # 读写 mcp.json
-│   ├── platforms.py              # 多平台抽象（可扩展）
-│   ├── registry.py               # registry.yaml 读写 + v1->v2->v3 迁移
-│   ├── validator.py              # 资源校验
-│   ├── github_client.py          # PyGithub 封装
-│   ├── git_ops.py                # git 子进程封装（GIT_ASKPASS 安全认证）
-│   ├── config.py                 # 配置和 token 加载
-│   ├── models.py                 # Pydantic 数据模型（含元数据）
-│   └── __init__.py
-├── tests/                        # pytest 测试
-└── .github/workflows/ci.yml      # CI
-```
-
----
-
-## 安全说明
-
-- **token 永远不入库** -- `registry.yaml` 只存 HTTPS URL；git 操作通过 `GIT_ASKPASS` 传递 token，不写入 `.git/config`
-- **配置文件权限** -- `lpm init` 写完后尝试 `chmod 600`
-- **可脱离配置文件** -- 只设 `LPM_GITHUB_TOKEN` 环境变量也能用
-- **不要在聊天中发送 token** -- 如果不慎暴露，立即到 GitHub Settings 撤销并重新生成
-
----
-
-## 开发
+Install in editable mode:
 
 ```bash
-pip install -e ".[dev]"
-ruff check lpm tests
-pytest -q
+pip install -e .
 ```
 
-CI 在 Linux + Windows x Python 3.10 / 3.11 / 3.12 上运行。
+Run static checks:
 
----
+```bash
+ruff check lpm
+python -m compileall -q lpm
+```
 
-## 许可证
+## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT. See [LICENSE](LICENSE).

@@ -42,7 +42,7 @@ class PlatformProfile:
         if kind == "skill":
             base = self.skills_path()
             return base / item_name if base else None
-        if kind == "rule":
+        if kind in {"rule", "prompt"}:
             base = self.rules_path()
             return base / item_name if base else None
         if kind == "mcp":

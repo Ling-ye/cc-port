@@ -22,6 +22,14 @@ default_private = false
 # Fallback directory used when no platform-specific skills_dir is configured.
 target = "~/.cursor/skills"
 
+[resources]
+# Private data repository for your selected resources.  You can choose any
+# repo name; if local_path is empty, LPM uses ~/<repo_name>.
+repo_name = "LingyeAIResources"
+repo_url = ""
+local_path = ""
+branch = "main"
+
 # ---- Platform configuration ----
 # Enable one or more AI coding platforms. LPM installs skills, MCP
 # server configs, and rules into each enabled platform's directories.

@@ -1,0 +1,20 @@
+version: 4
+items:
+  - name: example-external-skill
+    kind: skill
+    source: external
+    repo: https://github.com/example/skills
+    subdir: skills/example
+    ref: main
+    description: Example third-party skill stored by reference only.
+    tags:
+      - example
+
+  - name: example-local-skill
+    kind: skill
+    source: local
+    path: skills/productivity/example-local-skill
+    ref: ''
+    description: Example local skill stored inside your private resource repo.
+    tags:
+      - local
