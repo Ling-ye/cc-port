@@ -82,7 +82,8 @@ def detect_local_resource_type(path: Path, explicit_type: str | None = None) -> 
             return "plugin"
         if any((p / name).is_file() for name in ("mcp.yaml", "mcp.yml", "mcp.json")):
             return "mcp"
-        if "rule" in p.name.lower() and list(p.glob("*.md")):
+        rule_files = list(p.glob("*.md")) + list(p.glob("*.mdc"))
+        if "rule" in p.name.lower() and rule_files:
             return "rule"
         if list(p.glob("*.md")):
             return "prompt"
@@ -90,7 +91,14 @@ def detect_local_resource_type(path: Path, explicit_type: str | None = None) -> 
         lower = p.name.lower()
         if lower in {"mcp.yaml", "mcp.yml", "mcp.json"}:
             return "mcp"
+        if lower in {"agents.md", "claude.md", ".cursorrules"} or p.suffix.lower() == ".mdc":
+            return "rule"
         if p.suffix.lower() == ".md":
+            parent_names = {parent.name.lower() for parent in p.parents}
+            if "rules" in parent_names:
+                return "rule"
+            if {"commands", "prompts"} & parent_names:
+                return "prompt"
             return "rule" if "rule" in lower else "prompt"
 
     raise ResourceDetectionError(

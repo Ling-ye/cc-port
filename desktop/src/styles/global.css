@@ -405,6 +405,13 @@ button {
   font-size: 13px;
 }
 
+.field-label {
+  display: block;
+  color: #46525c;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
 .stack-form input,
 .stack-form select {
   width: 100%;
@@ -440,6 +447,105 @@ button {
 
 .checkline input {
   width: auto;
+}
+
+.discovery-panel {
+  max-width: 1040px;
+}
+
+.discovery-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.discovery-actions span {
+  color: #65727c;
+  font-size: 13px;
+}
+
+.discovery-list {
+  display: grid;
+  gap: 8px;
+}
+
+.discovery-row {
+  display: grid;
+  grid-template-columns: 24px 70px minmax(0, 1fr) 38px;
+  gap: 10px;
+  align-items: start;
+  border: 1px solid #dce4e9;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfd;
+}
+
+.discovery-row.conflict {
+  border-color: #e2bd72;
+  background: #fffaf0;
+}
+
+.discovery-row > input[type="checkbox"] {
+  width: 16px;
+  margin-top: 5px;
+}
+
+.discovery-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.discovery-main input {
+  min-width: 0;
+  border: 1px solid #cbd5dc;
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: #ffffff;
+  color: #202a32;
+}
+
+.discovery-main small {
+  color: #6c7882;
+  overflow-wrap: anywhere;
+}
+
+.discovery-main p {
+  margin: 0;
+  color: #52606b;
+  font-size: 13px;
+}
+
+.discovery-warning {
+  color: #9a5b00 !important;
+}
+
+.preview-panel {
+  border: 1px solid #dce4e9;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafb;
+}
+
+.preview-panel strong {
+  display: block;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.preview-panel pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #10171b;
+  color: #e7edf0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .check-row {
@@ -667,8 +773,11 @@ button {
 
   .topbar p,
   .panel-head p,
+  .field-label,
   .description-list dt,
   .resource-row small,
+  .discovery-actions span,
+  .discovery-main small,
   .metric span,
   .modal-list span {
     color: #9cafb8;
@@ -700,5 +809,22 @@ button {
   .tag-row span,
   .kind-bars div div {
     background: #223239;
+  }
+
+  .discovery-row,
+  .preview-panel,
+  .discovery-main input {
+    background: #172228;
+    border-color: #2b3d46;
+    color: #e7edf0;
+  }
+
+  .discovery-row.conflict {
+    background: #2d2617;
+    border-color: #6f5521;
+  }
+
+  .discovery-main p {
+    color: #b7c5cb;
   }
 }

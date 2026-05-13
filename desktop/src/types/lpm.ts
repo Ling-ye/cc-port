@@ -1,4 +1,5 @@
 export type ResourceKind = "skill" | "mcp" | "rule" | "prompt" | "plugin";
+export type DiscoveryScope = "global" | "directory";
 
 export interface RegistryItem {
   name: string;
@@ -130,6 +131,47 @@ export interface DoctorCheck {
   detail: string;
   enabled?: boolean;
   profile?: PlatformProfile;
+}
+
+export interface DiscoveredResource {
+  id: string;
+  tool: string;
+  source: DiscoveryScope;
+  kind: ResourceKind;
+  name_hint: string;
+  path: string;
+  description: string;
+  size: number;
+  mtime: number;
+  status: "ready" | "warning" | "conflict";
+  warnings: string[];
+}
+
+export interface DiscoveryReadResult {
+  id: string;
+  path: string;
+  text: string;
+  truncated: boolean;
+  warning: string;
+}
+
+export interface DiscoveryUploadItemResult {
+  id: string;
+  name: string;
+  kind: ResourceKind;
+  path: string;
+  ok: boolean;
+  error?: string;
+  entry?: RegistryItem;
+  source_path?: string;
+  stored_path?: string;
+}
+
+export interface DiscoveryUploadResult {
+  results: DiscoveryUploadItemResult[];
+  imported: number;
+  failed: number;
+  push?: unknown;
 }
 
 export interface LpmResponse<T> {

@@ -65,7 +65,10 @@ def import_local_resource(
 
     validate_item(src, kind, mcp_config=mcp_config)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if src.is_dir():
+    if src.is_file() and kind in {"prompt", "rule"}:
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest / src.name)
+    elif src.is_dir():
         shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git", "__pycache__"))
     else:
         shutil.copy2(src, dest)

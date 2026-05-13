@@ -46,6 +46,11 @@ from ..services import publisher
 from ..services.installer import check_all, status_all, sync_all, uninstall_one
 from ..services.local_resources import import_local_resource
 from ..services.publisher import remove_skill
+from ..services.resource_discovery import (
+    discover_resources,
+    read_discovered_resource,
+    resolve_discovered_resources,
+)
 from ..services.resource_repo import (
     ensure_structure,
     init_resource_repo,
@@ -195,6 +200,80 @@ def _upload(payload: JsonDict) -> JsonDict:
     )
     push_result = _maybe_push(load_config(), payload)
     return {"entry": result.entry, "source_path": result.source_path, "stored_path": result.stored_path, "push": push_result}
+
+
+def _discover_resources(payload: JsonDict) -> JsonDict:
+    scope = _optional_str(payload.get("scope")) or "global"
+    root_path = _optional_str(payload.get("root_path"))
+    items = discover_resources(scope=scope, root_path=root_path)
+    return {"scope": scope, "root_path": root_path or "", "items": items}
+
+
+def _read_discovered_resource(payload: JsonDict) -> Any:
+    return read_discovered_resource(
+        _required_str(payload, "id"),
+        scope=_optional_str(payload.get("scope")) or "global",
+        root_path=_optional_str(payload.get("root_path")),
+    )
+
+
+def _upload_discovered_resources(payload: JsonDict) -> JsonDict:
+    selections = _discovery_selections(payload.get("items"))
+    if not selections:
+        raise ValueError("Missing required field: items")
+
+    candidates = resolve_discovered_resources(
+        [item["id"] for item in selections],
+        scope=_optional_str(payload.get("scope")) or "global",
+        root_path=_optional_str(payload.get("root_path")),
+    )
+    overwrite = bool(payload.get("overwrite", False))
+    results: list[JsonDict] = []
+    imported = 0
+
+    for selection, candidate in zip(selections, candidates, strict=True):
+        name = _optional_str(selection.get("name")) or candidate.name_hint
+        try:
+            result = import_local_resource(
+                candidate.path,
+                kind=candidate.kind,
+                name=name,
+                overwrite=overwrite,
+            )
+        except Exception as exc:  # noqa: BLE001 - batch uploads report per-item failures
+            results.append(
+                {
+                    "id": candidate.id,
+                    "name": name,
+                    "kind": candidate.kind,
+                    "path": candidate.path,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        imported += 1
+        results.append(
+            {
+                "id": candidate.id,
+                "name": result.entry.name,
+                "kind": result.entry.kind,
+                "path": candidate.path,
+                "ok": True,
+                "entry": result.entry,
+                "source_path": result.source_path,
+                "stored_path": result.stored_path,
+            }
+        )
+
+    push_result = _maybe_push(load_config(), payload) if imported else None
+    return {
+        "results": results,
+        "imported": imported,
+        "failed": len(results) - imported,
+        "push": push_result,
+    }
 
 
 def _sync(payload: JsonDict) -> JsonDict:
@@ -713,6 +792,21 @@ def _str_list(value: Any) -> list[str]:
     raise ValueError("Expected a string list.")
 
 
+def _discovery_selections(value: Any) -> list[JsonDict]:
+    if not isinstance(value, list):
+        return []
+    out: list[JsonDict] = []
+    for item in value:
+        if isinstance(item, str):
+            if item.strip():
+                out.append({"id": item.strip()})
+        elif isinstance(item, dict):
+            resource_id = str(item.get("id") or "").strip()
+            if resource_id:
+                out.append({"id": resource_id, "name": _optional_str(item.get("name")) or ""})
+    return out
+
+
 ACTIONS: dict[str, Handler] = {
     "summary": _summary,
     "list_items": _list_items,
@@ -721,6 +815,9 @@ ACTIONS: dict[str, Handler] = {
     "doctor": _doctor,
     "collect": _collect,
     "upload": _upload,
+    "discover_resources": _discover_resources,
+    "read_discovered_resource": _read_discovered_resource,
+    "upload_discovered_resources": _upload_discovered_resources,
     "sync": _sync,
     "check": _check,
     "remove": _remove,

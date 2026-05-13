@@ -107,14 +107,29 @@ def validate_mcp_path(path: Path) -> None:
     validate_mcp_config(data)
 
 
-def validate_rule_dir(rule_dir: Path) -> None:
-    """Validate that a rule directory contains at least one .md file."""
-    rule_dir = rule_dir.expanduser().resolve()
-    if not rule_dir.is_dir():
-        raise SkillValidationError(f"{rule_dir} is not a directory.")
-    md_files = list(rule_dir.glob("*.md"))
-    if not md_files:
-        raise SkillValidationError(f"No .md files found in {rule_dir}.")
+RULE_FILE_NAMES = {"agents.md", "claude.md", ".cursorrules"}
+RULE_FILE_SUFFIXES = {".md", ".mdc"}
+
+
+def validate_rule_path(rule_path: Path) -> None:
+    """Validate that a rule is a supported text file or directory."""
+    rule_path = rule_path.expanduser().resolve()
+    if rule_path.is_file():
+        lower = rule_path.name.lower()
+        if lower in RULE_FILE_NAMES or rule_path.suffix.lower() in RULE_FILE_SUFFIXES:
+            return
+        raise SkillValidationError(f"{rule_path} must be a .md/.mdc rule file.")
+
+    if not rule_path.is_dir():
+        raise SkillValidationError(f"{rule_path} is not a directory.")
+    rule_files = [
+        p
+        for p in rule_path.iterdir()
+        if p.is_file()
+        and (p.name.lower() in RULE_FILE_NAMES or p.suffix.lower() in RULE_FILE_SUFFIXES)
+    ]
+    if not rule_files:
+        raise SkillValidationError(f"No rule files found in {rule_path}.")
 
 
 def validate_prompt_path(prompt_path: Path) -> None:
@@ -124,7 +139,11 @@ def validate_prompt_path(prompt_path: Path) -> None:
         if prompt_path.suffix.lower() != ".md":
             raise SkillValidationError(f"{prompt_path} must be a .md prompt file.")
         return
-    validate_rule_dir(prompt_path)
+    if not prompt_path.is_dir():
+        raise SkillValidationError(f"{prompt_path} is not a directory.")
+    md_files = list(prompt_path.glob("*.md"))
+    if not md_files:
+        raise SkillValidationError(f"No .md prompt files found in {prompt_path}.")
 
 
 def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None = None) -> None:
@@ -137,7 +156,7 @@ def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None 
         else:
             validate_mcp_path(path)
     elif kind == "rule":
-        validate_rule_dir(path)
+        validate_rule_path(path)
     elif kind == "prompt":
         validate_prompt_path(path)
     elif kind == "plugin":
