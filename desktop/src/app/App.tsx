@@ -9,6 +9,7 @@ import { DashboardView } from "@/features/dashboard/DashboardView";
 import { HealthView } from "@/features/health/HealthView";
 import { PlatformsView } from "@/features/platforms/PlatformsView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
+import { SettingsView } from "@/features/settings/SettingsView";
 import { SyncView } from "@/features/sync/SyncView";
 import type { PlatformProfile, RegistryItem, Summary } from "@/types/lpm";
 
@@ -108,6 +109,13 @@ export default function App() {
         ) : null}
         {view === "health" ? <HealthView onError={setError} /> : null}
         {view === "platforms" ? <PlatformsView platforms={platforms} /> : null}
+        {view === "settings" ? (
+          <SettingsView
+            onDone={setMessage}
+            onError={setError}
+            onChanged={refresh}
+          />
+        ) : null}
       </main>
     </div>
   );
@@ -131,4 +139,3 @@ function Topbar({ summary, busy, onRefresh }: { summary: Summary | null; busy: b
     </header>
   );
 }
-

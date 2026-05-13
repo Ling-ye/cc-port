@@ -75,7 +75,7 @@ def default_config_path() -> Path:
     return Path.home() / DEFAULT_CONFIG_RELATIVE
 
 
-def load_config(path: Path | None = None) -> Config:
+def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
     cfg_path = path or default_config_path()
     data: dict = {}
     if cfg_path.is_file():
@@ -111,15 +111,25 @@ def load_config(path: Path | None = None) -> Config:
         source_path=cfg_path if cfg_path.is_file() else None,
     )
 
-    env_token = os.environ.get(CONFIG_ENV_VAR, "").strip()
-    if env_token:
-        cfg.github.token = env_token
+    if apply_env:
+        env_token = os.environ.get(CONFIG_ENV_VAR, "").strip()
+        if env_token:
+            cfg.github.token = env_token
 
-    env_resource_home = os.environ.get(RESOURCE_HOME_ENV_VAR, "").strip()
-    if env_resource_home:
-        cfg.resources.local_path = env_resource_home
+        env_resource_home = os.environ.get(RESOURCE_HOME_ENV_VAR, "").strip()
+        if env_resource_home:
+            cfg.resources.local_path = env_resource_home
 
     return cfg
+
+
+def load_raw_config(path: Path | None = None) -> Config:
+    """Load config.toml without environment overrides.
+
+    Desktop settings editing needs the persisted config, while normal runtime
+    calls still use env overrides such as ``LPM_GITHUB_TOKEN``.
+    """
+    return load_config(path, apply_env=False)
 
 
 def write_config(cfg: Config, path: Path | None = None) -> Path:

@@ -3,6 +3,12 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[derive(Debug, Deserialize)]
 struct LpmActionRequest {
     action: String,
@@ -23,8 +29,9 @@ fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, String> {
     let output = run_lpm_ui_api(&request.action, &payload)?;
     let raw = String::from_utf8_lossy(&output).trim().to_string();
 
-    let parsed: Value = serde_json::from_str(&raw)
-        .map_err(|err| format!("lpm-desktop-api returned invalid JSON: {err}. Raw output: {raw}"))?;
+    let parsed: Value = serde_json::from_str(&raw).map_err(|err| {
+        format!("lpm-desktop-api returned invalid JSON: {err}. Raw output: {raw}")
+    })?;
 
     Ok(LpmActionResponse {
         ok: parsed.get("ok").and_then(Value::as_bool).unwrap_or(false),
@@ -53,6 +60,8 @@ impl Candidate {
     fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
     }
 }
@@ -71,7 +80,10 @@ fn build_candidates(action: &str, payload: &str) -> Vec<Candidate> {
         }
     }
 
-    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from))
+    {
         // Tauri renames `bundle.externalBin` files to plain `lpm-desktop-api(.exe)` in
         // the final installer / release output, but keeps the
         // `lpm-desktop-api-{target_triple}{.exe}` naming for `cargo run` / `tauri dev`.

@@ -436,6 +436,23 @@ button {
   color: #202a32;
 }
 
+.stack-form input[readonly] {
+  color: #52606b;
+  background: #f6f8fa;
+}
+
+.two-column {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.three-column {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
 .checkline {
   display: flex !important;
   align-items: center;
@@ -468,6 +485,133 @@ button {
   display: block;
   color: #6c7882;
   margin-top: 4px;
+}
+
+.settings-view {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-panel {
+  max-width: 1120px;
+}
+
+.settings-actions,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-actions button,
+.modal-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.inline-warning {
+  margin-top: 14px;
+  border: 1px solid #e4c37d;
+  color: #8a5a11;
+  background: #fff8e8;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.settings-sections {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.settings-section {
+  border-top: 1px solid #edf1f4;
+  padding-top: 16px;
+}
+
+.settings-section h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.platform-editor-list {
+  display: grid;
+  gap: 12px;
+}
+
+.platform-editor {
+  border: 1px solid #e0e7ec;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.platform-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(7 14 18 / 54%);
+  display: grid;
+  place-items: center;
+  z-index: 30;
+}
+
+.modal {
+  width: min(560px, calc(100vw - 48px));
+  background: #ffffff;
+  color: #202a32;
+  border: 1px solid #dce4e9;
+  border-radius: 8px;
+  padding: 18px;
+  box-shadow: 0 20px 60px rgb(7 14 18 / 22%);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modal-head svg {
+  color: #9a5b00;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.modal-list {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.modal-list div {
+  border-top: 1px solid #edf1f4;
+  padding-top: 10px;
+}
+
+.modal-list strong,
+.modal-list span {
+  display: block;
+}
+
+.modal-list span {
+  margin-top: 4px;
+  color: #65727c;
+  overflow-wrap: anywhere;
 }
 
 .kind-bars {
@@ -528,21 +672,40 @@ button {
   .metric,
   .status,
   .icon-button,
-  .quick-actions button,
-  .mode-tabs button,
-  .stack-form input,
-  .stack-form select {
+    .quick-actions button,
+    .mode-tabs button,
+    .stack-form input,
+    .stack-form select,
+    .platform-editor,
+    .modal {
     background: #172228;
     border-color: #2b3d46;
     color: #e7edf0;
+  }
+
+  .stack-form input[readonly] {
+    background: #111b21;
+    color: #a7b6be;
   }
 
   .topbar p,
   .panel-head p,
   .description-list dt,
   .resource-row small,
-  .metric span {
+  .metric span,
+  .modal-list span {
     color: #9cafb8;
+  }
+
+  .inline-warning {
+    background: #2d2617;
+    border-color: #6f5521;
+    color: #e2bd72;
+  }
+
+  .settings-section,
+  .modal-list div {
+    border-color: #253842;
   }
 
   .resource-row:hover,

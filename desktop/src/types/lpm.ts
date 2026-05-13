@@ -48,6 +48,58 @@ export interface PlatformProfile {
   rules_dir: string;
 }
 
+export type TokenSource = "env" | "config" | "none";
+
+export interface EditableConfig {
+  github: {
+    owner: string;
+    repo_prefix: string;
+    default_private: boolean;
+  };
+  install: {
+    target: string;
+  };
+  resources: {
+    repo_name: string;
+    repo_url: string;
+    local_path: string;
+    branch: string;
+  };
+  platforms: PlatformProfile[];
+}
+
+export interface ConfigSettings {
+  path: string;
+  exists: boolean;
+  token_source: TokenSource;
+  token_preview: string;
+  config_token_preview: string;
+  env_token_active: boolean;
+  config: EditableConfig;
+}
+
+export interface ConfigCheckItem {
+  id: string;
+  label: string;
+  detail: string;
+}
+
+export interface ConfigCheckResult {
+  missing: ConfigCheckItem[];
+  warnings: ConfigCheckItem[];
+  can_prepare: boolean;
+  local: {
+    path: string;
+    exists: boolean;
+    is_git_repo: boolean;
+  };
+  remote: {
+    checked: boolean;
+    exists: boolean;
+    repo: string;
+  };
+}
+
 export interface Summary {
   version: string;
   registry_path: string;

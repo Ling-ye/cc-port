@@ -5,9 +5,10 @@ import {
   HeartPulse,
   PackagePlus,
   Settings,
+  SlidersHorizontal,
 } from "lucide-react";
 
-export type View = "dashboard" | "resources" | "add" | "sync" | "health" | "platforms";
+export type View = "dashboard" | "resources" | "add" | "sync" | "health" | "platforms" | "settings";
 
 export const navItems = [
   { id: "dashboard", label: "Overview", icon: Activity },
@@ -16,5 +17,5 @@ export const navItems = [
   { id: "sync", label: "Sync", icon: FolderSync },
   { id: "health", label: "Health", icon: HeartPulse },
   { id: "platforms", label: "Platforms", icon: Settings },
+  { id: "settings", label: "Settings", icon: SlidersHorizontal },
 ] satisfies Array<{ id: View; label: string; icon: typeof Activity }>;
-
