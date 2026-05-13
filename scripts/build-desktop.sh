@@ -65,6 +65,11 @@ if [[ -f "${RELEASE_DIR}/lpm-desktop" ]]; then
 elif [[ -f "${RELEASE_DIR}/lpm-desktop.exe" ]]; then
     cp -f "${RELEASE_DIR}/lpm-desktop.exe" "${ARTIFACT_DIR}/"
 fi
+if [[ -f "${RELEASE_DIR}/lpm-desktop-api" ]]; then
+    cp -f "${RELEASE_DIR}/lpm-desktop-api" "${ARTIFACT_DIR}/"
+elif [[ -f "${RELEASE_DIR}/lpm-desktop-api.exe" ]]; then
+    cp -f "${RELEASE_DIR}/lpm-desktop-api.exe" "${ARTIFACT_DIR}/"
+fi
 if [[ -d "${RELEASE_DIR}/bundle" ]]; then
     cp -R "${RELEASE_DIR}/bundle/." "${ARTIFACT_DIR}/"
     find "${RELEASE_DIR}/bundle" -type f -print | sed 's/^/  Bundle     : /'

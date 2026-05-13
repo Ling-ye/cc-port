@@ -104,6 +104,10 @@ $exePath = Join-Path $releaseDir "lpm-desktop.exe"
 if (Test-Path $exePath) {
     Copy-Item -LiteralPath $exePath -Destination $artifactDir -Force
 }
+$sidecarPath = Join-Path $releaseDir "lpm-desktop-api.exe"
+if (Test-Path $sidecarPath) {
+    Copy-Item -LiteralPath $sidecarPath -Destination $artifactDir -Force
+}
 if (Test-Path $bundleDir) {
     Copy-Item -Path (Join-Path $bundleDir "*") -Destination $artifactDir -Recurse -Force
     Get-ChildItem $bundleDir -Recurse -File | ForEach-Object {
