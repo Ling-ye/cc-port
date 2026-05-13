@@ -7,8 +7,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "tauri": "tauri",
-    "sidecar": "python ../packaging/sidecar/build_sidecar.py",
-    "icons": "python ../packaging/icons/generate_icons.py",
+    "sidecar": "python ../tools/packaging/sidecar/build_sidecar.py",
+    "icons": "python ../tools/packaging/icons/generate_icons.py",
     "app:dev": "npm run sidecar && npm run tauri dev",
     "app:build": "npm run sidecar && npm run tauri build"
   },

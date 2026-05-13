@@ -4,7 +4,7 @@
     Run the LPM Desktop app in development mode.
 
 .DESCRIPTION
-    Builds the lpm-ui-api sidecar binary first (so the bundled app works
+    Builds the lpm-desktop-api sidecar binary first (so the bundled app works
     end-to-end), then launches `npm run tauri dev` which starts Vite,
     compiles the Tauri shell with Cargo, and opens the desktop window.
 
@@ -42,9 +42,9 @@ if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue)) {
 }
 
 if (-not $SkipSidecar) {
-    Write-Host "==> Building lpm-ui-api sidecar" -ForegroundColor Cyan
+    Write-Host "==> Building lpm-desktop-api sidecar" -ForegroundColor Cyan
     Invoke-Step "sidecar build" {
-        & python "$RepoRoot/packaging/sidecar/build_sidecar.py"
+        & python "$RepoRoot/tools/packaging/sidecar/build_sidecar.py"
     }
 }
 

@@ -24,7 +24,7 @@ fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, String> {
     let raw = String::from_utf8_lossy(&output).trim().to_string();
 
     let parsed: Value = serde_json::from_str(&raw)
-        .map_err(|err| format!("lpm-ui-api returned invalid JSON: {err}. Raw output: {raw}"))?;
+        .map_err(|err| format!("lpm-desktop-api returned invalid JSON: {err}. Raw output: {raw}"))?;
 
     Ok(LpmActionResponse {
         ok: parsed.get("ok").and_then(Value::as_bool).unwrap_or(false),
@@ -34,7 +34,7 @@ fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, String> {
     })
 }
 
-/// One way to invoke lpm-ui-api.
+/// One way to invoke lpm-desktop-api.
 struct Candidate {
     label: String,
     program: String,
@@ -60,17 +60,11 @@ impl Candidate {
 fn build_candidates(action: &str, payload: &str) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     let api_args = vec![action.to_string(), payload.to_string()];
-    let module_args = vec![
-        "-m".to_string(),
-        "lpm.ui_api".to_string(),
-        action.to_string(),
-        payload.to_string(),
-    ];
 
-    if let Ok(bin) = std::env::var("LPM_UI_API_BIN") {
+    if let Ok(bin) = std::env::var("LPM_DESKTOP_API_BIN") {
         if !bin.trim().is_empty() {
             out.push(Candidate::new(
-                "$LPM_UI_API_BIN",
+                "$LPM_DESKTOP_API_BIN",
                 bin.trim(),
                 api_args.clone(),
             ));
@@ -78,17 +72,17 @@ fn build_candidates(action: &str, payload: &str) -> Vec<Candidate> {
     }
 
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
-        // Tauri renames `bundle.externalBin` files to plain `lpm-ui-api(.exe)` in
+        // Tauri renames `bundle.externalBin` files to plain `lpm-desktop-api(.exe)` in
         // the final installer / release output, but keeps the
-        // `lpm-ui-api-{target_triple}{.exe}` naming for `cargo run` / `tauri dev`.
+        // `lpm-desktop-api-{target_triple}{.exe}` naming for `cargo run` / `tauri dev`.
         // Try both, plus a few common siblings (Resources/, _up_/, ...) that
         // various Tauri bundles use on different platforms.
         let triple = env!("TAURI_ENV_TARGET_TRIPLE");
         let names = [
-            "lpm-ui-api.exe".to_string(),
-            "lpm-ui-api".to_string(),
-            format!("lpm-ui-api-{triple}.exe"),
-            format!("lpm-ui-api-{triple}"),
+            "lpm-desktop-api.exe".to_string(),
+            "lpm-desktop-api".to_string(),
+            format!("lpm-desktop-api-{triple}.exe"),
+            format!("lpm-desktop-api-{triple}"),
         ];
         let search_dirs = [
             exe_dir.clone(),
@@ -108,39 +102,6 @@ fn build_candidates(action: &str, payload: &str) -> Vec<Candidate> {
                 }
             }
         }
-    }
-
-    out.push(Candidate::new(
-        "PATH: lpm-ui-api",
-        "lpm-ui-api",
-        api_args.clone(),
-    ));
-
-    if let Ok(py) = std::env::var("LPM_PYTHON") {
-        if !py.trim().is_empty() {
-            out.push(Candidate::new(
-                "$LPM_PYTHON -m lpm.ui_api",
-                py.trim(),
-                module_args.clone(),
-            ));
-        }
-    }
-
-    out.push(Candidate::new(
-        "PATH: python -m lpm.ui_api",
-        "python",
-        module_args.clone(),
-    ));
-    out.push(Candidate::new(
-        "PATH: python3 -m lpm.ui_api",
-        "python3",
-        module_args.clone(),
-    ));
-
-    if cfg!(windows) {
-        let mut py_args = vec!["-3".to_string()];
-        py_args.extend(module_args.clone());
-        out.push(Candidate::new("py -3 -m lpm.ui_api", "py", py_args));
     }
 
     out
@@ -175,7 +136,7 @@ fn run_lpm_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
         errors.join("\n")
     };
     Err(format!(
-        "Unable to run lpm-ui-api. Tried {} candidates:\n{}\n\nHints:\n  - Set LPM_UI_API_BIN to the absolute path of lpm-ui-api(.exe).\n  - Or set LPM_PYTHON to a Python that has the `lpm` package installed.\n  - Or place lpm-ui-api(.exe) next to the desktop executable.",
+        "Unable to run lpm-desktop-api. Tried {} candidates:\n{}\n\nHints:\n  - Run the desktop build scripts so Tauri can bundle the sidecar.\n  - Or set LPM_DESKTOP_API_BIN to the absolute path of lpm-desktop-api(.exe).",
         candidates.len(),
         detail
     ))

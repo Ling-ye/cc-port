@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the LPM Desktop app in development mode.
 #
-# Builds the lpm-ui-api sidecar binary first, then launches `npm run tauri dev`.
+# Builds the lpm-desktop-api sidecar binary first, then launches `npm run tauri dev`.
 #
 # Usage:
 #   bash scripts/dev.sh
@@ -26,8 +26,8 @@ fi
 PY="$(command -v python3 || command -v python)"
 
 if [[ "${SKIP_SIDECAR}" -eq 0 ]]; then
-    echo "==> Building lpm-ui-api sidecar"
-    "${PY}" "${REPO_ROOT}/packaging/sidecar/build_sidecar.py"
+    echo "==> Building lpm-desktop-api sidecar"
+    "${PY}" "${REPO_ROOT}/tools/packaging/sidecar/build_sidecar.py"
 fi
 
 echo

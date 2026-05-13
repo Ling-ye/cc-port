@@ -33,7 +33,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check lpm tests
+        run: ruff check src/lpm tests
 
       - name: Test
         run: pytest -q

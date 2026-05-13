@@ -38,23 +38,27 @@ dev = [
     "ruff>=0.5",
 ]
 # Tooling needed only when building the Tauri desktop app from source.
-# Installs PyInstaller (for the lpm-ui-api sidecar binary) and Pillow
-# (for generating placeholder icons via packaging/icons/generate_icons.py).
+# Installs PyInstaller for the release-only desktop API sidecar and Pillow
+# for generating placeholder icons via tools/packaging/icons/generate_icons.py.
 desktop = [
     "pyinstaller>=6.0",
     "Pillow>=10.0",
 ]
 
 [project.scripts]
-lpm = "lpm.cli:app"
-lpm-mcp = "lpm.mcp_server:main"
-lpm-ui-api = "lpm.ui_api:main"
+lpm = "lpm.interfaces.cli:app"
+lpm-mcp = "lpm.interfaces.mcp_server:main"
+lpm-desktop-api = "lpm.interfaces.desktop_api:main"
 
 [project.urls]
 Homepage = "https://github.com/Ling-ye/LingyePluginMarketplace"
 Issues = "https://github.com/Ling-ye/LingyePluginMarketplace/issues"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
+where = ["src"]
 include = ["lpm*"]
 exclude = ["tests*", "examples*"]
 

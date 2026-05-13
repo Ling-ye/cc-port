@@ -6,7 +6,7 @@
 .DESCRIPTION
     Steps:
       1. Generate placeholder icons if missing.
-      2. Build the lpm-ui-api sidecar binary via PyInstaller.
+      2. Build the lpm-desktop-api sidecar binary via PyInstaller.
       3. Run `npm run tauri build` which compiles the Rust shell, packages the
          frontend, and produces NSIS / MSI installers on Windows (or the
          platform-equivalent bundles on macOS / Linux).
@@ -48,6 +48,14 @@ function Invoke-Step {
     }
 }
 
+function Get-TargetTriple {
+    $hostLine = (& rustc -vV 2>$null | Where-Object { $_ -like "host:*" } | Select-Object -First 1)
+    if ($hostLine) {
+        return (($hostLine -split ":", 2)[1]).Trim()
+    }
+    return "unknown-target"
+}
+
 if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue)) {
     $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
     if (Test-Path (Join-Path $cargoBin "cargo.exe")) {
@@ -62,7 +70,7 @@ if (-not $SkipIcons) {
     $iconFile = Join-Path $RepoRoot "desktop/src-tauri/icons/icon.ico"
     if (-not (Test-Path $iconFile)) {
         Invoke-Step "generate_icons.py" {
-            & python "$RepoRoot/packaging/icons/generate_icons.py"
+            & python "$RepoRoot/tools/packaging/icons/generate_icons.py"
         }
     } else {
         Write-Host "  icons already present"
@@ -70,9 +78,9 @@ if (-not $SkipIcons) {
 }
 
 if (-not $SkipSidecar) {
-    Write-Section "Building lpm-ui-api sidecar"
+    Write-Section "Building lpm-desktop-api sidecar"
     Invoke-Step "sidecar build" {
-        & python "$RepoRoot/packaging/sidecar/build_sidecar.py"
+        & python "$RepoRoot/tools/packaging/sidecar/build_sidecar.py"
     }
 }
 
@@ -87,9 +95,19 @@ try {
 Write-Section "Build complete"
 $releaseDir = Join-Path $RepoRoot "desktop/src-tauri/target/release"
 $bundleDir  = Join-Path $releaseDir "bundle"
+$targetTriple = Get-TargetTriple
+$artifactDir = Join-Path $RepoRoot "dist/desktop/$targetTriple"
+New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+
 Write-Host "  Executable : $releaseDir\lpm-desktop.exe"
+$exePath = Join-Path $releaseDir "lpm-desktop.exe"
+if (Test-Path $exePath) {
+    Copy-Item -LiteralPath $exePath -Destination $artifactDir -Force
+}
 if (Test-Path $bundleDir) {
+    Copy-Item -Path (Join-Path $bundleDir "*") -Destination $artifactDir -Recurse -Force
     Get-ChildItem $bundleDir -Recurse -File | ForEach-Object {
         Write-Host ("  Bundle     : " + $_.FullName)
     }
 }
+Write-Host "  Collected  : $artifactDir"

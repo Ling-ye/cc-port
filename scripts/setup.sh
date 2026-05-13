@@ -63,7 +63,7 @@ if [[ "${SKIP_DESKTOP}" -eq 0 ]]; then
     if [[ -f "desktop/src-tauri/icons/icon.ico" ]]; then
         echo "  icons already present at desktop/src-tauri/icons/"
     else
-        "${PY}" "packaging/icons/generate_icons.py"
+        "${PY}" "tools/packaging/icons/generate_icons.py"
     fi
 
     section "Installing desktop npm dependencies"

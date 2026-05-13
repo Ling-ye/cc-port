@@ -3,7 +3,7 @@
 #
 # Steps:
 #   1. Generate placeholder icons if missing.
-#   2. Build the lpm-ui-api sidecar via PyInstaller.
+#   2. Build the lpm-desktop-api sidecar via PyInstaller.
 #   3. Run `npm run tauri build` to produce platform installers.
 #
 # Run scripts/setup.sh once before invoking this.
@@ -38,15 +38,15 @@ PY="$(command -v python3 || command -v python)"
 if [[ "${SKIP_ICONS}" -eq 0 ]]; then
     section "Ensuring desktop icons exist"
     if [[ ! -f "${REPO_ROOT}/desktop/src-tauri/icons/icon.ico" ]]; then
-        "${PY}" "${REPO_ROOT}/packaging/icons/generate_icons.py"
+        "${PY}" "${REPO_ROOT}/tools/packaging/icons/generate_icons.py"
     else
         echo "  icons already present"
     fi
 fi
 
 if [[ "${SKIP_SIDECAR}" -eq 0 ]]; then
-    section "Building lpm-ui-api sidecar"
-    "${PY}" "${REPO_ROOT}/packaging/sidecar/build_sidecar.py"
+    section "Building lpm-desktop-api sidecar"
+    "${PY}" "${REPO_ROOT}/tools/packaging/sidecar/build_sidecar.py"
 fi
 
 section "Building Tauri app (release)"
@@ -55,7 +55,18 @@ npm run tauri build
 
 section "Build complete"
 RELEASE_DIR="${REPO_ROOT}/desktop/src-tauri/target/release"
+TARGET_TRIPLE="$(rustc -vV 2>/dev/null | awk '/^host:/ {print $2; exit}')"
+TARGET_TRIPLE="${TARGET_TRIPLE:-unknown-target}"
+ARTIFACT_DIR="${REPO_ROOT}/dist/desktop/${TARGET_TRIPLE}"
+mkdir -p "${ARTIFACT_DIR}"
 echo "  Executable : ${RELEASE_DIR}/lpm-desktop"
+if [[ -f "${RELEASE_DIR}/lpm-desktop" ]]; then
+    cp -f "${RELEASE_DIR}/lpm-desktop" "${ARTIFACT_DIR}/"
+elif [[ -f "${RELEASE_DIR}/lpm-desktop.exe" ]]; then
+    cp -f "${RELEASE_DIR}/lpm-desktop.exe" "${ARTIFACT_DIR}/"
+fi
 if [[ -d "${RELEASE_DIR}/bundle" ]]; then
+    cp -R "${RELEASE_DIR}/bundle/." "${ARTIFACT_DIR}/"
     find "${RELEASE_DIR}/bundle" -type f -print | sed 's/^/  Bundle     : /'
 fi
+echo "  Collected  : ${ARTIFACT_DIR}"

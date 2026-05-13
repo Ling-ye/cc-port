@@ -30,7 +30,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/lpm-ui-api"
+      "binaries/lpm-desktop-api"
     ]
   }
 }

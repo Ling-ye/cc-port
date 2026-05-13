@@ -96,7 +96,7 @@ if (-not $SkipDesktop) {
         Write-Host "  icons already present at desktop/src-tauri/icons/"
     } else {
         Invoke-Step "generate_icons.py" {
-            & python "$RepoRoot/packaging/icons/generate_icons.py"
+            & python "$RepoRoot/tools/packaging/icons/generate_icons.py"
         }
     }
 
