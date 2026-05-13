@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run the LPM Desktop app in development mode.
 #
-# Builds the lpm-desktop-api sidecar binary first, then launches `npm run tauri dev`.
+# Builds the lpm-desktop-api sidecar binary first, then uses
+# `npm run tauri dev` as the internal Tauri development step.
 #
 # Usage:
 #   bash scripts/dev.sh

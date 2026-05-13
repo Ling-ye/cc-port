@@ -5,8 +5,8 @@
 
 .DESCRIPTION
     Builds the lpm-desktop-api sidecar binary first (so the bundled app works
-    end-to-end), then launches `npm run tauri dev` which starts Vite,
-    compiles the Tauri shell with Cargo, and opens the desktop window.
+    end-to-end), then uses `npm run tauri dev` as an internal step to start
+    Vite, compile the Tauri shell with Cargo, and open the desktop window.
 
 .EXAMPLE
     pwsh scripts/dev.ps1

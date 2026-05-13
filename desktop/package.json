@@ -8,9 +8,7 @@
     "build": "tsc && vite build",
     "tauri": "tauri",
     "sidecar": "python ../tools/packaging/sidecar/build_sidecar.py",
-    "icons": "python ../tools/packaging/icons/generate_icons.py",
-    "app:dev": "npm run sidecar && npm run tauri dev",
-    "app:build": "npm run sidecar && npm run tauri build"
+    "icons": "python ../tools/packaging/icons/generate_icons.py"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

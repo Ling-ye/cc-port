@@ -120,7 +120,45 @@ build/sidecar/                  # PyInstaller 中间产物，可忽略
 - Node.js 18+
 - Rust / Cargo
 - Git
-- Windows 构建安装包时需要可用的 Tauri Windows 打包环境。
+- Windows 构建桌面端时还需要 Microsoft C++ Build Tools（Tauri / Rust MSVC 链接器依赖）。
+
+Windows Tauri 构建依赖：
+
+- Tauri 官方前置依赖说明：<https://v2.tauri.app/start/prerequisites/>
+- 需要安装 Visual Studio Build Tools，并选择 **Desktop development with C++** 工作负载。
+- 如果本机可用 `winget`，可以运行：
+
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+- 如果构建时报 `linker link.exe not found`，说明 MSVC 链接器不可用；安装上面的 C++ Build Tools 后重新打开 PowerShell，再运行构建命令。
+- Windows 10 1803 及以上 / Windows 11 通常已包含 WebView2；旧系统可能还需要按 Tauri 文档安装 WebView2 Runtime。
+
+Rust / Cargo 安装指引：
+
+- 官方安装页：<https://www.rust-lang.org/tools/install>
+- Windows 推荐使用 `rustup` 安装器；如果本机可用 `winget`，可以运行：
+
+```powershell
+winget install --id Rustlang.Rustup -e
+```
+
+- macOS / Linux / WSL 可以运行：
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+安装完成后请重新打开终端，并确认 `rustc` 和 `cargo` 可用：
+
+```bash
+rustc --version
+cargo --version
+```
+
+如果命令仍然找不到，通常是 PATH 尚未生效；Windows 下检查 `%USERPROFILE%\.cargo\bin`，macOS / Linux 下检查 `~/.cargo/bin` 是否在 PATH 中。
 
 克隆仓库：
 
@@ -204,6 +242,16 @@ desktop/src-tauri/target/release/
 desktop/src-tauri/target/release/bundle/
 ```
 
+### 命令分层说明
+
+源码构建和发布时，对外推荐只使用仓库根目录下的脚本：
+
+- `scripts/setup.*`：初始化 Python、Node.js、Rust/Tauri 相关依赖。
+- `scripts/dev.*`：启动完整桌面开发模式。
+- `scripts/build-desktop.*`：构建最终桌面可执行文件和安装包。
+
+`desktop/package.json` 中的 npm 脚本属于内部步骤或专项检查：Tauri 会调用 `npm run build` 构建前端，根目录脚本会调用 `npm run tauri dev/build` 启动或打包桌面外壳，`npm run sidecar` 和 `npm run icons` 主要用于维护单个打包环节。完整构建请使用根目录脚本，不需要手动拼接这些内部命令。
+
 ## 配置
 
 示例配置：
@@ -282,6 +330,8 @@ lpm-mcp
 ```
 
 ## 开发检查
+
+下面的命令用于单独检查某一层是否正常，不会收集最终桌面产物，也不是完整桌面打包入口。完整开发和发布流程仍以根目录脚本为准。
 
 Python 检查：
 

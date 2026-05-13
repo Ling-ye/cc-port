@@ -4,7 +4,7 @@
 # Steps:
 #   1. Generate placeholder icons if missing.
 #   2. Build the lpm-desktop-api sidecar via PyInstaller.
-#   3. Run `npm run tauri build` to produce platform installers.
+#   3. Use `npm run tauri build` as the internal Tauri release step.
 #
 # Run scripts/setup.sh once before invoking this.
 

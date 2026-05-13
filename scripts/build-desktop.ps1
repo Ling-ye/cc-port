@@ -7,9 +7,10 @@
     Steps:
       1. Generate placeholder icons if missing.
       2. Build the lpm-desktop-api sidecar binary via PyInstaller.
-      3. Run `npm run tauri build` which compiles the Rust shell, packages the
-         frontend, and produces NSIS / MSI installers on Windows (or the
-         platform-equivalent bundles on macOS / Linux).
+      3. Use `npm run tauri build` as the internal Tauri release step to
+         compile the Rust shell, package the frontend, and produce NSIS / MSI
+         installers on Windows (or the platform-equivalent bundles on macOS /
+         Linux).
 
     Run scripts/setup.ps1 once before invoking this.
 
