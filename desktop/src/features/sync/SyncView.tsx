@@ -1,14 +1,17 @@
 import { useState } from "react";
 import { FolderSync } from "lucide-react";
 import { lpmAction } from "@/api/client";
+import type { TFunction } from "@/app/i18n";
 import type { PlatformProfile } from "@/types/lpm";
 
 export function SyncView({
   platforms,
+  t,
   onDone,
   onError,
 }: {
   platforms: PlatformProfile[];
+  t: TFunction;
   onDone: (message: string) => void;
   onError: (message: string) => void;
 }) {
@@ -23,7 +26,7 @@ export function SyncView({
         all_kinds: allKinds,
         platform: platform || undefined,
       });
-      onDone(`Sync completed with ${data.results.length} result(s)`);
+      onDone(t("sync.success", { count: data.results.length }));
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -35,19 +38,19 @@ export function SyncView({
     <section className="panel form-panel">
       <div className="panel-head">
         <div>
-          <h2>Sync installs</h2>
-          <p>Install resources into enabled platform directories from the configured registry.</p>
+          <h2>{t("sync.title")}</h2>
+          <p>{t("sync.description")}</p>
         </div>
       </div>
       <div className="stack-form">
         <label className="checkline">
           <input type="checkbox" checked={allKinds} onChange={(event) => setAllKinds(event.target.checked)} />
-          <span>Sync all resource types</span>
+          <span>{t("sync.allKinds")}</span>
         </label>
         <label>
-          <span>Target platform</span>
+          <span>{t("sync.targetPlatform")}</span>
           <select value={platform} onChange={(event) => setPlatform(event.target.value)}>
-            <option value="">All enabled platforms</option>
+            <option value="">{t("sync.allEnabledPlatforms")}</option>
             {platforms.filter((item) => item.enabled).map((item) => (
               <option key={item.name} value={item.name}>{item.name}</option>
             ))}
@@ -55,10 +58,9 @@ export function SyncView({
         </label>
         <button className="primary" onClick={sync} disabled={busy}>
           <FolderSync size={17} />
-          {busy ? "Syncing..." : "Start sync"}
+          {busy ? t("sync.syncing") : t("sync.start")}
         </button>
       </div>
     </section>
   );
 }
-

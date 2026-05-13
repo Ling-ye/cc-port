@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { CheckCircle2, TerminalSquare, XCircle } from "lucide-react";
 import { lpmAction } from "@/api/client";
+import type { TFunction } from "@/app/i18n";
 import type { DoctorCheck } from "@/types/lpm";
 
-export function HealthView({ onError }: { onError: (message: string) => void }) {
+export function HealthView({ t, onError }: { t: TFunction; onError: (message: string) => void }) {
   const [checks, setChecks] = useState<DoctorCheck[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -23,10 +24,10 @@ export function HealthView({ onError }: { onError: (message: string) => void }) 
     <section className="panel">
       <div className="panel-head">
         <div>
-          <h2>Health checks</h2>
-          <p>Check Git, config, token, resource repo, and platform state.</p>
+          <h2>{t("health.title")}</h2>
+          <p>{t("health.description")}</p>
         </div>
-        <button className="primary" onClick={runDoctor} disabled={busy}><TerminalSquare size={17} />Run checks</button>
+        <button className="primary" onClick={runDoctor} disabled={busy}><TerminalSquare size={17} />{t("health.runChecks")}</button>
       </div>
       <div className="check-list">
         {checks.map((check) => (
@@ -40,4 +41,3 @@ export function HealthView({ onError }: { onError: (message: string) => void }) 
     </section>
   );
 }
-

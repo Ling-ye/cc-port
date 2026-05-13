@@ -121,35 +121,16 @@ button {
   font-size: 13px;
 }
 
-.status-strip {
+.topbar-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.status {
-  border: 1px solid #d5dde2;
-  border-radius: 999px;
-  padding: 6px 10px;
-  background: #ffffff;
-  font-size: 12px;
-}
-
-.status.ok {
-  color: #0d7568;
-  border-color: #a7ddd3;
-}
-
-.status.warn {
-  color: #9a5b00;
-  border-color: #e4c37d;
 }
 
 .icon-button,
 .primary,
 .secondary,
 .danger,
-.quick-actions button,
 .mode-tabs button {
   border: 1px solid #ccd6dc;
   border-radius: 8px;
@@ -162,6 +143,16 @@ button {
   width: 38px;
   display: grid;
   place-items: center;
+}
+
+.language-toggle {
+  width: auto;
+  min-width: 62px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .primary {
@@ -243,10 +234,6 @@ button {
   padding: 16px;
 }
 
-.wide {
-  grid-column: 1 / -1;
-}
-
 .panel-head,
 .toolbar,
 .detail-title,
@@ -263,14 +250,6 @@ button {
   font-size: 18px;
 }
 
-.quick-actions {
-  margin-top: 16px;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.quick-actions button,
 .mode-tabs button {
   padding: 10px 12px;
   display: inline-flex;
@@ -670,14 +649,12 @@ button {
 
   .panel,
   .metric,
-  .status,
   .icon-button,
-    .quick-actions button,
-    .mode-tabs button,
-    .stack-form input,
-    .stack-form select,
-    .platform-editor,
-    .modal {
+  .mode-tabs button,
+  .stack-form input,
+  .stack-form select,
+  .platform-editor,
+  .modal {
     background: #172228;
     border-color: #2b3d46;
     color: #e7edf0;

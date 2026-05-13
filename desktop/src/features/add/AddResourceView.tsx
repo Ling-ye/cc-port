@@ -1,14 +1,17 @@
 import { FormEvent, useState } from "react";
 import { GitBranch, Upload } from "lucide-react";
 import { lpmAction } from "@/api/client";
+import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import type { ResourceKind } from "@/types/lpm";
 
 const kinds: ResourceKind[] = ["skill", "mcp", "rule", "prompt", "plugin"];
 
 export function AddResourceView({
+  t,
   onDone,
   onError,
 }: {
+  t: TFunction;
   onDone: (message: string) => void;
   onError: (message: string) => void;
 }) {
@@ -30,7 +33,7 @@ export function AddResourceView({
         push,
       };
       await lpmAction(mode, payload);
-      onDone(mode === "collect" ? "Resource collected" : "Resource uploaded");
+      onDone(mode === "collect" ? t("add.successCollected") : t("add.successUploaded"));
       setValue("");
       setName("");
     } catch (err) {
@@ -44,37 +47,36 @@ export function AddResourceView({
     <section className="panel form-panel">
       <div className="panel-head">
         <div>
-          <h2>Add resource</h2>
-          <p>Collect a GitHub resource by reference, or upload a local resource to your private repo.</p>
+          <h2>{t("add.title")}</h2>
+          <p>{t("add.description")}</p>
         </div>
       </div>
       <div className="mode-tabs">
-        <button className={mode === "collect" ? "active" : ""} onClick={() => setMode("collect")}><GitBranch size={17} />Collect</button>
-        <button className={mode === "upload" ? "active" : ""} onClick={() => setMode("upload")}><Upload size={17} />Upload</button>
+        <button className={mode === "collect" ? "active" : ""} onClick={() => setMode("collect")}><GitBranch size={17} />{t("add.modeCollect")}</button>
+        <button className={mode === "upload" ? "active" : ""} onClick={() => setMode("upload")}><Upload size={17} />{t("add.modeUpload")}</button>
       </div>
       <form onSubmit={submit} className="stack-form">
         <label>
-          <span>{mode === "collect" ? "GitHub URL" : "Local path"}</span>
+          <span>{mode === "collect" ? t("add.githubUrl") : t("add.localPath")}</span>
           <input value={value} onChange={(event) => setValue(event.target.value)} required />
         </label>
         <label>
-          <span>Resource name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Leave empty to infer" />
+          <span>{t("add.resourceName")}</span>
+          <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("add.inferPlaceholder")} />
         </label>
         <label>
-          <span>Type</span>
+          <span>{t("add.type")}</span>
           <select value={kind} onChange={(event) => setKind(event.target.value as "auto" | ResourceKind)}>
-            <option value="auto">Auto detect</option>
-            {kinds.map((item) => <option key={item} value={item}>{item}</option>)}
+            <option value="auto">{t("kind.auto")}</option>
+            {kinds.map((item) => <option key={item} value={item}>{resourceKindLabel(item, t)}</option>)}
           </select>
         </label>
         <label className="checkline">
           <input type="checkbox" checked={push} onChange={(event) => setPush(event.target.checked)} />
-          <span>Push private resource repo after completion</span>
+          <span>{t("add.pushAfterCompletion")}</span>
         </label>
-        <button className="primary" disabled={busy}>{busy ? "Working..." : "Confirm"}</button>
+        <button className="primary" disabled={busy}>{busy ? t("common.working") : t("common.confirm")}</button>
       </form>
     </section>
   );
 }
-

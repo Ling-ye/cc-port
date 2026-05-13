@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { lpmAction } from "@/api/client";
+import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import { DescriptionList } from "@/components/DescriptionList";
 import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
@@ -11,11 +12,13 @@ const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prom
 export function ResourcesView({
   items,
   selected,
+  t,
   onSelect,
   onChanged,
 }: {
   items: RegistryItem[];
   selected?: RegistryItem;
+  t: TFunction;
   onSelect: (name: string) => void;
   onChanged: () => void;
 }) {
@@ -27,7 +30,7 @@ export function ResourcesView({
 
   async function removeSelected(uninstall: boolean) {
     if (!selected) return;
-    if (!confirm(`Remove ${selected.name}?`)) return;
+    if (!confirm(t("resources.removeConfirm", { name: selected.name }))) return;
     await lpmAction("remove", { name: selected.name, uninstall });
     await onChanged();
   }
@@ -36,7 +39,7 @@ export function ResourcesView({
     <section className="split-view">
       <div className="panel list-panel">
         <div className="toolbar">
-          <Segmented value={filter} values={kinds} onChange={setFilter} />
+          <Segmented value={filter} values={kinds} onChange={setFilter} getLabel={(item) => resourceKindLabel(item, t)} />
         </div>
         <div className="resource-list">
           {visible.map((item) => (
@@ -45,10 +48,10 @@ export function ResourcesView({
               className={selected?.name === item.name ? "resource-row active" : "resource-row"}
               onClick={() => onSelect(item.name)}
             >
-              <KindBadge kind={item.kind} />
+              <KindBadge kind={item.kind} label={resourceKindLabel(item.kind, t)} />
               <span>
                 <strong>{item.name}</strong>
-                <small>{item.source} / {item.status?.installed ? "installed" : "not installed"}</small>
+                <small>{item.source} / {item.status?.installed ? t("status.installed") : t("status.notInstalled")}</small>
               </span>
             </button>
           ))}
@@ -58,33 +61,32 @@ export function ResourcesView({
         {selected ? (
           <>
             <div className="detail-title">
-              <KindBadge kind={selected.kind} />
+              <KindBadge kind={selected.kind} label={resourceKindLabel(selected.kind, t)} />
               <h2>{selected.name}</h2>
             </div>
             <DescriptionList
               rows={[
-                ["Source", selected.source],
-                ["Repo", selected.repo || "-"],
-                ["Path", selected.path || "-"],
-                ["Ref", selected.ref || "-"],
-                ["Subdir", selected.subdir || "-"],
-                ["Install path", selected.status?.install_path || "-"],
-                ["Install state", selected.status?.installed ? "installed" : "not installed"],
+                [t("resources.source"), selected.source],
+                [t("resources.repo"), selected.repo || "-"],
+                [t("resources.path"), selected.path || "-"],
+                [t("resources.ref"), selected.ref || "-"],
+                [t("resources.subdir"), selected.subdir || "-"],
+                [t("resources.installPath"), selected.status?.install_path || "-"],
+                [t("resources.installState"), selected.status?.installed ? t("status.installed") : t("status.notInstalled")],
               ]}
             />
             <div className="tag-row">
               {selected.tags?.map((tag) => <span key={tag}>{tag}</span>)}
             </div>
             <div className="danger-row">
-              <button className="secondary" onClick={() => removeSelected(false)}>Remove record</button>
-              <button className="danger" onClick={() => removeSelected(true)}>Remove and uninstall</button>
+              <button className="secondary" onClick={() => removeSelected(false)}>{t("resources.removeRecord")}</button>
+              <button className="danger" onClick={() => removeSelected(true)}>{t("resources.removeAndUninstall")}</button>
             </div>
           </>
         ) : (
-          <EmptyState text="No resource selected" />
+          <EmptyState text={t("resources.noSelected")} />
         )}
       </div>
     </section>
   );
 }
-

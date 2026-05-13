@@ -24,9 +24,12 @@ struct LpmActionResponse {
 }
 
 #[tauri::command]
-fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, String> {
+async fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, String> {
+    let action = request.action;
     let payload = serde_json::to_string(&request.payload).map_err(|err| err.to_string())?;
-    let output = run_lpm_ui_api(&request.action, &payload)?;
+    let output = tauri::async_runtime::spawn_blocking(move || run_lpm_ui_api(&action, &payload))
+        .await
+        .map_err(|err| format!("lpm-desktop-api task failed: {err}"))??;
     let raw = String::from_utf8_lossy(&output).trim().to_string();
 
     let parsed: Value = serde_json::from_str(&raw).map_err(|err| {

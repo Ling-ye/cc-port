@@ -1,0 +1,371 @@
+export type Language = "zh" | "en";
+
+const en = {
+  "about.description": "Project and developer information for LPM Desktop.",
+  "about.developer": "Developer",
+  "about.developerDescription":
+    "Maintained by Lingye as a personal developer tool for organizing, collecting, and syncing AI coding workflow resources.",
+  "about.gitAddress": "Git address",
+  "about.openSourceStatus": "Status",
+  "about.openSourceStatusValue": "Not open source yet / not public.",
+  "about.positioning": "Positioning",
+  "about.positioningValue": "A desktop manager for AI coding resources.",
+  "about.projectInfo": "Project information",
+  "about.projectName": "Project",
+  "about.title": "About",
+  "add.description": "Collect a GitHub resource by reference, or upload a local resource to your private repo.",
+  "add.githubUrl": "GitHub URL",
+  "add.inferPlaceholder": "Leave empty to infer",
+  "add.localPath": "Local path",
+  "add.modeCollect": "Collect",
+  "add.modeUpload": "Upload",
+  "add.pushAfterCompletion": "Push private resource repo after completion",
+  "add.resourceName": "Resource name",
+  "add.successCollected": "Resource collected",
+  "add.successUploaded": "Resource uploaded",
+  "add.title": "Add resource",
+  "add.type": "Type",
+  "brand.subtitle": "Desktop",
+  "common.cancel": "Cancel",
+  "common.confirm": "Confirm",
+  "common.refresh": "Refresh",
+  "common.reload": "Reload",
+  "common.save": "Save",
+  "common.working": "Working...",
+  "dashboard.installed": "Installed",
+  "dashboard.recentResources": "Recent resources",
+  "dashboard.resourceTypes": "Resource types",
+  "dashboard.sources": "Sources",
+  "dashboard.totalResources": "Total resources",
+  "dashboard.updates": "Updates",
+  "health.description": "Check Git, config, token, resource repo, and platform state.",
+  "health.runChecks": "Run checks",
+  "health.title": "Health checks",
+  "guide.description": "What this tool does and how to use the desktop app.",
+  "guide.desktopTitle": "Desktop app functions",
+  "guide.featureAdd": "Add Resource",
+  "guide.featureAddDescription":
+    "Collects a GitHub resource by reference, or uploads a local resource into the private resource repository.",
+  "guide.featureHealth": "Health",
+  "guide.featureHealthDescription":
+    "Checks Git, configuration, tokens, resource repository state, and platform paths.",
+  "guide.featureOverview": "Overview",
+  "guide.featureOverviewDescription":
+    "Shows resource counts, installed items, updates, sources, and recent resources.",
+  "guide.featurePlatforms": "Platforms",
+  "guide.featurePlatformsDescription":
+    "Displays enabled desktop targets and their skills, MCP, and rules paths.",
+  "guide.featureResources": "Resources",
+  "guide.featureResourcesDescription":
+    "Browses registered resources by type, source, repository, path, reference, tags, and install state.",
+  "guide.featureSettings": "Settings",
+  "guide.featureSettingsDescription":
+    "Edits GitHub, resource repository, install target, and platform configuration.",
+  "guide.featureSync": "Sync",
+  "guide.featureSyncDescription": "Installs registered resources into enabled platform directories.",
+  "guide.featureTopbar": "Topbar",
+  "guide.featureTopbarDescription":
+    "Refresh reloads local state; the language button switches between Chinese and English.",
+  "guide.resourceMcp": "mcp",
+  "guide.resourceMcpDescription": "MCP server configurations and related integration resources.",
+  "guide.resourcePlugin": "plugin",
+  "guide.resourcePluginDescription": "Plugin packages or plugin references used by supported tools.",
+  "guide.resourcePrompt": "prompt",
+  "guide.resourcePromptDescription": "Prompt templates and reusable prompt assets.",
+  "guide.resourceRule": "rule",
+  "guide.resourceRuleDescription": "Rules or instruction files used to steer coding tools.",
+  "guide.resourcesTitle": "Managed resource types",
+  "guide.resourceSkill": "skill",
+  "guide.resourceSkillDescription": "Reusable abilities and workflows that extend an AI coding assistant.",
+  "guide.title": "Guide",
+  "kind.all": "all",
+  "kind.auto": "Auto detect",
+  "kind.mcp": "mcp",
+  "kind.plugin": "plugin",
+  "kind.prompt": "prompt",
+  "kind.rule": "rule",
+  "kind.skill": "skill",
+  "nav.about": "About",
+  "nav.add": "Add Resource",
+  "nav.dashboard": "Overview",
+  "nav.guide": "Guide",
+  "nav.health": "Health",
+  "nav.platforms": "Platforms",
+  "nav.resources": "Resources",
+  "nav.settings": "Settings",
+  "nav.sync": "Sync",
+  "platforms.disabled": "disabled",
+  "platforms.enabled": "enabled",
+  "platforms.mcp": "MCP",
+  "platforms.rules": "Rules",
+  "platforms.skills": "Skills",
+  "platforms.title": "Platform config",
+  "resources.installPath": "Install path",
+  "resources.installState": "Install state",
+  "resources.noSelected": "No resource selected",
+  "resources.path": "Path",
+  "resources.ref": "Ref",
+  "resources.removeAndUninstall": "Remove and uninstall",
+  "resources.removeConfirm": "Remove {name}?",
+  "resources.removeRecord": "Remove record",
+  "resources.repo": "Repo",
+  "resources.source": "Source",
+  "resources.subdir": "Subdir",
+  "settings.branch": "Branch",
+  "settings.checking": "Checking resource repository...",
+  "settings.checkingShort": "Checking...",
+  "settings.clearStoredToken": "Clear stored token",
+  "settings.defaultPrivate": "New repositories default to private",
+  "settings.enabled": "Enabled",
+  "settings.envTokenWarning":
+    "Current GitHub token comes from LPM_GITHUB_TOKEN. Saving a token here updates config.toml, but this running session still uses the environment token.",
+  "settings.fallbackTarget": "Fallback target",
+  "settings.github": "GitHub",
+  "settings.install": "Install",
+  "settings.localPath": "Local path",
+  "settings.mcpJson": "MCP JSON",
+  "settings.modalConfirm": "Create / connect and save",
+  "settings.modalTitle": "Resource repository needs preparation",
+  "settings.newToken": "New token",
+  "settings.notConfigured": "Not configured",
+  "settings.owner": "Owner",
+  "settings.platforms": "Platforms",
+  "settings.preparing": "Preparing resource repository...",
+  "settings.preparingShort": "Preparing...",
+  "settings.repoName": "Repo name",
+  "settings.repoPrefix": "Repo prefix",
+  "settings.repoUrl": "Repo URL",
+  "settings.resourceRepository": "Resource Repository",
+  "settings.rules": "Rules",
+  "settings.saved": "Configuration saved.",
+  "settings.saving": "Saving configuration...",
+  "settings.savingShort": "Saving...",
+  "settings.skills": "Skills",
+  "settings.title": "Settings",
+  "settings.tokenPreview": "Token preview",
+  "status.installed": "installed",
+  "status.notInstalled": "not installed",
+  "sync.allEnabledPlatforms": "All enabled platforms",
+  "sync.allKinds": "Sync all resource types",
+  "sync.description": "Install resources into enabled platform directories from the configured registry.",
+  "sync.start": "Start sync",
+  "sync.success": "Sync completed with {count} result(s)",
+  "sync.syncing": "Syncing...",
+  "sync.targetPlatform": "Target platform",
+  "sync.title": "Sync installs",
+  "topbar.loadingConfig": "Reading local configuration",
+  "topbar.switchToChinese": "Switch to Chinese",
+  "topbar.switchToEnglish": "切换到英文",
+} as const;
+
+export type I18nKey = keyof typeof en;
+
+const zh: Record<I18nKey, string> = {
+  "about.description": "查看 LPM Desktop 的项目和开发者信息。",
+  "about.developer": "开发者",
+  "about.developerDescription":
+    "由灵叶维护的个人开发者工具，用来整理、收集和同步 AI coding 工作流中的技能、插件、MCP、规则与提示词资源。",
+  "about.gitAddress": "Git 地址",
+  "about.openSourceStatus": "状态",
+  "about.openSourceStatusValue": "暂未开源 / 暂未公开。",
+  "about.positioning": "定位",
+  "about.positioningValue": "面向 AI coding 资源的桌面管理工具。",
+  "about.projectInfo": "项目信息",
+  "about.projectName": "项目",
+  "about.title": "关于",
+  "add.description": "通过 GitHub 引用收集资源，或把本地资源上传到你的私有资源库。",
+  "add.githubUrl": "GitHub 地址",
+  "add.inferPlaceholder": "留空则自动推断",
+  "add.localPath": "本地路径",
+  "add.modeCollect": "收集",
+  "add.modeUpload": "上传",
+  "add.pushAfterCompletion": "完成后推送私有资源库",
+  "add.resourceName": "资源名称",
+  "add.successCollected": "资源已收集",
+  "add.successUploaded": "资源已上传",
+  "add.title": "添加资源",
+  "add.type": "类型",
+  "brand.subtitle": "桌面端",
+  "common.cancel": "取消",
+  "common.confirm": "确认",
+  "common.refresh": "刷新",
+  "common.reload": "重新加载",
+  "common.save": "保存",
+  "common.working": "处理中...",
+  "dashboard.installed": "已安装",
+  "dashboard.recentResources": "最近资源",
+  "dashboard.resourceTypes": "资源类型",
+  "dashboard.sources": "来源",
+  "dashboard.totalResources": "资源总数",
+  "dashboard.updates": "更新",
+  "health.description": "检查 Git、配置、Token、资源库和平台状态。",
+  "health.runChecks": "运行检查",
+  "health.title": "健康检查",
+  "guide.description": "了解此工具的作用，以及桌面端各功能入口的用途。",
+  "guide.desktopTitle": "桌面端功能",
+  "guide.featureAdd": "添加资源",
+  "guide.featureAddDescription": "通过 GitHub 引用收集资源，或把本地资源上传到私有资源库。",
+  "guide.featureHealth": "健康检查",
+  "guide.featureHealthDescription": "检查 Git、配置、Token、资源库状态和平台目录是否正常。",
+  "guide.featureOverview": "概览",
+  "guide.featureOverviewDescription": "查看资源总数、已安装数量、更新数量、来源数量和最近资源。",
+  "guide.featurePlatforms": "平台",
+  "guide.featurePlatformsDescription": "查看已启用的桌面目标，以及技能、MCP、规则目录配置。",
+  "guide.featureResources": "资源",
+  "guide.featureResourcesDescription": "按类型浏览注册资源，查看来源、仓库、路径、引用、标签和安装状态。",
+  "guide.featureSettings": "设置",
+  "guide.featureSettingsDescription": "编辑 GitHub、资源库、安装目标和平台相关配置。",
+  "guide.featureSync": "同步",
+  "guide.featureSyncDescription": "把已注册资源安装到启用的平台目录中。",
+  "guide.featureTopbar": "顶部栏",
+  "guide.featureTopbarDescription": "刷新按钮重新读取本地状态；语言按钮在中文和英文之间切换。",
+  "guide.resourceMcp": "mcp",
+  "guide.resourceMcpDescription": "MCP Server 配置和相关集成资源。",
+  "guide.resourcePlugin": "plugin",
+  "guide.resourcePluginDescription": "受支持工具使用的插件包或插件引用。",
+  "guide.resourcePrompt": "prompt",
+  "guide.resourcePromptDescription": "提示词模板和可复用的提示词资产。",
+  "guide.resourceRule": "rule",
+  "guide.resourceRuleDescription": "用于约束或引导 coding 工具行为的规则与指令文件。",
+  "guide.resourcesTitle": "管理的资源类型",
+  "guide.resourceSkill": "skill",
+  "guide.resourceSkillDescription": "扩展 AI coding 助手能力的可复用技能和工作流。",
+  "guide.title": "说明",
+  "kind.all": "全部",
+  "kind.auto": "自动检测",
+  "kind.mcp": "MCP",
+  "kind.plugin": "插件",
+  "kind.prompt": "提示词",
+  "kind.rule": "规则",
+  "kind.skill": "技能",
+  "nav.about": "关于",
+  "nav.add": "添加资源",
+  "nav.dashboard": "概览",
+  "nav.guide": "说明",
+  "nav.health": "健康检查",
+  "nav.platforms": "平台",
+  "nav.resources": "资源",
+  "nav.settings": "设置",
+  "nav.sync": "同步",
+  "platforms.disabled": "已禁用",
+  "platforms.enabled": "已启用",
+  "platforms.mcp": "MCP",
+  "platforms.rules": "规则",
+  "platforms.skills": "技能",
+  "platforms.title": "平台配置",
+  "resources.installPath": "安装路径",
+  "resources.installState": "安装状态",
+  "resources.noSelected": "未选择资源",
+  "resources.path": "路径",
+  "resources.ref": "引用",
+  "resources.removeAndUninstall": "移除并卸载",
+  "resources.removeConfirm": "移除 {name}？",
+  "resources.removeRecord": "移除记录",
+  "resources.repo": "仓库",
+  "resources.source": "来源",
+  "resources.subdir": "子目录",
+  "settings.branch": "分支",
+  "settings.checking": "正在检查资源仓库...",
+  "settings.checkingShort": "检查中...",
+  "settings.clearStoredToken": "清除已保存 Token",
+  "settings.defaultPrivate": "新仓库默认设为私有",
+  "settings.enabled": "启用",
+  "settings.envTokenWarning":
+    "当前 GitHub Token 来自 LPM_GITHUB_TOKEN。保存这里的 Token 会更新 config.toml，但当前运行会话仍会使用环境变量 Token。",
+  "settings.fallbackTarget": "兜底目标",
+  "settings.github": "GitHub",
+  "settings.install": "安装",
+  "settings.localPath": "本地路径",
+  "settings.mcpJson": "MCP JSON",
+  "settings.modalConfirm": "创建/连接并保存",
+  "settings.modalTitle": "资源库需要准备",
+  "settings.newToken": "新 Token",
+  "settings.notConfigured": "未配置",
+  "settings.owner": "所有者",
+  "settings.platforms": "平台",
+  "settings.preparing": "正在准备资源仓库...",
+  "settings.preparingShort": "准备中...",
+  "settings.repoName": "仓库名称",
+  "settings.repoPrefix": "仓库前缀",
+  "settings.repoUrl": "仓库地址",
+  "settings.resourceRepository": "资源库",
+  "settings.rules": "规则",
+  "settings.saved": "配置已保存。",
+  "settings.saving": "正在保存配置...",
+  "settings.savingShort": "保存中...",
+  "settings.skills": "技能",
+  "settings.title": "设置",
+  "settings.tokenPreview": "Token 预览",
+  "status.installed": "已安装",
+  "status.notInstalled": "未安装",
+  "sync.allEnabledPlatforms": "所有已启用平台",
+  "sync.allKinds": "同步所有资源类型",
+  "sync.description": "从已配置的注册表把资源安装到启用的平台目录。",
+  "sync.start": "开始同步",
+  "sync.success": "同步完成，共 {count} 个结果",
+  "sync.syncing": "同步中...",
+  "sync.targetPlatform": "目标平台",
+  "sync.title": "同步安装",
+  "topbar.loadingConfig": "正在读取本地配置",
+  "topbar.switchToChinese": "切换到中文",
+  "topbar.switchToEnglish": "切换到英文",
+};
+
+export type TFunction = (key: I18nKey, values?: Record<string, string | number>) => string;
+
+export const DEFAULT_LANGUAGE: Language = "zh";
+export const LANGUAGE_STORAGE_KEY = "lpm.language";
+
+const translations: Record<Language, Record<I18nKey, string>> = { en, zh };
+
+export function readStoredLanguage(): Language {
+  if (typeof window === "undefined") return DEFAULT_LANGUAGE;
+
+  try {
+    const value = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    return value === "en" || value === "zh" ? value : DEFAULT_LANGUAGE;
+  } catch {
+    return DEFAULT_LANGUAGE;
+  }
+}
+
+export function storeLanguage(language: Language) {
+  try {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+  } catch {
+    // Ignore storage failures; the in-memory language state still works.
+  }
+}
+
+export function nextLanguage(language: Language): Language {
+  return language === "zh" ? "en" : "zh";
+}
+
+export function createTranslator(language: Language): TFunction {
+  const dictionary = translations[language];
+  return (key, values) => interpolate(dictionary[key] || en[key], values);
+}
+
+export function resourceKindLabel(kind: string, t: TFunction): string {
+  switch (kind) {
+    case "all":
+      return t("kind.all");
+    case "skill":
+      return t("kind.skill");
+    case "mcp":
+      return t("kind.mcp");
+    case "rule":
+      return t("kind.rule");
+    case "prompt":
+      return t("kind.prompt");
+    case "plugin":
+      return t("kind.plugin");
+    default:
+      return kind;
+  }
+}
+
+function interpolate(text: string, values?: Record<string, string | number>): string {
+  if (!values) return text;
+  return text.replace(/\{(\w+)\}/g, (match, key: string) => String(values[key] ?? match));
+}

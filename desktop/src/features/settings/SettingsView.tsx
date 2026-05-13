@@ -1,6 +1,7 @@
 import { AlertTriangle, RefreshCcw, Save } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { lpmAction } from "@/api/client";
+import type { TFunction } from "@/app/i18n";
 import type {
   ConfigCheckResult,
   ConfigSettings,
@@ -21,11 +22,15 @@ type PendingSave = {
 };
 
 export function SettingsView({
+  t,
   onDone,
+  onStatus,
   onError,
   onChanged,
 }: {
+  t: TFunction;
   onDone: (message: string) => void;
+  onStatus: (message: string) => void;
   onError: (message: string) => void;
   onChanged: () => Promise<void> | void;
 }) {
@@ -33,11 +38,32 @@ export function SettingsView({
   const [draft, setDraft] = useState<EditableConfig | null>(null);
   const [newToken, setNewToken] = useState("");
   const [clearToken, setClearToken] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
+  const draftRef = useRef<EditableConfig | null>(null);
+  const newTokenRef = useRef("");
+  const clearTokenRef = useRef(false);
+
+  const actionBusy = checking || saving || preparing;
+  const anyBusy = loading || actionBusy;
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  useEffect(() => {
+    newTokenRef.current = newToken;
+  }, [newToken]);
+
+  useEffect(() => {
+    clearTokenRef.current = clearToken;
+  }, [clearToken]);
 
   async function loadSettings() {
-    setBusy(true);
+    setLoading(true);
     try {
       const data = await lpmAction<ConfigSettings>("config_get");
       setSettings(data);
@@ -47,7 +73,7 @@ export function SettingsView({
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   }
 
@@ -90,51 +116,64 @@ export function SettingsView({
   async function saveSettings() {
     const payload = buildPayload(false);
     if (!payload) return;
-    setBusy(true);
+    setChecking(true);
+    onStatus(t("settings.checking"));
     try {
       const check = await lpmAction<ConfigCheckResult>("config_check", payload);
       if (check.missing.length > 0) {
         setPendingSave({ check, payload });
+        onStatus("");
         return;
       }
+      setChecking(false);
       await commitSave(payload);
     } catch (err) {
+      onStatus("");
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setChecking(false);
     }
   }
 
-  async function commitSave(payload: SavePayload) {
-    const saved = await lpmAction<ConfigSettings>("config_save", payload);
-    setSettings(saved);
-    setDraft(saved.config);
-    setNewToken("");
-    setClearToken(false);
-    setPendingSave(null);
-    onDone("Configuration saved.");
-    await onChanged();
+  async function commitSave(payload: SavePayload, mode: "saving" | "preparing" = "saving") {
+    const savedToken = payload.new_token || "";
+    const savedClearToken = payload.token_action === "clear";
+    const setModeBusy = mode === "preparing" ? setPreparing : setSaving;
+    setModeBusy(true);
+    onStatus(mode === "preparing" ? t("settings.preparing") : t("settings.saving"));
+    try {
+      const saved = await lpmAction<ConfigSettings>("config_save", payload);
+      setSettings(saved);
+      setDraft((current) => (current === payload.draft ? saved.config : current));
+      if (draftRef.current === payload.draft) {
+        if (newTokenRef.current.trim() === savedToken && clearTokenRef.current === savedClearToken) {
+          setNewToken("");
+          setClearToken(false);
+        }
+      }
+      setPendingSave(null);
+      onDone(t("settings.saved"));
+      void onChanged();
+    } catch (err) {
+      onStatus("");
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setModeBusy(false);
+    }
   }
 
   async function confirmPrepareAndSave() {
     if (!pendingSave) return;
-    setBusy(true);
-    try {
-      await commitSave({ ...pendingSave.payload, prepare_resource_repo: true });
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
+    await commitSave({ ...pendingSave.payload, prepare_resource_repo: true }, "preparing");
   }
 
   if (!draft || !settings) {
     return (
       <section className="panel">
         <div className="panel-head">
-          <h2>Settings</h2>
-          <button className="secondary" type="button" onClick={loadSettings} disabled={busy}>
-            <RefreshCcw size={17} />Refresh
+          <h2>{t("settings.title")}</h2>
+          <button className="secondary" type="button" onClick={loadSettings} disabled={anyBusy}>
+            <RefreshCcw size={17} />{t("common.refresh")}
           </button>
         </div>
       </section>
@@ -146,15 +185,15 @@ export function SettingsView({
       <div className="panel settings-panel">
         <div className="panel-head">
           <div>
-            <h2>Settings</h2>
+            <h2>{t("settings.title")}</h2>
             <p>{settings.path}</p>
           </div>
           <div className="settings-actions">
-            <button className="secondary" type="button" onClick={loadSettings} disabled={busy}>
-              <RefreshCcw size={17} />Reload
+            <button className="secondary" type="button" onClick={loadSettings} disabled={anyBusy}>
+              <RefreshCcw size={17} />{t("common.reload")}
             </button>
-            <button className="primary" type="button" onClick={saveSettings} disabled={busy}>
-              <Save size={17} />Save
+            <button className="primary" type="button" onClick={saveSettings} disabled={anyBusy}>
+              <Save size={17} />{saveLabel(t, { checking, saving, preparing })}
             </button>
           </div>
         </div>
@@ -162,20 +201,20 @@ export function SettingsView({
         {settings.env_token_active ? (
           <div className="inline-warning">
             <AlertTriangle size={17} />
-            <span>{`Current GitHub token comes from LPM_GITHUB_TOKEN. Saving a token here updates config.toml, but this running session still uses the environment token.`}</span>
+            <span>{t("settings.envTokenWarning")}</span>
           </div>
         ) : null}
 
         <div className="settings-sections">
           <div className="settings-section">
-            <h3>GitHub</h3>
+            <h3>{t("settings.github")}</h3>
             <div className="stack-form two-column">
               <label>
-                <span>Token preview</span>
-                <input value={settings.token_preview || "Not configured"} readOnly />
+                <span>{t("settings.tokenPreview")}</span>
+                <input value={settings.token_preview || t("settings.notConfigured")} readOnly />
               </label>
               <label>
-                <span>New token</span>
+                <span>{t("settings.newToken")}</span>
                 <input
                   type="password"
                   value={newToken}
@@ -196,7 +235,7 @@ export function SettingsView({
                     if (event.target.checked) setNewToken("");
                   }}
                 />
-                <span>Clear stored token</span>
+                <span>{t("settings.clearStoredToken")}</span>
               </label>
               <label className="checkline">
                 <input
@@ -204,17 +243,17 @@ export function SettingsView({
                   checked={draft.github.default_private}
                   onChange={(event) => updateGithub("default_private", event.target.checked)}
                 />
-                <span>New repositories default to private</span>
+                <span>{t("settings.defaultPrivate")}</span>
               </label>
               <label>
-                <span>Owner</span>
+                <span>{t("settings.owner")}</span>
                 <input
                   value={draft.github.owner}
                   onChange={(event) => updateGithub("owner", event.target.value)}
                 />
               </label>
               <label>
-                <span>Repo prefix</span>
+                <span>{t("settings.repoPrefix")}</span>
                 <input
                   value={draft.github.repo_prefix}
                   onChange={(event) => updateGithub("repo_prefix", event.target.value)}
@@ -224,31 +263,31 @@ export function SettingsView({
           </div>
 
           <div className="settings-section">
-            <h3>Resource Repository</h3>
+            <h3>{t("settings.resourceRepository")}</h3>
             <div className="stack-form two-column">
               <label>
-                <span>Repo name</span>
+                <span>{t("settings.repoName")}</span>
                 <input
                   value={draft.resources.repo_name}
                   onChange={(event) => updateResources("repo_name", event.target.value)}
                 />
               </label>
               <label>
-                <span>Branch</span>
+                <span>{t("settings.branch")}</span>
                 <input
                   value={draft.resources.branch}
                   onChange={(event) => updateResources("branch", event.target.value)}
                 />
               </label>
               <label className="span-2">
-                <span>Repo URL</span>
+                <span>{t("settings.repoUrl")}</span>
                 <input
                   value={draft.resources.repo_url}
                   onChange={(event) => updateResources("repo_url", event.target.value)}
                 />
               </label>
               <label className="span-2">
-                <span>Local path</span>
+                <span>{t("settings.localPath")}</span>
                 <input
                   value={draft.resources.local_path}
                   onChange={(event) => updateResources("local_path", event.target.value)}
@@ -258,10 +297,10 @@ export function SettingsView({
           </div>
 
           <div className="settings-section">
-            <h3>Install</h3>
+            <h3>{t("settings.install")}</h3>
             <div className="stack-form">
               <label>
-                <span>Fallback target</span>
+                <span>{t("settings.fallbackTarget")}</span>
                 <input
                   value={draft.install.target}
                   onChange={(event) => updateInstall("target", event.target.value)}
@@ -271,7 +310,7 @@ export function SettingsView({
           </div>
 
           <div className="settings-section">
-            <h3>Platforms</h3>
+            <h3>{t("settings.platforms")}</h3>
             <div className="platform-editor-list">
               {draft.platforms.map((platform, index) => (
                 <div className="platform-editor" key={platform.name}>
@@ -283,26 +322,26 @@ export function SettingsView({
                         checked={platform.enabled}
                         onChange={(event) => updatePlatform(index, { enabled: event.target.checked })}
                       />
-                      <span>Enabled</span>
+                      <span>{t("settings.enabled")}</span>
                     </label>
                   </div>
                   <div className="stack-form three-column">
                     <label>
-                      <span>Skills</span>
+                      <span>{t("settings.skills")}</span>
                       <input
                         value={platform.skills_dir}
                         onChange={(event) => updatePlatform(index, { skills_dir: event.target.value })}
                       />
                     </label>
                     <label>
-                      <span>MCP JSON</span>
+                      <span>{t("settings.mcpJson")}</span>
                       <input
                         value={platform.mcp_json}
                         onChange={(event) => updatePlatform(index, { mcp_json: event.target.value })}
                       />
                     </label>
                     <label>
-                      <span>Rules</span>
+                      <span>{t("settings.rules")}</span>
                       <input
                         value={platform.rules_dir}
                         onChange={(event) => updatePlatform(index, { rules_dir: event.target.value })}
@@ -319,7 +358,8 @@ export function SettingsView({
       {pendingSave ? (
         <PrepareModal
           check={pendingSave.check}
-          busy={busy}
+          busy={actionBusy}
+          t={t}
           onCancel={() => setPendingSave(null)}
           onConfirm={confirmPrepareAndSave}
         />
@@ -328,14 +368,26 @@ export function SettingsView({
   );
 }
 
+function saveLabel(
+  t: TFunction,
+  state: { checking: boolean; saving: boolean; preparing: boolean },
+): string {
+  if (state.preparing) return t("settings.preparingShort");
+  if (state.saving) return t("settings.savingShort");
+  if (state.checking) return t("settings.checkingShort");
+  return t("common.save");
+}
+
 function PrepareModal({
   check,
   busy,
+  t,
   onCancel,
   onConfirm,
 }: {
   check: ConfigCheckResult;
   busy: boolean;
+  t: TFunction;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -344,7 +396,7 @@ function PrepareModal({
       <div className="modal">
         <div className="modal-head">
           <AlertTriangle size={20} />
-          <h2>Resource repository needs preparation</h2>
+          <h2>{t("settings.modalTitle")}</h2>
         </div>
         <div className="modal-list">
           {check.missing.map((item) => (
@@ -361,9 +413,9 @@ function PrepareModal({
           ))}
         </div>
         <div className="modal-actions">
-          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
           <button className="primary" type="button" onClick={onConfirm} disabled={busy || !check.can_prepare}>
-            Create / connect and save
+            {t("settings.modalConfirm")}
           </button>
         </div>
       </div>
