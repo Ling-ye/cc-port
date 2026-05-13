@@ -1,0 +1,564 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #1f2933;
+  background: #f4f6f8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 980px;
+  min-height: 640px;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: 100vh;
+  background: #eef2f5;
+}
+
+.sidebar {
+  background: #132026;
+  color: #edf5f2;
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 6px;
+}
+
+.brand-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #2fb39a;
+  color: #08211d;
+  font-weight: 800;
+}
+
+.brand strong,
+.brand span {
+  display: block;
+}
+
+.brand span {
+  color: #a6b8b4;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.sidebar nav {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-item {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 11px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #c9d8d3;
+  background: transparent;
+  text-align: left;
+}
+
+.nav-item:hover,
+.nav-item.active {
+  background: #20333b;
+  color: #ffffff;
+}
+
+.workspace {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 23px;
+  line-height: 1.2;
+}
+
+.topbar p,
+.panel-head p {
+  margin: 4px 0 0;
+  color: #65727c;
+  font-size: 13px;
+}
+
+.status-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status {
+  border: 1px solid #d5dde2;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.status.ok {
+  color: #0d7568;
+  border-color: #a7ddd3;
+}
+
+.status.warn {
+  color: #9a5b00;
+  border-color: #e4c37d;
+}
+
+.icon-button,
+.primary,
+.secondary,
+.danger,
+.quick-actions button,
+.mode-tabs button {
+  border: 1px solid #ccd6dc;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #24313a;
+  min-height: 36px;
+}
+
+.icon-button {
+  width: 38px;
+  display: grid;
+  place-items: center;
+}
+
+.primary {
+  background: #167f72;
+  border-color: #167f72;
+  color: #ffffff;
+  padding: 9px 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.secondary,
+.danger {
+  padding: 8px 12px;
+}
+
+.danger {
+  color: #a32424;
+  border-color: #e4b5b5;
+}
+
+.banner {
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid;
+}
+
+.banner.success {
+  background: #e9f8f2;
+  border-color: #b7e5d2;
+  color: #176c55;
+}
+
+.banner.danger {
+  background: #fff0f0;
+  border-color: #edb5b5;
+  color: #9c2525;
+}
+
+.view-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.metrics {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metric,
+.panel {
+  background: #ffffff;
+  border: 1px solid #dce4e9;
+  border-radius: 8px;
+}
+
+.metric {
+  padding: 16px;
+}
+
+.metric span {
+  display: block;
+  color: #65727c;
+  font-size: 13px;
+}
+
+.metric strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 28px;
+}
+
+.panel {
+  padding: 16px;
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+.panel-head,
+.toolbar,
+.detail-title,
+.danger-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-head h2,
+.detail-title h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.quick-actions {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quick-actions button,
+.mode-tabs button {
+  padding: 10px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.split-view {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.42fr) 1fr;
+  gap: 14px;
+  min-height: 560px;
+}
+
+.list-panel,
+.detail-panel {
+  min-height: 560px;
+}
+
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.segmented button {
+  border: 1px solid #d5dde2;
+  background: #f7fafb;
+  border-radius: 999px;
+  padding: 6px 10px;
+}
+
+.segmented button.active {
+  background: #132026;
+  color: #ffffff;
+  border-color: #132026;
+}
+
+.resource-list,
+.compact-list,
+.check-list,
+.platform-grid {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.resource-row {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 10px;
+  text-align: left;
+}
+
+.resource-row:hover,
+.resource-row.active {
+  background: #f1f6f7;
+  border-color: #c9dfe2;
+}
+
+.resource-row small {
+  display: block;
+  color: #6c7882;
+  margin-top: 3px;
+}
+
+.kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  height: 24px;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.kind-skill { background: #167f72; }
+.kind-mcp { background: #7b4ab5; }
+.kind-rule { background: #9b6a12; }
+.kind-prompt { background: #2f6690; }
+.kind-plugin { background: #8e3d4f; }
+
+.description-list {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.description-list div,
+.platform-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.description-list dt {
+  color: #6c7882;
+}
+
+.description-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tag-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tag-row span {
+  background: #eef3f4;
+  border-radius: 999px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.form-panel {
+  max-width: 760px;
+}
+
+.mode-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.mode-tabs .active {
+  background: #132026;
+  color: #ffffff;
+}
+
+.stack-form {
+  display: grid;
+  gap: 14px;
+}
+
+.stack-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.stack-form label > span {
+  color: #46525c;
+  font-size: 13px;
+}
+
+.stack-form input,
+.stack-form select {
+  width: 100%;
+  border: 1px solid #cbd5dc;
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: #ffffff;
+  color: #202a32;
+}
+
+.checkline {
+  display: flex !important;
+  align-items: center;
+  gap: 9px !important;
+}
+
+.checkline input {
+  width: auto;
+}
+
+.check-row {
+  display: grid;
+  grid-template-columns: 24px 160px 1fr;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid #edf1f4;
+  padding: 10px 0;
+}
+
+.check-row svg:first-child {
+  color: #167f72;
+}
+
+.platform-row {
+  border-top: 1px solid #edf1f4;
+  padding-top: 12px;
+}
+
+.platform-row > div:first-child span {
+  display: block;
+  color: #6c7882;
+  margin-top: 4px;
+}
+
+.kind-bars {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.kind-bars > div {
+  display: grid;
+  grid-template-columns: 80px 1fr 36px;
+  gap: 10px;
+  align-items: center;
+}
+
+.kind-bars div div {
+  height: 8px;
+  background: #edf2f4;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.kind-bars i {
+  display: block;
+  height: 100%;
+  background: #2f8f83;
+}
+
+.compact-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.empty {
+  height: 100%;
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  color: #697781;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #e7edf0;
+    background: #10171b;
+  }
+
+  .app-shell {
+    background: #10171b;
+  }
+
+  .workspace {
+    background: #10171b;
+  }
+
+  .panel,
+  .metric,
+  .status,
+  .icon-button,
+  .quick-actions button,
+  .mode-tabs button,
+  .stack-form input,
+  .stack-form select {
+    background: #172228;
+    border-color: #2b3d46;
+    color: #e7edf0;
+  }
+
+  .topbar p,
+  .panel-head p,
+  .description-list dt,
+  .resource-row small,
+  .metric span {
+    color: #9cafb8;
+  }
+
+  .resource-row:hover,
+  .resource-row.active {
+    background: #1d3036;
+    border-color: #31505a;
+  }
+
+  .segmented button {
+    background: #162128;
+    color: #d8e1e4;
+    border-color: #2b3d46;
+  }
+
+  .tag-row span,
+  .kind-bars div div {
+    background: #223239;
+  }
+}
