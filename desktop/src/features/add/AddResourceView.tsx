@@ -1,5 +1,5 @@
 import { FormEvent, useMemo, useState } from "react";
-import { Eye, FolderSearch, GitBranch, Search, Upload } from "lucide-react";
+import { Eye, EyeOff, FolderSearch, GitBranch, Search, Upload } from "lucide-react";
 import { lpmAction } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import { KindBadge } from "@/components/KindBadge";
@@ -36,6 +36,7 @@ export function AddResourceView({
   const [candidateNames, setCandidateNames] = useState<Record<string, string>>({});
   const [kindFilter, setKindFilter] = useState<"all" | ResourceKind>("all");
   const [toolFilter, setToolFilter] = useState("all");
+  const [activePreviewId, setActivePreviewId] = useState("");
   const [preview, setPreview] = useState<DiscoveryReadResult | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [scanSummary, setScanSummary] = useState("");
@@ -99,7 +100,15 @@ export function AddResourceView({
   }
 
   async function readPreview(candidate: DiscoveredResource) {
+    if (activePreviewId === candidate.id) {
+      setActivePreviewId("");
+      setPreview(null);
+      return;
+    }
+
     setPreviewBusy(true);
+    setActivePreviewId(candidate.id);
+    setPreview(null);
     try {
       const data = await lpmAction<DiscoveryReadResult>("read_discovered_resource", {
         ...discoveryPayload(),
@@ -223,19 +232,24 @@ export function AddResourceView({
                       {candidate.description ? <p>{candidate.description}</p> : null}
                       {candidate.warnings.length ? <p className="discovery-warning">{candidate.warnings.join(" ")}</p> : null}
                     </div>
-                    <button className="icon-button" onClick={() => readPreview(candidate)} disabled={previewBusy} title={t("add.discoverPreview")}>
-                      <Eye size={16} />
+                    <button
+                      className={activePreviewId === candidate.id ? "icon-button active" : "icon-button"}
+                      onClick={() => readPreview(candidate)}
+                      disabled={previewBusy && activePreviewId !== candidate.id}
+                      title={t("add.discoverPreview")}
+                    >
+                      {activePreviewId === candidate.id ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
+                    {activePreviewId === candidate.id && preview ? (
+                      <div className="preview-panel discovery-preview">
+                        <strong>{preview.path}</strong>
+                        {preview.warning ? <p className="discovery-warning">{preview.warning}</p> : null}
+                        <pre>{preview.text}{preview.truncated ? "\n..." : ""}</pre>
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
-              {preview ? (
-                <div className="preview-panel">
-                  <strong>{preview.path}</strong>
-                  {preview.warning ? <p className="discovery-warning">{preview.warning}</p> : null}
-                  <pre>{preview.text}{preview.truncated ? "\n..." : ""}</pre>
-                </div>
-              ) : null}
               <label className="checkline">
                 <input type="checkbox" checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />
                 <span>{t("add.discoverOverwrite")}</span>

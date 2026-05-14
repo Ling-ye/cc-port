@@ -848,7 +848,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             result = run_action(args.action, payload)
 
-    print(json.dumps(_to_jsonable(result), ensure_ascii=False))
+    print(json.dumps(_to_jsonable(result), ensure_ascii=True))
     return 0 if result.get("ok") else 1
 
 

@@ -155,6 +155,12 @@ button {
   gap: 6px;
 }
 
+.icon-button.active {
+  background: #132026;
+  border-color: #132026;
+  color: #ffffff;
+}
+
 .primary {
   background: #167f72;
   border-color: #167f72;
@@ -528,6 +534,11 @@ button {
   background: #f8fafb;
 }
 
+.discovery-preview {
+  grid-column: 3 / -1;
+  min-width: 0;
+}
+
 .preview-panel strong {
   display: block;
   margin-bottom: 8px;
@@ -764,6 +775,12 @@ button {
     background: #172228;
     border-color: #2b3d46;
     color: #e7edf0;
+  }
+
+  .icon-button.active {
+    background: #e7edf0;
+    border-color: #e7edf0;
+    color: #132026;
   }
 
   .stack-form input[readonly] {
