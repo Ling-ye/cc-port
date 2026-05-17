@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { CheckCircle2, TerminalSquare, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, TerminalSquare, XCircle } from "lucide-react";
 import { lpmAction } from "@/api/client";
 import type { TFunction } from "@/app/i18n";
-import type { DoctorCheck } from "@/types/lpm";
+import type { DoctorCheck, DoctorStatus } from "@/types/lpm";
 
 export function HealthView({ t, onError }: { t: TFunction; onError: (message: string) => void }) {
   const [checks, setChecks] = useState<DoctorCheck[]>([]);
@@ -31,8 +31,8 @@ export function HealthView({ t, onError }: { t: TFunction; onError: (message: st
       </div>
       <div className="check-list">
         {checks.map((check) => (
-          <div key={check.id} className="check-row">
-            {check.ok ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
+          <div key={check.id} className={`check-row status-${statusOf(check)}`}>
+            {iconForStatus(statusOf(check))}
             <strong>{check.label}</strong>
             <span>{check.detail}</span>
           </div>
@@ -40,4 +40,22 @@ export function HealthView({ t, onError }: { t: TFunction; onError: (message: st
       </div>
     </section>
   );
+}
+
+function statusOf(check: DoctorCheck): DoctorStatus {
+  return check.status ?? (check.ok ? "ok" : "error");
+}
+
+function iconForStatus(status: DoctorStatus) {
+  switch (status) {
+    case "ok":
+      return <CheckCircle2 size={18} />;
+    case "warning":
+      return <AlertTriangle size={18} />;
+    case "skipped":
+      return <Info size={18} />;
+    case "error":
+    default:
+      return <XCircle size={18} />;
+  }
 }

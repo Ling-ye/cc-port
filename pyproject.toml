@@ -33,8 +33,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-mock>=3.12",
     "ruff>=0.5",
 ]
 # Tooling needed only when building the Tauri desktop app from source.
@@ -70,7 +68,3 @@ target-version = "py310"
 select = ["E", "F", "W", "I", "B", "UP"]
 # B008: Typer relies on `typer.Argument(...)` / `typer.Option(...)` in defaults.
 ignore = ["E501", "B008"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"

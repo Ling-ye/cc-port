@@ -283,6 +283,7 @@ export function SettingsView({
                 <span>{t("settings.repoUrl")}</span>
                 <input
                   value={draft.resources.repo_url}
+                  placeholder={t("settings.repoUrlPlaceholder")}
                   onChange={(event) => updateResources("repo_url", event.target.value)}
                 />
               </label>

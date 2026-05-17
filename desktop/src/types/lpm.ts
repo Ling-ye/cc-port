@@ -105,6 +105,7 @@ export interface Summary {
   version: string;
   registry_path: string;
   resource_repo: ResourceRepoInfo;
+  resource_repo_display_name: string;
   counts: {
     total: number;
     by_kind: Record<string, number>;
@@ -124,10 +125,13 @@ export interface Summary {
   };
 }
 
+export type DoctorStatus = "ok" | "warning" | "error" | "skipped";
+
 export interface DoctorCheck {
   id: string;
   label: string;
   ok: boolean;
+  status: DoctorStatus;
   detail: string;
   enabled?: boolean;
   profile?: PlatformProfile;

@@ -177,7 +177,7 @@ function Topbar({
   return (
     <header className="topbar">
       <div>
-        <h1>{summary?.resource_repo.repo_name || "LingyePluginMarketplace"}</h1>
+        <h1>{summary?.resource_repo_display_name || t("settings.notConfigured")}</h1>
         <p>{summary?.registry_path || t("topbar.loadingConfig")}</p>
       </div>
       <div className="topbar-actions">

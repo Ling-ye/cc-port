@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ..core.config import (
@@ -28,6 +28,7 @@ from ..core.resource_detection import (
     detect_remote_resource,
 )
 from ..services import publisher
+from ..services.doctor import build_doctor_checks, has_doctor_errors
 from ..services.installer import (
     SyncAction,
     check_all,
@@ -838,69 +839,32 @@ def cmd_check(
 def cmd_doctor() -> None:
     """Check that the environment is ready (git, token, permissions, platforms)."""
     cfg = _load()
-    issues: list[str] = []
+    checks = build_doctor_checks(cfg)
+    general_checks = [check for check in checks if not str(check.get("id", "")).startswith("platform:")]
+    platform_checks = [check for check in checks if str(check.get("id", "")).startswith("platform:")]
 
-    git_path = shutil.which("git")
-    if git_path:
-        version = subprocess.run(
-            ["git", "--version"], capture_output=True, text=True, check=False
-        ).stdout.strip()
-        console.print(f"[green]git:[/green] {version} ({git_path})")
-    else:
-        console.print("[red]git not found on PATH.[/red]")
-        issues.append("git missing")
-
-    if cfg.github.token:
-        console.print("[green]GitHub token: configured[/green]")
-    else:
-        console.print(
-            f"[yellow]No GitHub token configured.[/yellow] Set ${CONFIG_ENV_VAR} or run `lpm init`."
-        )
-
-    target = cfg.install.target_path
-    try:
-        target.mkdir(parents=True, exist_ok=True)
-        console.print(f"[green]Install target writable:[/green] {target}")
-    except OSError as exc:
-        console.print(f"[red]Install target not writable[/red] {target}: {exc}")
-        issues.append("install target")
-
-    reg_path = find_registry_path()
-    console.print(f"[green]Registry:[/green] {reg_path}")
-    resource_info = inspect_resource_repo(cfg)
-    console.print(f"[green]Resource repo:[/green] {resource_info.local_path}")
-    if not resource_info.exists:
-        console.print("[yellow]Resource repo is not initialized.[/yellow] Run `lpm resource init`.")
-    elif not resource_info.is_git_repo:
-        console.print("[yellow]Resource repo exists but is not a git repository.[/yellow]")
-
-    if cfg.source_path:
-        console.print(f"[green]Config:[/green] {cfg.source_path}")
-    else:
-        console.print(f"[yellow]Config not found at[/yellow] {default_config_path()}")
-
+    for check in general_checks:
+        _print_doctor_check(check)
+    console.print(f"[green]Registry:[/green] {escape(str(find_registry_path()))}")
     console.print("\n[bold]Platforms[/bold]")
-    for plat in cfg.platforms.profiles:
-        status = "[green]enabled[/green]" if plat.enabled else "[dim]disabled[/dim]"
-        console.print(f"  {plat.name}: {status}")
-        if plat.enabled:
-            sp = plat.skills_path()
-            if sp:
-                try:
-                    sp.mkdir(parents=True, exist_ok=True)
-                    console.print(f"    skills_dir: [green]{sp}[/green]")
-                except OSError:
-                    console.print(f"    skills_dir: [red]{sp} (not writable)[/red]")
-                    issues.append(f"{plat.name} skills_dir")
-            mp = plat.mcp_json_path()
-            if mp:
-                console.print(f"    mcp_json: {mp} {'[green](exists)[/green]' if mp.is_file() else '[dim](not yet created)[/dim]'}")
-            rp = plat.rules_path()
-            if rp:
-                console.print(f"    rules_dir: {rp}")
+    for check in platform_checks:
+        _print_doctor_check(check, indent="  ")
 
-    if issues:
+    if has_doctor_errors(checks):
         raise typer.Exit(1)
+
+
+def _print_doctor_check(check: dict, *, indent: str = "") -> None:
+    status = str(check.get("status") or ("ok" if check.get("ok") else "error"))
+    style = {
+        "ok": "green",
+        "warning": "yellow",
+        "error": "red",
+        "skipped": "dim",
+    }.get(status, "white")
+    label = escape(str(check.get("label") or check.get("id") or "Check"))
+    detail = escape(str(check.get("detail") or ""))
+    console.print(f"{indent}[{style}]{label}:[/{style}] {detail}")
 
 
 # ---- uninstall ---- #

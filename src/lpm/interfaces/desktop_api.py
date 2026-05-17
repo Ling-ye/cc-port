@@ -10,8 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
@@ -19,6 +17,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - py310 fallback
+    import tomli as tomllib
 
 from .. import __version__
 from ..core.config import (
@@ -43,6 +46,7 @@ from ..core.resource_detection import detect_local_resource_type, detect_remote_
 from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubClient
 from ..services import publisher
+from ..services.doctor import build_doctor_checks
 from ..services.installer import check_all, status_all, sync_all, uninstall_one
 from ..services.local_resources import import_local_resource
 from ..services.publisher import remove_skill
@@ -80,6 +84,7 @@ def run_action(action: str, payload: JsonDict | None = None) -> JsonDict:
 
 def _summary(_: JsonDict) -> JsonDict:
     cfg = load_config()
+    raw_cfg = load_raw_config()
     registry_path = find_registry_path()
     registry = load_registry(registry_path)
     resource = inspect_resource_repo(cfg)
@@ -89,6 +94,7 @@ def _summary(_: JsonDict) -> JsonDict:
         "config": _config_summary(cfg),
         "registry_path": str(registry_path),
         "resource_repo": resource,
+        "resource_repo_display_name": _configured_resource_repo_name(raw_cfg),
         "counts": _registry_counts(registry.items),
         "updates": sum(1 for item in statuses if item.has_update),
         "installed": sum(1 for item in statuses if item.installed),
@@ -124,47 +130,7 @@ def _platforms(_: JsonDict) -> JsonDict:
 
 
 def _doctor(_: JsonDict) -> JsonDict:
-    cfg = load_config()
-    git_path = shutil.which("git")
-    resource = inspect_resource_repo(cfg)
-    checks: list[JsonDict] = [
-        {
-            "id": "git",
-            "label": "Git",
-            "ok": bool(git_path),
-            "detail": _git_version(git_path) if git_path else "git not found on PATH",
-        },
-        {
-            "id": "config",
-            "label": "Config",
-            "ok": bool(cfg.source_path),
-            "detail": str(cfg.source_path or default_config_path()),
-        },
-        {
-            "id": "github_token",
-            "label": "GitHub token",
-            "ok": bool(cfg.github.token),
-            "detail": f"Configured via {CONFIG_ENV_VAR} or config" if cfg.github.token else "Not configured",
-        },
-        {
-            "id": "resource_repo",
-            "label": "Resource repo",
-            "ok": resource.exists and resource.is_git_repo,
-            "detail": str(resource.local_path),
-        },
-    ]
-    for profile in cfg.platforms.profiles:
-        checks.append(
-            {
-                "id": f"platform:{profile.name}",
-                "label": f"Platform: {profile.name}",
-                "ok": True,
-                "detail": "enabled" if profile.enabled else "disabled",
-                "enabled": profile.enabled,
-                "profile": profile,
-            }
-        )
-    return {"checks": checks}
+    return {"checks": build_doctor_checks(load_config())}
 
 
 def _collect(payload: JsonDict) -> JsonDict:
@@ -711,6 +677,21 @@ def _maybe_push(cfg: Config, payload: JsonDict) -> Any:
     return push_resource_repo(config=cfg)
 
 
+def _configured_resource_repo_name(raw_cfg: Config) -> str:
+    if raw_cfg.source_path is None:
+        return ""
+    try:
+        with raw_cfg.source_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+
+    resources = data.get("resources", {})
+    if not isinstance(resources, dict):
+        return ""
+    return str(resources.get("repo_name") or "").strip()
+
+
 def _config_summary(cfg: Config) -> JsonDict:
     return {
         "path": str(cfg.source_path or default_config_path()),
@@ -732,18 +713,6 @@ def _registry_counts(items: list[RegistryItem]) -> JsonDict:
         counts["by_kind"][item.kind] = counts["by_kind"].get(item.kind, 0) + 1
         counts["by_source"][item.source] = counts["by_source"].get(item.source, 0) + 1
     return counts
-
-
-def _git_version(git_path: str | None) -> str:
-    if not git_path:
-        return ""
-    completed = subprocess.run(
-        [git_path, "--version"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return completed.stdout.strip() or git_path
 
 
 def _to_jsonable(value: Any) -> Any:

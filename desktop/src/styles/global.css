@@ -569,8 +569,24 @@ button {
   padding: 10px 0;
 }
 
-.check-row svg:first-child {
+.check-row.status-ok svg:first-child {
   color: #167f72;
+}
+
+.check-row.status-warning svg:first-child {
+  color: #b87912;
+}
+
+.check-row.status-error svg:first-child {
+  color: #c83d35;
+}
+
+.check-row.status-skipped {
+  color: #6c7882;
+}
+
+.check-row.status-skipped svg:first-child {
+  color: #8a969e;
 }
 
 .platform-row {

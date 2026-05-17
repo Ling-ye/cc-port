@@ -273,6 +273,12 @@ Windows 下等价路径通常是：
 %USERPROFILE%\.config\lpm\config.toml
 ```
 
+资源仓库地址格式：
+
+- 推荐填写 GitHub HTTPS 仓库地址：`https://github.com/<owner>/<repo>`。
+- 也可以填写：`https://github.com/<owner>/<repo>.git` 或 `git@github.com:<owner>/<repo>.git`。
+- 桌面设置页里的检查、创建和连接资源仓库功能目前只支持 `github.com` 仓库。
+
 常用环境变量：
 
 - `LPM_CONFIG`：指定配置文件路径。
