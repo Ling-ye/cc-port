@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useMemo, useRef, useState } from "react";
 import { Eye, EyeOff, FolderSearch, GitBranch, Search, Upload } from "lucide-react";
 import { lpmAction } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
@@ -41,6 +41,7 @@ export function AddResourceView({
   const [previewBusy, setPreviewBusy] = useState(false);
   const [scanSummary, setScanSummary] = useState("");
   const [busy, setBusy] = useState(false);
+  const previewRequestRef = useRef(0);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const tools = useMemo(
@@ -84,7 +85,10 @@ export function AddResourceView({
       return;
     }
     setBusy(true);
+    previewRequestRef.current += 1;
+    setActivePreviewId("");
     setPreview(null);
+    setPreviewBusy(false);
     setScanSummary("");
     try {
       const data = await lpmAction<{ items: DiscoveredResource[] }>("discover_resources", discoveryPayload());
@@ -101,11 +105,15 @@ export function AddResourceView({
 
   async function readPreview(candidate: DiscoveredResource) {
     if (activePreviewId === candidate.id) {
+      previewRequestRef.current += 1;
       setActivePreviewId("");
       setPreview(null);
+      setPreviewBusy(false);
       return;
     }
 
+    const requestId = previewRequestRef.current + 1;
+    previewRequestRef.current = requestId;
     setPreviewBusy(true);
     setActivePreviewId(candidate.id);
     setPreview(null);
@@ -114,11 +122,19 @@ export function AddResourceView({
         ...discoveryPayload(),
         id: candidate.id,
       });
-      setPreview(data);
+      if (previewRequestRef.current === requestId) {
+        setPreview(data);
+      }
     } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+      if (previewRequestRef.current === requestId) {
+        setActivePreviewId("");
+        setPreview(null);
+        onError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setPreviewBusy(false);
+      if (previewRequestRef.current === requestId) {
+        setPreviewBusy(false);
+      }
     }
   }
 
@@ -240,7 +256,7 @@ export function AddResourceView({
                     >
                       {activePreviewId === candidate.id ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
-                    {activePreviewId === candidate.id && preview ? (
+                    {activePreviewId === candidate.id && preview?.id === candidate.id ? (
                       <div className="preview-panel discovery-preview">
                         <strong>{preview.path}</strong>
                         {preview.warning ? <p className="discovery-warning">{preview.warning}</p> : null}

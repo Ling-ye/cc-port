@@ -535,8 +535,9 @@ button {
 }
 
 .discovery-preview {
-  grid-column: 3 / -1;
+  grid-column: 1 / -1;
   min-width: 0;
+  margin-top: 2px;
 }
 
 .preview-panel strong {

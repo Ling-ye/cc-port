@@ -768,6 +768,16 @@ def _error(code: str, message: str) -> JsonDict:
     return {"ok": False, "error": {"code": code, "message": message}}
 
 
+def _write_json_response(result: JsonDict) -> None:
+    text = json.dumps(_to_jsonable(result), ensure_ascii=True)
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(text.encode("utf-8") + b"\n")
+        buffer.flush()
+        return
+    print(text)
+
+
 def _required_str(payload: JsonDict, key: str) -> str:
     value = payload.get(key)
     if value is None or str(value).strip() == "":
@@ -848,7 +858,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             result = run_action(args.action, payload)
 
-    print(json.dumps(_to_jsonable(result), ensure_ascii=True))
+    _write_json_response(result)
     return 0 if result.get("ok") else 1
 
 
