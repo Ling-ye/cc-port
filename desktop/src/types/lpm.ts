@@ -101,6 +101,13 @@ export interface ConfigCheckResult {
   };
 }
 
+export interface ConfigBranchOptions {
+  branches: string[];
+  default_branch: string;
+  selected_branch: string;
+  warning: string;
+}
+
 export interface Summary {
   version: string;
   registry_path: string;

@@ -186,6 +186,25 @@ def pull(path: Path, ref: str | None = None, token: str | None = None) -> None:
         _cleanup_askpass(env)
 
 
+def fetch(path: Path, remote: str = "origin", ref: str | None = None, token: str | None = None) -> None:
+    args = ["fetch", remote]
+    if ref:
+        args.append(ref)
+    env = _token_env(token)
+    try:
+        _run(args, cwd=path, extra_env=env)
+    finally:
+        _cleanup_askpass(env)
+
+
+def merge_ff_only(path: Path, target: str) -> None:
+    _run(["merge", "--ff-only", target], cwd=path)
+
+
+def checkout_remote_branch(path: Path, branch: str, remote: str = "origin") -> None:
+    _run(["checkout", "-B", branch, f"{remote}/{branch}"], cwd=path)
+
+
 def current_remote_url(path: Path, remote: str = "origin") -> str | None:
     res = _run(["remote", "get-url", remote], cwd=path, check=False)
     if res.returncode != 0:
@@ -204,6 +223,14 @@ def checkout_branch(path: Path, branch: str) -> None:
     _run(["checkout", "-B", branch], cwd=path)
 
 
+def checkout_local_branch(path: Path, branch: str) -> None:
+    exists = _run(["rev-parse", "--verify", branch], cwd=path, check=False)
+    if exists.returncode == 0:
+        _run(["checkout", branch], cwd=path)
+    else:
+        checkout_branch(path, branch)
+
+
 def status_short(path: Path) -> str:
     res = _run(["status", "--short"], cwd=path, check=False)
     return res.stdout.strip() if res.returncode == 0 else ""
@@ -216,11 +243,20 @@ def head_commit(path: Path) -> str | None:
     return res.stdout.strip() or None
 
 
-def remote_commit(path: Path, ref: str = "main", remote: str = "origin") -> str | None:
-    res = _run(["ls-remote", remote, ref], cwd=path, check=False)
-    if res.returncode != 0 or not res.stdout.strip():
-        return None
-    return res.stdout.split()[0]
+def remote_commit(
+    path: Path,
+    ref: str = "main",
+    remote: str = "origin",
+    token: str | None = None,
+) -> str | None:
+    env = _token_env(token)
+    try:
+        res = _run(["ls-remote", remote, ref], cwd=path, check=False, extra_env=env)
+        if res.returncode != 0 or not res.stdout.strip():
+            return None
+        return res.stdout.split()[0]
+    finally:
+        _cleanup_askpass(env)
 
 
 def probe_remote(url: str, ref: str = "main", *, timeout: int = 15) -> bool:

@@ -21,6 +21,13 @@ class CreatedRepo:
     private: bool
 
 
+@dataclass
+class RepoBranches:
+    full_name: str
+    default_branch: str
+    branches: list[str]
+
+
 class GithubClient:
     def __init__(self, token: str):
         if not token:
@@ -123,4 +130,17 @@ class GithubClient:
             ssh_url=repo.ssh_url,
             default_branch=repo.default_branch or "main",
             private=bool(repo.private),
+        )
+
+    def list_repo_branches(self, owner: str, name: str) -> RepoBranches | None:
+        """Return branch names and default branch for an existing repository."""
+        repo = self.get_repo(owner, name)
+        if repo is None:
+            return None
+        branches = sorted({branch.name for branch in repo.get_branches()})
+        default_branch = repo.default_branch or "main"
+        return RepoBranches(
+            full_name=repo.full_name,
+            default_branch=default_branch,
+            branches=branches,
         )

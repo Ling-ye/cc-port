@@ -133,12 +133,16 @@ def _resource_repo_check(
         detail_parts.append("no git remote configured")
 
     status: DoctorStatus = "ok"
-    if cfg.resources.repo_url and resource.remote_url:
-        expected = _normalize_git_url(cfg.resources.repo_url)
-        actual = _normalize_git_url(resource.remote_url)
-        if expected != actual:
+    if cfg.resources.repo_url:
+        if not resource.remote_url:
             status = "warning"
             detail_parts.append(f"configured URL is {cfg.resources.repo_url}")
+        else:
+            expected = _normalize_git_url(cfg.resources.repo_url)
+            actual = _normalize_git_url(resource.remote_url)
+            if expected != actual:
+                status = "warning"
+                detail_parts.append(f"configured URL is {cfg.resources.repo_url}")
     if resource.dirty:
         status = "warning"
         detail_parts.append("has local changes")

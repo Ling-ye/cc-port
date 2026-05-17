@@ -418,6 +418,36 @@ button {
   margin-bottom: 6px;
 }
 
+.field-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.field-action {
+  border: 0;
+  background: transparent;
+  color: #167f72;
+  padding: 0;
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.field-action:disabled {
+  color: #7f8d95;
+  cursor: default;
+}
+
+.field-note {
+  color: #8a5a11;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .stack-form input,
 .stack-form select {
   width: 100%;
@@ -808,6 +838,7 @@ button {
   .topbar p,
   .panel-head p,
   .field-label,
+  .field-action:disabled,
   .description-list dt,
   .resource-row small,
   .discovery-actions span,
@@ -820,6 +851,10 @@ button {
   .inline-warning {
     background: #2d2617;
     border-color: #6f5521;
+    color: #e2bd72;
+  }
+
+  .field-note {
     color: #e2bd72;
   }
 

@@ -56,6 +56,7 @@ from ..services.resource_discovery import (
     resolve_discovered_resources,
 )
 from ..services.resource_repo import (
+    connect_local_resource_repo,
     ensure_structure,
     init_resource_repo,
     inspect_resource_repo,
@@ -319,6 +320,57 @@ def _config_check(payload: JsonDict) -> JsonDict:
     return _check_resource_target(cfg)
 
 
+def _config_branches(payload: JsonDict) -> JsonDict:
+    raw_cfg = load_raw_config()
+    cfg = _config_from_draft(payload, raw_cfg)
+    cfg.github.token = _effective_token(cfg.github.token)
+
+    selected_branch = cfg.resources.branch.strip() or DEFAULT_RESOURCE_BRANCH
+    default_branch = DEFAULT_RESOURCE_BRANCH
+
+    parsed = _parse_github_repo(cfg.resources.repo_url)
+    if cfg.resources.repo_url and parsed is None:
+        return _branch_options_response(
+            selected_branch=selected_branch,
+            default_branch=default_branch,
+            warning="Only github.com repositories can be checked from Settings.",
+        )
+
+    if not cfg.github.token.strip():
+        return _branch_options_response(
+            selected_branch=selected_branch,
+            default_branch=default_branch,
+            warning=f"Set a token in config or {CONFIG_ENV_VAR} before loading remote branches.",
+        )
+
+    try:
+        client = GithubClient(cfg.github.token)
+        owner, name = _target_repo_owner_name(cfg, client)
+        result = client.list_repo_branches(owner, name)
+    except Exception as exc:  # noqa: BLE001 - branch loading is optional in Settings
+        return _branch_options_response(
+            selected_branch=selected_branch,
+            default_branch=default_branch,
+            warning=str(exc),
+        )
+
+    if result is None:
+        label = "/".join(part for part in (owner, name) if part) or cfg.resources.repo_url
+        return _branch_options_response(
+            selected_branch=selected_branch,
+            default_branch=default_branch,
+            warning=f"Repository {label} is not accessible or does not exist.",
+        )
+
+    default_branch = result.default_branch or DEFAULT_RESOURCE_BRANCH
+    return {
+        "branches": _branch_options(result.branches, selected_branch, default_branch),
+        "default_branch": default_branch,
+        "selected_branch": selected_branch,
+        "warning": "",
+    }
+
+
 def _config_save(payload: JsonDict) -> JsonDict:
     raw_cfg = load_raw_config()
     cfg = _config_from_draft(payload, raw_cfg)
@@ -512,6 +564,8 @@ def _check_resource_target(cfg: Config) -> JsonDict:
     local_path = cfg.resources.local_path_value.expanduser()
     local_exists = local_path.exists()
     local_is_git = git_ops.is_repo(local_path) if local_exists else False
+    local_remote_url = git_ops.current_remote_url(local_path) if local_is_git else None
+    local_dirty = bool(git_ops.status_short(local_path)) if local_is_git else False
 
     if not local_exists:
         missing.append(
@@ -527,6 +581,34 @@ def _check_resource_target(cfg: Config) -> JsonDict:
                 "id": "local_git",
                 "label": "Local git repository",
                 "detail": f"{local_path} exists but is not a git repository.",
+            }
+        )
+    elif cfg.resources.repo_url.strip():
+        expected = _normalize_git_url(cfg.resources.repo_url)
+        actual = _normalize_git_url(local_remote_url or "")
+        if not local_remote_url:
+            missing.append(
+                {
+                    "id": "local_remote",
+                    "label": "Local git remote",
+                    "detail": f"{local_path} is a git repository but has no origin remote.",
+                }
+            )
+        elif expected and actual != expected:
+            missing.append(
+                {
+                    "id": "local_remote_mismatch",
+                    "label": "Local git remote",
+                    "detail": f"{local_path} points to {local_remote_url}, not {cfg.resources.repo_url}.",
+                }
+            )
+
+    if local_dirty:
+        warnings.append(
+            {
+                "id": "local_dirty",
+                "label": "Local resource directory",
+                "detail": f"{local_path} has local changes. Commit or clean them before pulling remote data.",
             }
         )
 
@@ -617,15 +699,12 @@ def _prepare_resource_target(cfg: Config, token: str) -> JsonDict:
     branch = cfg.resources.branch or DEFAULT_RESOURCE_BRANCH
     local_path = cfg.resources.local_path_value.expanduser().resolve()
 
-    if not local_path.exists():
-        git_ops.clone(repo.https_url, local_path, token=token)
-    else:
-        local_path.mkdir(parents=True, exist_ok=True)
-        if not git_ops.is_repo(local_path):
-            git_ops.init_repo(local_path, default_branch=branch)
-        git_ops.set_remote(local_path, "origin", repo.https_url)
-
-    git_ops.checkout_branch(local_path, branch)
+    connect_local_resource_repo(
+        local_path,
+        repo_url=repo.https_url,
+        branch=branch,
+        token=token,
+    )
     ensure_structure(local_path)
     if git_ops.status_short(local_path):
         git_ops.add_all(local_path)
@@ -669,6 +748,35 @@ def _parse_github_repo(value: str) -> tuple[str, str] | None:
     if len(parts) < 2:
         return None
     return parts[0], parts[1].removesuffix(".git")
+
+
+def _normalize_git_url(value: str) -> str:
+    return value.strip().removesuffix(".git").rstrip("/")
+
+
+def _branch_options_response(
+    *,
+    selected_branch: str,
+    default_branch: str,
+    warning: str,
+) -> JsonDict:
+    return {
+        "branches": _branch_options([], selected_branch, default_branch),
+        "default_branch": default_branch,
+        "selected_branch": selected_branch,
+        "warning": warning,
+    }
+
+
+def _branch_options(branches: list[str], selected_branch: str, default_branch: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for branch in [DEFAULT_RESOURCE_BRANCH, default_branch, selected_branch, *branches]:
+        value = branch.strip()
+        if value and value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
 
 
 def _maybe_push(cfg: Config, payload: JsonDict) -> Any:
@@ -806,6 +914,7 @@ ACTIONS: dict[str, Handler] = {
     "resource_push": _resource_push,
     "config_get": _config_get,
     "config_check": _config_check,
+    "config_branches": _config_branches,
     "config_save": _config_save,
     "write_default_config": _write_default_config,
 }

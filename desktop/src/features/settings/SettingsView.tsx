@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { lpmAction } from "@/api/client";
 import type { TFunction } from "@/app/i18n";
 import type {
+  ConfigBranchOptions,
   ConfigCheckResult,
   ConfigSettings,
   EditableConfig,
@@ -43,9 +44,12 @@ export function SettingsView({
   const [saving, setSaving] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
+  const [branchOptions, setBranchOptions] = useState<ConfigBranchOptions>(() => fallbackBranchOptions("main"));
+  const [loadingBranches, setLoadingBranches] = useState(false);
   const draftRef = useRef<EditableConfig | null>(null);
   const newTokenRef = useRef("");
   const clearTokenRef = useRef(false);
+  const branchRequestRef = useRef(0);
 
   const actionBusy = checking || saving || preparing;
   const anyBusy = loading || actionBusy;
@@ -81,6 +85,20 @@ export function SettingsView({
     void loadSettings();
   }, []);
 
+  useEffect(() => {
+    if (!draft) return;
+    const timer = window.setTimeout(() => {
+      void loadBranchOptions(draft);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [
+    draft?.github.owner,
+    draft?.resources.repo_name,
+    draft?.resources.repo_url,
+    newToken,
+    clearToken,
+  ]);
+
   function updateGithub(key: keyof EditableConfig["github"], value: string | boolean) {
     setDraft((current) => current && { ...current, github: { ...current.github, [key]: value } });
   }
@@ -102,15 +120,48 @@ export function SettingsView({
     });
   }
 
-  function buildPayload(prepare = false): SavePayload | null {
-    if (!draft) return null;
+  function buildPayloadFromDraft(nextDraft: EditableConfig, prepare = false): SavePayload {
     const trimmedToken = newToken.trim();
     return {
-      draft,
+      draft: nextDraft,
       token_action: clearToken ? "clear" : trimmedToken ? "replace" : "preserve",
       new_token: trimmedToken || undefined,
       prepare_resource_repo: prepare,
     };
+  }
+
+  function buildPayload(prepare = false): SavePayload | null {
+    if (!draft) return null;
+    return buildPayloadFromDraft(draft, prepare);
+  }
+
+  async function loadBranchOptions(nextDraft = draft) {
+    if (!nextDraft) return;
+    const requestId = branchRequestRef.current + 1;
+    branchRequestRef.current = requestId;
+    setLoadingBranches(true);
+    try {
+      const options = await lpmAction<ConfigBranchOptions>(
+        "config_branches",
+        buildPayloadFromDraft(nextDraft),
+      );
+      if (branchRequestRef.current !== requestId) return;
+      setBranchOptions({
+        ...options,
+        branches: branchChoices(options, nextDraft.resources.branch),
+      });
+    } catch (err) {
+      if (branchRequestRef.current !== requestId) return;
+      const message = err instanceof Error ? err.message : String(err);
+      setBranchOptions({
+        ...fallbackBranchOptions(nextDraft.resources.branch),
+        warning: message,
+      });
+    } finally {
+      if (branchRequestRef.current === requestId) {
+        setLoadingBranches(false);
+      }
+    }
   }
 
   async function saveSettings() {
@@ -273,11 +324,32 @@ export function SettingsView({
                 />
               </label>
               <label>
-                <span>{t("settings.branch")}</span>
-                <input
-                  value={draft.resources.branch}
+                <span className="field-heading">
+                  <span>{t("settings.branch")}</span>
+                  <button
+                    className="field-action"
+                    type="button"
+                    onClick={() => loadBranchOptions()}
+                    disabled={loadingBranches || actionBusy}
+                    title={t("settings.branchRefresh")}
+                  >
+                    <RefreshCcw size={14} />{loadingBranches ? t("settings.branchLoading") : t("settings.branchRefresh")}
+                  </button>
+                </span>
+                <select
+                  value={draft.resources.branch || branchOptions.selected_branch || "main"}
                   onChange={(event) => updateResources("branch", event.target.value)}
-                />
+                  disabled={loadingBranches}
+                >
+                  {branchChoices(branchOptions, draft.resources.branch).map((branch) => (
+                    <option key={branch} value={branch}>{branch}</option>
+                  ))}
+                </select>
+                {branchOptions.warning ? (
+                  <small className="field-note">
+                    {t("settings.branchLoadWarning", { message: branchOptions.warning })}
+                  </small>
+                ) : null}
               </label>
               <label className="span-2">
                 <span>{t("settings.repoUrl")}</span>
@@ -367,6 +439,27 @@ export function SettingsView({
       ) : null}
     </section>
   );
+}
+
+function fallbackBranchOptions(selectedBranch: string): ConfigBranchOptions {
+  const selected = selectedBranch.trim() || "main";
+  return {
+    branches: branchChoices({ branches: ["main"], default_branch: "main", selected_branch: selected, warning: "" }, selected),
+    default_branch: "main",
+    selected_branch: selected,
+    warning: "",
+  };
+}
+
+function branchChoices(options: ConfigBranchOptions, currentBranch: string): string[] {
+  const out: string[] = [];
+  for (const branch of ["main", options.default_branch, options.selected_branch, currentBranch, ...options.branches]) {
+    const value = branch.trim();
+    if (value && !out.includes(value)) {
+      out.push(value);
+    }
+  }
+  return out;
 }
 
 function saveLabel(
