@@ -84,7 +84,8 @@ scripts/
   dev.*                         # 启动桌面开发模式
   build-desktop.*               # 构建最终桌面工具
 
-dist/desktop/                   # 收集后的最终 exe/installer，可忽略
+desktop/dist/                   # Vite 前端静态资源，中间产物，可忽略
+release/desktop/                # 对外发布的最终 exe/installer，可忽略
 build/sidecar/                  # PyInstaller 中间产物，可忽略
 ```
 
@@ -222,12 +223,12 @@ bash scripts/build-desktop.sh
 2. 使用 PyInstaller 构建 `lpm-desktop-api` sidecar。
 3. 执行 Tauri release build。
 4. 生成平台安装包。
-5. 把最终产物收集到 `dist/desktop/<target-triple>/`。
+5. 把最终产物收集到 `release/desktop/<target-triple>/`。
 
 Windows 上最终通常会得到：
 
 ```text
-dist/desktop/x86_64-pc-windows-msvc/
+release/desktop/x86_64-pc-windows-msvc/
   lpm-desktop.exe
   msi/
     LPM Desktop_*.msi
@@ -235,11 +236,12 @@ dist/desktop/x86_64-pc-windows-msvc/
     LPM Desktop_*-setup.exe
 ```
 
-Tauri 原始输出仍保留在：
+中间产物和 Tauri 原始输出仍保留在：
 
 ```text
-desktop/src-tauri/target/release/
-desktop/src-tauri/target/release/bundle/
+desktop/dist/                         # Vite 前端静态资源
+desktop/src-tauri/target/release/     # Tauri/Cargo release 输出
+desktop/src-tauri/target/release/bundle/  # Tauri 原始安装包输出
 ```
 
 ### 命令分层说明

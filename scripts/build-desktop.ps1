@@ -97,22 +97,22 @@ Write-Section "Build complete"
 $releaseDir = Join-Path $RepoRoot "desktop/src-tauri/target/release"
 $bundleDir  = Join-Path $releaseDir "bundle"
 $targetTriple = Get-TargetTriple
-$artifactDir = Join-Path $RepoRoot "dist/desktop/$targetTriple"
-New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+$releaseArtifactDir = Join-Path $RepoRoot "release/desktop/$targetTriple"
+New-Item -ItemType Directory -Force -Path $releaseArtifactDir | Out-Null
 
 Write-Host "  Executable : $releaseDir\lpm-desktop.exe"
 $exePath = Join-Path $releaseDir "lpm-desktop.exe"
 if (Test-Path $exePath) {
-    Copy-Item -LiteralPath $exePath -Destination $artifactDir -Force
+    Copy-Item -LiteralPath $exePath -Destination $releaseArtifactDir -Force
 }
 $sidecarPath = Join-Path $releaseDir "lpm-desktop-api.exe"
 if (Test-Path $sidecarPath) {
-    Copy-Item -LiteralPath $sidecarPath -Destination $artifactDir -Force
+    Copy-Item -LiteralPath $sidecarPath -Destination $releaseArtifactDir -Force
 }
 if (Test-Path $bundleDir) {
-    Copy-Item -Path (Join-Path $bundleDir "*") -Destination $artifactDir -Recurse -Force
+    Copy-Item -Path (Join-Path $bundleDir "*") -Destination $releaseArtifactDir -Recurse -Force
     Get-ChildItem $bundleDir -Recurse -File | ForEach-Object {
         Write-Host ("  Bundle     : " + $_.FullName)
     }
 }
-Write-Host "  Collected  : $artifactDir"
+Write-Host "  Collected  : $releaseArtifactDir"

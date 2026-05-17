@@ -57,21 +57,21 @@ section "Build complete"
 RELEASE_DIR="${REPO_ROOT}/desktop/src-tauri/target/release"
 TARGET_TRIPLE="$(rustc -vV 2>/dev/null | awk '/^host:/ {print $2; exit}')"
 TARGET_TRIPLE="${TARGET_TRIPLE:-unknown-target}"
-ARTIFACT_DIR="${REPO_ROOT}/dist/desktop/${TARGET_TRIPLE}"
-mkdir -p "${ARTIFACT_DIR}"
+RELEASE_ARTIFACT_DIR="${REPO_ROOT}/release/desktop/${TARGET_TRIPLE}"
+mkdir -p "${RELEASE_ARTIFACT_DIR}"
 echo "  Executable : ${RELEASE_DIR}/lpm-desktop"
 if [[ -f "${RELEASE_DIR}/lpm-desktop" ]]; then
-    cp -f "${RELEASE_DIR}/lpm-desktop" "${ARTIFACT_DIR}/"
+    cp -f "${RELEASE_DIR}/lpm-desktop" "${RELEASE_ARTIFACT_DIR}/"
 elif [[ -f "${RELEASE_DIR}/lpm-desktop.exe" ]]; then
-    cp -f "${RELEASE_DIR}/lpm-desktop.exe" "${ARTIFACT_DIR}/"
+    cp -f "${RELEASE_DIR}/lpm-desktop.exe" "${RELEASE_ARTIFACT_DIR}/"
 fi
 if [[ -f "${RELEASE_DIR}/lpm-desktop-api" ]]; then
-    cp -f "${RELEASE_DIR}/lpm-desktop-api" "${ARTIFACT_DIR}/"
+    cp -f "${RELEASE_DIR}/lpm-desktop-api" "${RELEASE_ARTIFACT_DIR}/"
 elif [[ -f "${RELEASE_DIR}/lpm-desktop-api.exe" ]]; then
-    cp -f "${RELEASE_DIR}/lpm-desktop-api.exe" "${ARTIFACT_DIR}/"
+    cp -f "${RELEASE_DIR}/lpm-desktop-api.exe" "${RELEASE_ARTIFACT_DIR}/"
 fi
 if [[ -d "${RELEASE_DIR}/bundle" ]]; then
-    cp -R "${RELEASE_DIR}/bundle/." "${ARTIFACT_DIR}/"
+    cp -R "${RELEASE_DIR}/bundle/." "${RELEASE_ARTIFACT_DIR}/"
     find "${RELEASE_DIR}/bundle" -type f -print | sed 's/^/  Bundle     : /'
 fi
-echo "  Collected  : ${ARTIFACT_DIR}"
+echo "  Collected  : ${RELEASE_ARTIFACT_DIR}"
