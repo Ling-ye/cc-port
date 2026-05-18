@@ -327,12 +327,20 @@ def _resource_open_path(payload: JsonDict) -> JsonDict:
 
 
 def _resource_delete(payload: JsonDict) -> Any:
-    return delete_resource(
+    cfg = load_config()
+    deleted = delete_resource(
         _required_str(payload, "name"),
-        config=load_config(),
+        config=cfg,
         confirm_name=_optional_str(payload.get("confirm_name")),
         reason=_optional_str(payload.get("reason")) or "",
     )
+    return {
+        **asdict(deleted),
+        "push": push_resource_repo(
+            message=f"lpm: delete resource {deleted.name}",
+            config=cfg,
+        ),
+    }
 
 
 def _check(payload: JsonDict) -> JsonDict:

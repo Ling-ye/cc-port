@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Download, Eye, EyeOff, FolderOpen, Trash2, Unplug } from "lucide-react";
+import { AlertTriangle, Download, Eye, EyeOff, FolderOpen, Trash2, Unplug } from "lucide-react";
 import { lpmAction, openPath } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import { DescriptionList } from "@/components/DescriptionList";
@@ -17,9 +17,15 @@ import type {
 } from "@/types/lpm";
 
 const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
-const statusFilters = ["all", "available", "installed", "not-installed", "removed"] as const;
+const statusFilters = ["all", "available", "installed", "not-installed"] as const;
 type TargetAction = "install" | "uninstall" | "preview" | "open";
 const cachePreviewTarget = "__cache_preview__";
+
+type DeleteDialogState = {
+  item: ResourceInventoryItem;
+  confirmName: string;
+  error: string;
+};
 
 export function ResourcesView({
   items,
@@ -46,6 +52,7 @@ export function ResourcesView({
   const [preview, setPreview] = useState<ResourcePreviewResult | null>(null);
   const [targetAction, setTargetAction] = useState<TargetAction | null>(null);
   const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
+  const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
 
   const visible = useMemo(
     () =>
@@ -57,8 +64,7 @@ export function ResourcesView({
           (statusFilter === "all" ||
             (statusFilter === "available" && lifecycle === "active") ||
             (statusFilter === "installed" && lifecycle === "active" && installed) ||
-            (statusFilter === "not-installed" && lifecycle === "active" && !installed) ||
-            (statusFilter === "removed" && lifecycle === "removed"))
+            (statusFilter === "not-installed" && lifecycle === "active" && !installed))
         );
       }),
     [filter, items, statusFilter],
@@ -170,20 +176,21 @@ export function ResourcesView({
     }
   }
 
-  async function deleteSelected() {
+  function openDeleteDialog() {
     if (!selected) return;
-    const name = selected.entry.name;
-    const remoteDelete = selected.remote_state.can_delete_remote;
-    let confirmName = "";
+    setDeleteDialog({ item: selected, confirmName: "", error: "" });
+  }
+
+  async function confirmDeleteResource() {
+    if (!deleteDialog) return;
+    const name = deleteDialog.item.entry.name;
+    const remoteDelete = deleteDialog.item.remote_state.can_delete_remote;
+    const confirmName = deleteDialog.confirmName.trim();
     if (remoteDelete) {
-      if (!confirm(t("resources.remoteDeleteFirstConfirm", { name }))) return;
-      confirmName = prompt(t("resources.remoteDeletePrompt", { name })) || "";
       if (confirmName !== name) {
-        onError(t("resources.remoteDeleteMismatch"));
+        setDeleteDialog((current) => (current ? { ...current, error: t("resources.remoteDeleteMismatch") } : current));
         return;
       }
-    } else if (!confirm(t("resources.deleteConfirm", { name }))) {
-      return;
     }
 
     setBusyAction("delete");
@@ -194,6 +201,7 @@ export function ResourcesView({
       });
       onDone(t("resources.deleteDone", { name: data.name }));
       setPreview(null);
+      setDeleteDialog(null);
       await onChanged();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -254,7 +262,7 @@ export function ResourcesView({
               openTargets={openTargets}
               selected={selected}
               t={t}
-              onDelete={deleteSelected}
+              onDelete={openDeleteDialog}
               onOpenTargetModal={openTargetModal}
             />
             <ResourceDetailPanel selected={selected} t={t} />
@@ -282,6 +290,16 @@ export function ResourcesView({
             });
           }}
           confirmDisabled={!canSubmitModal}
+        />
+      ) : null}
+      {deleteDialog ? (
+        <ResourceDeleteModal
+          busy={busyAction === "delete"}
+          state={deleteDialog}
+          t={t}
+          onCancel={() => setDeleteDialog(null)}
+          onConfirm={confirmDeleteResource}
+          onNameChange={(confirmName) => setDeleteDialog((current) => (current ? { ...current, confirmName, error: "" } : current))}
         />
       ) : null}
     </section>
@@ -505,6 +523,52 @@ function ResourceTargetModal({
   );
 }
 
+function ResourceDeleteModal({
+  busy,
+  state,
+  t,
+  onCancel,
+  onConfirm,
+  onNameChange,
+}: {
+  busy: boolean;
+  state: DeleteDialogState;
+  t: TFunction;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onNameChange: (value: string) => void;
+}) {
+  const name = state.item.entry.name;
+  const remoteDelete = state.item.remote_state.can_delete_remote;
+  const confirmDisabled = remoteDelete && state.confirmName.trim() !== name;
+  return (
+    <div className="modal-backdrop">
+      <div className="modal resource-delete-modal">
+        <div className="modal-head danger-head">
+          <AlertTriangle size={20} />
+          <h2>{remoteDelete ? t("resources.deleteRemoteTitle") : t("resources.deleteTitle")}</h2>
+        </div>
+        <div className="delete-modal-body">
+          <p>{remoteDelete ? t("resources.deleteRemoteDescription", { name }) : t("resources.deleteDescription", { name })}</p>
+          {remoteDelete ? (
+            <label className="confirm-name-field">
+              <span>{t("resources.deleteConfirmNameLabel", { name })}</span>
+              <input value={state.confirmName} onChange={(event) => onNameChange(event.target.value)} disabled={busy} autoFocus />
+            </label>
+          ) : null}
+          {state.error ? <p className="delete-modal-error">{state.error}</p> : null}
+        </div>
+        <div className="modal-actions">
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
+          <button className="danger solid-danger" type="button" onClick={onConfirm} disabled={busy || confirmDisabled}>
+            {busy ? t("common.working") : t("resources.confirmDeleteResource")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function targetModalTitle(action: TargetAction, t: TFunction): string {
   if (action === "install") return t("resources.selectInstallTargets");
   if (action === "uninstall") return t("resources.selectUninstallTargets");
@@ -530,7 +594,6 @@ function statusFilterLabel(value: (typeof statusFilters)[number], t: TFunction) 
   if (value === "available") return t("resources.availableOnly");
   if (value === "installed") return t("status.installed");
   if (value === "not-installed") return t("status.notInstalled");
-  if (value === "removed") return t("resources.lifecycleRemoved");
   return t("kind.all");
 }
 

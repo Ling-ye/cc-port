@@ -260,6 +260,7 @@ export interface DiscoveredResource {
   description: string;
   size: number;
   mtime: number;
+  exists_in_registry: boolean;
   status: "ready" | "warning" | "conflict";
   warnings: string[];
 }

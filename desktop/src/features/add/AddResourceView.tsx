@@ -13,6 +13,7 @@ import type {
 
 const kinds: ResourceKind[] = ["skill", "mcp", "rule", "prompt", "plugin"];
 const filterKinds: Array<"all" | ResourceKind> = ["all", "skill", "rule", "prompt"];
+const registryFilters = ["all", "existing", "new"] as const;
 
 export function AddResourceView({
   t,
@@ -35,6 +36,7 @@ export function AddResourceView({
   const [candidateNames, setCandidateNames] = useState<Record<string, string>>({});
   const [kindFilter, setKindFilter] = useState<"all" | ResourceKind>("all");
   const [toolFilter, setToolFilter] = useState("all");
+  const [registryFilter, setRegistryFilter] = useState<(typeof registryFilters)[number]>("all");
   const [activePreviewId, setActivePreviewId] = useState("");
   const [preview, setPreview] = useState<DiscoveryReadResult | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -52,9 +54,12 @@ export function AddResourceView({
       candidates.filter(
         (candidate) =>
           (kindFilter === "all" || candidate.kind === kindFilter) &&
-          (toolFilter === "all" || candidate.tool === toolFilter),
+          (toolFilter === "all" || candidate.tool === toolFilter) &&
+          (registryFilter === "all" ||
+            (registryFilter === "existing" && candidate.exists_in_registry) ||
+            (registryFilter === "new" && !candidate.exists_in_registry)),
       ),
-    [candidates, kindFilter, toolFilter],
+    [candidates, kindFilter, registryFilter, toolFilter],
   );
 
   async function submit(event: FormEvent) {
@@ -223,6 +228,17 @@ export function AddResourceView({
                   <select value={toolFilter} onChange={(event) => setToolFilter(event.target.value)}>
                     <option value="all">{t("kind.all")}</option>
                     {tools.map((tool) => <option key={tool} value={tool}>{tool}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>{t("add.discoverRegistryFilter")}</span>
+                  <select
+                    value={registryFilter}
+                    onChange={(event) => setRegistryFilter(event.target.value as (typeof registryFilters)[number])}
+                  >
+                    <option value="all">{t("add.discoverRegistryAll")}</option>
+                    <option value="existing">{t("add.discoverRegistryExisting")}</option>
+                    <option value="new">{t("add.discoverRegistryNew")}</option>
                   </select>
                 </label>
               </div>

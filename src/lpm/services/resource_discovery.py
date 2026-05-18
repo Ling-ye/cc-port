@@ -59,6 +59,7 @@ class DiscoveredResource:
     description: str = ""
     size: int = 0
     mtime: float = 0
+    exists_in_registry: bool = False
     status: str = "ready"
     warnings: list[str] = field(default_factory=list)
 
@@ -401,6 +402,7 @@ def _mark_conflicts(candidates: list[DiscoveredResource], registry_names: set[st
 
     for candidate in candidates:
         if candidate.name_hint in registry_names:
+            candidate.exists_in_registry = True
             candidate.warnings.append("Name already exists in registry.")
         if counts.get(candidate.name_hint, 0) > 1:
             candidate.warnings.append("Another discovered resource has the same inferred name.")

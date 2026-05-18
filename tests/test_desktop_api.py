@@ -6,6 +6,7 @@ from lpm.core.config import Config
 from lpm.core.models import RegistryItem
 from lpm.interfaces import desktop_api
 from lpm.services.local_resources import ImportLocalResult
+from lpm.services.resource_manager import ResourceDeleteResult
 
 
 def test_desktop_upload_pushes_resource_repo_by_default(tmp_path: Path, monkeypatch) -> None:
@@ -66,3 +67,46 @@ def test_desktop_upload_allows_explicit_no_push(tmp_path: Path, monkeypatch) -> 
 
     assert result["ok"] is True
     assert result["data"]["push"] is None
+
+
+def test_desktop_resource_delete_pushes_resource_repo_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+    entry = RegistryItem(
+        name="demo",
+        kind="skill",
+        source="local",
+        path="skills/demo",
+        lifecycle="removed",
+        removed_effect="local_files_deleted",
+    )
+
+    def fake_delete_resource(name: str, **kwargs) -> ResourceDeleteResult:
+        assert name == "demo"
+        assert isinstance(kwargs["config"], Config)
+        calls.append(("delete", name))
+        return ResourceDeleteResult(
+            name=name,
+            effect="local_files_deleted",
+            entry=entry,
+            deleted_path=tmp_path / "resources" / "skills" / "demo",
+            deleted_local_files=True,
+        )
+
+    def fake_push_resource_repo(*, message: str, config: Config):
+        assert isinstance(config, Config)
+        calls.append(("push", message))
+        return {"local_path": str(tmp_path / "resources")}
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "delete_resource", fake_delete_resource)
+    monkeypatch.setattr(desktop_api, "push_resource_repo", fake_push_resource_repo)
+
+    result = desktop_api.run_action("resource_delete", {"name": "demo"})
+
+    assert result["ok"] is True
+    assert calls == [("delete", "demo"), ("push", "lpm: delete resource demo")]
+    assert result["data"]["name"] == "demo"
+    assert result["data"]["deleted_local_files"] is True
+    assert result["data"]["push"]["local_path"].endswith("resources")

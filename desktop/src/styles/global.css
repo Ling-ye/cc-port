@@ -956,6 +956,11 @@ button {
   color: #9a5b00;
 }
 
+.modal-head.danger-head svg,
+.modal-head.danger-head h2 {
+  color: #a32424;
+}
+
 .modal-head h2 {
   margin: 0;
   font-size: 18px;
@@ -985,6 +990,57 @@ button {
 
 .resource-target-modal {
   width: min(640px, calc(100vw - 48px));
+}
+
+.resource-delete-modal {
+  width: min(520px, calc(100vw - 48px));
+}
+
+.delete-modal-body {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.delete-modal-body p {
+  margin: 0;
+  color: #52606b;
+  line-height: 1.55;
+}
+
+.confirm-name-field {
+  display: grid;
+  gap: 7px;
+}
+
+.confirm-name-field span {
+  color: #65727c;
+  font-size: 13px;
+}
+
+.confirm-name-field input {
+  border: 1px solid #cbd5dc;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #ffffff;
+  color: #202a32;
+}
+
+.delete-modal-body .delete-modal-error {
+  color: #a32424;
+  font-size: 13px;
+}
+
+.solid-danger {
+  background: #b42318;
+  border-color: #b42318;
+  color: #ffffff;
+}
+
+.solid-danger:disabled {
+  background: #e9b9b5;
+  border-color: #e9b9b5;
+  color: #ffffff;
 }
 
 .target-list {
@@ -1114,6 +1170,8 @@ button {
   .panel-head p,
   .field-label,
   .field-action:disabled,
+  .delete-modal-body p,
+  .confirm-name-field span,
   .description-list dt,
   .resource-row small,
   .resource-filter-group > span,
@@ -1184,6 +1242,7 @@ button {
   .discovery-row,
   .preview-panel,
   .discovery-main input,
+  .confirm-name-field input,
   .sync-result-row,
   .target-row {
     background: #172228;
