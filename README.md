@@ -81,8 +81,8 @@ tools/packaging/
 
 scripts/
   setup.*                       # 初始化开发/构建环境
-  dev.*                         # 启动桌面开发模式
-  build-desktop.*               # 构建最终桌面工具
+  dev.*                         # 启动 Tauri 桌面调试环境
+  build-desktop.*               # 构建桌面发布产物
 
 desktop/dist/                   # Vite 前端静态资源，中间产物，可忽略
 release/desktop/                # 对外发布的最终 exe/installer，可忽略
@@ -193,7 +193,7 @@ bash scripts/setup.sh
 - 安装桌面端 npm 依赖。
 - 确保 Tauri 图标存在。
 
-启动开发模式：
+启动 Tauri 桌面调试环境：
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File scripts\dev.ps1
@@ -205,7 +205,29 @@ powershell.exe -ExecutionPolicy Bypass -File scripts\dev.ps1
 bash scripts/dev.sh
 ```
 
-构建最终桌面工具：
+该脚本会先构建 `lpm-desktop-api` sidecar，再启动 Tauri dev shell。Tauri 会在内部启动 Vite 前端开发服务器、编译 Rust 桌面外壳，并打开桌面窗口。这个入口适合日常开发、联调和问题复现，不会生成最终安装包。
+
+`scripts/dev.*` 生成和使用的主要产物路径：
+
+```text
+desktop/src-tauri/binaries/lpm-desktop-api-<target-triple>[.exe]
+```
+
+Windows x86_64 默认路径通常是：
+
+```text
+desktop/src-tauri/binaries/lpm-desktop-api-x86_64-pc-windows-msvc.exe
+```
+
+同时会保留这些调试/中间输出：
+
+```text
+build/sidecar/dist/lpm-desktop-api[.exe]       # PyInstaller 中间输出
+build/sidecar/work/                            # PyInstaller 工作目录
+desktop/src-tauri/target/debug/                # Tauri/Cargo dev 调试输出
+```
+
+构建桌面发布产物：
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File scripts\build-desktop.ps1
@@ -217,13 +239,18 @@ powershell.exe -ExecutionPolicy Bypass -File scripts\build-desktop.ps1
 bash scripts/build-desktop.sh
 ```
 
-构建脚本会按顺序执行：
+该脚本用于生成可分发的桌面程序和安装包。它会按顺序执行：
 
 1. 检查/生成桌面图标。
 2. 使用 PyInstaller 构建 `lpm-desktop-api` sidecar。
 3. 执行 Tauri release build。
 4. 生成平台安装包。
 5. 把最终产物收集到 `release/desktop/<target-triple>/`。
+
+简单区分：
+
+- `scripts/dev.*`：本地调试入口，启动的是带热更新能力的桌面开发环境。
+- `scripts/build-desktop.*`：发布构建入口，输出的是 exe、sidecar 和安装包等最终产物。
 
 Windows 上最终通常会得到：
 
@@ -249,8 +276,8 @@ desktop/src-tauri/target/release/bundle/  # Tauri 原始安装包输出
 源码构建和发布时，对外推荐只使用仓库根目录下的脚本：
 
 - `scripts/setup.*`：初始化 Python、Node.js、Rust/Tauri 相关依赖。
-- `scripts/dev.*`：启动完整桌面开发模式。
-- `scripts/build-desktop.*`：构建最终桌面可执行文件和安装包。
+- `scripts/dev.*`：启动完整的 Tauri 桌面调试环境，用于开发和联调。
+- `scripts/build-desktop.*`：构建最终桌面可执行文件、sidecar 和安装包。
 
 `desktop/package.json` 中的 npm 脚本属于内部步骤或专项检查：Tauri 会调用 `npm run build` 构建前端，根目录脚本会调用 `npm run tauri dev/build` 启动或打包桌面外壳，`npm run sidecar` 和 `npm run icons` 主要用于维护单个打包环节。完整构建请使用根目录脚本，不需要手动拼接这些内部命令。
 

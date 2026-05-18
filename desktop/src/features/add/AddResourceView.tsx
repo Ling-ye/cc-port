@@ -178,7 +178,7 @@ export function AddResourceView({
   }
 
   return (
-    <section className="panel form-panel">
+    <section className="panel form-panel add-resource-panel">
       <div className="panel-head">
         <div>
           <h2>{t("add.title")}</h2>

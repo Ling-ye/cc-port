@@ -16,8 +16,7 @@ import type {
 } from "@/types/lpm";
 
 const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
-const lifecycleFilters = ["active", "removed", "all"] as const;
-const installFilters = ["all", "installed", "not-installed"] as const;
+const statusFilters = ["available", "installed", "not-installed", "removed", "all"] as const;
 
 export function ResourcesView({
   items,
@@ -39,8 +38,7 @@ export function ResourcesView({
   onError: (message: string) => void;
 }) {
   const [filter, setFilter] = useState<(typeof kinds)[number]>("all");
-  const [lifecycleFilter, setLifecycleFilter] = useState<(typeof lifecycleFilters)[number]>("active");
-  const [installFilter, setInstallFilter] = useState<(typeof installFilters)[number]>("all");
+  const [statusFilter, setStatusFilter] = useState<(typeof statusFilters)[number]>("available");
   const [platform, setPlatform] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [preview, setPreview] = useState<ResourcePreviewResult | null>(null);
@@ -53,13 +51,14 @@ export function ResourcesView({
         const installed = item.local_state.installed;
         return (
           (filter === "all" || item.entry.kind === filter) &&
-          (lifecycleFilter === "all" || lifecycle === lifecycleFilter) &&
-          (installFilter === "all" ||
-            (installFilter === "installed" && installed) ||
-            (installFilter === "not-installed" && !installed))
+          (statusFilter === "all" ||
+            (statusFilter === "available" && lifecycle === "active") ||
+            (statusFilter === "installed" && lifecycle === "active" && installed) ||
+            (statusFilter === "not-installed" && lifecycle === "active" && !installed) ||
+            (statusFilter === "removed" && lifecycle === "removed"))
         );
       }),
-    [filter, installFilter, items, lifecycleFilter],
+    [filter, items, statusFilter],
   );
   const installableVisible = useMemo(() => visible.filter((item) => item.actions.can_install), [visible]);
   const activePreview = selected && preview?.name === selected.entry.name ? preview : null;
@@ -189,18 +188,12 @@ export function ResourcesView({
         <div className="resource-filter-stack">
           <Segmented value={filter} values={kinds} onChange={setFilter} getLabel={(item) => resourceKindLabel(item, t)} />
           <Segmented
-            value={lifecycleFilter}
-            values={lifecycleFilters}
-            onChange={setLifecycleFilter}
-            getLabel={(item) => lifecycleFilterLabel(item, t)}
+            value={statusFilter}
+            values={statusFilters}
+            onChange={setStatusFilter}
+            getLabel={(item) => statusFilterLabel(item, t)}
           />
           <div className="stack-form">
-            <label>
-              <span>{t("resources.installFilter")}</span>
-              <select value={installFilter} onChange={(event) => setInstallFilter(event.target.value as (typeof installFilters)[number])}>
-                {installFilters.map((item) => <option key={item} value={item}>{installFilterLabel(item, t)}</option>)}
-              </select>
-            </label>
             <label>
               <span>{t("sync.targetPlatform")}</span>
               <select value={platform} onChange={(event) => setPlatform(event.target.value)} disabled={!enabledPlatforms.length}>
@@ -311,19 +304,16 @@ export function ResourcesView({
   );
 }
 
-function lifecycleFilterLabel(value: (typeof lifecycleFilters)[number], t: TFunction) {
-  if (value === "all") return t("resources.allLifecycles");
-  return lifecycleLabel(value, t);
+function statusFilterLabel(value: (typeof statusFilters)[number], t: TFunction) {
+  if (value === "available") return t("resources.availableOnly");
+  if (value === "installed") return t("status.installed");
+  if (value === "not-installed") return t("status.notInstalled");
+  if (value === "removed") return t("resources.lifecycleRemoved");
+  return t("kind.all");
 }
 
 function lifecycleLabel(value: "active" | "removed", t: TFunction) {
   return value === "removed" ? t("resources.lifecycleRemoved") : t("resources.lifecycleActive");
-}
-
-function installFilterLabel(value: (typeof installFilters)[number], t: TFunction) {
-  if (value === "installed") return t("resources.installedOnly");
-  if (value === "not-installed") return t("resources.notInstalledOnly");
-  return t("kind.all");
 }
 
 function remoteStateLabel(value: boolean | null | undefined, t: TFunction) {

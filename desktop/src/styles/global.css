@@ -286,13 +286,14 @@ button {
 .resource-detail-panel {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .resource-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 16px;
 }
 
@@ -315,9 +316,14 @@ button {
   min-height: 560px;
 }
 
+.resources-workspace {
+  grid-template-columns: minmax(280px, 0.34fr) minmax(0, 1fr);
+}
+
 .list-panel,
 .detail-panel {
   min-height: 560px;
+  min-width: 0;
 }
 
 .segmented {
@@ -358,6 +364,13 @@ button {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.resource-actions button {
+  padding-inline: 8px;
+  font-size: 13px;
 }
 
 .resource-row {
@@ -370,6 +383,10 @@ button {
   grid-template-columns: 70px 1fr;
   gap: 10px;
   text-align: left;
+}
+
+.resource-row > span {
+  min-width: 0;
 }
 
 .resource-row:hover,
@@ -440,10 +457,29 @@ button {
   max-width: 760px;
 }
 
+.add-resource-panel {
+  max-width: 1120px;
+}
+
+.add-resource-panel .two-column {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.add-resource-panel > .stack-form,
+.add-resource-panel form {
+  max-width: 1040px;
+}
+
 .mode-tabs {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 180px));
   gap: 8px;
   margin: 18px 0;
+}
+
+.mode-tabs button {
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .mode-tabs .active {
@@ -551,6 +587,10 @@ button {
   flex-wrap: wrap;
 }
 
+.discovery-actions button {
+  white-space: nowrap;
+}
+
 .discovery-actions span {
   color: #65727c;
   font-size: 13px;
@@ -600,6 +640,7 @@ button {
 .discovery-main small {
   color: #6c7882;
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .discovery-main p {
@@ -610,6 +651,24 @@ button {
 
 .discovery-warning {
   color: #9a5b00 !important;
+}
+
+@media (max-width: 1120px) {
+  .resources-workspace {
+    grid-template-columns: minmax(240px, 0.32fr) minmax(0, 1fr);
+  }
+
+  .resource-actions {
+    gap: 5px;
+  }
+
+  .resource-actions button {
+    padding-inline: 6px;
+  }
+
+  .mode-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .sync-panel {
@@ -648,6 +707,7 @@ button {
   border-radius: 8px;
   padding: 10px;
   background: #fbfcfd;
+  min-width: 0;
 }
 
 .sync-result-row small,
