@@ -16,3 +16,7 @@ export async function lpmAction<T>(
 
   return response.data as T;
 }
+
+export async function openPath(path: string): Promise<void> {
+  await invoke("open_path", { path });
+}

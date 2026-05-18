@@ -44,6 +44,13 @@ async fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, Stri
     })
 }
 
+#[tauri::command]
+async fn open_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open_path_with_system(&path))
+        .await
+        .map_err(|err| format!("open_path task failed: {err}"))?
+}
+
 /// One way to invoke lpm-desktop-api.
 struct Candidate {
     label: String,
@@ -157,10 +164,48 @@ fn run_lpm_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
     ))
 }
 
+fn open_path_with_system(path: &str) -> Result<(), String> {
+    let target = PathBuf::from(path);
+    if !target.exists() {
+        return Err(format!("Path does not exist: {}", target.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut cmd = Command::new("explorer");
+        cmd.arg(&target);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = Command::new("open");
+        cmd.arg(&target);
+        cmd
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(&target);
+        cmd
+    };
+
+    let status = command
+        .status()
+        .map_err(|err| format!("Unable to open {}: {}", target.display(), err))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Open command failed with status: {status}"))
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![lpm_action])
+        .invoke_handler(tauri::generate_handler![lpm_action, open_path])
         .run(tauri::generate_context!())
         .expect("error while running LPM Desktop");
 }

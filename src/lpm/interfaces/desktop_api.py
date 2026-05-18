@@ -49,11 +49,18 @@ from ..services import publisher
 from ..services.doctor import build_doctor_checks
 from ..services.installer import check_all, preview_sync_all, status_all, sync_all, uninstall_one
 from ..services.local_resources import import_local_resource
-from ..services.publisher import remove_skill
 from ..services.resource_discovery import (
     discover_resources,
     read_discovered_resource,
     resolve_discovered_resources,
+)
+from ..services.resource_manager import (
+    build_resource_inventory,
+    delete_resource,
+    install_resource,
+    preview_resource,
+    resource_open_path,
+    uninstall_resource,
 )
 from ..services.resource_repo import (
     connect_local_resource_repo,
@@ -165,7 +172,7 @@ def _upload(payload: JsonDict) -> JsonDict:
         name=_optional_str(payload.get("name")),
         overwrite=bool(payload.get("overwrite", False)),
     )
-    push_result = _maybe_push(load_config(), payload)
+    push_result = _push_after_upload(load_config(), payload)
     return {"entry": result.entry, "source_path": result.source_path, "stored_path": result.stored_path, "push": push_result}
 
 
@@ -234,7 +241,7 @@ def _upload_discovered_resources(payload: JsonDict) -> JsonDict:
             }
         )
 
-    push_result = _maybe_push(load_config(), payload) if imported else None
+    push_result = _push_after_upload(load_config(), payload) if imported else None
     return {
         "results": results,
         "imported": imported,
@@ -270,6 +277,43 @@ def _sync_preview(payload: JsonDict) -> Any:
     )
 
 
+def _resource_inventory(payload: JsonDict) -> Any:
+    return build_resource_inventory(
+        config=load_config(),
+        kind=_optional_str(payload.get("kind")),
+    )
+
+
+def _resource_install(payload: JsonDict) -> Any:
+    return install_resource(
+        _required_str(payload, "name"),
+        config=load_config(),
+        platform_filter=_optional_str(payload.get("platform")),
+    )
+
+
+def _resource_uninstall(payload: JsonDict) -> Any:
+    return uninstall_resource(_required_str(payload, "name"), config=load_config())
+
+
+def _resource_preview(payload: JsonDict) -> Any:
+    return preview_resource(_required_str(payload, "name"), config=load_config())
+
+
+def _resource_open_path(payload: JsonDict) -> JsonDict:
+    path = resource_open_path(_required_str(payload, "name"), config=load_config())
+    return {"path": path}
+
+
+def _resource_delete(payload: JsonDict) -> Any:
+    return delete_resource(
+        _required_str(payload, "name"),
+        config=load_config(),
+        confirm_name=_optional_str(payload.get("confirm_name")),
+        reason=_optional_str(payload.get("reason")) or "",
+    )
+
+
 def _check(payload: JsonDict) -> JsonDict:
     results, pruned = check_all(
         config=load_config(),
@@ -285,11 +329,15 @@ def _remove(payload: JsonDict) -> JsonDict:
     cfg = load_config()
     registry = load_registry()
     entry = registry.get(name)
-    removed = remove_skill(name)
     uninstalled = False
-    if removed is not None and entry is not None and bool(payload.get("uninstall", False)):
+    if entry is not None and bool(payload.get("uninstall", False)):
         uninstalled = uninstall_one(entry, config=cfg)
-    return {"removed": removed, "uninstalled": uninstalled}
+    removed = delete_resource(
+        name,
+        config=cfg,
+        confirm_name=_optional_str(payload.get("confirm_name")),
+    )
+    return {"removed": removed.entry, "delete": removed, "uninstalled": uninstalled}
 
 
 def _resource_init(payload: JsonDict) -> Any:
@@ -798,6 +846,12 @@ def _maybe_push(cfg: Config, payload: JsonDict) -> Any:
     return push_resource_repo(config=cfg)
 
 
+def _push_after_upload(cfg: Config, payload: JsonDict) -> Any:
+    if bool(payload.get("no_push", False)):
+        return None
+    return push_resource_repo(config=cfg)
+
+
 def _configured_resource_repo_name(raw_cfg: Config) -> str:
     if raw_cfg.source_path is None:
         return ""
@@ -920,6 +974,12 @@ ACTIONS: dict[str, Handler] = {
     "upload_discovered_resources": _upload_discovered_resources,
     "sync_preview": _sync_preview,
     "sync": _sync,
+    "resource_inventory": _resource_inventory,
+    "resource_install": _resource_install,
+    "resource_uninstall": _resource_uninstall,
+    "resource_preview": _resource_preview,
+    "resource_open_path": _resource_open_path,
+    "resource_delete": _resource_delete,
     "check": _check,
     "remove": _remove,
     "resource_init": _resource_init,

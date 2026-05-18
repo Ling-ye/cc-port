@@ -1,5 +1,7 @@
 export type ResourceKind = "skill" | "mcp" | "rule" | "prompt" | "plugin";
 export type DiscoveryScope = "global" | "directory";
+export type ResourceLifecycle = "active" | "removed";
+export type RemovedEffect = "index_only" | "local_files_deleted" | "remote_repo_deleted" | "";
 
 export interface RegistryItem {
   name: string;
@@ -16,6 +18,10 @@ export interface RegistryItem {
   private?: boolean | null;
   reachable?: boolean | null;
   last_checked?: string | null;
+  lifecycle?: ResourceLifecycle;
+  removed_at?: string | null;
+  removed_reason?: string;
+  removed_effect?: RemovedEffect;
   status?: ItemStatus | null;
 }
 
@@ -68,6 +74,67 @@ export interface ResourceRepoInfo {
   dirty: boolean;
   current_branch: string;
   remote_url: string;
+}
+
+export interface ResourceRemoteState {
+  repo: string;
+  ref: string;
+  subdir: string;
+  reachable?: boolean | null;
+  last_checked?: string | null;
+  can_delete_remote: boolean;
+  delete_remote_reason: string;
+}
+
+export interface ResourceLocalState {
+  source_path?: string | null;
+  source_exists: boolean;
+  install_path: string;
+  installed: boolean;
+  open_path?: string | null;
+  target_paths: string[];
+}
+
+export interface ResourceActionState {
+  can_install: boolean;
+  can_uninstall: boolean;
+  can_preview: boolean;
+  can_open: boolean;
+  can_delete_resource: boolean;
+  can_delete_remote: boolean;
+  install_reason: string;
+  delete_reason: string;
+}
+
+export interface ResourceInventoryItem {
+  entry: RegistryItem;
+  status?: ItemStatus | null;
+  sync_preview?: SyncPreviewItem | null;
+  remote_state: ResourceRemoteState;
+  local_state: ResourceLocalState;
+  actions: ResourceActionState;
+}
+
+export interface ResourceInventoryResult {
+  registry_path: string;
+  items: ResourceInventoryItem[];
+}
+
+export interface ResourcePreviewResult {
+  name: string;
+  path: string;
+  text: string;
+  truncated: boolean;
+  warning: string;
+}
+
+export interface ResourceDeleteResult {
+  name: string;
+  effect: RemovedEffect;
+  entry: RegistryItem;
+  deleted_path?: string | null;
+  deleted_local_files: boolean;
+  remote_repo_deleted: boolean;
 }
 
 export interface PlatformProfile {

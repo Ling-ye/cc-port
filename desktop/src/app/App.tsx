@@ -16,17 +16,16 @@ import { AddResourceView } from "@/features/add/AddResourceView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
 import { GuideView } from "@/features/guide/GuideView";
 import { HealthView } from "@/features/health/HealthView";
-import { PlatformsView } from "@/features/platforms/PlatformsView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
 import { SettingsView } from "@/features/settings/SettingsView";
-import { SyncView } from "@/features/sync/SyncView";
-import type { PlatformProfile, RegistryItem, Summary } from "@/types/lpm";
+import type { PlatformProfile, RegistryItem, ResourceInventoryResult, ResourceInventoryItem, Summary } from "@/types/lpm";
 
 export default function App() {
   const [view, setView] = useState<View>("dashboard");
   const [language, setLanguage] = useState<Language>(() => readStoredLanguage());
   const [summary, setSummary] = useState<Summary | null>(null);
   const [items, setItems] = useState<RegistryItem[]>([]);
+  const [resourceItems, setResourceItems] = useState<ResourceInventoryItem[]>([]);
   const [platforms, setPlatforms] = useState<PlatformProfile[]>([]);
   const [selectedName, setSelectedName] = useState<string>("");
   const [busy, setBusy] = useState(false);
@@ -40,13 +39,14 @@ export default function App() {
     try {
       const [nextSummary, itemData, platformData] = await Promise.all([
         lpmAction<Summary>("summary"),
-        lpmAction<{ items: RegistryItem[] }>("list_items"),
+        lpmAction<ResourceInventoryResult>("resource_inventory"),
         lpmAction<{ platforms: PlatformProfile[] }>("platforms"),
       ]);
       setSummary(nextSummary);
-      setItems(itemData.items);
+      setResourceItems(itemData.items);
+      setItems(itemData.items.map((item) => item.entry));
       setPlatforms(platformData.platforms);
-      setSelectedName((current) => current || itemData.items[0]?.name || "");
+      setSelectedName((current) => current || itemData.items[0]?.entry.name || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -70,7 +70,7 @@ export default function App() {
     });
   }
 
-  const selected = items.find((item) => item.name === selectedName) || items[0];
+  const selected = resourceItems.find((item) => item.entry.name === selectedName) || resourceItems[0];
 
   return (
     <div className="app-shell">
@@ -116,7 +116,16 @@ export default function App() {
           <DashboardView summary={summary} items={items} t={t} />
         ) : null}
         {view === "resources" ? (
-          <ResourcesView items={items} selected={selected} t={t} onSelect={setSelectedName} onChanged={refresh} />
+          <ResourcesView
+            items={resourceItems}
+            platforms={platforms}
+            selected={selected}
+            t={t}
+            onSelect={setSelectedName}
+            onChanged={refresh}
+            onDone={setMessage}
+            onError={setError}
+          />
         ) : null}
         {view === "add" ? (
           <AddResourceView
@@ -128,19 +137,7 @@ export default function App() {
             onError={setError}
           />
         ) : null}
-        {view === "sync" ? (
-          <SyncView
-            platforms={platforms}
-            t={t}
-            onDone={async (text) => {
-              setMessage(text);
-              await refresh();
-            }}
-            onError={setError}
-          />
-        ) : null}
         {view === "health" ? <HealthView t={t} onError={setError} /> : null}
-        {view === "platforms" ? <PlatformsView platforms={platforms} t={t} /> : null}
         {view === "settings" ? (
           <SettingsView
             t={t}

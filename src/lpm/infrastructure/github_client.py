@@ -144,3 +144,15 @@ class GithubClient:
             default_branch=default_branch,
             branches=branches,
         )
+
+    def delete_repo(self, owner: str, name: str) -> bool:
+        """Delete an existing GitHub repository.
+
+        Returns True when a repository existed and the delete request was sent.
+        Returns False when the repository is already missing.
+        """
+        repo = self.get_repo(owner, name)
+        if repo is None:
+            return False
+        repo.delete()
+        return True

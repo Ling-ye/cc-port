@@ -256,6 +256,50 @@ button {
   font-size: 18px;
 }
 
+.detail-title-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.detail-title-main h2 {
+  overflow-wrap: anywhere;
+}
+
+.lifecycle-pill {
+  flex: 0 0 auto;
+  border: 1px solid #b7e5d2;
+  background: #e9f8f2;
+  color: #176c55;
+  border-radius: 999px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.lifecycle-pill.removed {
+  border-color: #e4c37d;
+  background: #fff8e8;
+  color: #8a5a11;
+}
+
+.resource-detail-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.resource-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.resource-preview {
+  margin-top: 16px;
+}
+
 .mode-tabs button {
   padding: 10px 12px;
   display: inline-flex;
@@ -297,10 +341,22 @@ button {
 
 .resource-list,
 .compact-list,
-.check-list,
-.platform-grid {
+.check-list {
   margin-top: 14px;
   display: grid;
+  gap: 8px;
+}
+
+.resource-filter-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.resource-wide-action,
+.resource-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   gap: 8px;
 }
 
@@ -351,8 +407,7 @@ button {
   margin: 18px 0;
 }
 
-.description-list div,
-.platform-row {
+.description-list div {
   display: grid;
   grid-template-columns: 120px 1fr;
   gap: 12px;
@@ -664,17 +719,6 @@ button {
   color: #8a969e;
 }
 
-.platform-row {
-  border-top: 1px solid #edf1f4;
-  padding-top: 12px;
-}
-
-.platform-row > div:first-child span {
-  display: block;
-  color: #6c7882;
-  margin-top: 4px;
-}
-
 .settings-view {
   display: grid;
   gap: 14px;
@@ -744,6 +788,39 @@ button {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.platform-editor-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.platform-editor-title strong {
+  overflow-wrap: anywhere;
+}
+
+.platform-status {
+  flex: 0 0 auto;
+  border: 1px solid #ccd6dc;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #52606b;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.platform-status.enabled {
+  background: #e9f8f2;
+  border-color: #b7e5d2;
+  color: #176c55;
+}
+
+.platform-status.disabled {
+  background: #f4f6f8;
+  border-color: #d5dde2;
+  color: #6c7882;
 }
 
 .modal-backdrop {
@@ -923,6 +1000,30 @@ button {
   .tag-row span,
   .kind-bars div div {
     background: #223239;
+  }
+
+  .lifecycle-pill {
+    background: #17362e;
+    border-color: #276754;
+    color: #b7e5d2;
+  }
+
+  .lifecycle-pill.removed {
+    background: #2d2617;
+    border-color: #6f5521;
+    color: #e2bd72;
+  }
+
+  .platform-status.enabled {
+    background: #17362e;
+    border-color: #276754;
+    color: #b7e5d2;
+  }
+
+  .platform-status.disabled {
+    background: #111b21;
+    border-color: #2b3d46;
+    color: #9cafb8;
   }
 
   .discovery-row,

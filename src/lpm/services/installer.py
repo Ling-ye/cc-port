@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import stat
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -110,7 +111,7 @@ def _install_skill_to_platform(
         pass
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     if target_dir.exists():
-        shutil.rmtree(target_dir, ignore_errors=True)
+        _remove_path(target_dir)
     shutil.copytree(source_path, target_dir, ignore=shutil.ignore_patterns(".git"))
     return target_dir
 
@@ -140,7 +141,7 @@ def _install_rule_to_platform(
         pass
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     if target_dir.exists():
-        shutil.rmtree(target_dir, ignore_errors=True)
+        _remove_path(target_dir)
     shutil.copytree(source_path, target_dir, ignore=shutil.ignore_patterns(".git"))
     return target_dir
 
@@ -210,6 +211,13 @@ def sync_one(
 ) -> SyncResult:
     install_path = _install_path(config, entry)
     clone_path = _clone_path(config, entry)
+    if entry.lifecycle != "active":
+        return SyncResult(
+            name=entry.name,
+            install_path=install_path,
+            action=SyncAction.SKIPPED,
+            detail="Resource has been removed from the active registry.",
+        )
     install_path.parent.mkdir(parents=True, exist_ok=True)
     clone_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -237,10 +245,7 @@ def sync_one(
                 )
 
             if install_path.exists():
-                if install_path.is_dir():
-                    shutil.rmtree(install_path, ignore_errors=True)
-                else:
-                    install_path.unlink()
+                _remove_path(install_path)
             install_path.parent.mkdir(parents=True, exist_ok=True)
             if source_path.is_dir():
                 shutil.copytree(source_path, install_path, ignore=shutil.ignore_patterns(".git"))
@@ -267,6 +272,9 @@ def sync_one(
                 action=SyncAction.INSTALLED,
                 platforms_installed=platforms_installed,
             )
+
+        if clone_path.exists() and not git_ops.is_repo(clone_path):
+            _remove_path(clone_path)
 
         if not git_ops.is_repo(clone_path):
             git_ops.clone(entry.repo, clone_path, ref=entry.ref, token=auth_token)
@@ -350,6 +358,8 @@ def sync_all(
     )
     results: list[SyncResult] = []
     for entry in reg.items:
+        if entry.lifecycle != "active":
+            continue
         if only and entry.name not in only:
             continue
         if entry.kind not in allowed_kinds:
@@ -390,6 +400,8 @@ def preview_sync_all(
     )
     preview_entries: list[RegistryItem] = []
     for entry in reg.items:
+        if entry.lifecycle != "active":
+            continue
         if only and entry.name not in only:
             continue
         if entry.kind not in allowed_kinds:
@@ -547,14 +559,14 @@ def uninstall_one(entry: RegistryItem, *, config: Config) -> bool:
 
     for p in {install_path, clone_path}:
         if p.exists():
-            shutil.rmtree(p, ignore_errors=True)
+            _remove_path(p)
             removed = True
 
     for plat in config.platforms.enabled():
         if entry.kind == "skill":
             target = plat.resolve_install_path("skill", entry.install_target_name())
             if target and target.exists():
-                shutil.rmtree(target, ignore_errors=True)
+                _remove_path(target)
                 removed = True
         elif entry.kind == "mcp":
             mcp_path = plat.mcp_json_path()
@@ -564,7 +576,7 @@ def uninstall_one(entry: RegistryItem, *, config: Config) -> bool:
         elif entry.kind in {"rule", "prompt"}:
             target = plat.resolve_install_path("rule", entry.install_target_name())
             if target and target.exists():
-                shutil.rmtree(target, ignore_errors=True)
+                _remove_path(target)
                 removed = True
 
     return removed
@@ -657,6 +669,29 @@ def _materialize_subdir(clone_path: Path, subdir: str, install_path: Path) -> No
     if not src.is_dir():
         raise git_ops.GitError(f"subdir {subdir!r} not found inside cloned repo {clone_path}.")
     if install_path.exists():
-        shutil.rmtree(install_path)
+        _remove_path(install_path)
     install_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, install_path)
+
+
+def _remove_path(path: Path) -> None:
+    """Remove a file or directory, including read-only files left by git clones."""
+    if not path.exists():
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, onerror=_make_writable_and_retry)
+    else:
+        try:
+            path.unlink()
+        except PermissionError:
+            path.chmod(path.stat().st_mode | stat.S_IWRITE)
+            path.unlink()
+
+
+def _make_writable_and_retry(function, path: str, _exc_info) -> None:
+    target = Path(path)
+    try:
+        target.chmod(target.stat().st_mode | stat.S_IWRITE)
+    except OSError:
+        pass
+    function(path)

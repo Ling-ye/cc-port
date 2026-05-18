@@ -13,9 +13,7 @@ const featureRows = [
   ["guide.featureOverview", "guide.featureOverviewDescription"],
   ["guide.featureResources", "guide.featureResourcesDescription"],
   ["guide.featureAdd", "guide.featureAddDescription"],
-  ["guide.featureSync", "guide.featureSyncDescription"],
   ["guide.featureHealth", "guide.featureHealthDescription"],
-  ["guide.featurePlatforms", "guide.featurePlatformsDescription"],
   ["guide.featureSettings", "guide.featureSettingsDescription"],
   ["guide.featureTopbar", "guide.featureTopbarDescription"],
 ] satisfies Array<[I18nKey, I18nKey]>;

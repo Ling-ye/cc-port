@@ -27,7 +27,6 @@ export function AddResourceView({
   const [value, setValue] = useState("");
   const [kind, setKind] = useState<"auto" | ResourceKind>("auto");
   const [name, setName] = useState("");
-  const [push, setPush] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
   const [scope, setScope] = useState<DiscoveryScope>("global");
   const [directory, setDirectory] = useState("");
@@ -66,7 +65,7 @@ export function AddResourceView({
         [mode === "collect" ? "github_url" : "path"]: value,
         kind: kind === "auto" ? undefined : kind,
         name,
-        push,
+        push: true,
       };
       await lpmAction(mode === "collect" ? "collect" : "upload", payload);
       onDone(mode === "collect" ? t("add.successCollected") : t("add.successUploaded"));
@@ -145,7 +144,7 @@ export function AddResourceView({
         ...discoveryPayload(),
         items: selectedIds.map((id) => ({ id, name: candidateNames[id] })),
         overwrite,
-        push,
+        push: true,
       });
       const errors = result.results.filter((item) => !item.ok).map((item) => `${item.name}: ${item.error}`);
       if (errors.length) onError(errors.slice(0, 3).join("\n"));
@@ -270,10 +269,6 @@ export function AddResourceView({
                 <input type="checkbox" checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />
                 <span>{t("add.discoverOverwrite")}</span>
               </label>
-              <label className="checkline">
-                <input type="checkbox" checked={push} onChange={(event) => setPush(event.target.checked)} />
-                <span>{t("add.pushAfterCompletion")}</span>
-              </label>
               <button className="primary" onClick={uploadSelected} disabled={busy || selectedIds.length === 0}>{busy ? t("common.working") : t("add.discoverUploadSelected")}</button>
             </>
           ) : null}
@@ -294,10 +289,6 @@ export function AddResourceView({
               <option value="auto">{t("kind.auto")}</option>
               {kinds.map((item) => <option key={item} value={item}>{resourceKindLabel(item, t)}</option>)}
             </select>
-          </label>
-          <label className="checkline">
-            <input type="checkbox" checked={push} onChange={(event) => setPush(event.target.checked)} />
-            <span>{t("add.pushAfterCompletion")}</span>
           </label>
           <button className="primary" disabled={busy}>{busy ? t("common.working") : t("common.confirm")}</button>
         </form>

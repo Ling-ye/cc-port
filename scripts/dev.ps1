@@ -36,6 +36,31 @@ function Invoke-Step {
     }
 }
 
+function Stop-ExistingDesktopDevServer {
+    $DesktopRoot = (Join-Path $RepoRoot "desktop")
+    $Listeners = Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 1420 -State Listen -ErrorAction SilentlyContinue
+    foreach ($Listener in $Listeners) {
+        $ProcessInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $($Listener.OwningProcess)" -ErrorAction SilentlyContinue
+        if ($null -eq $ProcessInfo) {
+            continue
+        }
+
+        $CommandLine = [string]$ProcessInfo.CommandLine
+        $IsThisRepoVite =
+            $CommandLine.Contains($DesktopRoot) -and
+            $CommandLine.Contains("vite") -and
+            $CommandLine.Contains("--host 127.0.0.1")
+
+        if (-not $IsThisRepoVite) {
+            throw "Port 1420 is already in use by PID $($Listener.OwningProcess): $CommandLine"
+        }
+
+        Write-Host "Stopping existing LPM Vite dev server on port 1420 (PID $($Listener.OwningProcess))" -ForegroundColor Yellow
+        Stop-Process -Id $Listener.OwningProcess -Force
+        Start-Sleep -Milliseconds 500
+    }
+}
+
 if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue)) {
     $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
     if (Test-Path (Join-Path $cargoBin "cargo.exe")) {
@@ -52,6 +77,7 @@ if (-not $SkipSidecar) {
 
 Write-Host ""
 Write-Host "==> Starting Tauri dev shell" -ForegroundColor Cyan
+Stop-ExistingDesktopDevServer
 Push-Location (Join-Path $RepoRoot "desktop")
 try {
     Invoke-Step "tauri dev" { & npm run tauri dev }

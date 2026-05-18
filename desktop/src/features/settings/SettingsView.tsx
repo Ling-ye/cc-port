@@ -388,7 +388,12 @@ export function SettingsView({
               {draft.platforms.map((platform, index) => (
                 <div className="platform-editor" key={platform.name}>
                   <div className="platform-editor-head">
-                    <strong>{platform.name}</strong>
+                    <div className="platform-editor-title">
+                      <strong>{platform.name}</strong>
+                      <span className={platform.enabled ? "platform-status enabled" : "platform-status disabled"}>
+                        {platform.enabled ? t("settings.enabled") : t("settings.disabled")}
+                      </span>
+                    </div>
                     <label className="checkline">
                       <input
                         type="checkbox"
@@ -403,6 +408,7 @@ export function SettingsView({
                       <span>{t("settings.skills")}</span>
                       <input
                         value={platform.skills_dir}
+                        placeholder={t("settings.notConfigured")}
                         onChange={(event) => updatePlatform(index, { skills_dir: event.target.value })}
                       />
                     </label>
@@ -410,6 +416,7 @@ export function SettingsView({
                       <span>{t("settings.mcpJson")}</span>
                       <input
                         value={platform.mcp_json}
+                        placeholder={t("settings.notConfigured")}
                         onChange={(event) => updatePlatform(index, { mcp_json: event.target.value })}
                       />
                     </label>
@@ -417,6 +424,7 @@ export function SettingsView({
                       <span>{t("settings.rules")}</span>
                       <input
                         value={platform.rules_dir}
+                        placeholder={t("settings.notConfigured")}
                         onChange={(event) => updatePlatform(index, { rules_dir: event.target.value })}
                       />
                     </label>

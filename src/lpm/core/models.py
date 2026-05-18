@@ -13,6 +13,8 @@ ITEM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 SKILL_NAME_RE = ITEM_NAME_RE
 
 ItemKind = Literal["skill", "mcp", "rule", "prompt", "plugin"]
+ItemLifecycle = Literal["active", "removed"]
+RemovedEffect = Literal["", "index_only", "local_files_deleted", "remote_repo_deleted"]
 
 
 class RegistryItem(BaseModel):
@@ -66,6 +68,18 @@ class RegistryItem(BaseModel):
     reachable: bool | None = Field(
         default=None,
         description="Whether the repo was reachable at last check.",
+    )
+
+    # --- Lifecycle metadata (v5) ---
+    lifecycle: ItemLifecycle = Field(
+        default="active",
+        description="Whether this item is active or kept only as a removed tracking record.",
+    )
+    removed_at: str | None = Field(default=None, description="ISO-8601 removal timestamp.")
+    removed_reason: str = Field(default="", description="Human-readable removal reason.")
+    removed_effect: RemovedEffect = Field(
+        default="",
+        description="What deletion action was applied when the item was removed.",
     )
 
     @field_validator("name")
@@ -127,9 +141,9 @@ SkillEntry = RegistryItem
 
 
 class Registry(BaseModel):
-    """Top-level registry document (supports v1, v2 and v3 formats)."""
+    """Top-level registry document (supports v1 through v5 formats)."""
 
-    version: int = 3
+    version: int = 5
     items: list[RegistryItem] = Field(default_factory=list)
 
     def __init__(self, **data: Any) -> None:

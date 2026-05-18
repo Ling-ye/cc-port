@@ -38,7 +38,7 @@ def find_registry_path(start: Path | None = None) -> Path:
     return cur / DEFAULT_REGISTRY_FILENAME
 
 
-CURRENT_REGISTRY_VERSION = 4
+CURRENT_REGISTRY_VERSION = 5
 
 
 def _migrate_v1_to_v2(data: dict) -> dict:
@@ -65,6 +65,18 @@ def _migrate_v3_to_v4(data: dict) -> dict:
     return data
 
 
+def _migrate_v4_to_v5(data: dict) -> dict:
+    """v4 -> v5: items get explicit lifecycle tracking."""
+    data = dict(data)
+    items = data.get("items", []) or []
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                item.setdefault("lifecycle", "active")
+    data["version"] = 5
+    return data
+
+
 def load_registry(path: Path | None = None) -> Registry:
     p = path or find_registry_path()
     if not p.is_file():
@@ -81,6 +93,8 @@ def load_registry(path: Path | None = None) -> Registry:
         data = _migrate_v2_to_v3(data)
     if version < 4:
         data = _migrate_v3_to_v4(data)
+    if version < 5:
+        data = _migrate_v4_to_v5(data)
 
     if "skills" in data and "items" not in data:
         data["items"] = data.pop("skills")
@@ -92,6 +106,7 @@ def load_registry(path: Path | None = None) -> Registry:
 _OMIT_WHEN_EMPTY: set[str] = {
     "mcp_config", "last_checked", "reachable", "private",
     "version", "author", "tags", "category", "license", "path",
+    "removed_at", "removed_reason", "removed_effect",
 }
 
 
