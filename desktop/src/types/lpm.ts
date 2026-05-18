@@ -93,6 +93,15 @@ export interface ResourceLocalState {
   installed: boolean;
   open_path?: string | null;
   target_paths: string[];
+  targets: ResourceTargetState[];
+}
+
+export interface ResourceTargetState {
+  platform: string;
+  path: string;
+  supported: boolean;
+  exists: boolean;
+  installed: boolean;
 }
 
 export interface ResourceActionState {
@@ -143,6 +152,7 @@ export interface PlatformProfile {
   skills_dir: string;
   mcp_json: string;
   rules_dir: string;
+  plugins_dir: string;
 }
 
 export type TokenSource = "env" | "config" | "none";

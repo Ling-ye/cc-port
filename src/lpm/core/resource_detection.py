@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ TYPE_ALIASES: dict[str, ItemKind] = {
     "plugin": "plugin",
     "plugins": "plugin",
 }
+MANIFEST_FILENAMES = {"lpm.resource.json", "lpm-resource.json"}
 
 
 class ResourceDetectionError(RuntimeError):
@@ -74,6 +76,9 @@ def detect_local_resource_type(path: Path, explicit_type: str | None = None) -> 
 
     p = path.expanduser().resolve()
     if p.is_dir():
+        manifest_kind = _local_manifest_kind(p)
+        if manifest_kind is not None:
+            return manifest_kind
         if (p / "SKILL.md").is_file() or len(list(p.glob("*/SKILL.md"))) == 1:
             return "skill"
         if (p / ".claude-plugin" / "plugin.json").is_file() or (
@@ -204,6 +209,11 @@ def _detect_github_path_kind(parsed: ParsedGithubUrl, *, token: str | None) -> I
 
     names = {entry.get("name", "") for entry in entries}
     lower_names = {name.lower() for name in names}
+    manifest_name = next((name for name in names if name.lower() in MANIFEST_FILENAMES), None)
+    if manifest_name:
+        manifest_kind = _remote_manifest_kind(parsed, parsed.subdir, manifest_name, token=token)
+        if manifest_kind is not None:
+            return manifest_kind
     if "SKILL.md" in names:
         return "skill"
     if ".claude-plugin" in names or ".codex-plugin" in names:
@@ -255,6 +265,64 @@ def _github_contents(parsed: ParsedGithubUrl, path: str, *, token: str | None) -
     req = Request(url, headers=headers)
     with urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _local_manifest_kind(path: Path) -> ItemKind | None:
+    manifest = next((path / name for name in MANIFEST_FILENAMES if (path / name).is_file()), None)
+    if manifest is None:
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return _kind_from_manifest(data)
+
+
+def _remote_manifest_kind(
+    parsed: ParsedGithubUrl,
+    subdir: str,
+    manifest_name: str,
+    *,
+    token: str | None,
+) -> ItemKind | None:
+    manifest_path = f"{subdir.strip('/')}/{manifest_name}" if subdir else manifest_name
+    try:
+        data = _github_contents(parsed, manifest_path, token=token)
+        if not isinstance(data, dict):
+            return None
+        content = str(data.get("content") or "")
+        if not content:
+            return None
+        text = base64.b64decode(content.encode("ascii")).decode("utf-8")
+        return _kind_from_manifest(json.loads(text))
+    except Exception:
+        return None
+
+
+def _kind_from_manifest(data: Any) -> ItemKind | None:
+    if not isinstance(data, dict):
+        return None
+    buckets = {str(key).lower(): value for key, value in data.items()}
+    if _has_manifest_entries(buckets, "skills"):
+        return "skill"
+    if _has_manifest_entries(buckets, "mcp"):
+        return "mcp"
+    if _has_manifest_entries(buckets, "rules"):
+        return "rule"
+    if _has_manifest_entries(buckets, "prompts") or _has_manifest_entries(buckets, "commands"):
+        return "prompt"
+    if any(_has_manifest_entries(buckets, key) for key in ("plugins", "agents", "hooks")):
+        return "plugin"
+    return None
+
+
+def _has_manifest_entries(data: dict[str, Any], key: str) -> bool:
+    value = data.get(key)
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(str(item).strip() for item in value)
+    return False
 
 
 def _tree_url(parsed: ParsedGithubUrl, subdir: str) -> str:

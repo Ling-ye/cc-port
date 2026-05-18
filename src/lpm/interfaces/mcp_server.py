@@ -17,6 +17,7 @@ from ..core.secrets import redact_item_dump
 from ..services import publisher
 from ..services.installer import check_all, status_all, sync_all, sync_one, uninstall_one
 from ..services.local_resources import export_claude_plugin, import_local_resource
+from ..services.resource_manager import resource_install_plan
 
 mcp = FastMCP("LPM")
 
@@ -38,7 +39,13 @@ def list_items(kind: str | None = None) -> dict[str, Any]:
         "registry_path": str(find_registry_path()),
         "install_target": str(install_root),
         "platforms": [
-            {"name": p.name, "enabled": p.enabled, "skills_dir": p.skills_dir, "mcp_json": p.mcp_json}
+            {
+                "name": p.name,
+                "enabled": p.enabled,
+                "skills_dir": p.skills_dir,
+                "mcp_json": p.mcp_json,
+                "plugins_dir": p.plugins_dir,
+            }
             for p in cfg.platforms.profiles
         ],
         "items": [
@@ -71,6 +78,7 @@ def list_platforms() -> dict[str, Any]:
                 "skills_dir": p.skills_dir,
                 "mcp_json": p.mcp_json,
                 "rules_dir": p.rules_dir,
+                "plugins_dir": p.plugins_dir,
             }
             for p in cfg.platforms.profiles
         ],
@@ -417,6 +425,47 @@ def sync_skills(
                 "detail": r.detail,
             }
             for r in results
+        ],
+    }
+
+
+@mcp.tool()
+def plan_resource_install(name: str, platform: str | None = None) -> dict[str, Any]:
+    """Build an install plan for one registered resource without writing files."""
+    try:
+        plan = resource_install_plan(name, config=load_config(), platform_filter=platform)
+    except Exception as exc:  # noqa: BLE001 - MCP tools return errors as data
+        return {"error": str(exc)}
+    return {
+        "name": plan.name,
+        "kind": plan.kind,
+        "source_path": str(plan.source_path),
+        "manifest_path": str(plan.manifest_path) if plan.manifest_path else "",
+        "files": [str(path) for path in plan.files],
+        "targets": [
+            {
+                "platform": target.platform,
+                "kind": target.kind,
+                "install_mechanism": target.install_mechanism,
+                "path": str(target.path),
+                "auto_install": target.auto_install,
+            }
+            for target in plan.targets
+        ],
+        "warnings": plan.warnings,
+        "detected_agents": [
+            {
+                "id": item.provider.id,
+                "name": item.provider.name,
+                "detected": item.detected,
+                "auto_install": item.auto_install,
+                "matched_signals": [
+                    {"kind": signal.kind, "value": signal.value, "soft": signal.soft}
+                    for signal in item.matched_signals
+                ],
+                "notes": item.notes,
+            }
+            for item in plan.detected_agents
         ],
     }
 

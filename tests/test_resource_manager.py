@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from lpm.core.config import Config, GithubConfig, InstallConfig, ResourcesConfig
 from lpm.core.models import Registry, RegistryItem
+from lpm.core.platforms import PlatformProfile, PlatformsConfig
 from lpm.core.registry import load_registry, save_registry
 from lpm.services import installer, resource_manager
 
 
-def _config(root: Path, install: Path, *, token: str = "") -> Config:
+def _config(
+    root: Path,
+    install: Path,
+    *,
+    token: str = "",
+    platforms: list[PlatformProfile] | None = None,
+) -> Config:
     return Config(
         github=GithubConfig(token=token),
         install=InstallConfig(target=str(install)),
         resources=ResourcesConfig(local_path=str(root)),
+        platforms=PlatformsConfig(profiles=platforms or []),
     )
 
 
@@ -194,6 +205,51 @@ def test_uninstall_keeps_registry_lifecycle_active(tmp_path: Path) -> None:
     assert stored.lifecycle == "active"
 
 
+def test_uninstall_selected_platform_keeps_cache_and_other_targets(tmp_path: Path) -> None:
+    root = tmp_path / "resources"
+    install = tmp_path / "install"
+    source = root / "skills" / "local-demo"
+    installed = install / "local-demo"
+    cursor_target = tmp_path / "cursor" / "skills" / "local-demo"
+    codex_target = tmp_path / "codex" / "skills" / "local-demo"
+    for path in (source, installed, cursor_target, codex_target):
+        path.mkdir(parents=True)
+        (path / "SKILL.md").write_text(path.name, encoding="utf-8")
+    registry_path = root / "registry.yaml"
+    save_registry(
+        Registry(
+            items=[
+                RegistryItem(
+                    name="local-demo",
+                    kind="skill",
+                    source="local",
+                    path="skills/local-demo",
+                )
+            ]
+        ),
+        registry_path,
+    )
+
+    result = resource_manager.uninstall_resource(
+        "local-demo",
+        config=_config(
+            root,
+            install,
+            platforms=[
+                PlatformProfile(name="cursor", enabled=True, skills_dir=str(tmp_path / "cursor" / "skills")),
+                PlatformProfile(name="codex", enabled=True, skills_dir=str(tmp_path / "codex" / "skills")),
+            ],
+        ),
+        registry_path=registry_path,
+        platform_filter="cursor",
+    )
+
+    assert result["uninstalled"] is True
+    assert installed.exists()
+    assert not cursor_target.exists()
+    assert codex_target.exists()
+
+
 def test_preview_prefers_install_then_source_then_clone_cache(tmp_path: Path) -> None:
     root = tmp_path / "resources"
     install = tmp_path / "install"
@@ -244,6 +300,162 @@ def test_preview_prefers_install_then_source_then_clone_cache(tmp_path: Path) ->
         config=cfg,
         registry_path=registry_path,
     ).text == "clone preview"
+
+
+def test_preview_fetches_remote_to_cache_when_missing(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "resources"
+    install = tmp_path / "install"
+    registry_path = root / "registry.yaml"
+    save_registry(
+        Registry(
+            items=[
+                RegistryItem(
+                    name="external-demo",
+                    kind="skill",
+                    source="external",
+                    repo="https://github.com/example/external-demo",
+                )
+            ]
+        ),
+        registry_path,
+    )
+
+    def fake_clone(url: str, dest: Path, **_kwargs) -> None:
+        assert url == "https://github.com/example/external-demo"
+        dest.mkdir(parents=True)
+        (dest / ".git").mkdir()
+        (dest / "SKILL.md").write_text("remote preview", encoding="utf-8")
+
+    monkeypatch.setattr(resource_manager.git_ops, "clone", fake_clone)
+
+    result = resource_manager.preview_resource(
+        "external-demo",
+        config=_config(root, install),
+        registry_path=registry_path,
+    )
+
+    assert result.text == "remote preview"
+    assert (install / "external-demo" / "SKILL.md").is_file()
+
+
+def test_preview_with_platform_prefers_installed_target(tmp_path: Path) -> None:
+    root = tmp_path / "resources"
+    install = tmp_path / "install"
+    installed = install / "local-demo"
+    cursor_target = tmp_path / "cursor" / "skills" / "local-demo"
+    installed.mkdir(parents=True)
+    cursor_target.mkdir(parents=True)
+    (installed / "SKILL.md").write_text("cache preview", encoding="utf-8")
+    (cursor_target / "SKILL.md").write_text("cursor preview", encoding="utf-8")
+    registry_path = root / "registry.yaml"
+    save_registry(
+        Registry(
+            items=[
+                RegistryItem(
+                    name="local-demo",
+                    kind="skill",
+                    source="local",
+                    path="skills/local-demo",
+                )
+            ]
+        ),
+        registry_path,
+    )
+
+    result = resource_manager.preview_resource(
+        "local-demo",
+        config=_config(
+            root,
+            install,
+            platforms=[
+                PlatformProfile(name="cursor", enabled=True, skills_dir=str(tmp_path / "cursor" / "skills")),
+            ],
+        ),
+        registry_path=registry_path,
+        platform_filter="cursor",
+    )
+
+    assert result.text == "cursor preview"
+
+
+def test_open_path_platform_requires_existing_target(tmp_path: Path) -> None:
+    root = tmp_path / "resources"
+    install = tmp_path / "install"
+    registry_path = root / "registry.yaml"
+    save_registry(
+        Registry(
+            items=[
+                RegistryItem(
+                    name="external-demo",
+                    kind="skill",
+                    source="external",
+                    repo="https://github.com/example/external-demo",
+                )
+            ]
+        ),
+        registry_path,
+    )
+
+    with pytest.raises(FileNotFoundError):
+        resource_manager.resource_open_path(
+            "external-demo",
+            config=_config(
+                root,
+                install,
+                platforms=[
+                    PlatformProfile(name="cursor", enabled=True, skills_dir=str(tmp_path / "cursor" / "skills")),
+                ],
+            ),
+            registry_path=registry_path,
+            platform_filter="cursor",
+        )
+
+
+def test_mcp_target_inventory_and_platform_uninstall(tmp_path: Path) -> None:
+    root = tmp_path / "resources"
+    install = tmp_path / "install"
+    mcp_json = tmp_path / "cursor" / "mcp.json"
+    mcp_json.parent.mkdir(parents=True)
+    mcp_json.write_text(
+        json.dumps({"mcpServers": {"demo-mcp": {"command": "demo"}}}),
+        encoding="utf-8",
+    )
+    registry_path = root / "registry.yaml"
+    save_registry(
+        Registry(
+            items=[
+                RegistryItem(
+                    name="demo-mcp",
+                    kind="mcp",
+                    source="owned",
+                    path="mcp/demo-mcp",
+                    mcp_config={"command": "demo"},
+                )
+            ]
+        ),
+        registry_path,
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[PlatformProfile(name="cursor", enabled=True, mcp_json=str(mcp_json))],
+    )
+
+    inventory = resource_manager.build_resource_inventory(config=cfg, registry_path=registry_path)
+    target = inventory["items"][0].local_state.targets[0]
+    assert target.platform == "cursor"
+    assert target.installed is True
+
+    result = resource_manager.uninstall_resource(
+        "demo-mcp",
+        config=cfg,
+        registry_path=registry_path,
+        platform_filter="cursor",
+    )
+
+    assert result["uninstalled"] is True
+    data = json.loads(mcp_json.read_text(encoding="utf-8"))
+    assert "demo-mcp" not in data["mcpServers"]
 
 
 def test_install_external_resource_replaces_stale_non_git_directory(

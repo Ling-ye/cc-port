@@ -12,11 +12,14 @@ import type {
   ResourceInventoryItem,
   ResourceKind,
   ResourcePreviewResult,
+  ResourceTargetState,
   SyncResultItem,
 } from "@/types/lpm";
 
 const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
 const statusFilters = ["available", "installed", "not-installed", "removed", "all"] as const;
+type TargetAction = "install" | "uninstall" | "preview" | "open";
+const cachePreviewTarget = "__cache_preview__";
 
 export function ResourcesView({
   items,
@@ -39,11 +42,11 @@ export function ResourcesView({
 }) {
   const [filter, setFilter] = useState<(typeof kinds)[number]>("all");
   const [statusFilter, setStatusFilter] = useState<(typeof statusFilters)[number]>("available");
-  const [platform, setPlatform] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [preview, setPreview] = useState<ResourcePreviewResult | null>(null);
+  const [targetAction, setTargetAction] = useState<TargetAction | null>(null);
+  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
 
-  const enabledPlatforms = useMemo(() => platforms.filter((item) => item.enabled), [platforms]);
   const visible = useMemo(
     () =>
       items.filter((item) => {
@@ -60,42 +63,39 @@ export function ResourcesView({
       }),
     [filter, items, statusFilter],
   );
-  const installableVisible = useMemo(() => visible.filter((item) => item.actions.can_install), [visible]);
   const activePreview = selected && preview?.name === selected.entry.name ? preview : null;
   const busy = Boolean(busyAction);
+  const targets = selected?.local_state.targets || [];
+  const installTargets = useMemo(() => targets.filter((item) => item.supported), [targets]);
+  const installedTargets = useMemo(() => installTargets.filter((item) => item.installed), [installTargets]);
+  const openTargets = useMemo(() => installTargets.filter((item) => item.exists && item.installed), [installTargets]);
+  const modalOptions = selected && targetAction ? targetOptions(targetAction, installTargets, installedTargets, openTargets, t) : [];
+  const modalMulti = targetAction === "install" || targetAction === "uninstall";
+  const canSubmitModal = selectedTargets.length > 0 && !modalOptions.every((item) => item.disabled);
 
-  async function installSelected() {
+  function openTargetModal(action: TargetAction) {
+    if (!selected) return;
+    if (action === "preview" && activePreview) {
+      setPreview(null);
+      return;
+    }
+    const nextOptions = targetOptions(action, installTargets, installedTargets, openTargets, t);
+    setSelectedTargets(defaultTargetSelection(action, nextOptions));
+    setTargetAction(action);
+  }
+
+  async function installSelected(platformsToInstall: string[]) {
     if (!selected) return;
     setBusyAction("install");
     try {
-      const data = await lpmAction<SyncResultItem>("resource_install", {
-        name: selected.entry.name,
-        platform: platform || undefined,
-      });
-      onDone(t("resources.installDone", { name: data.name }));
-      setPreview(null);
-      await onChanged();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyAction("");
-    }
-  }
-
-  async function installVisible() {
-    if (!installableVisible.length) {
-      onError(t("resources.noVisibleInstall"));
-      return;
-    }
-    setBusyAction("install-visible");
-    try {
-      for (const item of installableVisible) {
-        await lpmAction<SyncResultItem>("resource_install", {
-          name: item.entry.name,
-          platform: platform || undefined,
+      let data: SyncResultItem | null = null;
+      for (const targetPlatform of platformsToInstall) {
+        data = await lpmAction<SyncResultItem>("resource_install", {
+          name: selected.entry.name,
+          platform: targetPlatform,
         });
       }
-      onDone(t("resources.installManyDone", { count: installableVisible.length }));
+      onDone(t("resources.installTargetsDone", { name: data?.name || selected.entry.name, count: platformsToInstall.length }));
       setPreview(null);
       await onChanged();
     } catch (err) {
@@ -105,12 +105,14 @@ export function ResourcesView({
     }
   }
 
-  async function uninstallSelected() {
+  async function uninstallSelected(platformsToUninstall: string[]) {
     if (!selected) return;
     setBusyAction("uninstall");
     try {
-      await lpmAction("resource_uninstall", { name: selected.entry.name });
-      onDone(t("resources.uninstallDone", { name: selected.entry.name }));
+      for (const targetPlatform of platformsToUninstall) {
+        await lpmAction("resource_uninstall", { name: selected.entry.name, platform: targetPlatform });
+      }
+      onDone(t("resources.uninstallTargetsDone", { name: selected.entry.name, count: platformsToUninstall.length }));
       setPreview(null);
       await onChanged();
     } catch (err) {
@@ -120,15 +122,14 @@ export function ResourcesView({
     }
   }
 
-  async function previewSelected() {
+  async function previewSelected(target: string) {
     if (!selected) return;
-    if (activePreview) {
-      setPreview(null);
-      return;
-    }
     setBusyAction("preview");
     try {
-      const data = await lpmAction<ResourcePreviewResult>("resource_preview", { name: selected.entry.name });
+      const data = await lpmAction<ResourcePreviewResult>("resource_preview", {
+        name: selected.entry.name,
+        platform: target === cachePreviewTarget ? undefined : target,
+      });
       setPreview(data);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -137,16 +138,35 @@ export function ResourcesView({
     }
   }
 
-  async function openSelectedDirectory() {
+  async function openSelectedDirectory(target: string) {
     if (!selected) return;
     setBusyAction("open");
     try {
-      const data = await lpmAction<{ path: string }>("resource_open_path", { name: selected.entry.name });
+      const data = await lpmAction<{ path: string }>("resource_open_path", {
+        name: selected.entry.name,
+        platform: target,
+      });
       await openPath(data.path);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyAction("");
+    }
+  }
+
+  async function confirmTargetAction() {
+    if (!targetAction || !selectedTargets.length) return;
+    const action = targetAction;
+    const targetsToUse = [...selectedTargets];
+    setTargetAction(null);
+    if (action === "install") {
+      await installSelected(targetsToUse);
+    } else if (action === "uninstall") {
+      await uninstallSelected(targetsToUse);
+    } else if (action === "preview") {
+      await previewSelected(targetsToUse[0]);
+    } else {
+      await openSelectedDirectory(targetsToUse[0]);
     }
   }
 
@@ -193,19 +213,6 @@ export function ResourcesView({
             onChange={setStatusFilter}
             getLabel={(item) => statusFilterLabel(item, t)}
           />
-          <div className="stack-form">
-            <label>
-              <span>{t("sync.targetPlatform")}</span>
-              <select value={platform} onChange={(event) => setPlatform(event.target.value)} disabled={!enabledPlatforms.length}>
-                <option value="">{t("sync.allEnabledPlatforms")}</option>
-                {enabledPlatforms.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-              </select>
-            </label>
-          </div>
-          <button className="secondary resource-wide-action" onClick={installVisible} disabled={busy || installableVisible.length === 0}>
-            <Download size={16} />
-            {busyAction === "install-visible" ? t("common.working") : t("resources.installVisible")}
-          </button>
         </div>
         <div className="resource-list">
           {visible.map((item) => (
@@ -267,19 +274,24 @@ export function ResourcesView({
               <p className="discovery-warning">{selected.sync_preview.warnings.join(" ")}</p>
             ) : null}
             <div className="resource-actions">
-              <button className="primary" onClick={installSelected} disabled={busy || !selected.actions.can_install} title={selected.actions.install_reason}>
+              <button
+                className="primary"
+                onClick={() => openTargetModal("install")}
+                disabled={busy || !selected.actions.can_install || installTargets.length === 0}
+                title={selected.actions.install_reason}
+              >
                 <Download size={16} />
                 {busyAction === "install" ? t("common.working") : t("resources.downloadRegister")}
               </button>
-              <button className="secondary" onClick={uninstallSelected} disabled={busy || !selected.actions.can_uninstall}>
+              <button className="secondary" onClick={() => openTargetModal("uninstall")} disabled={busy || installedTargets.length === 0}>
                 <Unplug size={16} />
                 {busyAction === "uninstall" ? t("common.working") : t("resources.uninstallLocal")}
               </button>
-              <button className="secondary" onClick={previewSelected} disabled={busy || !selected.actions.can_preview}>
+              <button className="secondary" onClick={() => openTargetModal("preview")} disabled={busy || !selected.actions.can_preview}>
                 {activePreview ? <EyeOff size={16} /> : <Eye size={16} />}
                 {activePreview ? t("resources.hidePreview") : t("resources.previewContent")}
               </button>
-              <button className="secondary" onClick={openSelectedDirectory} disabled={busy || !selected.actions.can_open}>
+              <button className="secondary" onClick={() => openTargetModal("open")} disabled={busy || openTargets.length === 0}>
                 <FolderOpen size={16} />
                 {t("resources.openDirectory")}
               </button>
@@ -300,8 +312,161 @@ export function ResourcesView({
           <EmptyState text={t("resources.noSelected")} />
         )}
       </div>
+      {selected && targetAction ? (
+        <ResourceTargetModal
+          action={targetAction}
+          busy={busy}
+          multi={modalMulti}
+          options={modalOptions}
+          selected={selectedTargets}
+          t={t}
+          onCancel={() => setTargetAction(null)}
+          onConfirm={confirmTargetAction}
+          onToggle={(id) => {
+            setSelectedTargets((current) => {
+              if (!modalMulti) return [id];
+              return current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
+            });
+          }}
+          confirmDisabled={!canSubmitModal}
+        />
+      ) : null}
     </section>
   );
+}
+
+type TargetOption = {
+  id: string;
+  label: string;
+  path: string;
+  installed: boolean;
+  exists: boolean;
+  disabled?: boolean;
+  note: string;
+};
+
+function targetOptions(
+  action: TargetAction,
+  installTargets: ResourceTargetState[],
+  installedTargets: ResourceTargetState[],
+  openTargets: ResourceTargetState[],
+  t: TFunction,
+): TargetOption[] {
+  if (action === "install") return installTargets.map((item) => targetOption(item, t));
+  if (action === "uninstall") return installedTargets.map((item) => targetOption(item, t));
+  if (action === "open") return openTargets.map((item) => targetOption(item, t));
+  if (installedTargets.length) return installedTargets.map((item) => targetOption(item, t));
+  return [
+    {
+      id: cachePreviewTarget,
+      label: t("resources.cacheRemotePreview"),
+      path: t("resources.cacheRemotePreviewPath"),
+      installed: false,
+      exists: true,
+      note: t("resources.cacheRemotePreviewNote"),
+    },
+  ];
+}
+
+function targetOption(item: ResourceTargetState, t: TFunction): TargetOption {
+  return {
+    id: item.platform,
+    label: item.platform,
+    path: item.path,
+    installed: item.installed,
+    exists: item.exists,
+    note: item.installed ? t("status.installed") : t("status.notInstalled"),
+  };
+}
+
+function defaultTargetSelection(action: TargetAction, options: TargetOption[]): string[] {
+  const enabled = options.filter((item) => !item.disabled);
+  if (action === "install" || action === "uninstall") return enabled.map((item) => item.id);
+  return enabled[0] ? [enabled[0].id] : [];
+}
+
+function ResourceTargetModal({
+  action,
+  busy,
+  multi,
+  options,
+  selected,
+  t,
+  onCancel,
+  onConfirm,
+  onToggle,
+  confirmDisabled,
+}: {
+  action: TargetAction;
+  busy: boolean;
+  multi: boolean;
+  options: TargetOption[];
+  selected: string[];
+  t: TFunction;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onToggle: (id: string) => void;
+  confirmDisabled: boolean;
+}) {
+  return (
+    <div className="modal-backdrop">
+      <div className="modal resource-target-modal">
+        <div className="modal-head">
+          <FolderOpen size={20} />
+          <h2>{targetModalTitle(action, t)}</h2>
+        </div>
+        {options.length ? (
+          <div className="target-list">
+            {options.map((item) => (
+              <label key={item.id} className={item.disabled ? "target-row disabled" : "target-row"}>
+                <input
+                  type={multi ? "checkbox" : "radio"}
+                  checked={selected.includes(item.id)}
+                  disabled={item.disabled || busy}
+                  onChange={() => onToggle(item.id)}
+                  name="resource-target"
+                />
+                <span>
+                  <strong>{item.label}</strong>
+                  <small>{item.path}</small>
+                  <small>{item.note}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <p className="empty compact-empty">{emptyTargetText(action, t)}</p>
+        )}
+        <div className="modal-actions">
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
+          <button className="primary" type="button" onClick={onConfirm} disabled={busy || confirmDisabled || !options.length}>
+            {targetConfirmLabel(action, t, selected.length)}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function targetModalTitle(action: TargetAction, t: TFunction): string {
+  if (action === "install") return t("resources.selectInstallTargets");
+  if (action === "uninstall") return t("resources.selectUninstallTargets");
+  if (action === "preview") return t("resources.selectPreviewTarget");
+  return t("resources.selectOpenTarget");
+}
+
+function targetConfirmLabel(action: TargetAction, t: TFunction, count: number): string {
+  if (action === "install") return t("resources.confirmInstallTargets", { count });
+  if (action === "uninstall") return t("resources.confirmUninstallTargets", { count });
+  if (action === "preview") return t("resources.confirmPreviewTarget");
+  return t("resources.confirmOpenTarget");
+}
+
+function emptyTargetText(action: TargetAction, t: TFunction): string {
+  if (action === "install") return t("resources.noInstallTargets");
+  if (action === "uninstall") return t("resources.noUninstallTargets");
+  if (action === "preview") return t("resources.noPreviewTargets");
+  return t("resources.noOpenTargets");
 }
 
 function statusFilterLabel(value: (typeof statusFilters)[number], t: TFunction) {

@@ -403,7 +403,7 @@ export function SettingsView({
                       <span>{t("settings.enabled")}</span>
                     </label>
                   </div>
-                  <div className="stack-form three-column">
+                  <div className="stack-form four-column">
                     <label>
                       <span>{t("settings.skills")}</span>
                       <input
@@ -426,6 +426,14 @@ export function SettingsView({
                         value={platform.rules_dir}
                         placeholder={t("settings.notConfigured")}
                         onChange={(event) => updatePlatform(index, { rules_dir: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t("settings.plugins")}</span>
+                      <input
+                        value={platform.plugins_dir}
+                        placeholder={t("settings.notConfigured")}
+                        onChange={(event) => updatePlatform(index, { plugins_dir: event.target.value })}
                       />
                     </label>
                   </div>

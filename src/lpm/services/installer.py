@@ -15,6 +15,7 @@ from ..core.platforms import PlatformProfile
 from ..core.registry import find_registry_path, load_registry, save_registry
 from ..core.secrets import sanitize_mcp_config_for_storage
 from ..infrastructure import git_ops
+from .install_planner import InstallPlan, copy_resource_tree, plan_install
 from .mcp_installer import inject_mcp_server, remove_mcp_server
 
 # Backward-compatible alias
@@ -112,7 +113,7 @@ def _install_skill_to_platform(
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     if target_dir.exists():
         _remove_path(target_dir)
-    shutil.copytree(source_path, target_dir, ignore=shutil.ignore_patterns(".git"))
+    copy_resource_tree(source_path, target_dir)
     return target_dir
 
 
@@ -142,7 +143,25 @@ def _install_rule_to_platform(
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     if target_dir.exists():
         _remove_path(target_dir)
-    shutil.copytree(source_path, target_dir, ignore=shutil.ignore_patterns(".git"))
+    copy_resource_tree(source_path, target_dir)
+    return target_dir
+
+
+def _install_plugin_to_platform(
+    source_path: Path, platform: PlatformProfile, entry: RegistryItem
+) -> Path | None:
+    """Copy a plugin directory to a platform's plugin target."""
+    target_dir = platform.resolve_install_path("plugin", entry.install_target_name())
+    if target_dir is None:
+        return None
+    try:
+        if source_path.resolve() == target_dir.resolve():
+            return target_dir
+    except OSError:
+        pass
+    if target_dir.exists():
+        _remove_path(target_dir)
+    copy_resource_tree(source_path, target_dir)
     return target_dir
 
 
@@ -173,6 +192,8 @@ def _distribute_to_platforms(
             result_path = _install_mcp_to_platform(plat, entry)
         elif entry.kind in {"rule", "prompt"}:
             result_path = _install_rule_to_platform(source, plat, entry)
+        elif entry.kind == "plugin":
+            result_path = _install_plugin_to_platform(source, plat, entry)
 
         if result_path is not None:
             installed_on.append(plat.name)
@@ -248,7 +269,7 @@ def sync_one(
                 _remove_path(install_path)
             install_path.parent.mkdir(parents=True, exist_ok=True)
             if source_path.is_dir():
-                shutil.copytree(source_path, install_path, ignore=shutil.ignore_patterns(".git"))
+                copy_resource_tree(source_path, install_path)
             else:
                 install_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_path, install_path)
@@ -377,6 +398,26 @@ def sync_all(
     return results
 
 
+def create_install_plan(
+    entry: RegistryItem,
+    *,
+    config: Config,
+    platform_filter: str | None = None,
+    registry_root: Path | None = None,
+) -> InstallPlan:
+    if _is_local_resource(entry):
+        source_path = _local_source_path(entry, registry_root=registry_root)
+    else:
+        clone_path = _clone_path(config, entry)
+        source_path = clone_path / entry.subdir if entry.subdir else clone_path
+    return plan_install(
+        entry,
+        source_path,
+        config.platforms.profiles,
+        platform_filter=platform_filter,
+    )
+
+
 def preview_sync_all(
     *,
     config: Config,
@@ -458,9 +499,21 @@ def _preview_sync_item(
 ) -> SyncPreviewItem:
     install_path = _install_path(config, entry)
     clone_path = _clone_path(config, entry)
-    target_pairs = _platform_targets(config, entry, platform_filter=platform_filter)
     warnings: list[str] = []
     blocked = False
+    try:
+        install_plan = create_install_plan(
+            entry,
+            config=config,
+            platform_filter=platform_filter,
+            registry_root=registry_root,
+        )
+        target_pairs = [(target.platform, target.path) for target in install_plan.targets]
+        warnings.extend(install_plan.warnings)
+    except Exception as exc:  # noqa: BLE001 - preview should report plan failures
+        install_plan = None
+        target_pairs = _platform_targets(config, entry, platform_filter=platform_filter)
+        warnings.append(f"Install plan could not be built: {exc}")
 
     if entry.source in {"local", "owned"}:
         if not entry.path:
@@ -474,9 +527,7 @@ def _preview_sync_item(
                 warnings.append(f"Local resource path does not exist: {source_path}")
             install_path = source_path if blocked else install_path
 
-    if entry.kind == "plugin":
-        warnings.append("Plugin platform installation is not supported yet; fallback install path only.")
-    elif not target_pairs:
+    if not target_pairs:
         if platform_filter:
             warnings.append(f"No enabled target path found for platform {platform_filter}.")
         else:
@@ -484,6 +535,14 @@ def _preview_sync_item(
 
     if entry.kind == "mcp" and not entry.mcp_config:
         warnings.append("MCP config is missing; no MCP server entry can be injected.")
+
+    if install_plan is not None:
+        soft_targets = [target.platform for target in install_plan.targets if not target.auto_install]
+        if soft_targets:
+            warnings.append(
+                "Some detected agent targets require explicit selection: "
+                + ", ".join(sorted(soft_targets))
+            )
 
     return SyncPreviewItem(
         name=entry.name,
@@ -551,35 +610,51 @@ def _skill_status(
     )
 
 
-def uninstall_one(entry: RegistryItem, *, config: Config) -> bool:
+def uninstall_one(
+    entry: RegistryItem,
+    *,
+    config: Config,
+    platform_filter: str | None = None,
+) -> bool:
     """Remove an item's local files and clean up platform installations."""
     install_path = _install_path(config, entry)
     clone_path = _clone_path(config, entry)
     removed = False
 
-    for p in {install_path, clone_path}:
-        if p.exists():
-            _remove_path(p)
+    if platform_filter is None:
+        for p in {install_path, clone_path}:
+            if p.exists():
+                _remove_path(p)
+                removed = True
+
+    platforms = config.platforms.enabled()
+    if platform_filter:
+        platforms = [plat for plat in platforms if plat.name == platform_filter]
+
+    for plat in platforms:
+        if _remove_platform_installation(entry, plat):
             removed = True
 
-    for plat in config.platforms.enabled():
-        if entry.kind == "skill":
-            target = plat.resolve_install_path("skill", entry.install_target_name())
-            if target and target.exists():
-                _remove_path(target)
-                removed = True
-        elif entry.kind == "mcp":
-            mcp_path = plat.mcp_json_path()
-            if mcp_path:
-                if remove_mcp_server(mcp_path, entry.name):
-                    removed = True
-        elif entry.kind in {"rule", "prompt"}:
-            target = plat.resolve_install_path("rule", entry.install_target_name())
-            if target and target.exists():
-                _remove_path(target)
-                removed = True
-
     return removed
+
+
+def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile) -> bool:
+    if entry.kind == "skill":
+        target = platform.resolve_install_path("skill", entry.install_target_name())
+    elif entry.kind == "mcp":
+        mcp_path = platform.mcp_json_path()
+        return bool(mcp_path and remove_mcp_server(mcp_path, entry.name))
+    elif entry.kind in {"rule", "prompt"}:
+        target = platform.resolve_install_path("rule", entry.install_target_name())
+    elif entry.kind == "plugin":
+        target = platform.resolve_install_path("plugin", entry.install_target_name())
+    else:
+        target = None
+
+    if target and target.exists():
+        _remove_path(target)
+        return True
+    return False
 
 
 @dataclass
@@ -671,7 +746,7 @@ def _materialize_subdir(clone_path: Path, subdir: str, install_path: Path) -> No
     if install_path.exists():
         _remove_path(install_path)
     install_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, install_path)
+    copy_resource_tree(src, install_path)
 
 
 def _remove_path(path: Path) -> None:

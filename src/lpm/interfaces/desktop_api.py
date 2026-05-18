@@ -59,6 +59,7 @@ from ..services.resource_manager import (
     delete_resource,
     install_resource,
     preview_resource,
+    resource_install_plan,
     resource_open_path,
     uninstall_resource,
 )
@@ -292,16 +293,36 @@ def _resource_install(payload: JsonDict) -> Any:
     )
 
 
+def _resource_install_plan(payload: JsonDict) -> Any:
+    return resource_install_plan(
+        _required_str(payload, "name"),
+        config=load_config(),
+        platform_filter=_optional_str(payload.get("platform")),
+    )
+
+
 def _resource_uninstall(payload: JsonDict) -> Any:
-    return uninstall_resource(_required_str(payload, "name"), config=load_config())
+    return uninstall_resource(
+        _required_str(payload, "name"),
+        config=load_config(),
+        platform_filter=_optional_str(payload.get("platform")),
+    )
 
 
 def _resource_preview(payload: JsonDict) -> Any:
-    return preview_resource(_required_str(payload, "name"), config=load_config())
+    return preview_resource(
+        _required_str(payload, "name"),
+        config=load_config(),
+        platform_filter=_optional_str(payload.get("platform")),
+    )
 
 
 def _resource_open_path(payload: JsonDict) -> JsonDict:
-    path = resource_open_path(_required_str(payload, "name"), config=load_config())
+    path = resource_open_path(
+        _required_str(payload, "name"),
+        config=load_config(),
+        platform_filter=_optional_str(payload.get("platform")),
+    )
     return {"path": path}
 
 
@@ -486,6 +507,7 @@ def _platforms_with_presets(profiles: list[PlatformProfile]) -> list[PlatformPro
             skills_dir=p.skills_dir,
             mcp_json=p.mcp_json,
             rules_dir=p.rules_dir,
+            plugins_dir=p.plugins_dir,
         )
         for p in profiles
     ]
@@ -506,6 +528,7 @@ def _platform_to_json(profile: PlatformProfile) -> JsonDict:
         "skills_dir": profile.skills_dir,
         "mcp_json": profile.mcp_json,
         "rules_dir": profile.rules_dir,
+        "plugins_dir": profile.plugins_dir,
     }
 
 
@@ -584,6 +607,7 @@ def _platforms_from_payload(value: Any, existing: list[PlatformProfile]) -> list
                 skills_dir=str(item.get("skills_dir") or ""),
                 mcp_json=str(item.get("mcp_json") or ""),
                 rules_dir=str(item.get("rules_dir") or ""),
+                plugins_dir=str(item.get("plugins_dir") or ""),
             )
         )
         seen.add(name)
@@ -976,6 +1000,7 @@ ACTIONS: dict[str, Handler] = {
     "sync": _sync,
     "resource_inventory": _resource_inventory,
     "resource_install": _resource_install,
+    "resource_install_plan": _resource_install_plan,
     "resource_uninstall": _resource_uninstall,
     "resource_preview": _resource_preview,
     "resource_open_path": _resource_open_path,

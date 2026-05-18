@@ -39,9 +39,11 @@ enabled = true
 skills_dir = "~/.cursor/skills"
 mcp_json = "~/.cursor/mcp.json"
 rules_dir = ""
+plugins_dir = ""
 
 [platforms.claude-code]
 enabled = false
 skills_dir = "~/.claude/skills"
 mcp_json = "~/.claude.json"
 rules_dir = ""
+plugins_dir = "~/.claude/plugins"

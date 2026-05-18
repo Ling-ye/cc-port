@@ -168,6 +168,8 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         lines.append(f'skills_dir = "{_escape(profile.skills_dir)}"')
         lines.append(f'mcp_json = "{_escape(profile.mcp_json)}"')
         lines.append(f'rules_dir = "{_escape(profile.rules_dir)}"')
+        if profile.plugins_dir:
+            lines.append(f'plugins_dir = "{_escape(profile.plugins_dir)}"')
         lines.append("")
 
     out.write_text("\n".join(lines), encoding="utf-8")

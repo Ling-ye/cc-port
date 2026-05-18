@@ -11,6 +11,7 @@ import frontmatter
 from ..core.models import ItemKind
 from ..core.registry import load_registry
 from ..core.validator import RULE_FILE_NAMES, RULE_FILE_SUFFIXES, parse_skill
+from .install_planner import load_resource_manifest
 from .publisher import _slug
 
 DiscoveryScope = str
@@ -147,6 +148,9 @@ def _roots_for_scope(
             ("codex", home / ".codex"),
             ("claude-code", home / ".claude"),
             ("cursor", home / ".cursor"),
+            ("windsurf", home / ".windsurf"),
+            ("opencode", home / ".config" / "opencode"),
+            ("gemini", home / ".gemini"),
         ]
     if scope == "directory":
         if root_path is None or str(root_path).strip() == "":
@@ -195,30 +199,46 @@ def _scan_root(
 
 
 def _candidate_from_directory(path: Path, *, tool: str, source: str) -> DiscoveredResource | None:
+    manifest_candidate = _candidate_from_manifest(path, tool=tool, source=source)
+    if manifest_candidate is not None:
+        return manifest_candidate
+
     skill_md = path / "SKILL.md"
-    if not skill_md.is_file():
-        return None
+    if skill_md.is_file():
+        warnings: list[str] = []
+        name_hint = _slug(path.name)
+        description = ""
+        try:
+            meta = parse_skill(path)
+            name_hint = _slug(meta.name)
+            description = meta.description
+        except Exception as exc:  # noqa: BLE001 - discovery reports invalid metadata as a warning
+            warnings.append(str(exc))
 
-    warnings: list[str] = []
-    name_hint = _slug(path.name)
-    description = ""
-    try:
-        meta = parse_skill(path)
-        name_hint = _slug(meta.name)
-        description = meta.description
-    except Exception as exc:  # noqa: BLE001 - discovery reports invalid metadata as a warning
-        warnings.append(str(exc))
+        return _resource(
+            path=path,
+            marker=skill_md,
+            tool=tool,
+            source=source,
+            kind="skill",
+            name_hint=name_hint,
+            description=description,
+            warnings=warnings,
+        )
 
-    return _resource(
-        path=path,
-        marker=skill_md,
-        tool=tool,
-        source=source,
-        kind="skill",
-        name_hint=name_hint,
-        description=description,
-        warnings=warnings,
-    )
+    for marker in (path / ".claude-plugin" / "plugin.json", path / ".codex-plugin" / "plugin.json"):
+        if marker.is_file():
+            return _resource(
+                path=path,
+                marker=marker,
+                tool=tool,
+                source=source,
+                kind="plugin",
+                name_hint=_slug(path.name),
+                description="",
+                warnings=[],
+            )
+    return None
 
 
 def _candidate_from_file(path: Path, *, tool: str, source: str) -> DiscoveredResource | None:
@@ -271,6 +291,8 @@ def _resource(
 def _file_kind(path: Path) -> ItemKind | None:
     lower = path.name.lower()
     suffix = path.suffix.lower()
+    if lower in {"mcp.json", "mcp.yaml", "mcp.yml"}:
+        return "mcp"
     if lower in RULE_FILE_NAMES:
         return "rule"
     if suffix == ".mdc":
@@ -414,7 +436,58 @@ def _infer_tool(path: Path, *, default: str) -> str:
         return "claude-code"
     if ".cursor" in lowered:
         return "cursor"
+    if ".windsurf" in lowered:
+        return "windsurf"
+    if "opencode" in lowered:
+        return "opencode"
+    if ".gemini" in lowered:
+        return "gemini"
     return default
+
+
+def _candidate_from_manifest(path: Path, *, tool: str, source: str) -> DiscoveredResource | None:
+    try:
+        manifest = load_resource_manifest(path)
+    except ValueError as exc:
+        return _resource(
+            path=path,
+            marker=path,
+            tool=tool,
+            source=source,
+            kind="plugin",
+            name_hint=_slug(path.name),
+            description="",
+            warnings=[str(exc)],
+        )
+    if manifest.path is None:
+        return None
+    kind = _kind_from_manifest_buckets(manifest.buckets)
+    if kind is None:
+        return None
+    return _resource(
+        path=path,
+        marker=manifest.path,
+        tool=tool,
+        source=source,
+        kind=kind,
+        name_hint=_slug(path.name),
+        description="",
+        warnings=[],
+    )
+
+
+def _kind_from_manifest_buckets(buckets: dict[str, list[str]]) -> ItemKind | None:
+    if buckets.get("skills"):
+        return "skill"
+    if buckets.get("mcp"):
+        return "mcp"
+    if buckets.get("rules"):
+        return "rule"
+    if buckets.get("prompts") or buckets.get("commands"):
+        return "prompt"
+    if buckets.get("plugins") or buckets.get("agents") or buckets.get("hooks"):
+        return "plugin"
+    return None
 
 
 def _shorten(text: str, limit: int = 180) -> str:

@@ -12,6 +12,7 @@ from typing import Any
 from ..core.config import Config, load_config
 from ..core.models import RegistryItem, RemovedEffect
 from ..core.registry import find_registry_path, load_registry, save_registry
+from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubClient
 from .installer import (
     SkillStatus,
@@ -20,11 +21,13 @@ from .installer import (
     SyncResult,
     _clone_path,
     _install_path,
+    create_install_plan,
     preview_sync_all,
     status_all,
     sync_one,
     uninstall_one,
 )
+from .mcp_installer import has_mcp_server
 
 
 @dataclass
@@ -39,6 +42,15 @@ class ResourceRemoteState:
 
 
 @dataclass
+class ResourceTargetState:
+    platform: str
+    path: Path
+    supported: bool
+    exists: bool
+    installed: bool
+
+
+@dataclass
 class ResourceLocalState:
     source_path: Path | None
     source_exists: bool
@@ -46,6 +58,7 @@ class ResourceLocalState:
     installed: bool
     open_path: Path | None
     target_paths: list[Path] = field(default_factory=list)
+    targets: list[ResourceTargetState] = field(default_factory=list)
 
 
 @dataclass
@@ -158,11 +171,12 @@ def uninstall_resource(
     *,
     config: Config | None = None,
     registry_path: Path | None = None,
+    platform_filter: str | None = None,
 ) -> dict[str, Any]:
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
     entry = _require_entry(name, reg_path)
-    removed = uninstall_one(entry, config=cfg)
+    removed = uninstall_one(entry, config=cfg, platform_filter=platform_filter)
     status = next(
         (item for item in status_all(config=cfg, registry_path=reg_path) if item.name == name),
         None,
@@ -175,13 +189,25 @@ def preview_resource(
     *,
     config: Config | None = None,
     registry_path: Path | None = None,
+    platform_filter: str | None = None,
     max_bytes: int = 60_000,
 ) -> ResourcePreviewResult:
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
     entry = _require_entry(name, reg_path)
 
-    for root in _content_roots(entry, cfg, reg_path):
+    roots: list[Path] = []
+    if platform_filter:
+        roots.extend(_platform_content_roots(entry, cfg, platform_filter, require_exists=True))
+    roots.extend(_content_roots(entry, cfg, reg_path))
+    roots.extend(_remote_preview_roots(entry, cfg, reg_path))
+
+    seen: set[Path] = set()
+    for root in roots:
+        resolved = root.resolve() if root.exists() else root
+        if resolved in seen:
+            continue
+        seen.add(resolved)
         target = _preview_file(root, entry)
         if target is None:
             continue
@@ -264,14 +290,36 @@ def resource_open_path(
     *,
     config: Config | None = None,
     registry_path: Path | None = None,
+    platform_filter: str | None = None,
 ) -> Path:
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
     entry = _require_entry(name, reg_path)
-    path = _open_path(entry, cfg, reg_path)
+    if platform_filter:
+        path = _platform_open_path(entry, cfg, platform_filter)
+    else:
+        path = _open_path(entry, cfg, reg_path)
     if path is None:
         raise FileNotFoundError("No local resource directory is available to open.")
     return path
+
+
+def resource_install_plan(
+    name: str,
+    *,
+    config: Config | None = None,
+    registry_path: Path | None = None,
+    platform_filter: str | None = None,
+) -> Any:
+    cfg = config or load_config()
+    reg_path = registry_path or find_registry_path()
+    entry = _require_entry(name, reg_path)
+    return create_install_plan(
+        entry,
+        config=cfg,
+        platform_filter=platform_filter,
+        registry_root=reg_path.parent,
+    )
 
 
 def _inventory_item(
@@ -286,6 +334,8 @@ def _inventory_item(
     source_path = _source_path(entry, registry_path)
     source_exists = bool(source_path and source_path.exists())
     open_path = _open_path(entry, config, registry_path, status=status)
+    targets = _target_states(entry, config)
+    target_installed = any(target.installed for target in targets)
     can_install = entry.lifecycle == "active" and not (preview.blocked if preview else False)
     install_reason = ""
     if entry.lifecycle != "active":
@@ -313,15 +363,16 @@ def _inventory_item(
             source_path=source_path,
             source_exists=source_exists,
             install_path=install_path,
-            installed=status.installed if status else install_path.exists(),
+            installed=bool(target_installed or (status.installed if status else install_path.exists())),
             open_path=open_path,
             target_paths=preview.target_paths if preview else [],
+            targets=targets,
         ),
         actions=ResourceActionState(
             can_install=can_install,
-            can_uninstall=bool(status and status.installed),
-            can_preview=_has_preview(entry, config, registry_path),
-            can_open=open_path is not None,
+            can_uninstall=bool(target_installed or (status and status.installed)),
+            can_preview=_can_preview(entry, config, registry_path),
+            can_open=any(target.exists for target in targets) or open_path is not None,
             can_delete_resource=entry.lifecycle == "active",
             can_delete_remote=remote_can_delete,
             install_reason=install_reason,
@@ -358,6 +409,86 @@ def _content_roots(entry: RegistryItem, config: Config, registry_path: Path) -> 
     return roots
 
 
+def _remote_preview_roots(entry: RegistryItem, config: Config, registry_path: Path) -> list[Path]:
+    if entry.kind == "mcp" and entry.mcp_config and not entry.repo:
+        return []
+    if not entry.repo:
+        return []
+    clone_path = _clone_path(config, entry)
+    source_path = _source_path(entry, registry_path)
+    if source_path and source_path.exists():
+        return []
+    if not clone_path.exists():
+        git_ops.clone(entry.repo, clone_path, ref=entry.ref, token=config.github.token or None)
+        if entry.subdir:
+            git_ops.sparse_checkout(clone_path, entry.subdir)
+    elif git_ops.is_repo(clone_path):
+        git_ops.set_remote(clone_path, "origin", entry.repo)
+        git_ops.pull(clone_path, ref=entry.ref, token=config.github.token or None)
+    elif not _preview_file(clone_path, entry):
+        return []
+
+    clone_content = clone_path / entry.subdir if entry.subdir else clone_path
+    return [clone_content if clone_content.exists() else clone_path]
+
+
+def _target_states(entry: RegistryItem, config: Config) -> list[ResourceTargetState]:
+    states: list[ResourceTargetState] = []
+    for platform in config.platforms.enabled():
+        target = platform.resolve_install_path(entry.kind, entry.install_target_name())
+        if target is None:
+            continue
+        states.append(
+            ResourceTargetState(
+                platform=platform.name,
+                path=target,
+                supported=True,
+                exists=target.exists(),
+                installed=_target_installed(entry, platform, target),
+            )
+        )
+    return states
+
+
+def _target_installed(entry: RegistryItem, platform: Any, target: Path) -> bool:
+    if entry.kind == "mcp":
+        mcp_path = platform.mcp_json_path()
+        return bool(mcp_path and has_mcp_server(mcp_path, entry.name))
+    return target.exists()
+
+
+def _platform_content_roots(
+    entry: RegistryItem,
+    config: Config,
+    platform_filter: str,
+    *,
+    require_exists: bool,
+) -> list[Path]:
+    platform = config.platforms.get(platform_filter)
+    if platform is None or not platform.enabled:
+        return []
+    target = platform.resolve_install_path(entry.kind, entry.install_target_name())
+    if target is None:
+        return []
+    if require_exists and not _target_installed(entry, platform, target):
+        return []
+    if entry.kind == "mcp":
+        return [target] if target.exists() else []
+    return [target] if target.exists() else []
+
+
+def _platform_open_path(
+    entry: RegistryItem,
+    config: Config,
+    platform_filter: str,
+) -> Path | None:
+    roots = _platform_content_roots(entry, config, platform_filter, require_exists=True)
+    if not roots:
+        return None
+    path = roots[0]
+    return path if path.is_dir() else path.parent
+
+
 def _open_path(
     entry: RegistryItem,
     config: Config,
@@ -381,6 +512,10 @@ def _has_preview(entry: RegistryItem, config: Config, registry_path: Path) -> bo
     if entry.kind == "mcp" and entry.mcp_config:
         return True
     return any(_preview_file(root, entry) is not None for root in _content_roots(entry, config, registry_path))
+
+
+def _can_preview(entry: RegistryItem, config: Config, registry_path: Path) -> bool:
+    return _has_preview(entry, config, registry_path) or bool(entry.repo)
 
 
 def _preview_file(root: Path, entry: RegistryItem) -> Path | None:

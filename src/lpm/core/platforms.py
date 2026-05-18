@@ -26,6 +26,7 @@ class PlatformProfile:
     skills_dir: str = ""
     mcp_json: str = ""
     rules_dir: str = ""
+    plugins_dir: str = ""
 
     def skills_path(self) -> Path | None:
         return Path(self.skills_dir).expanduser() if self.skills_dir else None
@@ -35,6 +36,9 @@ class PlatformProfile:
 
     def rules_path(self) -> Path | None:
         return Path(self.rules_dir).expanduser() if self.rules_dir else None
+
+    def plugins_path(self) -> Path | None:
+        return Path(self.plugins_dir).expanduser() if self.plugins_dir else None
 
     def resolve_install_path(self, kind: ItemKind, item_name: str) -> Path | None:
         """Return the target path for a given resource kind, or None if the
@@ -47,6 +51,9 @@ class PlatformProfile:
             return base / item_name if base else None
         if kind == "mcp":
             return self.mcp_json_path()
+        if kind == "plugin":
+            base = self.plugins_path()
+            return base / item_name if base else None
         return None
 
 
@@ -72,6 +79,7 @@ PLATFORM_PRESETS: dict[str, PlatformProfile] = {
         skills_dir="~/.claude/skills",
         mcp_json="~/.claude.json",
         rules_dir="",
+        plugins_dir="~/.claude/plugins",
     ),
     "windsurf": PlatformProfile(
         name="windsurf",
@@ -86,6 +94,15 @@ PLATFORM_PRESETS: dict[str, PlatformProfile] = {
         skills_dir="~/.codex/skills",
         mcp_json="",
         rules_dir="",
+        plugins_dir="~/.codex/plugins",
+    ),
+    "opencode": PlatformProfile(
+        name="opencode",
+        enabled=False,
+        skills_dir="~/.config/opencode/skills",
+        mcp_json="~/.config/opencode/opencode.json",
+        rules_dir="~/.config/opencode/rules",
+        plugins_dir="~/.config/opencode/plugins",
     ),
 }
 
@@ -103,6 +120,7 @@ def build_platform(name: str, overrides: dict[str, Any] | None = None) -> Platfo
         skills_dir=preset.skills_dir,
         mcp_json=preset.mcp_json,
         rules_dir=preset.rules_dir,
+        plugins_dir=preset.plugins_dir,
     )
     if overrides:
         if "enabled" in overrides:
@@ -113,6 +131,8 @@ def build_platform(name: str, overrides: dict[str, Any] | None = None) -> Platfo
             base.mcp_json = str(overrides["mcp_json"] or "")
         if "rules_dir" in overrides:
             base.rules_dir = str(overrides["rules_dir"] or "")
+        if "plugins_dir" in overrides:
+            base.plugins_dir = str(overrides["plugins_dir"] or "")
     return base
 
 

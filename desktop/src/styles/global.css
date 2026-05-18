@@ -562,6 +562,10 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.four-column {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .span-2 {
   grid-column: span 2;
 }
@@ -939,6 +943,54 @@ button {
   overflow-wrap: anywhere;
 }
 
+.resource-target-modal {
+  width: min(640px, calc(100vw - 48px));
+}
+
+.target-list {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.target-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid #dce4e9;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfd;
+}
+
+.target-row.disabled {
+  opacity: 0.58;
+}
+
+.target-row input {
+  width: 16px;
+  margin-top: 4px;
+}
+
+.target-row span,
+.target-row strong,
+.target-row small {
+  display: block;
+  min-width: 0;
+}
+
+.target-row small {
+  margin-top: 4px;
+  color: #65727c;
+  overflow-wrap: anywhere;
+}
+
+.compact-empty {
+  min-height: 96px;
+  margin: 12px 0;
+}
+
 .kind-bars {
   display: grid;
   gap: 12px;
@@ -1026,7 +1078,8 @@ button {
   .discovery-actions span,
   .discovery-main small,
   .metric span,
-  .modal-list span {
+  .modal-list span,
+  .target-row small {
     color: #9cafb8;
   }
 
@@ -1089,7 +1142,8 @@ button {
   .discovery-row,
   .preview-panel,
   .discovery-main input,
-  .sync-result-row {
+  .sync-result-row,
+  .target-row {
     background: #172228;
     border-color: #2b3d46;
     color: #e7edf0;

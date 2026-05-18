@@ -16,6 +16,7 @@ settings object.  This module handles both layouts transparently.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -31,10 +32,20 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    _backup_once(path)
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+
+
+def _backup_once(path: Path) -> None:
+    if not path.is_file():
+        return
+    backup = path.with_name(f"{path.name}.lpm.bak")
+    if backup.exists():
+        return
+    shutil.copy2(path, backup)
 
 
 def _get_servers_section(data: dict[str, Any]) -> dict[str, Any]:

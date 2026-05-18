@@ -14,6 +14,7 @@ from ..core.models import ItemKind, RegistryItem
 from ..core.registry import find_registry_path, load_registry, save_registry
 from ..core.secrets import sanitize_mcp_config_for_storage
 from ..core.validator import parse_skill, validate_item
+from .install_planner import copy_resource_tree
 from .publisher import _slug
 
 LOCAL_SOURCE = "local"
@@ -69,7 +70,7 @@ def import_local_resource(
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest / src.name)
     elif src.is_dir():
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        copy_resource_tree(src, dest)
     else:
         shutil.copy2(src, dest)
 

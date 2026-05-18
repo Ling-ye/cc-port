@@ -38,6 +38,7 @@ from ..services.installer import (
     uninstall_one,
 )
 from ..services.local_resources import export_claude_plugin, import_local_resource
+from ..services.resource_manager import resource_install_plan
 from ..services.resource_repo import (
     init_resource_repo,
     inspect_resource_repo,
@@ -745,6 +746,42 @@ def cmd_sync(
         raise typer.Exit(1)
 
 
+@app.command("plan-install")
+def cmd_plan_install(
+    name: str = typer.Argument(..., help="Registered resource name."),
+    platform: str | None = typer.Option(None, "--platform", "-p", help="Only plan for this platform."),
+) -> None:
+    """Build an install plan without writing local files."""
+    try:
+        plan = resource_install_plan(name, config=_load(), platform_filter=platform)
+    except Exception as exc:
+        console.print(f"[red]Install plan failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[bold]{plan.name}[/bold] ({plan.kind})")
+    console.print(f"Source: {plan.source_path}")
+    if plan.manifest_path:
+        console.print(f"Manifest: {plan.manifest_path}")
+    if plan.warnings:
+        for warning in plan.warnings:
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    target_table = Table(title="Install targets")
+    target_table.add_column("Platform")
+    target_table.add_column("Mechanism")
+    target_table.add_column("Auto")
+    target_table.add_column("Path")
+    for target in plan.targets:
+        target_table.add_row(
+            target.platform,
+            target.install_mechanism,
+            "yes" if target.auto_install else "manual",
+            str(target.path),
+        )
+    console.print(target_table)
+    console.print(f"Files after filtering: {len(plan.files)}")
+
+
 # ---- status ---- #
 
 
@@ -988,6 +1025,7 @@ def cmd_platforms() -> None:
     table.add_column("Skills Dir")
     table.add_column("MCP Config")
     table.add_column("Rules Dir")
+    table.add_column("Plugins Dir")
     for plat in cfg.platforms.profiles:
         table.add_row(
             plat.name,
@@ -995,6 +1033,7 @@ def cmd_platforms() -> None:
             plat.skills_dir or "-",
             plat.mcp_json or "-",
             plat.rules_dir or "-",
+            plat.plugins_dir or "-",
         )
     console.print(table)
 
