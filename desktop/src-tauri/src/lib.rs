@@ -171,34 +171,40 @@ fn open_path_with_system(path: &str) -> Result<(), String> {
     }
 
     #[cfg(target_os = "windows")]
-    let mut command = {
+    {
         let mut cmd = Command::new("explorer");
         cmd.arg(&target);
         cmd.creation_flags(CREATE_NO_WINDOW);
-        cmd
-    };
+        return cmd
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("Unable to open {}: {}", target.display(), err));
+    }
 
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut cmd = Command::new("open");
-        cmd.arg(&target);
-        cmd
-    };
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            let mut cmd = Command::new("open");
+            cmd.arg(&target);
+            cmd
+        };
 
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
-        let mut cmd = Command::new("xdg-open");
-        cmd.arg(&target);
-        cmd
-    };
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let mut command = {
+            let mut cmd = Command::new("xdg-open");
+            cmd.arg(&target);
+            cmd
+        };
 
-    let status = command
-        .status()
-        .map_err(|err| format!("Unable to open {}: {}", target.display(), err))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("Open command failed with status: {status}"))
+        let status = command
+            .status()
+            .map_err(|err| format!("Unable to open {}: {}", target.display(), err))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Open command failed with status: {status}"))
+        }
     }
 }
 
