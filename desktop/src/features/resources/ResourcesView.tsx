@@ -17,7 +17,7 @@ import type {
 } from "@/types/lpm";
 
 const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
-const statusFilters = ["available", "installed", "not-installed", "removed", "all"] as const;
+const statusFilters = ["all", "available", "installed", "not-installed", "removed"] as const;
 type TargetAction = "install" | "uninstall" | "preview" | "open";
 const cachePreviewTarget = "__cache_preview__";
 
@@ -206,13 +206,19 @@ export function ResourcesView({
     <section className="split-view resources-workspace">
       <div className="panel list-panel">
         <div className="resource-filter-stack">
-          <Segmented value={filter} values={kinds} onChange={setFilter} getLabel={(item) => resourceKindLabel(item, t)} />
-          <Segmented
-            value={statusFilter}
-            values={statusFilters}
-            onChange={setStatusFilter}
-            getLabel={(item) => statusFilterLabel(item, t)}
-          />
+          <div className="resource-filter-group">
+            <span>{t("resources.filterKind")}</span>
+            <Segmented value={filter} values={kinds} onChange={setFilter} getLabel={(item) => resourceKindLabel(item, t)} />
+          </div>
+          <div className="resource-filter-group">
+            <span>{t("resources.filterStatus")}</span>
+            <Segmented
+              value={statusFilter}
+              values={statusFilters}
+              onChange={setStatusFilter}
+              getLabel={(item) => statusFilterLabel(item, t)}
+            />
+          </div>
         </div>
         <div className="resource-list">
           {visible.map((item) => (
@@ -236,80 +242,27 @@ export function ResourcesView({
           ))}
         </div>
       </div>
-      <div className="panel detail-panel resource-detail-panel">
+      <div className="resource-side-panel">
         {selected ? (
           <>
-            <div className="detail-title">
-              <div className="detail-title-main">
-                <KindBadge kind={selected.entry.kind} label={resourceKindLabel(selected.entry.kind, t)} />
-                <h2>{selected.entry.name}</h2>
-              </div>
-              <span className={selected.entry.lifecycle === "removed" ? "lifecycle-pill removed" : "lifecycle-pill"}>
-                {lifecycleLabel(selected.entry.lifecycle || "active", t)}
-              </span>
-            </div>
-            <DescriptionList
-              rows={[
-                [t("resources.source"), selected.entry.source],
-                [t("resources.lifecycle"), lifecycleLabel(selected.entry.lifecycle || "active", t)],
-                [t("resources.repo"), selected.entry.repo || "-"],
-                [t("resources.path"), selected.entry.path || "-"],
-                [t("resources.ref"), selected.entry.ref || "-"],
-                [t("resources.subdir"), selected.entry.subdir || "-"],
-                [t("resources.remoteState"), remoteStateLabel(selected.remote_state.reachable, t)],
-                [t("resources.sourcePath"), selected.local_state.source_path || "-"],
-                [t("resources.sourceState"), selected.local_state.source_exists ? t("resources.sourceExists") : t("resources.sourceMissing")],
-                [t("resources.installPath"), selected.local_state.install_path || "-"],
-                [t("resources.installState"), selected.local_state.installed ? t("status.installed") : t("status.notInstalled")],
-                [t("sync.plannedAction"), selected.sync_preview?.planned_action || "-"],
-                [t("sync.targetPaths"), selected.local_state.target_paths.length ? selected.local_state.target_paths.join(", ") : "-"],
-                [t("resources.removedAt"), selected.entry.removed_at || "-"],
-                [t("resources.removedEffect"), selected.entry.removed_effect || "-"],
-              ]}
+            <ResourceActionPanel
+              activePreview={activePreview}
+              busy={busy}
+              busyAction={busyAction}
+              installTargets={installTargets}
+              installedTargets={installedTargets}
+              openTargets={openTargets}
+              selected={selected}
+              t={t}
+              onDelete={deleteSelected}
+              onOpenTargetModal={openTargetModal}
             />
-            <div className="tag-row">
-              {selected.entry.tags?.map((tag) => <span key={tag}>{tag}</span>)}
-            </div>
-            {selected.sync_preview?.warnings.length ? (
-              <p className="discovery-warning">{selected.sync_preview.warnings.join(" ")}</p>
-            ) : null}
-            <div className="resource-actions">
-              <button
-                className="primary"
-                onClick={() => openTargetModal("install")}
-                disabled={busy || !selected.actions.can_install || installTargets.length === 0}
-                title={selected.actions.install_reason}
-              >
-                <Download size={16} />
-                {busyAction === "install" ? t("common.working") : t("resources.downloadRegister")}
-              </button>
-              <button className="secondary" onClick={() => openTargetModal("uninstall")} disabled={busy || installedTargets.length === 0}>
-                <Unplug size={16} />
-                {busyAction === "uninstall" ? t("common.working") : t("resources.uninstallLocal")}
-              </button>
-              <button className="secondary" onClick={() => openTargetModal("preview")} disabled={busy || !selected.actions.can_preview}>
-                {activePreview ? <EyeOff size={16} /> : <Eye size={16} />}
-                {activePreview ? t("resources.hidePreview") : t("resources.previewContent")}
-              </button>
-              <button className="secondary" onClick={() => openTargetModal("open")} disabled={busy || openTargets.length === 0}>
-                <FolderOpen size={16} />
-                {t("resources.openDirectory")}
-              </button>
-              <button className="danger" onClick={deleteSelected} disabled={busy || !selected.actions.can_delete_resource} title={selected.actions.delete_reason}>
-                <Trash2 size={16} />
-                {deleteButtonLabel(selected, t)}
-              </button>
-            </div>
-            {activePreview ? (
-              <div className="preview-panel resource-preview">
-                <strong>{activePreview.path}</strong>
-                {activePreview.warning ? <p className="discovery-warning">{activePreview.warning}</p> : null}
-                <pre>{activePreview.text}{activePreview.truncated ? "\n..." : ""}</pre>
-              </div>
-            ) : null}
+            <ResourceDetailPanel selected={selected} t={t} />
           </>
         ) : (
-          <EmptyState text={t("resources.noSelected")} />
+          <div className="panel detail-panel resource-detail-panel">
+            <EmptyState text={t("resources.noSelected")} />
+          </div>
         )}
       </div>
       {selected && targetAction ? (
@@ -344,6 +297,110 @@ type TargetOption = {
   disabled?: boolean;
   note: string;
 };
+
+function ResourceActionPanel({
+  activePreview,
+  busy,
+  busyAction,
+  installTargets,
+  installedTargets,
+  openTargets,
+  selected,
+  t,
+  onDelete,
+  onOpenTargetModal,
+}: {
+  activePreview: ResourcePreviewResult | null;
+  busy: boolean;
+  busyAction: string;
+  installTargets: ResourceTargetState[];
+  installedTargets: ResourceTargetState[];
+  openTargets: ResourceTargetState[];
+  selected: ResourceInventoryItem;
+  t: TFunction;
+  onDelete: () => void;
+  onOpenTargetModal: (action: TargetAction) => void;
+}) {
+  return (
+    <div className="panel resource-action-panel">
+      <div className="resource-actions">
+        <button
+          className="primary"
+          onClick={() => onOpenTargetModal("install")}
+          disabled={busy || !selected.actions.can_install || installTargets.length === 0}
+          title={selected.actions.install_reason}
+        >
+          <Download size={16} />
+          {busyAction === "install" ? t("common.working") : t("resources.downloadRegister")}
+        </button>
+        <button className="secondary" onClick={() => onOpenTargetModal("uninstall")} disabled={busy || installedTargets.length === 0}>
+          <Unplug size={16} />
+          {busyAction === "uninstall" ? t("common.working") : t("resources.uninstallLocal")}
+        </button>
+        <button className="secondary" onClick={() => onOpenTargetModal("preview")} disabled={busy || !selected.actions.can_preview}>
+          {activePreview ? <EyeOff size={16} /> : <Eye size={16} />}
+          {activePreview ? t("resources.hidePreview") : t("resources.previewContent")}
+        </button>
+        <button className="secondary" onClick={() => onOpenTargetModal("open")} disabled={busy || openTargets.length === 0}>
+          <FolderOpen size={16} />
+          {t("resources.openDirectory")}
+        </button>
+        <button className="danger" onClick={onDelete} disabled={busy || !selected.actions.can_delete_resource} title={selected.actions.delete_reason}>
+          <Trash2 size={16} />
+          {deleteButtonLabel(selected, t)}
+        </button>
+      </div>
+      {activePreview ? (
+        <div className="preview-panel resource-preview">
+          <strong>{activePreview.path}</strong>
+          {activePreview.warning ? <p className="discovery-warning">{activePreview.warning}</p> : null}
+          <pre>{activePreview.text}{activePreview.truncated ? "\n..." : ""}</pre>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ResourceDetailPanel({ selected, t }: { selected: ResourceInventoryItem; t: TFunction }) {
+  return (
+    <div className="panel detail-panel resource-detail-panel">
+      <div className="detail-title">
+        <div className="detail-title-main">
+          <KindBadge kind={selected.entry.kind} label={resourceKindLabel(selected.entry.kind, t)} />
+          <h2>{selected.entry.name}</h2>
+        </div>
+        <span className={selected.entry.lifecycle === "removed" ? "lifecycle-pill removed" : "lifecycle-pill"}>
+          {lifecycleLabel(selected.entry.lifecycle || "active", t)}
+        </span>
+      </div>
+      <DescriptionList
+        rows={[
+          [t("resources.source"), selected.entry.source],
+          [t("resources.lifecycle"), lifecycleLabel(selected.entry.lifecycle || "active", t)],
+          [t("resources.repo"), selected.entry.repo || "-"],
+          [t("resources.path"), selected.entry.path || "-"],
+          [t("resources.ref"), selected.entry.ref || "-"],
+          [t("resources.subdir"), selected.entry.subdir || "-"],
+          [t("resources.remoteState"), remoteStateLabel(selected.remote_state.reachable, t)],
+          [t("resources.sourcePath"), selected.local_state.source_path || "-"],
+          [t("resources.sourceState"), selected.local_state.source_exists ? t("resources.sourceExists") : t("resources.sourceMissing")],
+          [t("resources.installPath"), selected.local_state.install_path || "-"],
+          [t("resources.installState"), selected.local_state.installed ? t("status.installed") : t("status.notInstalled")],
+          [t("sync.plannedAction"), selected.sync_preview?.planned_action || "-"],
+          [t("sync.targetPaths"), selected.local_state.target_paths.length ? selected.local_state.target_paths.join(", ") : "-"],
+          [t("resources.removedAt"), selected.entry.removed_at || "-"],
+          [t("resources.removedEffect"), selected.entry.removed_effect || "-"],
+        ]}
+      />
+      <div className="tag-row">
+        {selected.entry.tags?.map((tag) => <span key={tag}>{tag}</span>)}
+      </div>
+      {selected.sync_preview?.warnings.length ? (
+        <p className="discovery-warning">{selected.sync_preview.warnings.join(" ")}</p>
+      ) : null}
+    </div>
+  );
+}
 
 function targetOptions(
   action: TargetAction,

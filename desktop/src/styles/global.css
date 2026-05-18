@@ -289,12 +289,22 @@ button {
   min-width: 0;
 }
 
+.resource-side-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.resource-action-panel {
+  min-width: 0;
+}
+
 .resource-actions {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   align-items: center;
-  gap: 6px;
-  margin-top: 16px;
+  gap: 8px;
 }
 
 .resource-preview {
@@ -317,7 +327,7 @@ button {
 }
 
 .resources-workspace {
-  grid-template-columns: minmax(280px, 0.34fr) minmax(0, 1fr);
+  grid-template-columns: minmax(430px, 0.44fr) minmax(0, 1fr);
 }
 
 .list-panel,
@@ -355,7 +365,36 @@ button {
 
 .resource-filter-stack {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e3eaee;
+  border-radius: 12px;
+  background: #fbfcfd;
+}
+
+.resource-filter-group {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-filter-group > span {
+  color: #65727c;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.resource-filter-group .segmented {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.resource-filter-group .segmented button {
+  flex: 0 0 auto;
+  padding-inline: 9px;
 }
 
 .resource-wide-action,
@@ -369,7 +408,7 @@ button {
 }
 
 .resource-actions button {
-  padding-inline: 8px;
+  padding-inline: 10px;
   font-size: 13px;
 }
 
@@ -659,15 +698,16 @@ button {
 
 @media (max-width: 1120px) {
   .resources-workspace {
-    grid-template-columns: minmax(240px, 0.32fr) minmax(0, 1fr);
+    grid-template-columns: minmax(430px, 0.44fr) minmax(0, 1fr);
   }
 
   .resource-actions {
-    gap: 5px;
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    gap: 6px;
   }
 
   .resource-actions button {
-    padding-inline: 6px;
+    padding-inline: 8px;
   }
 
   .mode-tabs {
@@ -1052,6 +1092,7 @@ button {
   .stack-form input,
   .stack-form select,
   .platform-editor,
+  .resource-filter-stack,
   .modal {
     background: #172228;
     border-color: #2b3d46;
@@ -1075,6 +1116,7 @@ button {
   .field-action:disabled,
   .description-list dt,
   .resource-row small,
+  .resource-filter-group > span,
   .discovery-actions span,
   .discovery-main small,
   .metric span,
