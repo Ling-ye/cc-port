@@ -47,7 +47,7 @@ from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubClient
 from ..services import publisher
 from ..services.doctor import build_doctor_checks
-from ..services.installer import check_all, status_all, sync_all, uninstall_one
+from ..services.installer import check_all, preview_sync_all, status_all, sync_all, uninstall_one
 from ..services.local_resources import import_local_resource
 from ..services.publisher import remove_skill
 from ..services.resource_discovery import (
@@ -255,6 +255,19 @@ def _sync(payload: JsonDict) -> JsonDict:
         platform_filter=_optional_str(payload.get("platform")),
     )
     return {"results": results}
+
+
+def _sync_preview(payload: JsonDict) -> Any:
+    include_kinds = set(_str_list(payload.get("include_kinds")))
+    return preview_sync_all(
+        config=load_config(),
+        only=_str_list(payload.get("only")) or None,
+        kind=_optional_str(payload.get("kind")),
+        tags=_str_list(payload.get("tags")) or None,
+        include_optional=bool(payload.get("all_kinds", False)),
+        include_kinds=include_kinds or None,
+        platform_filter=_optional_str(payload.get("platform")),
+    )
 
 
 def _check(payload: JsonDict) -> JsonDict:
@@ -905,6 +918,7 @@ ACTIONS: dict[str, Handler] = {
     "discover_resources": _discover_resources,
     "read_discovered_resource": _read_discovered_resource,
     "upload_discovered_resources": _upload_discovered_resources,
+    "sync_preview": _sync_preview,
     "sync": _sync,
     "check": _check,
     "remove": _remove,

@@ -50,6 +50,27 @@ class SyncResult:
     platforms_installed: list[str] = field(default_factory=list)
 
 
+@dataclass
+class SyncPreviewItem:
+    name: str
+    kind: str
+    source: str
+    planned_action: str
+    install_path: Path
+    target_platforms: list[str] = field(default_factory=list)
+    target_paths: list[Path] = field(default_factory=list)
+    installed: bool = False
+    has_update: bool = False
+    blocked: bool = False
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SyncPreviewResult:
+    registry_path: Path | None
+    items: list[SyncPreviewItem]
+
+
 # ---- Path helpers ---- #
 
 
@@ -156,6 +177,24 @@ def _distribute_to_platforms(
             installed_on.append(plat.name)
 
     return installed_on
+
+
+def _platform_targets(
+    config: Config,
+    entry: RegistryItem,
+    *,
+    platform_filter: str | None = None,
+) -> list[tuple[str, Path]]:
+    platforms = config.platforms.enabled()
+    if platform_filter:
+        platforms = [p for p in platforms if p.name == platform_filter]
+
+    targets: list[tuple[str, Path]] = []
+    for platform in platforms:
+        target_path = platform.resolve_install_path(entry.kind, entry.install_target_name())
+        if target_path is not None:
+            targets.append((platform.name, target_path))
+    return targets
 
 
 # ---- Core sync logic ---- #
@@ -328,6 +367,57 @@ def sync_all(
     return results
 
 
+def preview_sync_all(
+    *,
+    config: Config,
+    registry: Registry | None = None,
+    registry_path: Path | None = None,
+    only: list[str] | None = None,
+    kind: str | None = None,
+    tags: list[str] | None = None,
+    include_optional: bool = False,
+    include_kinds: set[str] | None = None,
+    platform_filter: str | None = None,
+) -> SyncPreviewResult:
+    effective_registry_path = registry_path or (find_registry_path() if registry is None else None)
+    reg = registry or load_registry(effective_registry_path)
+    registry_root = effective_registry_path.parent if effective_registry_path else None
+    tag_set = {t.lower() for t in tags or []}
+    allowed_kinds = _allowed_sync_kinds(
+        kind=kind,
+        include_optional=include_optional,
+        include_kinds=include_kinds,
+    )
+    preview_entries: list[RegistryItem] = []
+    for entry in reg.items:
+        if only and entry.name not in only:
+            continue
+        if entry.kind not in allowed_kinds:
+            continue
+        if tag_set and not (tag_set & {t.lower() for t in entry.tags}):
+            continue
+        preview_entries.append(entry)
+
+    statuses = {
+        entry.name: _skill_status(entry, config, registry_root=registry_root)
+        for entry in preview_entries
+    }
+
+    items: list[SyncPreviewItem] = []
+    for entry in preview_entries:
+        items.append(
+            _preview_sync_item(
+                config,
+                entry,
+                status=statuses.get(entry.name),
+                platform_filter=platform_filter,
+                registry_root=registry_root,
+            )
+        )
+
+    return SyncPreviewResult(registry_path=effective_registry_path, items=items)
+
+
 def status_all(
     *,
     config: Config,
@@ -344,6 +434,68 @@ def status_all(
             continue
         out.append(_skill_status(entry, config, registry_root=registry_root))
     return out
+
+
+def _preview_sync_item(
+    config: Config,
+    entry: RegistryItem,
+    *,
+    status: SkillStatus | None,
+    platform_filter: str | None,
+    registry_root: Path | None,
+) -> SyncPreviewItem:
+    install_path = _install_path(config, entry)
+    clone_path = _clone_path(config, entry)
+    target_pairs = _platform_targets(config, entry, platform_filter=platform_filter)
+    warnings: list[str] = []
+    blocked = False
+
+    if entry.source in {"local", "owned"}:
+        if not entry.path:
+            blocked = True
+            warnings.append("Local resource path is missing.")
+            install_path = _local_source_path(entry, registry_root=registry_root)
+        else:
+            source_path = _local_source_path(entry, registry_root=registry_root)
+            if not source_path.exists():
+                blocked = True
+                warnings.append(f"Local resource path does not exist: {source_path}")
+            install_path = source_path if blocked else install_path
+
+    if entry.kind == "plugin":
+        warnings.append("Plugin platform installation is not supported yet; fallback install path only.")
+    elif not target_pairs:
+        if platform_filter:
+            warnings.append(f"No enabled target path found for platform {platform_filter}.")
+        else:
+            warnings.append("No enabled platform has a target path for this resource type.")
+
+    if entry.kind == "mcp" and not entry.mcp_config:
+        warnings.append("MCP config is missing; no MCP server entry can be injected.")
+
+    return SyncPreviewItem(
+        name=entry.name,
+        kind=entry.kind,
+        source=entry.source,
+        planned_action=_planned_sync_action(entry, clone_path),
+        install_path=install_path,
+        target_platforms=[name for name, _ in target_pairs],
+        target_paths=[path for _, path in target_pairs],
+        installed=status.installed if status else False,
+        has_update=status.has_update if status else False,
+        blocked=blocked,
+        warnings=warnings,
+    )
+
+
+def _planned_sync_action(entry: RegistryItem, clone_path: Path) -> str:
+    if entry.kind == "mcp" and entry.mcp_config and not _needs_clone(entry):
+        return "inject_mcp"
+    if entry.source in {"local", "owned"} and entry.path:
+        return "copy"
+    if git_ops.is_repo(clone_path):
+        return "pull"
+    return "clone"
 
 
 def _allowed_sync_kinds(

@@ -22,6 +22,8 @@ param(
 # errors by PowerShell 5. We check $LASTEXITCODE manually instead.
 $ErrorActionPreference = "Continue"
 $RepoRoot = (Resolve-Path "$PSScriptRoot/..").Path
+$PreviousBrowser = $env:BROWSER
+$env:BROWSER = "none"
 
 function Invoke-Step {
     param(
@@ -55,4 +57,9 @@ try {
     Invoke-Step "tauri dev" { & npm run tauri dev }
 } finally {
     Pop-Location
+    if ($null -eq $PreviousBrowser) {
+        Remove-Item Env:\BROWSER -ErrorAction SilentlyContinue
+    } else {
+        $env:BROWSER = $PreviousBrowser
+    }
 }

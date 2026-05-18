@@ -28,6 +28,35 @@ export interface ItemStatus {
   has_update: boolean;
 }
 
+export type SyncPlannedAction = "clone" | "pull" | "copy" | "inject_mcp";
+
+export interface SyncPreviewItem {
+  name: string;
+  kind: ResourceKind;
+  source: RegistryItem["source"];
+  planned_action: SyncPlannedAction;
+  install_path: string;
+  target_platforms: string[];
+  target_paths: string[];
+  installed: boolean;
+  has_update: boolean;
+  blocked: boolean;
+  warnings: string[];
+}
+
+export interface SyncPreviewResult {
+  registry_path?: string | null;
+  items: SyncPreviewItem[];
+}
+
+export interface SyncResultItem {
+  name: string;
+  install_path: string;
+  action: string;
+  detail?: string;
+  platforms_installed: string[];
+}
+
 export interface ResourceRepoInfo {
   local_path: string;
   registry_path: string;
