@@ -12,6 +12,8 @@ LPM 用来管理和同步 AI coding 相关资源：
 - 从 GitHub 收集第三方资源，只记录引用，不复制无关内容。
 - 上传本地资源到你的私有资源仓库。
 - 维护私有 `registry.yaml`，用于跨设备同步资源。
+- 自动发现本机 Codex、Claude Code、Cursor、Windsurf、opencode、Gemini CLI 等 AI 工具的非敏配置资源。
+- 采集 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置，并把 MCP `env` 字面值替换为 `${SECRET_NAME}` 占位符。
 - 把资源同步安装到 Cursor、Claude Code 等配置的平台目录。
 - 检查 Git、GitHub token、配置文件、私有资源仓库和平台安装状态。
 - 通过 CLI 执行自动化任务。
@@ -250,6 +252,7 @@ bash scripts/build-desktop.sh
 简单区分：
 
 - `scripts/dev.*`：本地调试入口，启动的是带热更新能力的桌面开发环境。
+- `scripts/check-release.*`：发布验收入口，串联 Python 测试、Ruff、前端 build、sidecar build 和 Tauri build，并打印产物路径。
 - `scripts/build-desktop.*`：发布构建入口，输出的是 exe、sidecar 和安装包等最终产物。
 
 Windows 上最终通常会得到：
@@ -277,6 +280,7 @@ desktop/src-tauri/target/release/bundle/  # Tauri 原始安装包输出
 
 - `scripts/setup.*`：初始化 Python、Node.js、Rust/Tauri 相关依赖。
 - `scripts/dev.*`：启动完整的 Tauri 桌面调试环境，用于开发和联调。
+- `scripts/check-release.*`：执行发布前验收：`pytest`、`ruff`、`npm run build`、sidecar build 和 `tauri build`。
 - `scripts/build-desktop.*`：构建最终桌面可执行文件、sidecar 和安装包。
 
 `desktop/package.json` 中的 npm 脚本属于内部步骤或专项检查：Tauri 会调用 `npm run build` 构建前端，根目录脚本会调用 `npm run tauri dev/build` 启动或打包桌面外壳，`npm run sidecar` 和 `npm run icons` 主要用于维护单个打包环节。完整构建请使用根目录脚本，不需要手动拼接这些内部命令。
@@ -335,6 +339,72 @@ lpm doctor
 
 真实 `registry.yaml` 属于用户的私有资源仓库，不属于这个工具仓库。公开仓库默认忽略真实 `registry.yaml`、`skills/`、`rules/`、`prompts/`、`mcp/`、`plugins/` 和 `.claude-plugin/`。
 
+
+## 自动发现与跨电脑部署
+
+LPM 的环境迁移主流程是：`发现 -> 预览 -> 脱敏 -> 保存 -> 同步/导出 -> 另一台电脑恢复`。
+
+桌面端新增 **环境** 页面，用于执行这些动作：
+
+- 发现本机已安装或已有配置目录的 AI 工具。
+- 采集用户确认保存的 skills、prompts、rules、plugins 和 MCP server 配置。
+- 导出离线 zip 快照。
+- 推送前预览本地和远端差异，并按资源选择 local 或 incoming。
+- 拉取前预览远端和本地差异，并按资源选择 local 或 incoming。
+- 导入 zip 快照前预览快照和本地差异，并按资源选择 local 或 incoming。
+- dry-run 预览部署计划。
+- 部署到当前电脑已启用的平台目录。
+
+CLI 对应命令：
+
+```bash
+lpm env discover
+lpm env capture
+lpm env capture --push
+lpm env export --out ~/lpm-env-snapshot.zip
+lpm env push --dry-run
+lpm env push --choices choices.yaml
+lpm env pull --dry-run
+lpm env pull --choices choices.yaml
+lpm env import ~/lpm-env-snapshot.zip --dry-run
+lpm env import ~/lpm-env-snapshot.zip --choices choices.yaml
+lpm env deploy --dry-run
+lpm env deploy
+```
+
+choices 文件格式：
+
+```yaml
+operation: pull
+source: remote
+items:
+  resource:cursor-skill-demo-skill: incoming
+  meta:profiles/default.yaml: local
+```
+
+采集后的私人环境仓库包含：
+
+```text
+registry.yaml              # 资源索引
+profiles/default.yaml      # 当前采集到的工具、路径和资源统计
+secrets.example.yaml       # 需要用户自行补齐的密钥名和用途
+resources/
+  skills/
+  prompts/
+  rules/
+  plugins/
+  mcp/
+```
+
+安全边界：
+
+- API key、token、cookie、OAuth session、账号缓存不应进入 `registry.yaml`、`profiles/default.yaml`、`resources/` 或 zip 快照。
+- MCP `env` 的非空字面值保存为 `${ENV_NAME}` 占位符，缺失项写入 `secrets.example.yaml`。
+- push、pull、snapshot import 的 apply 前会扫描选定数据源中的疑似 token-like 内容；命中时阻断写入或上传。
+- zip 快照导入拒绝绝对路径、`..`、`.git/` 和 Windows drive-like 路径。
+- 恢复部署先生成 plan；目标已有同名资源且没有 LPM 管理标记时进入 `conflict`，不会静默覆盖。
+- 部署前会在私有资源仓库下创建 `.lpm-backups/<timestamp>/`，用于保存被更新的原文件。
+
 ## CLI
 
 CLI 是自动化入口，适合脚本、CI 或高级用户使用。
@@ -344,6 +414,10 @@ lpm --help
 lpm init
 lpm resource init
 lpm resource status
+lpm env discover
+lpm env capture
+lpm env capture --push
+lpm env deploy --dry-run
 lpm collect <github-url>
 lpm upload <local-path>
 lpm list

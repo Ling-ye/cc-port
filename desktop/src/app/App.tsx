@@ -14,6 +14,7 @@ import { Banner } from "@/components/Banner";
 import { AboutView } from "@/features/about/AboutView";
 import { AddResourceView } from "@/features/add/AddResourceView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
+import { EnvironmentView } from "@/features/environment/EnvironmentView";
 import { GuideView } from "@/features/guide/GuideView";
 import { HealthView } from "@/features/health/HealthView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
@@ -125,6 +126,15 @@ export default function App() {
             onChanged={refresh}
             onDone={setMessage}
             onError={setError}
+          />
+        ) : null}
+        {view === "environment" ? (
+          <EnvironmentView
+            t={t}
+            onDone={setMessage}
+            onStatus={setMessage}
+            onError={setError}
+            onChanged={refresh}
           />
         ) : null}
         {view === "add" ? (

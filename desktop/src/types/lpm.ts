@@ -292,6 +292,115 @@ export interface DiscoveryUploadResult {
   push?: unknown;
 }
 
+
+export interface DiscoveredTool {
+  id: string;
+  name: string;
+  root_path: string;
+  detected: boolean;
+  confidence: string;
+  config_paths: string[];
+  resource_paths: string[];
+  mcp_config_paths: string[];
+  supports_kinds: ResourceKind[];
+}
+
+export interface DiscoveredMcpServer {
+  id: string;
+  tool: string;
+  name: string;
+  config_path: string;
+  config: Record<string, unknown>;
+  secret_keys: string[];
+}
+
+export interface EnvDiscoveryResult {
+  tools: DiscoveredTool[];
+  resources: DiscoveredResource[];
+  mcp_servers: DiscoveredMcpServer[];
+}
+
+export interface CapturedResource {
+  name: string;
+  kind: ResourceKind;
+  source: string;
+  path: string;
+  target_tools: string[];
+  secret_placeholders: string[];
+  warnings: string[];
+}
+
+export interface SecretPlaceholder {
+  name: string;
+  tool: string;
+  resource: string;
+  purpose: string;
+}
+
+export interface CaptureResult {
+  root: string;
+  registry_path: string;
+  profile_path: string;
+  secrets_path: string;
+  captured: CapturedResource[];
+  skipped: CapturedResource[];
+  secrets: SecretPlaceholder[];
+}
+
+export interface DeployPlanItem {
+  name: string;
+  kind: ResourceKind;
+  platform: string;
+  target_path: string;
+  action: "create" | "update" | "skip" | "conflict" | string;
+  reason: string;
+  backup_path?: string | null;
+}
+
+export interface DeployPlan {
+  root: string;
+  registry_path: string;
+  dry_run: boolean;
+  backup_root?: string | null;
+  items: DeployPlanItem[];
+  missing_secrets: SecretPlaceholder[];
+  selected_names: string[];
+}
+
+export type EnvDiffStatus = "added" | "modified" | "deleted" | "same" | "conflict" | string;
+export type EnvVersionChoice = "local" | "incoming";
+
+export interface EnvSecretFinding {
+  path: string;
+  reason: string;
+  preview: string;
+}
+
+export interface EnvDiffItem {
+  id: string;
+  group: string;
+  name: string;
+  kind: string;
+  status: EnvDiffStatus;
+  local_path?: string | null;
+  incoming_path?: string | null;
+  default_choice: EnvVersionChoice;
+  selected_choice?: EnvVersionChoice | "";
+  preview: string;
+  reason: string;
+}
+
+export interface EnvDiffPlan {
+  operation: "push" | "pull" | "import" | string;
+  source: "remote" | "snapshot" | string;
+  local_root: string;
+  incoming_root: string;
+  items: EnvDiffItem[];
+  default_choices: Record<string, EnvVersionChoice>;
+  blocked: boolean;
+  secret_findings: EnvSecretFinding[];
+}
+
 export interface LpmResponse<T> {
   ok: boolean;
   data?: T;

@@ -29,6 +29,20 @@ from ..core.resource_detection import (
 )
 from ..services import publisher
 from ..services.doctor import build_doctor_checks, has_doctor_errors
+from ..services.env_manager import (
+    apply_env_import,
+    apply_env_pull,
+    apply_env_push,
+    build_deploy_plan,
+    build_env_import_diff,
+    build_env_pull_diff,
+    build_env_push_diff,
+    capture_environment,
+    deploy_environment,
+    discover_environment,
+    export_environment_snapshot,
+    load_env_choices,
+)
 from ..services.installer import (
     SyncAction,
     check_all,
@@ -53,7 +67,9 @@ app = typer.Typer(
     help="LPM (LingyePluginMarketplace): publish, register and sync skills, MCP servers and rules across AI coding platforms.",
 )
 resource_app = typer.Typer(help="Manage the private LPM resource repository.")
+env_app = typer.Typer(help="Discover, capture, export and deploy local AI tool environment configs.")
 app.add_typer(resource_app, name="resource")
+app.add_typer(env_app, name="env")
 console = Console()
 VALID_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
 
@@ -209,6 +225,358 @@ def _maybe_push_resource_repo(cfg: Config, *, push: bool, no_push: bool) -> None
         console.print(f"[red]Resource push failed:[/red] {exc}")
         raise typer.Exit(1) from exc
     console.print(f"[green]Pushed[/green] {info.local_path}")
+
+
+
+# ---- environment capture / deploy ---- #
+
+
+@env_app.command("discover")
+def cmd_env_discover() -> None:
+    """Scan this computer for supported AI tool configs without saving."""
+    result = discover_environment()
+    _print_env_discovery(result)
+
+
+@env_app.command("capture")
+def cmd_env_capture(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the capture confirmation."),
+    push: bool = typer.Option(False, "--push", help="Push private resource repo after capture."),
+    no_push: bool = typer.Option(False, "--no-push", help="Do not push private resource repo."),
+    tool: list[str] = typer.Option([], "--tool", help="Restrict to a discovered tool id. Repeatable."),
+    kind: list[str] = typer.Option([], "--kind", "-k", help="Restrict to resource kind. Repeatable."),
+) -> None:
+    """Capture non-secret skills, prompts, rules, plugins and MCP configs into the private repo."""
+    invalid = sorted({item for item in kind if item not in VALID_KINDS})
+    if invalid:
+        console.print(f"[red]Invalid kind(s):[/red] {', '.join(invalid)}")
+        raise typer.Exit(2)
+
+    cfg = _load()
+    if not yes:
+        discovery = discover_environment()
+        selected_tools = {item.strip() for item in tool if item.strip()}
+        selected_kinds = {item.strip() for item in kind if item.strip()}
+        resource_count = sum(
+            1
+            for item in discovery.resources
+            if (not selected_tools or item.tool in selected_tools)
+            and (not selected_kinds or item.kind in selected_kinds)
+        )
+        mcp_count = sum(
+            1
+            for item in discovery.mcp_servers
+            if (not selected_tools or item.tool in selected_tools)
+            and (not selected_kinds or "mcp" in selected_kinds)
+        )
+        if not typer.confirm(
+            f"Capture {resource_count} resource file(s) and {mcp_count} MCP server(s) into the private resource repo?",
+            default=True,
+        ):
+            console.print("[yellow]Capture cancelled.[/yellow]")
+            raise typer.Exit(0)
+
+    try:
+        result = capture_environment(
+            config=cfg,
+            tools=tool or None,
+            kinds=kind or None,
+        )
+    except Exception as exc:
+        console.print(f"[red]Environment capture failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]Captured[/green] {len(result.captured)} resource(s) into {result.root}")
+    _print_captured_resources(result.captured)
+    if result.secrets:
+        console.print(f"[yellow]Secrets template:[/yellow] {result.secrets_path}")
+    console.print(f"[green]Profile:[/green] {result.profile_path}")
+    _maybe_push_resource_repo(cfg, push=push, no_push=no_push or (yes and not push))
+
+
+@env_app.command("export")
+def cmd_env_export(
+    out: Path = typer.Option(..., "--out", "-o", help="Output zip snapshot path."),
+) -> None:
+    """Export the private environment repo as an offline zip snapshot."""
+    try:
+        path = export_environment_snapshot(out, config=_load())
+    except Exception as exc:
+        console.print(f"[red]Environment export failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]Exported[/green] {path}")
+
+
+@env_app.command("push")
+def cmd_env_push(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show local-vs-remote diff without pushing."),
+    choices: Path | None = typer.Option(None, "--choices", help="YAML choices file."),
+) -> None:
+    """Review and push the private environment repository with resource-level choices."""
+    try:
+        plan = build_env_push_diff(config=_load()) if dry_run else apply_env_push(
+            config=_load(),
+            choices=_load_env_choices_arg(choices, operation="push", source="remote"),
+        )
+    except Exception as exc:
+        console.print(f"[red]Environment push failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_env_diff_plan(plan)
+    if not dry_run:
+        console.print("[green]Pushed environment repo.[/green]")
+
+
+@env_app.command("pull")
+def cmd_env_pull(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show remote-vs-local diff without writing local repo."),
+    choices: Path | None = typer.Option(None, "--choices", help="YAML choices file."),
+) -> None:
+    """Review and pull the configured remote private environment repository."""
+    try:
+        plan = build_env_pull_diff(config=_load()) if dry_run else apply_env_pull(
+            config=_load(),
+            choices=_load_env_choices_arg(choices, operation="pull", source="remote"),
+        )
+    except Exception as exc:
+        console.print(f"[red]Environment pull failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_env_diff_plan(plan)
+    if not dry_run:
+        console.print("[green]Applied remote choices to local environment repo.[/green]")
+
+
+@env_app.command("import")
+def cmd_env_import(
+    snapshot: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False, help="Zip snapshot exported by `lpm env export`."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show snapshot-vs-local diff without writing local repo."),
+    choices: Path | None = typer.Option(None, "--choices", help="YAML choices file."),
+) -> None:
+    """Review and import an offline environment snapshot into the local private repo."""
+    try:
+        plan = build_env_import_diff(snapshot, config=_load()) if dry_run else apply_env_import(
+            snapshot,
+            config=_load(),
+            choices=_load_env_choices_arg(choices, operation="import", source="snapshot"),
+        )
+    except Exception as exc:
+        console.print(f"[red]Environment import failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_env_diff_plan(plan)
+    if not dry_run:
+        console.print("[green]Imported snapshot choices to local environment repo.[/green]")
+
+
+@env_app.command("deploy")
+def cmd_env_deploy(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the restore plan without writing tool files."),
+    force: bool = typer.Option(False, "--force", "-f", help="Allow updates over existing non-managed targets."),
+    only: list[str] = typer.Option([], "--only", help="Deploy only the named captured resource. Repeatable."),
+) -> None:
+    """Deploy captured environment resources into enabled AI tool directories."""
+    cfg = _load()
+    try:
+        plan = build_deploy_plan(config=cfg, force=force, names=only or None) if dry_run else deploy_environment(
+            config=cfg,
+            force=force,
+            names=only or None,
+        )
+    except Exception as exc:
+        console.print(f"[red]Environment deploy failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_deploy_plan(plan)
+
+
+def _print_env_discovery(result: object) -> None:
+    tools = list(getattr(result, "tools", []))
+    tool_table = Table(title="Discovered AI tools")
+    tool_table.add_column("Tool", style="bold")
+    tool_table.add_column("Detected")
+    tool_table.add_column("Confidence")
+    tool_table.add_column("Kinds")
+    tool_table.add_column("Root")
+    for tool in tools:
+        tool_table.add_row(
+            getattr(tool, "name", ""),
+            "yes" if getattr(tool, "detected", False) else "no",
+            getattr(tool, "confidence", ""),
+            ", ".join(getattr(tool, "supports_kinds", [])) or "-",
+            str(getattr(tool, "root_path", "")),
+        )
+    console.print(tool_table)
+
+    resources = list(getattr(result, "resources", []))
+    if resources:
+        resource_table = Table(title="Discovered resources")
+        resource_table.add_column("Tool")
+        resource_table.add_column("Kind")
+        resource_table.add_column("Name")
+        resource_table.add_column("Path")
+        resource_table.add_column("Warnings")
+        for item in resources:
+            resource_table.add_row(
+                getattr(item, "tool", ""),
+                getattr(item, "kind", ""),
+                getattr(item, "name_hint", ""),
+                str(getattr(item, "path", "")),
+                "; ".join(getattr(item, "warnings", [])) or "-",
+            )
+        console.print(resource_table)
+    else:
+        console.print("[yellow]No skill/prompt/rule/plugin files found.[/yellow]")
+
+    mcp_servers = list(getattr(result, "mcp_servers", []))
+    if mcp_servers:
+        mcp_table = Table(title="Discovered MCP servers")
+        mcp_table.add_column("Tool")
+        mcp_table.add_column("Server")
+        mcp_table.add_column("Config")
+        mcp_table.add_column("Secret placeholders")
+        for server in mcp_servers:
+            mcp_table.add_row(
+                getattr(server, "tool", ""),
+                getattr(server, "name", ""),
+                str(getattr(server, "config_path", "")),
+                ", ".join(getattr(server, "secret_keys", [])) or "-",
+            )
+        console.print(mcp_table)
+    else:
+        console.print("[yellow]No MCP server configs found.[/yellow]")
+
+
+def _print_captured_resources(items: list[object]) -> None:
+    if not items:
+        console.print("[yellow]Nothing captured.[/yellow]")
+        return
+    table = Table(title="Captured environment resources")
+    table.add_column("Name", style="bold")
+    table.add_column("Kind")
+    table.add_column("Stored path")
+    table.add_column("Secrets")
+    table.add_column("Warnings")
+    for item in items:
+        table.add_row(
+            getattr(item, "name", ""),
+            getattr(item, "kind", ""),
+            str(getattr(item, "path", "")),
+            ", ".join(getattr(item, "secret_placeholders", [])) or "-",
+            "; ".join(getattr(item, "warnings", [])) or "-",
+        )
+    console.print(table)
+
+
+def _load_env_choices_arg(path: Path | None, *, operation: str, source: str) -> dict[str, str] | None:
+    if path is None:
+        return None
+    return load_env_choices(path, operation=operation, source=source)
+
+
+def _print_env_diff_plan(plan: object) -> None:
+    items = list(getattr(plan, "items", []))
+    title = f"Environment {getattr(plan, 'operation', 'diff')} review"
+    table = Table(title=title)
+    table.add_column("ID", style="bold")
+    table.add_column("Status")
+    table.add_column("Kind")
+    table.add_column("Choice")
+    table.add_column("Local")
+    table.add_column("Incoming")
+    for item in items:
+        status = getattr(item, "status", "")
+        style = {
+            "added": "green",
+            "modified": "cyan",
+            "deleted": "yellow",
+            "conflict": "red",
+            "same": "white",
+        }.get(status, "white")
+        choice = getattr(item, "selected_choice", "") or getattr(item, "default_choice", "")
+        table.add_row(
+            getattr(item, "id", ""),
+            f"[{style}]{status}[/{style}]",
+            getattr(item, "kind", ""),
+            choice,
+            str(getattr(item, "local_path", "") or "-"),
+            str(getattr(item, "incoming_path", "") or "-"),
+        )
+    console.print(table)
+
+    findings = list(getattr(plan, "secret_findings", []))
+    if findings:
+        secret_table = Table(title="Blocked secret-like content")
+        secret_table.add_column("Path", style="bold")
+        secret_table.add_column("Reason")
+        secret_table.add_column("Preview")
+        for finding in findings:
+            secret_table.add_row(
+                str(getattr(finding, "path", "")),
+                getattr(finding, "reason", ""),
+                getattr(finding, "preview", ""),
+            )
+        console.print(secret_table)
+
+    preview_count = 0
+    for item in items:
+        preview = str(getattr(item, "preview", "") or "").strip()
+        if not preview:
+            continue
+        console.print(f"[bold]Diff preview:[/bold] {getattr(item, 'id', '')}")
+        console.print(escape(preview[:2000]))
+        preview_count += 1
+        if preview_count >= 6:
+            break
+
+    if getattr(plan, "blocked", False):
+        console.print("[red]Apply is blocked until secret-like content is removed.[/red]")
+    console.print("Choices file format:")
+    console.print("operation: push|pull|import")
+    console.print("source: remote|snapshot")
+    console.print('items: {"resource:name": "local"}')
+
+
+def _print_deploy_plan(plan: object) -> None:
+    items = list(getattr(plan, "items", []))
+    table = Table(title="Environment deploy plan")
+    table.add_column("Resource", style="bold")
+    table.add_column("Kind")
+    table.add_column("Platform")
+    table.add_column("Action")
+    table.add_column("Target")
+    table.add_column("Reason")
+    for item in items:
+        action = getattr(item, "action", "")
+        style = {
+            "create": "green",
+            "update": "cyan",
+            "conflict": "red",
+            "skip": "yellow",
+        }.get(action, "white")
+        table.add_row(
+            getattr(item, "name", ""),
+            getattr(item, "kind", ""),
+            getattr(item, "platform", "") or "-",
+            f"[{style}]{action}[/{style}]",
+            str(getattr(item, "target_path", "")) or "-",
+            getattr(item, "reason", "") or "-",
+        )
+    console.print(table)
+    missing = list(getattr(plan, "missing_secrets", []))
+    if missing:
+        secret_table = Table(title="Missing secret environment variables")
+        secret_table.add_column("Name", style="bold")
+        secret_table.add_column("Tool")
+        secret_table.add_column("Resource")
+        secret_table.add_column("Purpose")
+        for item in missing:
+            secret_table.add_row(
+                getattr(item, "name", ""),
+                getattr(item, "tool", ""),
+                getattr(item, "resource", ""),
+                getattr(item, "purpose", ""),
+            )
+        console.print(secret_table)
+    backup_root = getattr(plan, "backup_root", None)
+    if backup_root:
+        console.print(f"[green]Backup root:[/green] {backup_root}")
 
 
 # ---- publish ---- #

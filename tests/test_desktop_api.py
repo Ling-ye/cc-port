@@ -5,6 +5,7 @@ from pathlib import Path
 from lpm.core.config import Config
 from lpm.core.models import RegistryItem
 from lpm.interfaces import desktop_api
+from lpm.services.env_manager import EnvDiffItem, EnvDiffPlan
 from lpm.services.local_resources import ImportLocalResult
 from lpm.services.resource_manager import ResourceDeleteResult
 
@@ -110,3 +111,40 @@ def test_desktop_resource_delete_pushes_resource_repo_by_default(
     assert result["data"]["name"] == "demo"
     assert result["data"]["deleted_local_files"] is True
     assert result["data"]["push"]["local_path"].endswith("resources")
+
+
+def test_desktop_env_diff_import_serializes_paths_and_choices(tmp_path: Path, monkeypatch) -> None:
+    def fake_build_env_import_diff(snapshot: str, *, config: Config) -> EnvDiffPlan:
+        assert snapshot == "snapshot.zip"
+        assert isinstance(config, Config)
+        return EnvDiffPlan(
+            operation="import",
+            source="snapshot",
+            local_root=tmp_path / "local",
+            incoming_root=tmp_path / "incoming",
+            items=[
+                EnvDiffItem(
+                    id="resource:demo",
+                    group="resource",
+                    name="demo",
+                    kind="skill",
+                    status="modified",
+                    local_path=tmp_path / "local" / "resources" / "skills" / "demo",
+                    incoming_path=tmp_path / "incoming" / "resources" / "skills" / "demo",
+                    default_choice="incoming",
+                    preview="--- local\n+++ incoming",
+                )
+            ],
+            default_choices={"resource:demo": "incoming"},
+        )
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "build_env_import_diff", fake_build_env_import_diff)
+
+    result = desktop_api.run_action("env_diff_import", {"snapshot": "snapshot.zip"})
+
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["local_root"] == str(tmp_path / "local")
+    assert data["default_choices"] == {"resource:demo": "incoming"}
+    assert data["items"][0]["local_path"].endswith("resources/skills/demo")

@@ -47,6 +47,19 @@ from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubClient
 from ..services import publisher
 from ..services.doctor import build_doctor_checks
+from ..services.env_manager import (
+    apply_env_import,
+    apply_env_pull,
+    apply_env_push,
+    build_deploy_plan,
+    build_env_import_diff,
+    build_env_pull_diff,
+    build_env_push_diff,
+    capture_environment,
+    deploy_environment,
+    discover_environment,
+    export_environment_snapshot,
+)
 from ..services.installer import check_all, preview_sync_all, status_all, sync_all, uninstall_one
 from ..services.local_resources import import_local_resource
 from ..services.resource_discovery import (
@@ -368,6 +381,70 @@ def _remove(payload: JsonDict) -> JsonDict:
     )
     return {"removed": removed.entry, "delete": removed, "uninstalled": uninstalled}
 
+
+
+def _env_discover(_: JsonDict) -> Any:
+    return discover_environment()
+
+
+def _env_capture(payload: JsonDict) -> Any:
+    return capture_environment(
+        config=load_config(),
+        tools=_str_list(payload.get("tools")) or None,
+        kinds=_str_list(payload.get("kinds")) or None,
+    )
+
+
+def _env_export(payload: JsonDict) -> JsonDict:
+    return {"path": export_environment_snapshot(_required_str(payload, "out"), config=load_config())}
+
+
+def _env_diff_push(_: JsonDict) -> Any:
+    return build_env_push_diff(config=load_config())
+
+
+def _env_apply_push(payload: JsonDict) -> Any:
+    return apply_env_push(config=load_config(), choices=_choices_payload(payload))
+
+
+def _env_diff_pull(_: JsonDict) -> Any:
+    return build_env_pull_diff(config=load_config())
+
+
+def _env_apply_pull(payload: JsonDict) -> Any:
+    return apply_env_pull(config=load_config(), choices=_choices_payload(payload))
+
+
+def _env_diff_import(payload: JsonDict) -> Any:
+    return build_env_import_diff(_required_str(payload, "snapshot"), config=load_config())
+
+
+def _env_apply_import(payload: JsonDict) -> Any:
+    return apply_env_import(
+        _required_str(payload, "snapshot"),
+        config=load_config(),
+        choices=_choices_payload(payload),
+    )
+
+
+def _env_pull(_: JsonDict) -> Any:
+    return apply_env_pull(config=load_config())
+
+
+def _env_deploy_plan(payload: JsonDict) -> Any:
+    return build_deploy_plan(
+        config=load_config(),
+        force=bool(payload.get("force", False)),
+        names=_str_list(payload.get("only")) or None,
+    )
+
+
+def _env_deploy(payload: JsonDict) -> Any:
+    return deploy_environment(
+        config=load_config(),
+        force=bool(payload.get("force", False)),
+        names=_str_list(payload.get("only")) or None,
+    )
 
 def _resource_init(payload: JsonDict) -> Any:
     return init_resource_repo(name=_optional_str(payload.get("name")), config=load_config())
@@ -968,6 +1045,21 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
+def _choices_payload(payload: JsonDict) -> dict[str, str] | None:
+    value = payload.get("choices")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("choices must be a mapping of diff item id to local/incoming.")
+    out: dict[str, str] = {}
+    for key, raw_choice in value.items():
+        choice = str(raw_choice).strip()
+        if choice not in {"local", "incoming"}:
+            raise ValueError(f"Invalid choice for {key}: {choice}")
+        out[str(key)] = choice
+    return out
+
+
 def _str_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -1019,6 +1111,18 @@ ACTIONS: dict[str, Handler] = {
     "resource_use": _resource_use,
     "resource_pull": _resource_pull,
     "resource_push": _resource_push,
+    "env_discover": _env_discover,
+    "env_capture": _env_capture,
+    "env_export": _env_export,
+    "env_diff_push": _env_diff_push,
+    "env_apply_push": _env_apply_push,
+    "env_diff_pull": _env_diff_pull,
+    "env_apply_pull": _env_apply_pull,
+    "env_diff_import": _env_diff_import,
+    "env_apply_import": _env_apply_import,
+    "env_pull": _env_pull,
+    "env_deploy_plan": _env_deploy_plan,
+    "env_deploy": _env_deploy,
     "config_get": _config_get,
     "config_check": _config_check,
     "config_branches": _config_branches,
