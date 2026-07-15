@@ -68,6 +68,10 @@ config/
   config.example.toml           # 运行时配置模板
   registry.example.yaml         # 私有资源 registry 示例
 
+docs/
+  packaging-and-deployment.md   # 桌面打包、分发、升级与回退
+  specs/                        # 功能规格与验收标准
+
 src/lpm/
   core/                         # 领域模型、配置、registry、校验、资源识别
   services/                     # 业务用例：安装、同步、发布、资源仓库等
@@ -240,6 +244,8 @@ desktop/src-tauri/target/debug/                # Tauri/Cargo dev 调试输出
 
 构建桌面发布产物：
 
+完整的环境要求、版本同步、验收矩阵、产物校验、安装方式和回退边界见 [桌面打包与部署](docs/packaging-and-deployment.md)。
+
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File scripts\build-desktop.ps1
 ```
@@ -261,8 +267,8 @@ bash scripts/build-desktop.sh
 简单区分：
 
 - `scripts/dev.*`：本地调试入口，启动的是带热更新能力的桌面开发环境。
-- `scripts/check-release.*`：发布验收入口，串联 Python 测试、Ruff、前端 build、sidecar build 和 Tauri build，并打印产物路径。
-- `scripts/build-desktop.*`：发布构建入口，输出的是 exe、sidecar 和安装包等最终产物。
+- `scripts/check-release.*`：端到端构建验收入口，串联 Python 测试、Ruff、前端 build、sidecar build 和 Tauri build，并打印原始产物路径；当前不运行 Vitest，也不收集到 `release/desktop/`。
+- `scripts/build-desktop.*`：发布构建与收集入口，输出 exe、sidecar 和安装包等最终产物；当前不运行 Python 或前端测试。
 
 Windows 上最终通常会得到：
 
@@ -289,8 +295,8 @@ desktop/src-tauri/target/release/bundle/  # Tauri 原始安装包输出
 
 - `scripts/setup.*`：初始化 Python、Node.js、Rust/Tauri 相关依赖。
 - `scripts/dev.*`：启动完整的 Tauri 桌面调试环境，用于开发和联调。
-- `scripts/check-release.*`：执行发布前验收：`pytest`、`ruff`、`npm run build`、sidecar build 和 `tauri build`。
-- `scripts/build-desktop.*`：构建最终桌面可执行文件、sidecar 和安装包。
+- `scripts/check-release.*`：执行端到端构建验收：`pytest`、`ruff`、`npm run build`、sidecar build 和 `tauri build`；Vitest 需另外运行。
+- `scripts/build-desktop.*`：构建并收集最终桌面可执行文件、sidecar 和安装包，不替代测试命令。
 
 `desktop/package.json` 中的 npm 脚本属于内部步骤或专项检查：Tauri 会调用 `npm run build` 构建前端，根目录脚本会调用 `npm run tauri dev/build` 启动或打包桌面外壳，`npm run sidecar` 和 `npm run icons` 主要用于维护单个打包环节。完整构建请使用根目录脚本，不需要手动拼接这些内部命令。
 
@@ -463,6 +469,7 @@ pytest -q
 
 ```bash
 cd desktop
+npm test
 npm run build
 ```
 
@@ -486,6 +493,14 @@ desktop\src-tauri\binaries\lpm-desktop-api-x86_64-pc-windows-msvc.exe platforms 
 ```
 
 ## 发布说明
+
+完整发布流程见 [桌面打包与部署](docs/packaging-and-deployment.md)。该文档包含：
+
+- 构建入口职责和完整验收顺序。
+- Windows MSI、NSIS 与便携目录的选择。
+- 版本同步、产物时间与 SHA-256 校验。
+- 干净目标机验收、人工升级和回退边界。
+- 当前未配置代码签名、自动更新器和自动发布工作流的限制。
 
 PyInstaller 在本项目中只是 **发布手段**，不是业务架构核心。
 
