@@ -2,6 +2,7 @@ import { AlertTriangle, RefreshCcw, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { lpmAction } from "@/api/client";
 import type { TFunction } from "@/app/i18n";
+import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
   ConfigBranchOptions,
   ConfigCheckResult,
@@ -24,17 +25,14 @@ type PendingSave = {
 
 export function SettingsView({
   t,
-  onDone,
-  onStatus,
   onError,
   onChanged,
 }: {
   t: TFunction;
-  onDone: (message: string) => void;
-  onStatus: (message: string) => void;
   onError: (message: string) => void;
   onChanged: () => Promise<void> | void;
 }) {
+  const { runTask } = useTaskCenter();
   const [settings, setSettings] = useState<ConfigSettings | null>(null);
   const [draft, setDraft] = useState<EditableConfig | null>(null);
   const [newToken, setNewToken] = useState("");
@@ -66,16 +64,29 @@ export function SettingsView({
     clearTokenRef.current = clearToken;
   }, [clearToken]);
 
-  async function loadSettings() {
+  async function loadSettings(track = false) {
     setLoading(true);
     try {
-      const data = await lpmAction<ConfigSettings>("config_get");
-      setSettings(data);
-      setDraft(data.config);
-      setNewToken("");
-      setClearToken(false);
+      const request = async () => {
+        const data = await lpmAction<ConfigSettings>("config_get");
+        setSettings(data);
+        setDraft(data.config);
+        setNewToken("");
+        setClearToken(false);
+        return data;
+      };
+      if (track) {
+        await runTask({
+          kind: "settings-reload",
+          title: t("common.reload"),
+          action: request,
+          retryPolicy: "safe-read",
+        });
+      } else {
+        await request();
+      }
     } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+      if (!track) onError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -168,19 +179,25 @@ export function SettingsView({
     const payload = buildPayload(false);
     if (!payload) return;
     setChecking(true);
-    onStatus(t("settings.checking"));
     try {
-      const check = await lpmAction<ConfigCheckResult>("config_check", payload);
+      const check = await runTask({
+        kind: "settings-check",
+        title: t("settings.checkingShort"),
+        action: async () => {
+          const result = await lpmAction<ConfigCheckResult>("config_check", payload);
+          if (result.missing.length > 0) setPendingSave({ check: result, payload });
+          return result;
+        },
+        successMessage: t("settings.checkCompleted"),
+        retryPolicy: "safe-read",
+      });
       if (check.missing.length > 0) {
-        setPendingSave({ check, payload });
-        onStatus("");
         return;
       }
       setChecking(false);
       await commitSave(payload);
-    } catch (err) {
-      onStatus("");
-      onError(err instanceof Error ? err.message : String(err));
+    } catch {
+      // TaskCenter owns feedback for tracked operations.
     } finally {
       setChecking(false);
     }
@@ -191,9 +208,14 @@ export function SettingsView({
     const savedClearToken = payload.token_action === "clear";
     const setModeBusy = mode === "preparing" ? setPreparing : setSaving;
     setModeBusy(true);
-    onStatus(mode === "preparing" ? t("settings.preparing") : t("settings.saving"));
     try {
-      const saved = await lpmAction<ConfigSettings>("config_save", payload);
+      const saved = await runTask({
+        kind: mode === "preparing" ? "settings-prepare" : "settings-save",
+        title: mode === "preparing" ? t("settings.preparingShort") : t("settings.savingShort"),
+        action: () => lpmAction<ConfigSettings>("config_save", payload),
+        successMessage: t("settings.saved"),
+        retryPolicy: "none",
+      });
       setSettings(saved);
       setDraft((current) => (current === payload.draft ? saved.config : current));
       if (draftRef.current === payload.draft) {
@@ -203,11 +225,9 @@ export function SettingsView({
         }
       }
       setPendingSave(null);
-      onDone(t("settings.saved"));
       void onChanged();
-    } catch (err) {
-      onStatus("");
-      onError(err instanceof Error ? err.message : String(err));
+    } catch {
+      // TaskCenter owns feedback for tracked operations.
     } finally {
       setModeBusy(false);
     }
@@ -223,7 +243,7 @@ export function SettingsView({
       <section className="panel">
         <div className="panel-head">
           <h2>{t("settings.title")}</h2>
-          <button className="secondary" type="button" onClick={loadSettings} disabled={anyBusy}>
+          <button className="secondary" type="button" onClick={() => void loadSettings(true)} disabled={anyBusy}>
             <RefreshCcw size={17} />{t("common.refresh")}
           </button>
         </div>
@@ -240,7 +260,7 @@ export function SettingsView({
             <p>{settings.path}</p>
           </div>
           <div className="settings-actions">
-            <button className="secondary" type="button" onClick={loadSettings} disabled={anyBusy}>
+            <button className="secondary" type="button" onClick={() => void loadSettings(true)} disabled={anyBusy}>
               <RefreshCcw size={17} />{t("common.reload")}
             </button>
             <button className="primary" type="button" onClick={saveSettings} disabled={anyBusy}>

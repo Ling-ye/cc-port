@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, Download, Eye, EyeOff, FolderOpen, Trash2, Unplug } from "lucide-react";
 import { lpmAction, openPath } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
+import { useTaskCenter } from "@/app/TaskCenterContext";
 import { DescriptionList } from "@/components/DescriptionList";
 import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
@@ -34,7 +35,6 @@ export function ResourcesView({
   t,
   onSelect,
   onChanged,
-  onDone,
   onError,
 }: {
   items: ResourceInventoryItem[];
@@ -43,9 +43,9 @@ export function ResourcesView({
   t: TFunction;
   onSelect: (name: string) => void;
   onChanged: () => Promise<void> | void;
-  onDone: (message: string) => void;
   onError: (message: string) => void;
 }) {
+  const { runTask } = useTaskCenter();
   const [filter, setFilter] = useState<(typeof kinds)[number]>("all");
   const [statusFilter, setStatusFilter] = useState<(typeof statusFilters)[number]>("available");
   const [busyAction, setBusyAction] = useState("");
@@ -94,18 +94,30 @@ export function ResourcesView({
     if (!selected) return;
     setBusyAction("install");
     try {
-      let data: SyncResultItem | null = null;
-      for (const targetPlatform of platformsToInstall) {
-        data = await lpmAction<SyncResultItem>("resource_install", {
-          name: selected.entry.name,
-          platform: targetPlatform,
-        });
-      }
-      onDone(t("resources.installTargetsDone", { name: data?.name || selected.entry.name, count: platformsToInstall.length }));
+      await runTask({
+        kind: "resource-install",
+        title: t("resources.downloadRegister"),
+        context: `${selected.entry.name} · ${platformsToInstall.length}`,
+        action: async () => {
+          let result: SyncResultItem | null = null;
+          for (const targetPlatform of platformsToInstall) {
+            result = await lpmAction<SyncResultItem>("resource_install", {
+              name: selected.entry.name,
+              platform: targetPlatform,
+            });
+          }
+          return result;
+        },
+        successMessage: (result) => t("resources.installTargetsDone", {
+          name: result?.name || selected.entry.name,
+          count: platformsToInstall.length,
+        }),
+        retryPolicy: "none",
+      });
       setPreview(null);
       await onChanged();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+    } catch {
+      await Promise.resolve(onChanged());
     } finally {
       setBusyAction("");
     }
@@ -115,14 +127,25 @@ export function ResourcesView({
     if (!selected) return;
     setBusyAction("uninstall");
     try {
-      for (const targetPlatform of platformsToUninstall) {
-        await lpmAction("resource_uninstall", { name: selected.entry.name, platform: targetPlatform });
-      }
-      onDone(t("resources.uninstallTargetsDone", { name: selected.entry.name, count: platformsToUninstall.length }));
+      await runTask({
+        kind: "resource-uninstall",
+        title: t("resources.uninstallLocal"),
+        context: `${selected.entry.name} · ${platformsToUninstall.length}`,
+        action: async () => {
+          for (const targetPlatform of platformsToUninstall) {
+            await lpmAction("resource_uninstall", { name: selected.entry.name, platform: targetPlatform });
+          }
+        },
+        successMessage: t("resources.uninstallTargetsDone", {
+          name: selected.entry.name,
+          count: platformsToUninstall.length,
+        }),
+        retryPolicy: "none",
+      });
       setPreview(null);
       await onChanged();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+    } catch {
+      await Promise.resolve(onChanged());
     } finally {
       setBusyAction("");
     }
@@ -195,16 +218,22 @@ export function ResourcesView({
 
     setBusyAction("delete");
     try {
-      const data = await lpmAction<ResourceDeleteResult>("resource_delete", {
-        name,
-        confirm_name: confirmName || undefined,
+      await runTask({
+        kind: "resource-delete",
+        title: deleteButtonLabel(deleteDialog.item, t),
+        context: name,
+        action: () => lpmAction<ResourceDeleteResult>("resource_delete", {
+          name,
+          confirm_name: confirmName || undefined,
+        }),
+        successMessage: t("resources.deleteDone", { name }),
+        retryPolicy: "none",
       });
-      onDone(t("resources.deleteDone", { name: data.name }));
       setPreview(null);
       setDeleteDialog(null);
       await onChanged();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+    } catch {
+      await Promise.resolve(onChanged());
     } finally {
       setBusyAction("");
     }

@@ -1,4 +1,4 @@
-import { Languages, RefreshCcw } from "lucide-react";
+import { Activity, Languages, RefreshCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { lpmAction } from "@/api/client";
 import {
@@ -10,7 +10,9 @@ import {
   type TFunction,
 } from "@/app/i18n";
 import { navItems, type View } from "@/app/navigation";
+import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
+import { TaskCenterPanel, ToastViewport } from "@/components/TaskFeedback";
 import { AboutView } from "@/features/about/AboutView";
 import { AddResourceView } from "@/features/add/AddResourceView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
@@ -22,6 +24,7 @@ import { SettingsView } from "@/features/settings/SettingsView";
 import type { PlatformProfile, RegistryItem, ResourceInventoryResult, ResourceInventoryItem, Summary } from "@/types/lpm";
 
 export default function App() {
+  const { runTask, runningCount } = useTaskCenter();
   const [view, setView] = useState<View>("dashboard");
   const [language, setLanguage] = useState<Language>(() => readStoredLanguage());
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -30,33 +33,46 @@ export default function App() {
   const [platforms, setPlatforms] = useState<PlatformProfile[]>([]);
   const [selectedName, setSelectedName] = useState<string>("");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const t = useMemo(() => createTranslator(language), [language]);
 
-  async function refresh() {
+  async function loadData() {
+    const [nextSummary, itemData, platformData] = await Promise.all([
+      lpmAction<Summary>("summary"),
+      lpmAction<ResourceInventoryResult>("resource_inventory"),
+      lpmAction<{ platforms: PlatformProfile[] }>("platforms"),
+    ]);
+    setSummary(nextSummary);
+    setResourceItems(itemData.items);
+    setItems(itemData.items.map((item) => item.entry));
+    setPlatforms(platformData.platforms);
+    setSelectedName((current) => current || itemData.items[0]?.entry.name || "");
+  }
+
+  async function refresh(track = true) {
     setBusy(true);
     setError("");
     try {
-      const [nextSummary, itemData, platformData] = await Promise.all([
-        lpmAction<Summary>("summary"),
-        lpmAction<ResourceInventoryResult>("resource_inventory"),
-        lpmAction<{ platforms: PlatformProfile[] }>("platforms"),
-      ]);
-      setSummary(nextSummary);
-      setResourceItems(itemData.items);
-      setItems(itemData.items.map((item) => item.entry));
-      setPlatforms(platformData.platforms);
-      setSelectedName((current) => current || itemData.items[0]?.entry.name || "");
+      if (track) {
+        await runTask({
+          kind: "refresh",
+          title: t("common.refresh"),
+          action: loadData,
+          retryPolicy: "safe-read",
+        });
+      } else {
+        await loadData();
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!track) setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   }
 
   useEffect(() => {
-    void refresh();
+    void refresh(false);
   }, []);
 
   useEffect(() => {
@@ -106,12 +122,14 @@ export default function App() {
           summary={summary}
           busy={busy}
           language={language}
+          runningCount={runningCount}
           t={t}
-          onRefresh={refresh}
+          taskPanelOpen={taskPanelOpen}
+          onRefresh={() => void refresh()}
+          onTasks={() => setTaskPanelOpen((current) => !current)}
           onToggleLanguage={toggleLanguage}
         />
         {error ? <Banner tone="danger" text={error} /> : null}
-        {message ? <Banner tone="success" text={message} /> : null}
 
         {view === "dashboard" ? (
           <DashboardView summary={summary} items={items} t={t} />
@@ -123,43 +141,36 @@ export default function App() {
             selected={selected}
             t={t}
             onSelect={setSelectedName}
-            onChanged={refresh}
-            onDone={setMessage}
+            onChanged={() => refresh(false)}
             onError={setError}
           />
         ) : null}
         {view === "environment" ? (
           <EnvironmentView
             t={t}
-            onDone={setMessage}
-            onStatus={setMessage}
-            onError={setError}
-            onChanged={refresh}
+            onChanged={() => refresh(false)}
           />
         ) : null}
         {view === "add" ? (
           <AddResourceView
             t={t}
-            onDone={async (text) => {
-              setMessage(text);
-              await refresh();
-            }}
+            onChanged={() => refresh(false)}
             onError={setError}
           />
         ) : null}
-        {view === "health" ? <HealthView t={t} onError={setError} /> : null}
+        {view === "health" ? <HealthView t={t} /> : null}
         {view === "settings" ? (
           <SettingsView
             t={t}
-            onDone={setMessage}
-            onStatus={setMessage}
             onError={setError}
-            onChanged={refresh}
+            onChanged={() => refresh(false)}
           />
         ) : null}
         {view === "guide" ? <GuideView t={t} /> : null}
         {view === "about" ? <AboutView t={t} /> : null}
       </main>
+      <TaskCenterPanel open={taskPanelOpen} t={t} onClose={() => setTaskPanelOpen(false)} />
+      <ToastViewport t={t} />
     </div>
   );
 }
@@ -168,15 +179,21 @@ function Topbar({
   summary,
   busy,
   language,
+  runningCount,
   t,
+  taskPanelOpen,
   onRefresh,
+  onTasks,
   onToggleLanguage,
 }: {
   summary: Summary | null;
   busy: boolean;
   language: Language;
+  runningCount: number;
   t: TFunction;
+  taskPanelOpen: boolean;
   onRefresh: () => void;
+  onTasks: () => void;
   onToggleLanguage: () => void;
 }) {
   const languageTitle = language === "zh" ? t("topbar.switchToEnglish") : t("topbar.switchToChinese");
@@ -196,6 +213,17 @@ function Topbar({
         >
           <Languages size={17} />
           <span>{language === "zh" ? "EN" : "中"}</span>
+        </button>
+        <button
+          className="icon-button task-center-trigger"
+          type="button"
+          onClick={onTasks}
+          title={t("topbar.taskCenter")}
+          aria-label={t("topbar.taskCenter")}
+          aria-expanded={taskPanelOpen}
+        >
+          <Activity size={17} />
+          {runningCount ? <span className="task-running-badge">{runningCount}</span> : null}
         </button>
         <button className="icon-button" onClick={onRefresh} disabled={busy} title={t("common.refresh")}>
           <RefreshCcw size={17} />

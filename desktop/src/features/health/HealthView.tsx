@@ -2,19 +2,30 @@ import { useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, TerminalSquare, XCircle } from "lucide-react";
 import { lpmAction } from "@/api/client";
 import type { TFunction } from "@/app/i18n";
+import { useTaskCenter } from "@/app/TaskCenterContext";
 import type { DoctorCheck, DoctorStatus } from "@/types/lpm";
 
-export function HealthView({ t, onError }: { t: TFunction; onError: (message: string) => void }) {
+export function HealthView({ t }: { t: TFunction }) {
+  const { runTask } = useTaskCenter();
   const [checks, setChecks] = useState<DoctorCheck[]>([]);
   const [busy, setBusy] = useState(false);
 
   async function runDoctor() {
     setBusy(true);
     try {
-      const data = await lpmAction<{ checks: DoctorCheck[] }>("doctor");
-      setChecks(data.checks);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+      await runTask({
+        kind: "health-check",
+        title: t("health.runChecks"),
+        action: async () => {
+          const data = await lpmAction<{ checks: DoctorCheck[] }>("doctor");
+          setChecks(data.checks);
+          return data;
+        },
+        successMessage: (data) => t("health.completed", { count: data.checks.length }),
+        retryPolicy: "safe-read",
+      });
+    } catch {
+      // TaskCenter owns feedback for tracked operations.
     } finally {
       setBusy(false);
     }

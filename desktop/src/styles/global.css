@@ -1475,3 +1475,284 @@ button {
     color: #b7c5cb;
   }
 }
+
+.task-center-trigger {
+  position: relative;
+}
+
+.task-running-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #eef2f5;
+  border-radius: 999px;
+  background: #2f8f83;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.task-toast-viewport {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1100;
+  width: min(380px, calc(100vw - 32px));
+  display: grid;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.task-toast {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid;
+  border-radius: 10px;
+  box-shadow: 0 14px 36px rgba(23, 38, 46, 0.2);
+  background: #ffffff;
+  pointer-events: auto;
+}
+
+.task-toast.success {
+  border-color: #9fd7c6;
+  color: #176c55;
+}
+
+.task-toast.danger {
+  border-color: #e4b5b5;
+  color: #9c2525;
+}
+
+.task-toast > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.task-toast strong,
+.task-toast span {
+  overflow-wrap: anywhere;
+}
+
+.task-toast span {
+  color: #52606b;
+  font-size: 13px;
+  white-space: pre-line;
+}
+
+.task-feedback-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+}
+
+.task-feedback-close:hover {
+  background: rgba(91, 108, 117, 0.12);
+}
+
+.task-center-panel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 1000;
+  width: min(390px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #ccd6dc;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 22px 64px rgba(19, 32, 38, 0.24);
+  color: #24313a;
+}
+
+.task-center-header,
+.task-center-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e1e7eb;
+}
+
+.task-center-header > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.task-center-header strong {
+  font-size: 17px;
+}
+
+.task-center-header span,
+.task-center-toolbar > span {
+  color: #697781;
+  font-size: 12px;
+}
+
+.task-center-toolbar {
+  padding-block: 10px;
+  background: #f7f9fa;
+}
+
+.task-center-toolbar .secondary {
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 12px;
+}
+
+.task-center-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.task-center-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid #dde5e9;
+  border-radius: 9px;
+  background: #fbfcfd;
+}
+
+.task-center-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.task-center-copy > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-center-copy > div span,
+.task-center-copy small,
+.task-center-copy time {
+  color: #697781;
+  font-size: 11px;
+}
+
+.task-center-copy strong,
+.task-center-copy small,
+.task-center-copy p {
+  overflow-wrap: anywhere;
+}
+
+.task-center-copy p {
+  margin: 2px 0 0;
+  color: #52606b;
+  font-size: 12px;
+  white-space: pre-line;
+}
+
+.task-status-running {
+  color: #2f8f83;
+}
+
+.task-status-success {
+  color: #27846d;
+}
+
+.task-status-failed {
+  color: #b23b3b;
+}
+
+.task-retry-button {
+  min-height: 30px;
+  padding: 5px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #ccd6dc;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #24313a;
+  font-size: 12px;
+}
+
+.task-center-empty {
+  margin: 0;
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  color: #697781;
+  text-align: center;
+}
+
+.spin {
+  animation: task-spin 0.9s linear infinite;
+}
+
+@keyframes task-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .task-running-badge {
+    border-color: #10171b;
+  }
+
+  .task-toast,
+  .task-center-panel,
+  .task-center-row,
+  .task-retry-button {
+    background: #172228;
+    border-color: #2b3d46;
+    color: #e7edf0;
+  }
+
+  .task-center-toolbar {
+    background: #111b21;
+    border-color: #2b3d46;
+  }
+
+  .task-center-header {
+    border-color: #2b3d46;
+  }
+
+  .task-toast span,
+  .task-center-header span,
+  .task-center-toolbar > span,
+  .task-center-copy > div span,
+  .task-center-copy small,
+  .task-center-copy time,
+  .task-center-copy p,
+  .task-center-empty {
+    color: #9cafb8;
+  }
+}

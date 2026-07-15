@@ -2,23 +2,19 @@ import { Download, FolderSearch, GitPullRequest, PackageCheck, UploadCloud, Rock
 import { useMemo, useState } from "react";
 import { lpmAction } from "@/api/client";
 import type { TFunction } from "@/app/i18n";
+import { useTaskCenter, type RunTaskInput } from "@/app/TaskCenterContext";
 import type { CaptureResult, DeployPlan, EnvDiffPlan, EnvVersionChoice, EnvDiscoveryResult } from "@/types/lpm";
 
 type BusyAction = "" | "discover" | "capture" | "export" | "pull" | "push" | "import" | "plan" | "deploy" | "applyReview";
 
 export function EnvironmentView({
   t,
-  onDone,
-  onStatus,
-  onError,
   onChanged,
 }: {
   t: TFunction;
-  onDone: (message: string) => void;
-  onStatus: (message: string) => void;
-  onError: (message: string) => void;
   onChanged: () => Promise<void> | void;
 }) {
+  const { runTask } = useTaskCenter();
   const [discovery, setDiscovery] = useState<EnvDiscoveryResult | null>(null);
   const [capture, setCapture] = useState<CaptureResult | null>(null);
   const [deployPlan, setDeployPlan] = useState<DeployPlan | null>(null);
@@ -56,14 +52,12 @@ export function EnvironmentView({
   );
   const actionBusy = Boolean(busyAction);
 
-  async function withBusy(action: BusyAction, task: () => Promise<void>) {
+  async function withBusy<T>(action: BusyAction, task: RunTaskInput<T>) {
     setBusyAction(action);
-    onStatus(t("common.working"));
     try {
-      await task();
-    } catch (err) {
-      onStatus("");
-      onError(err instanceof Error ? err.message : String(err));
+      await runTask(task);
+    } catch {
+      // TaskCenter owns feedback for tracked operations.
     } finally {
       setBusyAction("");
     }
@@ -79,83 +73,137 @@ export function EnvironmentView({
   }
 
   async function runDiscover() {
-    await withBusy("discover", async () => {
-      const data = await lpmAction<EnvDiscoveryResult>("env_discover");
-      setDiscovery(data);
-      onDone(t("environment.discovered", { count: data.resources.length + data.mcp_servers.length }));
+    await withBusy("discover", {
+      kind: "environment-discover",
+      title: t("environment.discover"),
+      action: async () => {
+        const data = await lpmAction<EnvDiscoveryResult>("env_discover");
+        setDiscovery(data);
+        return data;
+      },
+      successMessage: (data) => t("environment.discovered", { count: data.resources.length + data.mcp_servers.length }),
+      retryPolicy: "safe-read",
     });
   }
 
   async function runCapture() {
-    await withBusy("capture", async () => {
-      const data = await lpmAction<CaptureResult>("env_capture");
-      setCapture(data);
-      onDone(t("environment.captured", { count: data.captured.length }));
-      await Promise.resolve(onChanged());
+    await withBusy("capture", {
+      kind: "environment-capture",
+      title: t("environment.capture"),
+      action: async () => {
+        const data = await lpmAction<CaptureResult>("env_capture");
+        setCapture(data);
+        await Promise.resolve(onChanged());
+        return data;
+      },
+      successMessage: (data) => t("environment.captured", { count: data.captured.length }),
+      retryPolicy: "none",
     });
   }
 
   async function runExport() {
-    await withBusy("export", async () => {
-      const data = await lpmAction<{ path: string }>("env_export", { out: snapshotPath });
-      onDone(t("environment.exported", { path: data.path }));
+    await withBusy("export", {
+      kind: "environment-export",
+      title: t("environment.export"),
+      context: snapshotPath,
+      action: () => lpmAction<{ path: string }>("env_export", { out: snapshotPath }),
+      successMessage: (data) => t("environment.exported", { path: data.path }),
+      retryPolicy: "none",
     });
   }
 
   async function runPushReview() {
-    await withBusy("push", async () => {
-      const data = await lpmAction<EnvDiffPlan>("env_diff_push");
-      setReviewPlan(data);
-      onDone(t("environment.reviewReady", { count: data.items.length }));
+    await withBusy("push", {
+      kind: "environment-push-review",
+      title: t("environment.pushReview"),
+      action: async () => {
+        const data = await lpmAction<EnvDiffPlan>("env_diff_push");
+        setReviewPlan(data);
+        return data;
+      },
+      successMessage: (data) => t("environment.reviewReady", { count: data.items.length }),
+      retryPolicy: "safe-read",
     });
   }
 
   async function runPullReview() {
-    await withBusy("pull", async () => {
-      const data = await lpmAction<EnvDiffPlan>("env_diff_pull");
-      setReviewPlan(data);
-      onDone(t("environment.reviewReady", { count: data.items.length }));
+    await withBusy("pull", {
+      kind: "environment-pull-review",
+      title: t("environment.pullReview"),
+      action: async () => {
+        const data = await lpmAction<EnvDiffPlan>("env_diff_pull");
+        setReviewPlan(data);
+        return data;
+      },
+      successMessage: (data) => t("environment.reviewReady", { count: data.items.length }),
+      retryPolicy: "safe-read",
     });
   }
 
   async function runImportReview() {
-    await withBusy("import", async () => {
-      const data = await lpmAction<EnvDiffPlan>("env_diff_import", { snapshot: snapshotPath });
-      setReviewPlan(data);
-      onDone(t("environment.reviewReady", { count: data.items.length }));
+    await withBusy("import", {
+      kind: "environment-import-review",
+      title: t("environment.importReview"),
+      context: snapshotPath,
+      action: async () => {
+        const data = await lpmAction<EnvDiffPlan>("env_diff_import", { snapshot: snapshotPath });
+        setReviewPlan(data);
+        return data;
+      },
+      successMessage: (data) => t("environment.reviewReady", { count: data.items.length }),
+      retryPolicy: "safe-read",
     });
   }
 
   async function runApplyReview() {
     if (!diffPlan) return;
-    await withBusy("applyReview", async () => {
-      const payload = { choices: effectiveChoices, snapshot: snapshotPath };
-      const action = diffPlan.operation === "push"
-        ? "env_apply_push"
-        : diffPlan.operation === "pull"
-          ? "env_apply_pull"
-          : "env_apply_import";
-      const data = await lpmAction<EnvDiffPlan>(action, payload);
-      setReviewPlan(data);
-      onDone(t("environment.reviewApplied", { operation: data.operation }));
-      await Promise.resolve(onChanged());
+    await withBusy("applyReview", {
+      kind: "environment-apply-review",
+      title: t("environment.applyReview"),
+      context: diffPlan.operation,
+      action: async () => {
+        const payload = { choices: effectiveChoices, snapshot: snapshotPath };
+        const action = diffPlan.operation === "push"
+          ? "env_apply_push"
+          : diffPlan.operation === "pull"
+            ? "env_apply_pull"
+            : "env_apply_import";
+        const data = await lpmAction<EnvDiffPlan>(action, payload);
+        setReviewPlan(data);
+        await Promise.resolve(onChanged());
+        return data;
+      },
+      successMessage: (data) => t("environment.reviewApplied", { operation: data.operation }),
+      retryPolicy: "none",
     });
   }
 
   async function runDeployPlan() {
-    await withBusy("plan", async () => {
-      const data = await lpmAction<DeployPlan>("env_deploy_plan");
-      setDeployPlan(data);
-      onDone(t("environment.planned", { count: data.items.length }));
+    await withBusy("plan", {
+      kind: "environment-deploy-plan",
+      title: t("environment.deployDryRun"),
+      action: async () => {
+        const data = await lpmAction<DeployPlan>("env_deploy_plan");
+        setDeployPlan(data);
+        return data;
+      },
+      successMessage: (data) => t("environment.planned", { count: data.items.length }),
+      retryPolicy: "safe-read",
     });
   }
 
   async function runDeploy() {
-    await withBusy("deploy", async () => {
-      const data = await lpmAction<DeployPlan>("env_deploy");
-      setDeployPlan(data);
-      onDone(t("environment.deployed", { count: data.items.length }));
-      await Promise.resolve(onChanged());
+    await withBusy("deploy", {
+      kind: "environment-deploy",
+      title: t("environment.deploy"),
+      action: async () => {
+        const data = await lpmAction<DeployPlan>("env_deploy");
+        setDeployPlan(data);
+        await Promise.resolve(onChanged());
+        return data;
+      },
+      successMessage: (data) => t("environment.deployed", { count: data.items.length }),
+      retryPolicy: "none",
     });
   }
 

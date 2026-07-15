@@ -2,6 +2,7 @@ import { FormEvent, useMemo, useRef, useState } from "react";
 import { Eye, EyeOff, FolderSearch, GitBranch, Search, Upload } from "lucide-react";
 import { lpmAction } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
+import { useTaskCenter } from "@/app/TaskCenterContext";
 import { KindBadge } from "@/components/KindBadge";
 import type {
   DiscoveredResource,
@@ -17,13 +18,14 @@ const registryFilters = ["all", "existing", "new"] as const;
 
 export function AddResourceView({
   t,
-  onDone,
+  onChanged,
   onError,
 }: {
   t: TFunction;
-  onDone: (message: string) => void;
+  onChanged: () => Promise<void> | void;
   onError: (message: string) => void;
 }) {
+  const { runTask } = useTaskCenter();
   const [mode, setMode] = useState<"collect" | "upload" | "discover">("collect");
   const [value, setValue] = useState("");
   const [kind, setKind] = useState<"auto" | ResourceKind>("auto");
@@ -72,12 +74,20 @@ export function AddResourceView({
         name,
         push: true,
       };
-      await lpmAction(mode === "collect" ? "collect" : "upload", payload);
-      onDone(mode === "collect" ? t("add.successCollected") : t("add.successUploaded"));
+      const collectMode = mode === "collect";
+      await runTask({
+        kind: collectMode ? "resource-collect" : "resource-upload",
+        title: collectMode ? t("add.modeCollect") : t("add.modeUpload"),
+        context: name || value,
+        action: () => lpmAction(collectMode ? "collect" : "upload", payload),
+        successMessage: collectMode ? t("add.successCollected") : t("add.successUploaded"),
+        retryPolicy: "none",
+      });
       setValue("");
       setName("");
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+      await Promise.resolve(onChanged());
+    } catch {
+      // TaskCenter owns feedback for tracked operations.
     } finally {
       setBusy(false);
     }
@@ -95,13 +105,23 @@ export function AddResourceView({
     setPreviewBusy(false);
     setScanSummary("");
     try {
-      const data = await lpmAction<{ items: DiscoveredResource[] }>("discover_resources", discoveryPayload());
-      setCandidates(data.items);
-      setSelectedIds([]);
-      setCandidateNames(Object.fromEntries(data.items.map((item) => [item.id, item.name_hint])));
-      setScanSummary(t("add.discoverFound", { count: data.items.length }));
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+      await runTask({
+        kind: "resource-discovery",
+        title: t("add.discoverScan"),
+        context: scope === "directory" ? directory : t("add.discoverGlobal"),
+        action: async () => {
+          const data = await lpmAction<{ items: DiscoveredResource[] }>("discover_resources", discoveryPayload());
+          setCandidates(data.items);
+          setSelectedIds([]);
+          setCandidateNames(Object.fromEntries(data.items.map((item) => [item.id, item.name_hint])));
+          setScanSummary(t("add.discoverFound", { count: data.items.length }));
+          return data;
+        },
+        successMessage: (result) => t("add.discoverFound", { count: result.items.length }),
+        retryPolicy: "safe-read",
+      });
+    } catch {
+      // TaskCenter owns feedback for tracked operations.
     } finally {
       setBusy(false);
     }
@@ -145,17 +165,29 @@ export function AddResourceView({
   async function uploadSelected() {
     setBusy(true);
     try {
-      const result = await lpmAction<DiscoveryUploadResult>("upload_discovered_resources", {
-        ...discoveryPayload(),
-        items: selectedIds.map((id) => ({ id, name: candidateNames[id] })),
-        overwrite,
-        push: true,
+      await runTask({
+        kind: "resource-import",
+        title: t("add.discoverUploadSelected"),
+        context: t("add.discoverSelected", { count: selectedIds.length }),
+        action: async () => {
+          const data = await lpmAction<DiscoveryUploadResult>("upload_discovered_resources", {
+            ...discoveryPayload(),
+            items: selectedIds.map((id) => ({ id, name: candidateNames[id] })),
+            overwrite,
+            push: true,
+          });
+          const failures = data.results.filter((item) => !item.ok).map((item) => `${item.name}: ${item.error}`);
+          if (failures.length) {
+            throw new Error(`${t("add.discoverUploaded", { count: data.imported, failed: data.failed })}\n${failures.slice(0, 3).join("\n")}`);
+          }
+          return data;
+        },
+        successMessage: (data) => t("add.discoverUploaded", { count: data.imported, failed: data.failed }),
+        retryPolicy: "none",
       });
-      const errors = result.results.filter((item) => !item.ok).map((item) => `${item.name}: ${item.error}`);
-      if (errors.length) onError(errors.slice(0, 3).join("\n"));
-      onDone(t("add.discoverUploaded", { count: result.imported, failed: result.failed }));
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+      await Promise.resolve(onChanged());
+    } catch {
+      await Promise.resolve(onChanged());
     } finally {
       setBusy(false);
     }
