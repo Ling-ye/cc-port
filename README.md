@@ -97,6 +97,7 @@ tools/packaging/
 scripts/
   setup.*                       # 初始化开发/构建环境
   dev.*                         # 启动 Tauri 桌面调试环境
+  release-desktop.ps1           # Windows 一键验收、打包和产物验证
   build-desktop.*               # 构建桌面发布产物
 
 desktop/dist/                   # Vite 前端静态资源，中间产物，可忽略
@@ -186,7 +187,7 @@ cd LingyePluginMarketplace
 Windows 初始化：
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File scripts\setup.ps1
+Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1
 ```
 
 如果安装了 PowerShell 7，也可以使用：
@@ -211,7 +212,7 @@ bash scripts/setup.sh
 启动 Tauri 桌面调试环境：
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File scripts\dev.ps1
+Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\dev.ps1
 ```
 
 或：
@@ -247,34 +248,30 @@ desktop/src-tauri/target/debug/                # Tauri/Cargo dev 调试输出
 完整的环境要求、版本同步、验收矩阵、产物校验、安装方式和回退边界见 [桌面打包与部署](docs/packaging-and-deployment.md)。
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File scripts\build-desktop.ps1
+Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1
 ```
 
-或：
+每次更新代码后只需要执行这一条命令。它会按顺序执行：
 
-```bash
-bash scripts/build-desktop.sh
-```
-
-该脚本用于生成可分发的桌面程序和安装包。它会按顺序执行：
-
-1. 检查/生成桌面图标。
-2. 使用 PyInstaller 构建 `lpm-desktop-api` sidecar。
-3. 执行 Tauri release build。
-4. 生成平台安装包。
-5. 把最终产物收集到 `release/desktop/<target-triple>/`。
+1. 安装 Python 发布依赖和锁定的前端依赖。
+2. 运行 pytest、Ruff 和 Vitest。
+3. 完整构建 sidecar 和 Tauri 安装包。
+4. 收集并验证本次产物。
+5. 打印 SHA-256。
 
 简单区分：
 
 - `scripts/dev.*`：本地调试入口，启动的是带热更新能力的桌面开发环境。
+- `scripts/release-desktop.ps1`：Windows 完整发布入口；更新代码后默认只执行这一条命令。
 - `scripts/check-release.*`：端到端构建验收入口，串联 Python 测试、Ruff、前端 build、sidecar build 和 Tauri build，并打印原始产物路径；当前不运行 Vitest，也不收集到 `release/desktop/`。
-- `scripts/build-desktop.*`：发布构建与收集入口，输出 exe、sidecar 和安装包等最终产物；当前不运行 Python 或前端测试。
+- `scripts/build-desktop.*`：`release-desktop.ps1` 使用的底层构建与收集入口，不单独承担完整发布验收。
 
 Windows 上最终通常会得到：
 
 ```text
 release/desktop/x86_64-pc-windows-msvc/
   lpm-desktop.exe
+  lpm-desktop-api.exe
   msi/
     LPM Desktop_*.msi
   nsis/
@@ -295,8 +292,8 @@ desktop/src-tauri/target/release/bundle/  # Tauri 原始安装包输出
 
 - `scripts/setup.*`：初始化 Python、Node.js、Rust/Tauri 相关依赖。
 - `scripts/dev.*`：启动完整的 Tauri 桌面调试环境，用于开发和联调。
-- `scripts/check-release.*`：执行端到端构建验收：`pytest`、`ruff`、`npm run build`、sidecar build 和 `tauri build`；Vitest 需另外运行。
-- `scripts/build-desktop.*`：构建并收集最终桌面可执行文件、sidecar 和安装包，不替代测试命令。
+- `scripts/release-desktop.ps1`：执行 Windows 完整验收、构建、收集和产物哈希。
+- `scripts/check-release.*`、`scripts/build-desktop.*`：专项或底层入口，完整发布时不需要手动组合。
 
 `desktop/package.json` 中的 npm 脚本属于内部步骤或专项检查：Tauri 会调用 `npm run build` 构建前端，根目录脚本会调用 `npm run tauri dev/build` 启动或打包桌面外壳，`npm run sidecar` 和 `npm run icons` 主要用于维护单个打包环节。完整构建请使用根目录脚本，不需要手动拼接这些内部命令。
 
@@ -496,7 +493,7 @@ desktop\src-tauri\binaries\lpm-desktop-api-x86_64-pc-windows-msvc.exe platforms 
 
 完整发布流程见 [桌面打包与部署](docs/packaging-and-deployment.md)。该文档包含：
 
-- 构建入口职责和完整验收顺序。
+- 更新代码后唯一需要复制的 PowerShell 命令。
 - Windows MSI、NSIS 与便携目录的选择。
 - 版本同步、产物时间与 SHA-256 校验。
 - 干净目标机验收、人工升级和回退边界。

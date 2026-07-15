@@ -147,4 +147,4 @@ def test_desktop_env_diff_import_serializes_paths_and_choices(tmp_path: Path, mo
     data = result["data"]
     assert data["local_root"] == str(tmp_path / "local")
     assert data["default_choices"] == {"resource:demo": "incoming"}
-    assert data["items"][0]["local_path"].endswith("resources/skills/demo")
+    assert Path(data["items"][0]["local_path"]) == tmp_path / "local" / "resources" / "skills" / "demo"
