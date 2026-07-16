@@ -329,6 +329,7 @@ Windows 下等价路径通常是：
 
 - `LPM_CONFIG`：指定配置文件路径。
 - `LPM_GITHUB_TOKEN`：覆盖配置文件中的 GitHub token。
+- 设置页读取远端分支时优先使用 GitHub API；Token 无效或未配置时，会尝试复用本机 GitHub SSH 密钥读取分支，并明确提示当前鉴权状态。回退过程使用非交互 SSH，不会弹出登录窗口。
 - `LPM_RESOURCE_HOME`：覆盖私有资源仓库本地路径。
 - `LPM_DESKTOP_API_BIN`：指定桌面 GUI 使用的 `lpm-desktop-api` 可执行文件，主要用于调试。
 

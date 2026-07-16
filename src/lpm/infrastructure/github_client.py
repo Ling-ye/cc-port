@@ -51,6 +51,11 @@ class GithubClient:
         except GithubException as exc:
             if exc.status == 404:
                 return None
+            if exc.status == 401:
+                raise GithubAuthError(
+                    "GitHub token rejected. Replace the saved token or remove it to use "
+                    "local Git/SSH credentials for branch discovery."
+                ) from exc
             raise
 
     def create_repo(

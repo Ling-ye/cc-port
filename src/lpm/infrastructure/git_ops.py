@@ -259,6 +259,69 @@ def remote_commit(
         _cleanup_askpass(env)
 
 
+def remote_branches(
+    url: str,
+    *,
+    token: str | None = None,
+    timeout: int = 15,
+) -> tuple[str, list[str]]:
+    """Return the default branch and branch names advertised by a remote.
+
+    Without an explicit token, GitHub HTTPS URLs are converted to SSH so a
+    configured SSH key can be used without opening credential prompts.
+    """
+    env = {**os.environ, **_NO_PROMPT_ENV}
+    query_url = url
+    if not token:
+        ssh_url = _github_ssh_url(url)
+        if ssh_url:
+            query_url = ssh_url
+            env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=10"
+    token_env = _token_env(token)
+    env.update(token_env)
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--symref", query_url, "HEAD", "refs/heads/*"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise GitError("`git` executable not found on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"Timed out while reading branches from {url}.") from exc
+    finally:
+        _cleanup_askpass(token_env)
+
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        raise GitError(f"Unable to read remote branches: {detail or 'git ls-remote failed.'}")
+
+    default_branch = ""
+    branches: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "ref:" and parts[2] == "HEAD":
+            default_branch = parts[1].removeprefix("refs/heads/")
+        elif len(parts) >= 2 and parts[1].startswith("refs/heads/"):
+            branches.add(parts[1].removeprefix("refs/heads/"))
+    if default_branch:
+        branches.add(default_branch)
+    return default_branch, sorted(branches)
+
+
+def _github_ssh_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "github.com":
+        return None
+    path = parsed.path.lstrip("/")
+    if not path:
+        return None
+    return f"git@github.com:{path}"
+
+
 def probe_remote(url: str, ref: str = "main", *, timeout: int = 15) -> bool:
     """Return True if the remote repo (and optional ref) is reachable.
 

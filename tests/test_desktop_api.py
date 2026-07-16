@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lpm.core.config import Config
+from lpm.core.config import Config, GithubConfig, ResourcesConfig
 from lpm.core.models import RegistryItem
+from lpm.infrastructure.github_client import GithubAuthError
 from lpm.interfaces import desktop_api
 from lpm.services.env_manager import EnvDiffItem, EnvDiffPlan
 from lpm.services.local_resources import ImportLocalResult
@@ -148,3 +149,77 @@ def test_desktop_env_diff_import_serializes_paths_and_choices(tmp_path: Path, mo
     assert data["local_root"] == str(tmp_path / "local")
     assert data["default_choices"] == {"resource:demo": "incoming"}
     assert Path(data["items"][0]["local_path"]) == tmp_path / "local" / "resources" / "skills" / "demo"
+
+
+def test_config_branches_falls_back_to_git_credentials_when_token_is_rejected(
+    monkeypatch,
+) -> None:
+    cfg = Config(
+        github=GithubConfig(token="expired-token"),
+        resources=ResourcesConfig(
+            repo_name="LingyeAIResources",
+            repo_url="https://github.com/Ling-ye/LingyeAIResources.git",
+            branch="main",
+        ),
+    )
+
+    class RejectedGithubClient:
+        def __init__(self, token: str):
+            assert token == "expired-token"
+
+        def list_repo_branches(self, owner: str, name: str):
+            assert (owner, name) == ("Ling-ye", "LingyeAIResources")
+            raise GithubAuthError("GitHub token rejected.")
+
+    monkeypatch.setattr(desktop_api, "load_raw_config", lambda: cfg)
+    monkeypatch.setattr(desktop_api, "GithubClient", RejectedGithubClient)
+    monkeypatch.setattr(
+        desktop_api.git_ops,
+        "remote_branches",
+        lambda url: ("main", ["dev", "main"]),
+    )
+
+    result = desktop_api._config_branches(
+        {
+            "draft": {
+                "github": {},
+                "install": {},
+                "resources": {},
+            }
+        }
+    )
+
+    assert result["branches"] == ["main", "dev"]
+    assert result["default_branch"] == "main"
+    assert "GitHub token rejected" in result["warning"]
+    assert "local Git/SSH credentials" in result["warning"]
+
+
+def test_config_branches_uses_git_credentials_without_api_token(monkeypatch) -> None:
+    cfg = Config(
+        resources=ResourcesConfig(
+            repo_name="LingyeAIResources",
+            repo_url="https://github.com/Ling-ye/LingyeAIResources.git",
+            branch="release",
+        )
+    )
+    monkeypatch.setattr(desktop_api, "load_raw_config", lambda: cfg)
+    monkeypatch.setattr(
+        desktop_api.git_ops,
+        "remote_branches",
+        lambda url: ("main", ["main", "release"]),
+    )
+
+    result = desktop_api._config_branches(
+        {
+            "draft": {
+                "github": {},
+                "install": {},
+                "resources": {},
+            }
+        }
+    )
+
+    assert result["branches"] == ["main", "release"]
+    assert result["selected_branch"] == "release"
+    assert "No API token is configured" in result["warning"]

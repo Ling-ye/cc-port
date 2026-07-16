@@ -44,7 +44,7 @@ from ..core.platforms import PLATFORM_PRESETS, PlatformProfile, PlatformsConfig,
 from ..core.registry import find_registry_path, load_registry
 from ..core.resource_detection import detect_local_resource_type, detect_remote_resource
 from ..infrastructure import git_ops
-from ..infrastructure.github_client import GithubClient
+from ..infrastructure.github_client import GithubAuthError, GithubClient
 from ..services import publisher
 from ..services.doctor import build_doctor_checks
 from ..services.env_manager import (
@@ -505,39 +505,62 @@ def _config_branches(payload: JsonDict) -> JsonDict:
             warning="Only github.com repositories can be checked from Settings.",
         )
 
-    if not cfg.github.token.strip():
-        return _branch_options_response(
-            selected_branch=selected_branch,
-            default_branch=default_branch,
-            warning=f"Set a token in config or {CONFIG_ENV_VAR} before loading remote branches.",
+    if cfg.github.token.strip():
+        try:
+            client = GithubClient(cfg.github.token)
+            owner, name = _target_repo_owner_name(cfg, client)
+            result = client.list_repo_branches(owner, name)
+            if result is not None:
+                default_branch = result.default_branch or DEFAULT_RESOURCE_BRANCH
+                return {
+                    "branches": _branch_options(
+                        result.branches,
+                        selected_branch,
+                        default_branch,
+                    ),
+                    "default_branch": default_branch,
+                    "selected_branch": selected_branch,
+                    "warning": "",
+                }
+            label = "/".join(part for part in (owner, name) if part) or cfg.resources.repo_url
+            api_warning = f"Repository {label} is not accessible or does not exist."
+        except GithubAuthError as exc:
+            api_warning = str(exc)
+        except Exception as exc:  # noqa: BLE001 - branch loading is optional in Settings
+            api_warning = f"GitHub API branch lookup failed: {exc}"
+    else:
+        api_warning = (
+            f"No API token is configured in config or {CONFIG_ENV_VAR}."
         )
 
-    try:
-        client = GithubClient(cfg.github.token)
-        owner, name = _target_repo_owner_name(cfg, client)
-        result = client.list_repo_branches(owner, name)
-    except Exception as exc:  # noqa: BLE001 - branch loading is optional in Settings
-        return _branch_options_response(
-            selected_branch=selected_branch,
-            default_branch=default_branch,
-            warning=str(exc),
-        )
+    if cfg.resources.repo_url:
+        try:
+            git_default, git_branches = git_ops.remote_branches(cfg.resources.repo_url)
+            default_branch = git_default or DEFAULT_RESOURCE_BRANCH
+            return {
+                "branches": _branch_options(
+                    git_branches,
+                    selected_branch,
+                    default_branch,
+                ),
+                "default_branch": default_branch,
+                "selected_branch": selected_branch,
+                "warning": (
+                    f"{api_warning} Branches were loaded using local Git/SSH credentials."
+                ),
+            }
+        except git_ops.GitError as exc:
+            return _branch_options_response(
+                selected_branch=selected_branch,
+                default_branch=default_branch,
+                warning=f"{api_warning} Git fallback also failed: {exc}",
+            )
 
-    if result is None:
-        label = "/".join(part for part in (owner, name) if part) or cfg.resources.repo_url
-        return _branch_options_response(
-            selected_branch=selected_branch,
-            default_branch=default_branch,
-            warning=f"Repository {label} is not accessible or does not exist.",
-        )
-
-    default_branch = result.default_branch or DEFAULT_RESOURCE_BRANCH
-    return {
-        "branches": _branch_options(result.branches, selected_branch, default_branch),
-        "default_branch": default_branch,
-        "selected_branch": selected_branch,
-        "warning": "",
-    }
+    return _branch_options_response(
+        selected_branch=selected_branch,
+        default_branch=default_branch,
+        warning=api_warning,
+    )
 
 
 def _config_save(payload: JsonDict) -> JsonDict:
