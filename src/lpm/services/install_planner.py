@@ -51,6 +51,7 @@ DEFAULT_EXCLUDED_SUFFIXES = {
     ".so",
     ".zip",
 }
+SAFE_ENV_SUFFIXES = {".example", ".sample", ".template"}
 
 
 @dataclass(frozen=True)
@@ -161,9 +162,17 @@ def plan_install(
     targets: list[InstallPlanTarget] = []
     warnings: list[str] = []
 
-    enabled = [p for p in platforms if p.enabled]
+    enabled = [
+        platform
+        for platform in platforms
+        if platform.enabled and entry.supports_platform(platform.name)
+    ]
     if platform_filter:
         enabled = [p for p in enabled if p.name == platform_filter]
+        if not entry.supports_platform(platform_filter):
+            warnings.append(
+                f"Resource is not allowed on platform {platform_filter!r}."
+            )
 
     detections_by_id = {item.provider.id: item for item in detected}
     for platform in enabled:
@@ -260,7 +269,11 @@ def _copy_ignore(directory: str, names: list[str]) -> set[str]:
         lower = name.lower()
         if path.is_dir() and lower in DEFAULT_EXCLUDED_DIRS:
             ignored.add(name)
-        elif path.is_file() and (lower in DEFAULT_EXCLUDED_FILES or path.suffix.lower() in DEFAULT_EXCLUDED_SUFFIXES):
+        elif path.is_file() and (
+            lower in DEFAULT_EXCLUDED_FILES
+            or path.suffix.lower() in DEFAULT_EXCLUDED_SUFFIXES
+            or _is_sensitive_env_file(path)
+        ):
             ignored.add(name)
     return ignored
 
@@ -270,7 +283,20 @@ def _is_excluded_path(path: Path) -> bool:
     if lower_parts & DEFAULT_EXCLUDED_DIRS:
         return True
     name = path.name.lower()
-    return name in DEFAULT_EXCLUDED_FILES or path.suffix.lower() in DEFAULT_EXCLUDED_SUFFIXES
+    return (
+        name in DEFAULT_EXCLUDED_FILES
+        or path.suffix.lower() in DEFAULT_EXCLUDED_SUFFIXES
+        or _is_sensitive_env_file(path)
+    )
+
+
+def _is_sensitive_env_file(path: Path) -> bool:
+    name = path.name.lower()
+    if name == ".env":
+        return True
+    if not name.startswith(".env."):
+        return False
+    return Path(name).suffix not in SAFE_ENV_SUFFIXES
 
 
 def _assert_inside(root: Path, target: Path) -> None:

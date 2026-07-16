@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ def import_local_resource(
     description: str | None = None,
     category: str = "",
     tags: list[str] | None = None,
+    platforms: list[str] | None = None,
     registry_path: Path | None = None,
     overwrite: bool = False,
     mcp_config: dict[str, Any] | None = None,
@@ -92,6 +94,7 @@ def import_local_resource(
         mcp_config=effective_mcp_config,
         tags=tags or [],
         category=category,
+        platforms=platforms or [],
     )
 
     registry = load_registry(reg_path)
@@ -112,20 +115,31 @@ def export_claude_plugin(
 
     skills: list[str] = []
     for item in registry.items:
-        if item.kind != "skill" or not item.path:
+        if (
+            item.kind != "skill"
+            or item.lifecycle != "active"
+            or not item.path
+            or not item.supports_platform("claude-code")
+        ):
             continue
         skill_path = root / item.path
         if (skill_path / "SKILL.md").is_file():
             skills.append(f"./{item.path}")
 
     payload = {
-        "name": plugin_name or root.name,
+        "name": _plugin_slug(plugin_name or root.name),
         "skills": sorted(skills),
     }
     out = root / ".claude-plugin" / "plugin.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return out
+
+
+def _plugin_slug(value: str) -> str:
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", value)
+    words = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "-", words)
+    return _slug(words)
 
 
 def _infer_local_name(src: Path, kind: ItemKind, name: str | None) -> str:

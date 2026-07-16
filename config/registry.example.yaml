@@ -1,4 +1,4 @@
-version: 4
+version: 5
 items:
   - name: example-external-skill
     kind: skill
@@ -9,6 +9,7 @@ items:
     description: Example third-party skill stored by reference only.
     tags:
       - example
+    lifecycle: active
 
   - name: example-local-skill
     kind: skill
@@ -18,3 +19,6 @@ items:
     description: Example local skill stored inside your private resource repo.
     tags:
       - local
+    platforms:
+      - cursor
+    lifecycle: active

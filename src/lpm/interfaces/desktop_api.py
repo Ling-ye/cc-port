@@ -172,6 +172,7 @@ def _collect(payload: JsonDict) -> JsonDict:
         skip_verify=bool(payload.get("skip_verify", False)),
         token=cfg.github.token or None,
         tags=detected.tags,
+        platforms=_str_list(payload.get("platforms")),
     )
     push_result = _maybe_push(cfg, payload)
     return {"entry": entry, "detected": detected, "push": push_result}
@@ -184,6 +185,7 @@ def _upload(payload: JsonDict) -> JsonDict:
         source,
         kind=kind,
         name=_optional_str(payload.get("name")),
+        platforms=_str_list(payload.get("platforms")),
         overwrite=bool(payload.get("overwrite", False)),
     )
     push_result = _push_after_upload(load_config(), payload)

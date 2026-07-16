@@ -458,6 +458,113 @@ def test_mcp_target_inventory_and_platform_uninstall(tmp_path: Path) -> None:
     assert "demo-mcp" not in data["mcpServers"]
 
 
+def test_inventory_respects_platform_allowlist_and_keeps_stale_target_removable(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    install = tmp_path / "install"
+    cursor_target = tmp_path / "cursor" / "skills" / "cursor-only"
+    codex_target = tmp_path / "codex" / "skills" / "cursor-only"
+    cursor_target.mkdir(parents=True)
+    codex_target.mkdir(parents=True)
+    registry_path = root / "registry.yaml"
+    save_registry(
+        Registry(
+            items=[
+                RegistryItem(
+                    name="cursor-only",
+                    kind="skill",
+                    source="local",
+                    path="skills/cursor-only",
+                    platforms=["cursor"],
+                )
+            ]
+        ),
+        registry_path,
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="cursor",
+                enabled=True,
+                skills_dir=str(tmp_path / "cursor" / "skills"),
+            ),
+            PlatformProfile(
+                name="codex",
+                enabled=True,
+                skills_dir=str(tmp_path / "codex" / "skills"),
+            ),
+        ],
+    )
+
+    inventory = resource_manager.build_resource_inventory(
+        config=cfg,
+        registry_path=registry_path,
+    )
+    targets = {
+        target.platform: target
+        for target in inventory["items"][0].local_state.targets
+    }
+
+    assert targets["cursor"].supported is True
+    assert targets["cursor"].installed is True
+    assert targets["codex"].supported is False
+    assert targets["codex"].installed is True
+    with pytest.raises(FileNotFoundError):
+        resource_manager.resource_open_path(
+            "cursor-only",
+            config=cfg,
+            registry_path=registry_path,
+            platform_filter="codex",
+        )
+
+
+def test_install_disallowed_platform_stops_before_writing_cache(tmp_path: Path) -> None:
+    root = tmp_path / "resources"
+    install = tmp_path / "install"
+    source = root / "skills" / "cursor-only"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("# Cursor only\n", encoding="utf-8")
+    registry_path = root / "registry.yaml"
+    save_registry(
+        Registry(
+            items=[
+                RegistryItem(
+                    name="cursor-only",
+                    kind="skill",
+                    source="local",
+                    path="skills/cursor-only",
+                    platforms=["cursor"],
+                )
+            ]
+        ),
+        registry_path,
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="codex",
+                enabled=True,
+                skills_dir=str(tmp_path / "codex" / "skills"),
+            )
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="not allowed on platform"):
+        resource_manager.install_resource(
+            "cursor-only",
+            config=cfg,
+            registry_path=registry_path,
+            platform_filter="codex",
+        )
+
+    assert not (install / "cursor-only").exists()
+
+
 def test_install_external_resource_replaces_stale_non_git_directory(
     tmp_path: Path, monkeypatch
 ) -> None:

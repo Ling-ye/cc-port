@@ -94,6 +94,7 @@ def publish_local_skill(
     update_visibility: bool = False,
     kind: str = "skill",
     mcp_config: dict[str, Any] | None = None,
+    platforms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Validate a local directory, create a dedicated GitHub repository for it
     under the configured owner, push the contents, and record it in registry.yaml.
@@ -109,6 +110,7 @@ def publish_local_skill(
             visibility, set this to True to flip it.
         kind: Resource type: "skill", "mcp", or "rule".
         mcp_config: MCP server configuration dict (required when kind="mcp").
+        platforms: Optional installation platform allowlist.
     """
     cfg = load_config()
     try:
@@ -121,6 +123,7 @@ def publish_local_skill(
             update_visibility=update_visibility,
             kind=kind,
             mcp_config=mcp_config,
+            platforms=platforms,
         )
     except publisher.VisibilityMismatchError as exc:
         return {
@@ -171,6 +174,7 @@ def add_external_skill(
     skip_verify: bool = False,
     tags: list[str] | None = None,
     category: str = "",
+    platforms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Register a third-party resource in registry.yaml.
 
@@ -188,6 +192,7 @@ def add_external_skill(
         skip_verify: Skip remote repository reachability check.
         tags: Optional tags for selective sync and discovery.
         category: Optional category label.
+        platforms: Optional installation platform allowlist.
     """
     cfg = load_config()
     try:
@@ -203,6 +208,7 @@ def add_external_skill(
             token=cfg.github.token or None,
             tags=tags,
             category=category,
+            platforms=platforms,
         )
     except publisher.RepoUnreachableError as exc:
         return {"error": "repo_unreachable", "message": str(exc)}
@@ -221,6 +227,7 @@ def collect_resource(
     skip_verify: bool = False,
     tags: list[str] | None = None,
     category: str = "",
+    platforms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect a third-party resource by recording its upstream URL only."""
     return add_external_skill(
@@ -234,6 +241,7 @@ def collect_resource(
         skip_verify=skip_verify,
         tags=tags,
         category=category,
+        platforms=platforms,
     )
 
 
@@ -245,6 +253,7 @@ def import_local_resource_tool(
     kind: str = "skill",
     category: str = "",
     tags: list[str] | None = None,
+    platforms: list[str] | None = None,
     overwrite: bool = False,
     mcp_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -257,6 +266,7 @@ def import_local_resource_tool(
             description=description,
             category=category,
             tags=tags,
+            platforms=platforms,
             overwrite=overwrite,
             mcp_config=mcp_config,
         )

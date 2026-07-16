@@ -73,6 +73,7 @@ token 缺失时不要静默失败 -- 指引用户设环境变量或编辑 config
 
 - `--tag python --tag testing` -- 标签（可重复，用于搜索过滤）
 - `--category software-dev` -- 分类
+- `--platform cursor` -- 资源安装平台白名单，可重复；省略表示所有已启用平台
 - `--version 1.0.0` -- 语义化版本
 - `--author Lingye` -- 作者
 - `--license MIT` -- 许可证
@@ -207,6 +208,8 @@ lpm link --only lpm
 
 - **token 永远不入库。** registry.yaml 和日志只存纯 HTTPS URL。git 操作通过 GIT_ASKPASS 传递 token，不写入 .git/config。
 - **资源名称**：小写字母/数字/连字符，最长 64 字符。
+- **平台专用资源必须声明白名单。** 例如 Cursor hooks/subagents skill 使用 `platforms: [cursor]`，不要依赖 tags 表达安装约束。
+- **真实环境文件不进入资源仓库。** `.env`、`.env.local` 等默认排除，只保留无密钥模板文件。
 - **发布后不要重新 git init。** 后续修改走正常 `git commit && git push`。
 - **优先用 MCP 工具。** 只在 MCP 不可用时回退到 CLI。
 
@@ -215,9 +218,13 @@ lpm link --only lpm
 ```
 lpm init [--claude-code] [-f]        # 生成配置文件
 lpm doctor                           # 检查环境
-lpm publish <path> [--private/--public --kind --mcp-config --tag --category --version --author --license -y]
+lpm publish <path> [--private/--public --kind --mcp-config --tag --category --platform --version --author --license -y]
 lpm set-visibility <name> {public|private}
-lpm add <github-url> [--subdir --ref --name --kind --mcp-config --tag --category]
+lpm add <github-url> [--subdir --ref --name --kind --mcp-config --tag --category --platform]
+lpm collect <github-tree-url> [--type --name --platform]
+lpm upload <path> [--type --name --platform]
+lpm import-local <path> [--kind --name --tag --category --platform]
+lpm export-plugin [--name]
 lpm search [query] [--tag --kind --category --remote]
 lpm link [--project --only --tag --kind]
 lpm unlink [--project]

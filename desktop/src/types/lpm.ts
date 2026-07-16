@@ -15,6 +15,7 @@ export interface RegistryItem {
   description: string;
   tags: string[];
   category: string;
+  platforms?: string[];
   private?: boolean | null;
   reachable?: boolean | null;
   last_checked?: string | null;

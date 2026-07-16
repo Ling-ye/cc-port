@@ -176,7 +176,11 @@ def _distribute_to_platforms(
 
     Returns list of platform names where installation succeeded.
     """
-    platforms = config.platforms.enabled()
+    platforms = [
+        platform
+        for platform in config.platforms.enabled()
+        if entry.supports_platform(platform.name)
+    ]
     if platform_filter:
         platforms = [p for p in platforms if p.name == platform_filter]
 
@@ -207,7 +211,11 @@ def _platform_targets(
     *,
     platform_filter: str | None = None,
 ) -> list[tuple[str, Path]]:
-    platforms = config.platforms.enabled()
+    platforms = [
+        platform
+        for platform in config.platforms.enabled()
+        if entry.supports_platform(platform.name)
+    ]
     if platform_filter:
         platforms = [p for p in platforms if p.name == platform_filter]
 
@@ -238,6 +246,13 @@ def sync_one(
             install_path=install_path,
             action=SyncAction.SKIPPED,
             detail="Resource has been removed from the active registry.",
+        )
+    if platform_filter and not entry.supports_platform(platform_filter):
+        return SyncResult(
+            name=entry.name,
+            install_path=install_path,
+            action=SyncAction.SKIPPED,
+            detail=f"Resource is not allowed on platform {platform_filter!r}.",
         )
     install_path.parent.mkdir(parents=True, exist_ok=True)
     clone_path.parent.mkdir(parents=True, exist_ok=True)

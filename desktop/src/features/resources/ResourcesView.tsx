@@ -74,8 +74,11 @@ export function ResourcesView({
   const targets = selected?.local_state.targets || [];
   const installTargets = useMemo(() => targets.filter((item) => item.supported), [targets]);
   const installedTargets = useMemo(() => installTargets.filter((item) => item.installed), [installTargets]);
+  const uninstallTargets = useMemo(() => targets.filter((item) => item.installed), [targets]);
   const openTargets = useMemo(() => installTargets.filter((item) => item.exists && item.installed), [installTargets]);
-  const modalOptions = selected && targetAction ? targetOptions(targetAction, installTargets, installedTargets, openTargets, t) : [];
+  const modalOptions = selected && targetAction
+    ? targetOptions(targetAction, installTargets, uninstallTargets, installedTargets, openTargets, t)
+    : [];
   const modalMulti = targetAction === "install" || targetAction === "uninstall";
   const canSubmitModal = selectedTargets.length > 0 && !modalOptions.every((item) => item.disabled);
 
@@ -85,7 +88,7 @@ export function ResourcesView({
       setPreview(null);
       return;
     }
-    const nextOptions = targetOptions(action, installTargets, installedTargets, openTargets, t);
+    const nextOptions = targetOptions(action, installTargets, uninstallTargets, installedTargets, openTargets, t);
     setSelectedTargets(defaultTargetSelection(action, nextOptions));
     setTargetAction(action);
   }
@@ -287,7 +290,7 @@ export function ResourcesView({
               busy={busy}
               busyAction={busyAction}
               installTargets={installTargets}
-              installedTargets={installedTargets}
+              uninstallTargets={uninstallTargets}
               openTargets={openTargets}
               selected={selected}
               t={t}
@@ -350,7 +353,7 @@ function ResourceActionPanel({
   busy,
   busyAction,
   installTargets,
-  installedTargets,
+  uninstallTargets,
   openTargets,
   selected,
   t,
@@ -361,7 +364,7 @@ function ResourceActionPanel({
   busy: boolean;
   busyAction: string;
   installTargets: ResourceTargetState[];
-  installedTargets: ResourceTargetState[];
+  uninstallTargets: ResourceTargetState[];
   openTargets: ResourceTargetState[];
   selected: ResourceInventoryItem;
   t: TFunction;
@@ -380,7 +383,7 @@ function ResourceActionPanel({
           <Download size={16} />
           {busyAction === "install" ? t("common.working") : t("resources.downloadRegister")}
         </button>
-        <button className="secondary" onClick={() => onOpenTargetModal("uninstall")} disabled={busy || installedTargets.length === 0}>
+        <button className="secondary" onClick={() => onOpenTargetModal("uninstall")} disabled={busy || uninstallTargets.length === 0}>
           <Unplug size={16} />
           {busyAction === "uninstall" ? t("common.working") : t("resources.uninstallLocal")}
         </button>
@@ -424,6 +427,7 @@ function ResourceDetailPanel({ selected, t }: { selected: ResourceInventoryItem;
         rows={[
           [t("resources.source"), selected.entry.source],
           [t("resources.lifecycle"), lifecycleLabel(selected.entry.lifecycle || "active", t)],
+          [t("resources.platforms"), selected.entry.platforms?.length ? selected.entry.platforms.join(", ") : t("resources.allEnabledPlatforms")],
           [t("resources.repo"), selected.entry.repo || "-"],
           [t("resources.path"), selected.entry.path || "-"],
           [t("resources.ref"), selected.entry.ref || "-"],
@@ -452,12 +456,13 @@ function ResourceDetailPanel({ selected, t }: { selected: ResourceInventoryItem;
 function targetOptions(
   action: TargetAction,
   installTargets: ResourceTargetState[],
+  uninstallTargets: ResourceTargetState[],
   installedTargets: ResourceTargetState[],
   openTargets: ResourceTargetState[],
   t: TFunction,
 ): TargetOption[] {
   if (action === "install") return installTargets.map((item) => targetOption(item, t));
-  if (action === "uninstall") return installedTargets.map((item) => targetOption(item, t));
+  if (action === "uninstall") return uninstallTargets.map((item) => targetOption(item, t));
   if (action === "open") return openTargets.map((item) => targetOption(item, t));
   if (installedTargets.length) return installedTargets.map((item) => targetOption(item, t));
   return [

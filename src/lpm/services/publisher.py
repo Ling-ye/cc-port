@@ -68,6 +68,7 @@ def publish_local_skill(
     mcp_config: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     category: str = "",
+    platforms: list[str] | None = None,
     version: str = "",
     author: str = "",
     item_license: str = "",
@@ -141,6 +142,7 @@ def publish_local_skill(
         private=repo.private,
         tags=tags or [],
         category=category,
+        platforms=platforms or [],
         version=version,
         author=author or config.github.owner,
         license=item_license,
@@ -263,6 +265,7 @@ def add_external_skill(
     token: str | None = None,
     tags: list[str] | None = None,
     category: str = "",
+    platforms: list[str] | None = None,
 ) -> RegistryItem:
     """Register a third-party resource in the registry.
 
@@ -291,6 +294,7 @@ def add_external_skill(
         mcp_config=sanitize_mcp_config_for_storage(mcp_config),
         tags=tags or [],
         category=category,
+        platforms=platforms or [],
     )
     registry = load_registry(registry_path)
     registry.upsert(entry)

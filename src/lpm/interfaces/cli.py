@@ -613,6 +613,12 @@ def cmd_publish(
     ),
     tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for discovery (repeatable)."),
     category: str = typer.Option("", "--category", "-c", help="Category, e.g. 'software-dev'."),
+    platforms: list[str] = typer.Option(
+        [],
+        "--platform",
+        "-p",
+        help="Restrict installation to these platforms (repeatable).",
+    ),
     version: str = typer.Option("", "--version", "-v", help="Semantic version, e.g. '1.0.0'."),
     author: str = typer.Option("", "--author", help="Author name."),
     item_license: str = typer.Option("", "--license", help="SPDX license id, e.g. 'MIT'."),
@@ -658,6 +664,7 @@ def cmd_publish(
             mcp_config=mcp_config,
             tags=tags or None,
             category=category,
+            platforms=platforms or None,
             version=version,
             author=author,
             item_license=item_license,
@@ -699,6 +706,12 @@ def cmd_add(
     ),
     tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for discovery (repeatable)."),
     category: str = typer.Option("", "--category", "-c", help="Category, e.g. 'productivity'."),
+    platforms: list[str] = typer.Option(
+        [],
+        "--platform",
+        "-p",
+        help="Restrict installation to these platforms (repeatable).",
+    ),
 ) -> None:
     """Register an external (third-party) resource in the registry."""
     cfg = _load()
@@ -727,6 +740,7 @@ def cmd_add(
             token=cfg.github.token or None,
             tags=tags or None,
             category=category,
+            platforms=platforms or None,
         )
     except publisher.RepoUnreachableError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -743,6 +757,12 @@ def cmd_collect(
         help="Override detected type: skill, mcp, rule, prompt, plugin.",
     ),
     name: str | None = typer.Option(None, "--name", help="Override the resource name."),
+    platforms: list[str] = typer.Option(
+        [],
+        "--platform",
+        "-p",
+        help="Restrict installation to these platforms (repeatable).",
+    ),
     push: bool = typer.Option(False, "--push", help="Push private resource repo without asking."),
     no_push: bool = typer.Option(False, "--no-push", help="Do not push private resource repo."),
 ) -> None:
@@ -763,6 +783,7 @@ def cmd_collect(
             skip_verify=False,
             token=cfg.github.token or None,
             tags=detected.tags,
+            platforms=platforms or None,
         )
     except (ValueError, ResourceDetectionError, publisher.RepoUnreachableError) as exc:
         console.print(f"[red]Collect failed:[/red] {exc}")
@@ -784,6 +805,12 @@ def cmd_upload(
         help="Override detected type: skill, mcp, rule, prompt, plugin.",
     ),
     name: str | None = typer.Option(None, "--name", help="Override the resource name."),
+    platforms: list[str] = typer.Option(
+        [],
+        "--platform",
+        "-p",
+        help="Restrict installation to these platforms (repeatable).",
+    ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing local resource."),
     push: bool = typer.Option(False, "--push", help="Push private resource repo without asking."),
     no_push: bool = typer.Option(False, "--no-push", help="Do not push private resource repo."),
@@ -796,6 +823,7 @@ def cmd_upload(
             path,
             kind=kind,
             name=name,
+            platforms=platforms or None,
             overwrite=force,
         )
     except Exception as exc:
@@ -816,6 +844,12 @@ def cmd_import_local(
     kind: str = typer.Option("skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."),
     category: str = typer.Option("", "--category", "-c", help="Stored under <kind>/<category>/<name>."),
     tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for discovery (repeatable)."),
+    platforms: list[str] = typer.Option(
+        [],
+        "--platform",
+        "-p",
+        help="Restrict installation to these platforms (repeatable).",
+    ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing local resource."),
     mcp_config_json: str | None = typer.Option(None, "--mcp-config", help="MCP server config JSON."),
 ) -> None:
@@ -840,6 +874,7 @@ def cmd_import_local(
             description=description,
             category=category,
             tags=tags or None,
+            platforms=platforms or None,
             overwrite=force,
             mcp_config=mcp_config,
         )
@@ -853,7 +888,11 @@ def cmd_import_local(
 
 @app.command("export-plugin")
 def cmd_export_plugin(
-    name: str | None = typer.Option(None, "--name", help="Plugin name (defaults to repo folder name)."),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        help="Plugin name (defaults to a kebab-case form of the repo folder name).",
+    ),
 ) -> None:
     """Generate .claude-plugin/plugin.json for local skills in this repository."""
     path = export_claude_plugin(plugin_name=name)

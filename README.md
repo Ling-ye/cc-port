@@ -12,6 +12,7 @@ LPM 用来管理和同步 AI coding 相关资源：
 - 从 GitHub 收集第三方资源，只记录引用，不复制无关内容。
 - 上传本地资源到你的私有资源仓库。
 - 维护私有 `registry.yaml`，用于跨设备同步资源。
+- 为单个资源配置可选的 `platforms` 白名单，避免平台专用资源被安装到不兼容的 AI 工具。
 - 自动发现本机 Codex、Claude Code、Cursor、Windsurf、opencode、Gemini CLI 等 AI 工具的非敏配置资源。
 - 采集 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置，并把 MCP `env` 字面值替换为 `${SECRET_NAME}` 占位符。
 - 把资源同步安装到 Cursor、Claude Code 等配置的平台目录。
@@ -411,6 +412,7 @@ resources/
 安全边界：
 
 - API key、token、cookie、OAuth session、账号缓存不应进入 `registry.yaml`、`profiles/default.yaml`、`resources/` 或 zip 快照。
+- 上传和复制资源时默认排除 `.env`、`.env.local` 等真实环境文件；`.env.example`、`.env.sample`、`.env.template` 可作为无密钥模板保留。
 - MCP `env` 的非空字面值保存为 `${ENV_NAME}` 占位符，缺失项写入 `secrets.example.yaml`。
 - push、pull、snapshot import 的 apply 前会扫描选定数据源中的疑似 token-like 内容；命中时阻断写入或上传。
 - zip 快照导入拒绝绝对路径、`..`、`.git/` 和 Windows drive-like 路径。
@@ -430,12 +432,27 @@ lpm env discover
 lpm env capture
 lpm env capture --push
 lpm env deploy --dry-run
-lpm collect <github-url>
-lpm upload <local-path>
+lpm collect <github-url-or-tree-url> [--platform cursor]
+lpm upload <local-path> [--platform cursor]
+lpm import-local <local-path> [--platform cursor]
+lpm export-plugin
 lpm list
 lpm sync
 lpm doctor
 ```
+
+`--platform` 可重复使用。资源未设置平台白名单时沿用旧行为，安装到所有已启用且支持该资源类型的平台；设置后只安装到列出的平台：
+
+```yaml
+- name: create-hook
+  kind: skill
+  source: local
+  path: skills/create-hook
+  platforms:
+  - cursor
+```
+
+`lpm export-plugin` 会从兼容 `claude-code` 的 active local skills 重新生成 `.claude-plugin/plugin.json`，并把默认插件名规范化为 kebab-case。
 
 Desktop API smoke test：
 

@@ -105,7 +105,7 @@ def load_registry(path: Path | None = None) -> Registry:
 # Fields to omit from YAML output when empty/None
 _OMIT_WHEN_EMPTY: set[str] = {
     "mcp_config", "last_checked", "reachable", "private",
-    "version", "author", "tags", "category", "license", "path",
+    "version", "author", "tags", "category", "license", "path", "platforms",
     "removed_at", "removed_reason", "removed_effect",
 }
 

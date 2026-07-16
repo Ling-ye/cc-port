@@ -442,7 +442,7 @@ def _target_states(entry: RegistryItem, config: Config) -> list[ResourceTargetSt
             ResourceTargetState(
                 platform=platform.name,
                 path=target,
-                supported=True,
+                supported=entry.supports_platform(platform.name),
                 exists=target.exists(),
                 installed=_target_installed(entry, platform, target),
             )
@@ -465,7 +465,11 @@ def _platform_content_roots(
     require_exists: bool,
 ) -> list[Path]:
     platform = config.platforms.get(platform_filter)
-    if platform is None or not platform.enabled:
+    if (
+        platform is None
+        or not platform.enabled
+        or not entry.supports_platform(platform.name)
+    ):
         return []
     target = platform.resolve_install_path(entry.kind, entry.install_target_name())
     if target is None:

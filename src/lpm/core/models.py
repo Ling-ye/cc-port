@@ -55,6 +55,10 @@ class RegistryItem(BaseModel):
     tags: list[str] = Field(default_factory=list, description="Search tags, e.g. ['python', 'testing'].")
     category: str = Field(default="", description="Category, e.g. 'software-dev', 'productivity'.")
     license: str = Field(default="", description="SPDX license identifier, e.g. 'MIT'.")
+    platforms: list[str] = Field(
+        default_factory=list,
+        description="Optional platform allowlist. Empty means every enabled platform.",
+    )
     private: bool | None = Field(
         default=None,
         description="Cached GitHub repo visibility. True=private, False=public.",
@@ -119,6 +123,20 @@ class RegistryItem(BaseModel):
             raise ValueError("subdir must not contain '..' segments.")
         return v
 
+    @field_validator("platforms")
+    @classmethod
+    def _validate_platforms(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            name = str(value).strip()
+            if not name:
+                raise ValueError("platforms must not contain empty names.")
+            if name not in seen:
+                normalized.append(name)
+                seen.add(name)
+        return normalized
+
     @model_validator(mode="after")
     def _validate_mcp_config(self) -> RegistryItem:
         if self.source == "external" and not self.repo:
@@ -134,6 +152,10 @@ class RegistryItem(BaseModel):
 
     def install_target_name(self) -> str:
         return self.install_dir or self.name
+
+    def supports_platform(self, platform_name: str) -> bool:
+        """Return whether this resource may be installed on *platform_name*."""
+        return not self.platforms or platform_name in self.platforms
 
 
 # Backward-compatible alias
