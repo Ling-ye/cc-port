@@ -13,7 +13,7 @@ from .config import default_state_dir
 from .models import RegistryItem
 
 MANAGED_MARKER = ".lpm-managed.json"
-MCP_OWNERSHIP_VERSION = 1
+MCP_OWNERSHIP_VERSION = 2
 
 
 def managed_marker_path(target: Path) -> Path:
@@ -31,13 +31,43 @@ def read_managed_marker(target: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def is_lpm_managed(target: Path, *, resource_name: str | None = None) -> bool:
+def managed_resource_key(target: Path) -> str:
+    marker = read_managed_marker(target)
+    if not marker or marker.get("managed_by") != "lpm":
+        return ""
+    stored_key = str(marker.get("resource_key") or "")
+    if stored_key:
+        return stored_key
+    name = str(marker.get("resource") or "")
+    kind = str(marker.get("kind") or "")
+    return f"{kind}:{name}" if kind and name else ""
+
+
+def is_lpm_managed(
+    target: Path,
+    *,
+    resource_name: str | None = None,
+    resource_kind: str | None = None,
+    resource_key: str | None = None,
+) -> bool:
     if not target.is_dir():
         return False
     marker = read_managed_marker(target)
     if not marker or marker.get("managed_by") != "lpm":
         return False
     stored_name = str(marker.get("resource") or "")
+    stored_kind = str(marker.get("kind") or "")
+    stored_key = str(marker.get("resource_key") or "")
+    expected_key = resource_key or (
+        f"{resource_kind}:{resource_name}"
+        if resource_kind and resource_name
+        else ""
+    )
+    if expected_key:
+        if stored_key:
+            return stored_key == expected_key
+        expected_kind, _, expected_name = expected_key.partition(":")
+        return stored_name == expected_name and (not stored_kind or stored_kind == expected_kind)
     return not resource_name or not stored_name or stored_name == resource_name
 
 
@@ -55,6 +85,7 @@ def write_managed_marker(
         "managed_by": "lpm",
         "resource": entry.name,
         "kind": entry.kind,
+        "resource_key": entry.resource_key,
         "platform": platform,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -69,11 +100,27 @@ def mcp_ownership_path() -> Path:
     return default_state_dir() / "ownership" / "mcp.json"
 
 
+def managed_mcp_resource_key(target: Path, server_name: str) -> str:
+    state = _read_mcp_ownership()
+    servers = state["targets"].get(_target_key(target), {})
+    record = servers.get(server_name)
+    if not isinstance(record, dict):
+        return ""
+    stored_key = str(record.get("resource_key") or "")
+    if stored_key:
+        return stored_key
+    name = str(record.get("resource") or "")
+    kind = str(record.get("kind") or "mcp")
+    return f"{kind}:{name}" if name else ""
+
+
 def is_lpm_managed_mcp(
     target: Path,
     server_name: str,
     *,
     resource_name: str | None = None,
+    resource_kind: str | None = None,
+    resource_key: str | None = None,
 ) -> bool:
     state = _read_mcp_ownership()
     servers = state["targets"].get(_target_key(target), {})
@@ -81,6 +128,18 @@ def is_lpm_managed_mcp(
     if not isinstance(record, dict):
         return False
     stored_name = str(record.get("resource") or "")
+    stored_kind = str(record.get("kind") or "")
+    stored_key = str(record.get("resource_key") or "")
+    expected_key = resource_key or (
+        f"{resource_kind}:{resource_name}"
+        if resource_kind and resource_name
+        else ""
+    )
+    if expected_key:
+        if stored_key:
+            return stored_key == expected_key
+        expected_kind, _, expected_name = expected_key.partition(":")
+        return stored_name == expected_name and (not stored_kind or stored_kind == expected_kind)
     return not resource_name or not stored_name or stored_name == resource_name
 
 
@@ -90,11 +149,15 @@ def mark_lpm_managed_mcp(
     *,
     resource_name: str,
     platform: str,
+    resource_kind: str = "mcp",
+    resource_key: str | None = None,
 ) -> Path:
     state = _read_mcp_ownership()
     servers = state["targets"].setdefault(_target_key(target), {})
     servers[server_name] = {
         "resource": resource_name,
+        "kind": resource_kind,
+        "resource_key": resource_key or f"{resource_kind}:{resource_name}",
         "platform": platform,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }

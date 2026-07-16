@@ -663,17 +663,17 @@ def _build_env_diff_plan(
     local_registry = load_registry(local_root / "registry.yaml")
     incoming_registry = load_registry(incoming_root / "registry.yaml")
     items: list[EnvDiffItem] = []
-    local_items = {item.name: item for item in local_registry.items}
-    incoming_items = {item.name: item for item in incoming_registry.items}
-    for name in sorted(set(local_items) | set(incoming_items)):
+    local_items = {item.resource_key: item for item in local_registry.items}
+    incoming_items = {item.resource_key: item for item in incoming_registry.items}
+    for resource_key in sorted(set(local_items) | set(incoming_items)):
         items.append(
             _resource_diff_item(
-                name,
+                resource_key,
                 operation=operation,
                 local_root=local_root,
                 incoming_root=incoming_root,
-                local_entry=local_items.get(name),
-                incoming_entry=incoming_items.get(name),
+                local_entry=local_items.get(resource_key),
+                incoming_entry=incoming_items.get(resource_key),
             )
         )
     items.append(
@@ -712,7 +712,7 @@ def _build_env_diff_plan(
 
 
 def _resource_diff_item(
-    name: str,
+    resource_key: str,
     *,
     operation: str,
     local_root: Path,
@@ -733,16 +733,16 @@ def _resource_diff_item(
     local_path = _entry_local_path(local_root, local_entry)
     incoming_path = _entry_local_path(incoming_root, incoming_entry)
     return EnvDiffItem(
-        id=f"resource:{name}",
+        id=f"resource:{resource_key}",
         group="resource",
-        name=name,
+        name=entry.name if entry is not None else resource_key,
         kind=entry.kind if entry is not None else "resource",
         status=status,
         local_path=local_path,
         incoming_path=incoming_path,
         default_choice=_default_choice(operation),
         preview=_resource_diff_preview(
-            name,
+            entry.name if entry is not None else resource_key,
             local_root=local_root,
             incoming_root=incoming_root,
             local_entry=local_entry,
@@ -965,8 +965,11 @@ def _raise_if_secret_findings(plan: EnvDiffPlan) -> None:
 
 def _apply_env_diff_plan(plan: EnvDiffPlan, choices: dict[str, str]) -> None:
     local_registry = load_registry(plan.local_root / "registry.yaml")
-    local_items = {item.name: item for item in local_registry.items}
-    incoming_items = {item.name: item for item in load_registry(plan.incoming_root / "registry.yaml").items}
+    local_items = {item.resource_key: item for item in local_registry.items}
+    incoming_items = {
+        item.resource_key: item
+        for item in load_registry(plan.incoming_root / "registry.yaml").items
+    }
     for item in plan.items:
         choice = choices.get(item.id, item.default_choice)
         if item.group == "resource":
@@ -994,15 +997,16 @@ def _apply_resource_choice(
     local_items: dict[str, RegistryItem],
     incoming_items: dict[str, RegistryItem],
 ) -> None:
-    name = item.name
-    local_entry = local_items.get(name)
-    incoming_entry = incoming_items.get(name)
+    resource_key = item.id.removeprefix("resource:")
+    local_entry = local_items.get(resource_key)
+    incoming_entry = incoming_items.get(resource_key)
     selected_entry = local_entry if choice == "local" else incoming_entry
     selected_root = local_root if choice == "local" else incoming_root
     if selected_entry is None:
         if local_entry and local_entry.path:
             _remove_path_if_exists(local_root / local_entry.path)
-        registry.remove(name)
+        if local_entry is not None:
+            registry.remove(local_entry.name, local_entry.kind)
         return
 
     if local_entry and local_entry.path and local_entry.path != selected_entry.path:
@@ -1256,15 +1260,23 @@ def _plan_entry(
     for platform in platforms:
         if not entry.supports_platform(platform.name):
             continue
-        target = platform.resolve_install_path(entry.kind, entry.install_target_name())
+        target = platform.resolve_install_path(
+            entry.kind,
+            entry.install_target_name(platform.name),
+        )
         if target is None:
             continue
         action = "create"
         reason = ""
         if entry.kind == "mcp":
-            action, reason = _mcp_target_action(target, entry, force=force)
+            action, reason = _mcp_target_action(
+                target,
+                entry,
+                platform=platform.name,
+                force=force,
+            )
         elif target.exists():
-            if is_lpm_managed(target, resource_name=entry.name) or force:
+            if is_lpm_managed(target, resource_key=entry.resource_key) or force:
                 source = _deploy_source_path(
                     entry,
                     resource_repo_root=resource_repo_root,
@@ -1305,22 +1317,29 @@ def _plan_entry(
     return items
 
 
-def _mcp_target_action(target: Path, entry: RegistryItem, *, force: bool) -> tuple[str, str]:
+def _mcp_target_action(
+    target: Path,
+    entry: RegistryItem,
+    *,
+    platform: str = "",
+    force: bool,
+) -> tuple[str, str]:
     if not target.exists():
         return "create", ""
     try:
         servers = list_mcp_servers(target)
     except Exception as exc:  # noqa: BLE001 - invalid target config is a deploy conflict
         return "conflict", f"Cannot read MCP config: {exc}"
-    if entry.name not in servers:
+    server_name = entry.install_target_name(platform)
+    if server_name not in servers:
         return "update", ""
     if is_lpm_managed_mcp(
         target,
-        entry.name,
-        resource_name=entry.name,
+        server_name,
+        resource_key=entry.resource_key,
     ):
         expected = sanitize_mcp_config_for_storage(entry.mcp_config or {})
-        if servers.get(entry.name) == expected:
+        if servers.get(server_name) == expected:
             return "skip", "MCP server already matches the managed configuration."
         return "update", ""
     return ("update", "") if force else ("conflict", "MCP server already exists in target config.")
@@ -1345,7 +1364,7 @@ def _deploy_item_paths(
     registry: Registry,
 ) -> list[Path]:
     paths = [item.target_path]
-    entry = registry.get(item.name)
+    entry = registry.get(item.name, item.kind)
     if entry is None:
         return paths
     if entry.kind == "mcp":
@@ -1363,12 +1382,14 @@ def _verify_deploy_item(
     config: Config,
     registry: Registry,
 ) -> None:
-    entry = registry.get(item.name)
+    entry = registry.get(item.name, item.kind)
     if entry is None:
         raise RuntimeError(f"Registry entry disappeared during deploy: {item.name}")
     if entry.kind == "mcp":
         expected = sanitize_mcp_config_for_storage(entry.mcp_config or {})
-        actual = list_mcp_servers(item.target_path).get(entry.name)
+        actual = list_mcp_servers(item.target_path).get(
+            entry.install_target_name(item.platform)
+        )
         if actual != expected:
             raise RuntimeError(
                 f"Deployment verification failed for {item.name} on {item.platform}"
@@ -1388,7 +1409,7 @@ def _write_managed_markers(items: list[DeployPlanItem], registry: Registry) -> N
     for item in items:
         if item.action not in {"create", "update"} or item.kind == "mcp":
             continue
-        entry = registry.get(item.name)
+        entry = registry.get(item.name, item.kind)
         if entry is None:
             continue
         target = item.target_path

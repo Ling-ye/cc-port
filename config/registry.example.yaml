@@ -1,4 +1,4 @@
-version: 5
+version: 6
 items:
   - name: example-external-skill
     kind: skill
@@ -21,4 +21,6 @@ items:
       - local
     platforms:
       - cursor
+    platform_install_dirs:
+      cursor: example-local-skill
     lifecycle: active

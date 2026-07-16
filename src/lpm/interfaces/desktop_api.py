@@ -45,13 +45,18 @@ from ..core.config import (
     load_raw_config,
     write_config,
 )
-from ..core.models import RegistryItem
+from ..core.models import ItemKind, RegistryItem
 from ..core.platforms import PLATFORM_PRESETS, PlatformProfile, PlatformsConfig, build_platform
 from ..core.registry import find_registry_path, load_registry
 from ..core.resource_detection import detect_local_resource_type, detect_remote_resource
 from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubAuthError, GithubClient
 from ..services import publisher
+from ..services.asset_sync import (
+    apply_asset_action_plan,
+    build_asset_action_plan,
+    build_asset_inventory,
+)
 from ..services.doctor import build_doctor_checks
 from ..services.env_manager import (
     apply_env_import,
@@ -120,6 +125,23 @@ from ..services.state_retention import build_state_retention_plan, prune_state
 
 JsonDict = dict[str, Any]
 Handler = Callable[[JsonDict], Any]
+ITEM_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
+DEPRECATED_ACTIONS = {
+    "resource_commit_plan",
+    "resource_commit_push",
+    "resource_sync_status",
+    "resource_sync_plan",
+    "resource_sync_resolve",
+    "resource_sync_apply",
+    "resource_sync_cancel",
+    "resource_sync_push",
+    "resource_sync_stale",
+    "resource_sync_cleanup",
+}
+DEPRECATED_SYNC_MESSAGE = (
+    "Deprecated: use asset_inventory, asset_action_plan, and asset_action_apply. "
+    "The Git workspace sync API will be removed in the next release."
+)
 
 
 def run_action(action: str, payload: JsonDict | None = None) -> JsonDict:
@@ -133,7 +155,11 @@ def run_action(action: str, payload: JsonDict | None = None) -> JsonDict:
         return _error("unknown_action", f"Unknown UI API action: {action}")
 
     try:
-        return {"ok": True, "data": _to_jsonable(handler(data))}
+        result = {"ok": True, "data": _to_jsonable(handler(data))}
+        if action in DEPRECATED_ACTIONS:
+            result["deprecated"] = True
+            result["warnings"] = [DEPRECATED_SYNC_MESSAGE]
+        return result
     except Exception as exc:  # noqa: BLE001 - desktop needs a structured error boundary
         return _error(exc.__class__.__name__, str(exc))
 
@@ -163,13 +189,16 @@ def _list_items(payload: JsonDict) -> JsonDict:
     registry_path = find_registry_path()
     registry = load_registry(registry_path)
     items = [item for item in registry.items if not kind or item.kind == kind]
-    statuses = {s.name: s for s in status_all(config=cfg, registry=registry, registry_path=registry_path)}
+    statuses = {
+        s.resource_key: s
+        for s in status_all(config=cfg, registry=registry, registry_path=registry_path)
+    }
     return {
         "registry_path": str(registry_path),
         "items": [
             {
                 **item.model_dump(mode="json"),
-                "status": _to_jsonable(statuses.get(item.name)),
+                "status": _to_jsonable(statuses.get(item.resource_key)),
             }
             for item in items
         ],
@@ -334,11 +363,41 @@ def _resource_inventory(payload: JsonDict) -> Any:
     )
 
 
+def _asset_inventory(payload: JsonDict) -> Any:
+    return build_asset_inventory(
+        config=load_config(),
+        scan_local=bool(payload.get("scan_local", False)),
+        refresh_remote=bool(payload.get("refresh_remote", True)),
+    )
+
+
+def _asset_action_plan(payload: JsonDict) -> Any:
+    return build_asset_action_plan(
+        _required_str(payload, "action"),
+        kind=_required_kind(payload),
+        name=_required_str(payload, "name"),
+        platform=_required_str(payload, "platform"),
+        local_instance_id=_optional_str(payload.get("local_instance_id")) or "",
+        new_name=_optional_str(payload.get("new_name")) or "",
+        new_install_name=_optional_str(payload.get("new_install_name")) or "",
+        overwrite_unmanaged=bool(payload.get("overwrite_unmanaged", False)),
+        config=load_config(),
+    )
+
+
+def _asset_action_apply(payload: JsonDict) -> Any:
+    return apply_asset_action_plan(
+        _required_str(payload, "operation_id"),
+        config=load_config(),
+    )
+
+
 def _resource_install(payload: JsonDict) -> Any:
     return install_resource(
         _required_str(payload, "name"),
         config=load_config(),
         platform_filter=_optional_str(payload.get("platform")),
+        kind=_optional_str(payload.get("kind")),
     )
 
 
@@ -347,6 +406,7 @@ def _resource_install_plan(payload: JsonDict) -> Any:
         _required_str(payload, "name"),
         config=load_config(),
         platform_filter=_optional_str(payload.get("platform")),
+        kind=_optional_str(payload.get("kind")),
     )
 
 
@@ -355,6 +415,7 @@ def _resource_uninstall(payload: JsonDict) -> Any:
         _required_str(payload, "name"),
         config=load_config(),
         platform_filter=_optional_str(payload.get("platform")),
+        kind=_optional_str(payload.get("kind")),
     )
 
 
@@ -363,6 +424,7 @@ def _resource_preview(payload: JsonDict) -> Any:
         _required_str(payload, "name"),
         config=load_config(),
         platform_filter=_optional_str(payload.get("platform")),
+        kind=_optional_str(payload.get("kind")),
     )
 
 
@@ -371,6 +433,7 @@ def _resource_open_path(payload: JsonDict) -> JsonDict:
         _required_str(payload, "name"),
         config=load_config(),
         platform_filter=_optional_str(payload.get("platform")),
+        kind=_optional_str(payload.get("kind")),
     )
     return {"path": path}
 
@@ -382,6 +445,7 @@ def _resource_delete(payload: JsonDict) -> Any:
         config=cfg,
         confirm_name=_optional_str(payload.get("confirm_name")),
         reason=_optional_str(payload.get("reason")) or "",
+        kind=_optional_str(payload.get("kind")),
     )
     return {
         **asdict(deleted),
@@ -404,14 +468,16 @@ def _check(payload: JsonDict) -> JsonDict:
 
 def _remove(payload: JsonDict) -> JsonDict:
     name = _required_str(payload, "name")
+    kind = _optional_str(payload.get("kind"))
     cfg = load_config()
     registry = load_registry()
-    entry = registry.get(name)
+    entry = registry.get(name, kind)
     uninstalled = False
     if entry is not None and bool(payload.get("uninstall", False)):
         uninstalled = uninstall_one(entry, config=cfg)
     removed = delete_resource(
         name,
+        kind=kind,
         config=cfg,
         confirm_name=_optional_str(payload.get("confirm_name")),
     )
@@ -1358,6 +1424,13 @@ def _optional_non_negative_int(value: Any) -> int | None:
     return result
 
 
+def _required_kind(payload: JsonDict) -> ItemKind:
+    kind = _required_str(payload, "kind")
+    if kind not in ITEM_KINDS:
+        raise ValueError(f"Unsupported resource kind: {kind}")
+    return kind  # type: ignore[return-value]
+
+
 def _discovery_selections(value: Any) -> list[JsonDict]:
     if not isinstance(value, list):
         return []
@@ -1387,6 +1460,9 @@ ACTIONS: dict[str, Handler] = {
     "sync_preview": _sync_preview,
     "sync": _sync,
     "resource_inventory": _resource_inventory,
+    "asset_inventory": _asset_inventory,
+    "asset_action_plan": _asset_action_plan,
+    "asset_action_apply": _asset_action_apply,
     "resource_install": _resource_install,
     "resource_install_plan": _resource_install_plan,
     "resource_uninstall": _resource_uninstall,

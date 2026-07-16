@@ -1,151 +1,153 @@
+import {
+  AlertTriangle,
+  Copy,
+  Download,
+  FolderOpen,
+  PencilLine,
+  RefreshCcw,
+  Trash2,
+  Unplug,
+  Upload,
+  X,
+} from "lucide-react";
 import { useMemo, useState } from "react";
-import { AlertTriangle, Download, Eye, EyeOff, FolderOpen, Trash2, Unplug } from "lucide-react";
 import { lpmAction, openPath } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
-import { DescriptionList } from "@/components/DescriptionList";
+import { Banner } from "@/components/Banner";
 import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
 import { Segmented } from "@/components/Segmented";
 import type {
-  PlatformProfile,
-  ResourceDeleteResult,
-  ResourceInventoryItem,
+  AssetAction,
+  AssetActionPlan,
+  AssetActionResult,
+  AssetInventory,
+  AssetPlatformRow,
+  AssetStatus,
   ResourceKind,
-  ResourcePreviewResult,
-  ResourceTargetState,
-  SyncResultItem,
 } from "@/types/lpm";
 
-const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
-const statusFilters = ["all", "available", "installed", "not-installed"] as const;
-type TargetAction = "install" | "uninstall" | "preview" | "open";
-const cachePreviewTarget = "__cache_preview__";
+const kinds: Array<"all" | ResourceKind> = [
+  "all",
+  "skill",
+  "mcp",
+  "rule",
+  "prompt",
+  "plugin",
+];
+const statusFilters: Array<"all" | AssetStatus> = [
+  "all",
+  "remote-only",
+  "local-only",
+  "same",
+  "content-different",
+  "metadata-only",
+  "read-only-reference",
+  "target-conflict",
+  "uncomparable",
+];
+const safeNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+type ActionDialogState = {
+  action: AssetAction;
+  row: AssetPlatformRow;
+  newName: string;
+  installName: string;
+  confirmed: boolean;
+  plan: AssetActionPlan | null;
+  error: string;
+};
 
 type DeleteDialogState = {
-  item: ResourceInventoryItem;
+  row: AssetPlatformRow;
   confirmName: string;
   error: string;
 };
 
 export function ResourcesView({
-  items,
-  platforms,
+  inventory,
   selected,
   t,
   onSelect,
+  onInventory,
   onChanged,
   onError,
 }: {
-  items: ResourceInventoryItem[];
-  platforms: PlatformProfile[];
-  selected?: ResourceInventoryItem;
+  inventory: AssetInventory | null;
+  selected?: AssetPlatformRow;
   t: TFunction;
-  onSelect: (name: string) => void;
+  onSelect: (rowId: string) => void;
+  onInventory: (inventory: AssetInventory) => void;
   onChanged: () => Promise<void> | void;
   onError: (message: string) => void;
 }) {
   const { runTask } = useTaskCenter();
-  const [filter, setFilter] = useState<(typeof kinds)[number]>("all");
-  const [statusFilter, setStatusFilter] = useState<(typeof statusFilters)[number]>("available");
+  const [kindFilter, setKindFilter] = useState<(typeof kinds)[number]>("all");
+  const [statusFilter, setStatusFilter] = useState<(typeof statusFilters)[number]>("all");
   const [busyAction, setBusyAction] = useState("");
-  const [preview, setPreview] = useState<ResourcePreviewResult | null>(null);
-  const [targetAction, setTargetAction] = useState<TargetAction | null>(null);
-  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
+  const [dialog, setDialog] = useState<ActionDialogState | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
 
-  const visible = useMemo(
-    () =>
-      items.filter((item) => {
-        const lifecycle = item.entry.lifecycle || "active";
-        const installed = item.local_state.installed;
-        return (
-          (filter === "all" || item.entry.kind === filter) &&
-          (statusFilter === "all" ||
-            (statusFilter === "available" && lifecycle === "active") ||
-            (statusFilter === "installed" && lifecycle === "active" && installed) ||
-            (statusFilter === "not-installed" && lifecycle === "active" && !installed))
-        );
-      }),
-    [filter, items, statusFilter],
+  const visibleRows = useMemo(
+    () => (inventory?.rows || []).filter((row) => (
+      (kindFilter === "all" || row.kind === kindFilter)
+      && (statusFilter === "all" || row.status === statusFilter)
+    )),
+    [inventory, kindFilter, statusFilter],
   );
-  const activePreview = selected && preview?.name === selected.entry.name ? preview : null;
-  const busy = Boolean(busyAction);
-  const targets = selected?.local_state.targets || [];
-  const installTargets = useMemo(() => targets.filter((item) => item.supported), [targets]);
-  const installedTargets = useMemo(() => installTargets.filter((item) => item.installed), [installTargets]);
-  const uninstallTargets = useMemo(() => targets.filter((item) => item.installed), [targets]);
-  const openTargets = useMemo(() => installTargets.filter((item) => item.exists && item.installed), [installTargets]);
-  const modalOptions = selected && targetAction
-    ? targetOptions(targetAction, installTargets, uninstallTargets, installedTargets, openTargets, t)
-    : [];
-  const modalMulti = targetAction === "install" || targetAction === "uninstall";
-  const canSubmitModal = selectedTargets.length > 0 && !modalOptions.every((item) => item.disabled);
 
-  function openTargetModal(action: TargetAction) {
-    if (!selected) return;
-    if (action === "preview" && activePreview) {
-      setPreview(null);
-      return;
-    }
-    const nextOptions = targetOptions(action, installTargets, uninstallTargets, installedTargets, openTargets, t);
-    setSelectedTargets(defaultTargetSelection(action, nextOptions));
-    setTargetAction(action);
-  }
-
-  async function installSelected(platformsToInstall: string[]) {
-    if (!selected) return;
-    setBusyAction("install");
+  async function scanLocal() {
+    setBusyAction("scan");
     try {
-      await runTask({
-        kind: "resource-install",
-        title: t("resources.downloadRegister"),
-        context: `${selected.entry.name} · ${platformsToInstall.length}`,
-        action: async () => {
-          let result: SyncResultItem | null = null;
-          for (const targetPlatform of platformsToInstall) {
-            result = await lpmAction<SyncResultItem>("resource_install", {
-              name: selected.entry.name,
-              platform: targetPlatform,
-            });
-          }
-          return result;
-        },
-        successMessage: (result) => t("resources.installTargetsDone", {
-          name: result?.name || selected.entry.name,
-          count: platformsToInstall.length,
+      const next = await runTask({
+        kind: "asset-scan-local",
+        title: t("assets.scanLocal"),
+        action: () => lpmAction<AssetInventory>("asset_inventory", {
+          scan_local: true,
+          refresh_remote: true,
         }),
-        retryPolicy: "none",
+        successMessage: t("assets.scanComplete"),
+        retryPolicy: "safe-read",
       });
-      setPreview(null);
-      await onChanged();
+      onInventory(next);
+      if (next.rows.length && !next.rows.some((row) => rowId(row) === rowId(selected))) {
+        onSelect(rowId(next.rows[0]));
+      }
     } catch {
-      await Promise.resolve(onChanged());
+      // The task center owns error reporting.
     } finally {
       setBusyAction("");
     }
   }
 
-  async function uninstallSelected(platformsToUninstall: string[]) {
-    if (!selected) return;
-    setBusyAction("uninstall");
+  function openAction(row: AssetPlatformRow, action: AssetAction) {
+    setDialog({
+      action,
+      row,
+      newName: "",
+      installName: row.install_name,
+      confirmed: false,
+      plan: null,
+      error: "",
+    });
+  }
+
+  async function uninstallLocal(row: AssetPlatformRow) {
+    setBusyAction(`uninstall:${rowId(row)}`);
     try {
       await runTask({
         kind: "resource-uninstall",
-        title: t("resources.uninstallLocal"),
-        context: `${selected.entry.name} · ${platformsToUninstall.length}`,
-        action: async () => {
-          for (const targetPlatform of platformsToUninstall) {
-            await lpmAction("resource_uninstall", { name: selected.entry.name, platform: targetPlatform });
-          }
-        },
-        successMessage: t("resources.uninstallTargetsDone", {
-          name: selected.entry.name,
-          count: platformsToUninstall.length,
+        title: t("assets.uninstall"),
+        context: `${row.resource_key} / ${row.platform}`,
+        action: () => lpmAction("resource_uninstall", {
+          kind: row.kind,
+          name: row.name,
+          platform: row.platform,
         }),
+        successMessage: t("assets.uninstallComplete"),
         retryPolicy: "none",
       });
-      setPreview(null);
       await onChanged();
     } catch {
       await Promise.resolve(onChanged());
@@ -154,85 +156,28 @@ export function ResourcesView({
     }
   }
 
-  async function previewSelected(target: string) {
-    if (!selected) return;
-    setBusyAction("preview");
-    try {
-      const data = await lpmAction<ResourcePreviewResult>("resource_preview", {
-        name: selected.entry.name,
-        platform: target === cachePreviewTarget ? undefined : target,
-      });
-      setPreview(data);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyAction("");
-    }
-  }
-
-  async function openSelectedDirectory(target: string) {
-    if (!selected) return;
-    setBusyAction("open");
-    try {
-      const data = await lpmAction<{ path: string }>("resource_open_path", {
-        name: selected.entry.name,
-        platform: target,
-      });
-      await openPath(data.path);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyAction("");
-    }
-  }
-
-  async function confirmTargetAction() {
-    if (!targetAction || !selectedTargets.length) return;
-    const action = targetAction;
-    const targetsToUse = [...selectedTargets];
-    setTargetAction(null);
-    if (action === "install") {
-      await installSelected(targetsToUse);
-    } else if (action === "uninstall") {
-      await uninstallSelected(targetsToUse);
-    } else if (action === "preview") {
-      await previewSelected(targetsToUse[0]);
-    } else {
-      await openSelectedDirectory(targetsToUse[0]);
-    }
-  }
-
-  function openDeleteDialog() {
-    if (!selected) return;
-    setDeleteDialog({ item: selected, confirmName: "", error: "" });
-  }
-
-  async function confirmDeleteResource() {
+  async function removeResource() {
     if (!deleteDialog) return;
-    const name = deleteDialog.item.entry.name;
-    const remoteDelete = deleteDialog.item.remote_state.can_delete_remote;
-    const confirmName = deleteDialog.confirmName.trim();
-    if (remoteDelete) {
-      if (confirmName !== name) {
-        setDeleteDialog((current) => (current ? { ...current, error: t("resources.remoteDeleteMismatch") } : current));
-        return;
-      }
+    if (deleteDialog.confirmName.trim() !== deleteDialog.row.name) {
+      setDeleteDialog((current) => (
+        current ? { ...current, error: t("assets.nameMismatch") } : current
+      ));
+      return;
     }
-
     setBusyAction("delete");
     try {
       await runTask({
         kind: "resource-delete",
-        title: deleteButtonLabel(deleteDialog.item, t),
-        context: name,
-        action: () => lpmAction<ResourceDeleteResult>("resource_delete", {
-          name,
-          confirm_name: confirmName || undefined,
+        title: t("assets.deleteResource"),
+        context: deleteDialog.row.resource_key,
+        action: () => lpmAction("resource_delete", {
+          kind: deleteDialog.row.kind,
+          name: deleteDialog.row.name,
+          confirm_name: deleteDialog.confirmName.trim(),
         }),
-        successMessage: t("resources.deleteDone", { name }),
+        successMessage: t("assets.deleteComplete"),
         retryPolicy: "none",
       });
-      setPreview(null);
       setDeleteDialog(null);
       await onChanged();
     } catch {
@@ -243,12 +188,38 @@ export function ResourcesView({
   }
 
   return (
-    <section className="split-view resources-workspace">
+    <section className="split-view resources-workspace asset-workspace">
       <div className="panel list-panel">
+        <div className="asset-inventory-head">
+          <div>
+            <strong>{t("assets.title")}</strong>
+            <small>
+              {inventory?.branch || "-"} / {shortCommit(inventory?.remote_commit)}
+            </small>
+          </div>
+          <button
+            className="secondary"
+            type="button"
+            onClick={() => void scanLocal()}
+            disabled={Boolean(busyAction)}
+          >
+            <RefreshCcw size={16} />
+            {busyAction === "scan" ? t("common.working") : t("assets.scanLocal")}
+          </button>
+        </div>
+        {inventory?.remote_warning ? <Banner tone="danger" text={inventory.remote_warning} /> : null}
+        {inventory?.legacy_write_blocker ? (
+          <Banner tone="danger" text={inventory.legacy_write_blocker} />
+        ) : null}
         <div className="resource-filter-stack">
           <div className="resource-filter-group">
             <span>{t("resources.filterKind")}</span>
-            <Segmented value={filter} values={kinds} onChange={setFilter} getLabel={(item) => resourceKindLabel(item, t)} />
+            <Segmented
+              value={kindFilter}
+              values={kinds}
+              onChange={setKindFilter}
+              getLabel={(value) => resourceKindLabel(value, t)}
+            />
           </div>
           <div className="resource-filter-group">
             <span>{t("resources.filterStatus")}</span>
@@ -256,48 +227,51 @@ export function ResourcesView({
               value={statusFilter}
               values={statusFilters}
               onChange={setStatusFilter}
-              getLabel={(item) => statusFilterLabel(item, t)}
+              getLabel={(value) => value === "all" ? t("assets.status.all") : assetStatusLabel(value, t)}
             />
           </div>
         </div>
-        <div className="resource-list">
-          {visible.map((item) => (
+        <div className="resource-list asset-row-list">
+          {visibleRows.map((row) => (
             <button
-              key={item.entry.name}
-              className={selected?.entry.name === item.entry.name ? "resource-row active" : "resource-row"}
-              onClick={() => {
-                onSelect(item.entry.name);
-                setPreview(null);
-              }}
+              key={rowId(row)}
+              className={rowId(selected) === rowId(row) ? "resource-row asset-row active" : "resource-row asset-row"}
+              onClick={() => onSelect(rowId(row))}
             >
-              <KindBadge kind={item.entry.kind} label={resourceKindLabel(item.entry.kind, t)} />
+              <KindBadge kind={row.kind} label={resourceKindLabel(row.kind, t)} />
               <span>
-                <strong>{item.entry.name}</strong>
-                <small>
-                  {item.entry.source} / {item.local_state.installed ? t("status.installed") : t("status.notInstalled")} /{" "}
-                  {lifecycleLabel(item.entry.lifecycle || "active", t)}
-                </small>
+                <strong>{row.name}</strong>
+                <small>{row.platform} / {row.install_name}</small>
+              </span>
+              <span className={`asset-status status-${row.status}`}>
+                {assetStatusLabel(row.status, t)}
               </span>
             </button>
           ))}
+          {!visibleRows.length ? <EmptyState text={t("assets.empty")} /> : null}
         </div>
       </div>
+
       <div className="resource-side-panel">
         {selected ? (
           <>
-            <ResourceActionPanel
-              activePreview={activePreview}
-              busy={busy}
-              busyAction={busyAction}
-              installTargets={installTargets}
-              uninstallTargets={uninstallTargets}
-              openTargets={openTargets}
-              selected={selected}
+            <AssetActionPanel
+              row={selected}
+              busy={Boolean(busyAction)}
               t={t}
-              onDelete={openDeleteDialog}
-              onOpenTargetModal={openTargetModal}
+              onAction={openAction}
+              onDelete={() => setDeleteDialog({
+                row: selected,
+                confirmName: "",
+                error: "",
+              })}
+              onOpen={() => {
+                const path = selected.local_path || selected.target_path;
+                if (path) void openPath(path).catch((error) => onError(String(error)));
+              }}
+              onUninstall={() => void uninstallLocal(selected)}
             />
-            <ResourceDetailPanel selected={selected} t={t} />
+            <AssetDetailPanel row={selected} t={t} />
           </>
         ) : (
           <div className="panel detail-panel resource-detail-panel">
@@ -305,297 +279,368 @@ export function ResourcesView({
           </div>
         )}
       </div>
-      {selected && targetAction ? (
-        <ResourceTargetModal
-          action={targetAction}
-          busy={busy}
-          multi={modalMulti}
-          options={modalOptions}
-          selected={selectedTargets}
+
+      {dialog ? (
+        <AssetActionDialog
+          state={dialog}
           t={t}
-          onCancel={() => setTargetAction(null)}
-          onConfirm={confirmTargetAction}
-          onToggle={(id) => {
-            setSelectedTargets((current) => {
-              if (!modalMulti) return [id];
-              return current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
-            });
+          onCancel={() => setDialog(null)}
+          onChange={(changes) => setDialog((current) => (
+            current ? { ...current, ...changes, plan: null, error: "" } : current
+          ))}
+          onPlan={(plan) => setDialog((current) => (
+            current ? { ...current, plan, error: "" } : current
+          ))}
+          onError={(error) => setDialog((current) => (
+            current ? { ...current, error } : current
+          ))}
+          onApplied={async () => {
+            setDialog(null);
+            await onChanged();
           }}
-          confirmDisabled={!canSubmitModal}
         />
       ) : null}
+
       {deleteDialog ? (
-        <ResourceDeleteModal
-          busy={busyAction === "delete"}
-          state={deleteDialog}
-          t={t}
-          onCancel={() => setDeleteDialog(null)}
-          onConfirm={confirmDeleteResource}
-          onNameChange={(confirmName) => setDeleteDialog((current) => (current ? { ...current, confirmName, error: "" } : current))}
-        />
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal resource-delete-modal" role="dialog" aria-modal="true">
+            <div className="modal-head danger-head">
+              <Trash2 size={20} />
+              <h2>{t("assets.deleteResource")}</h2>
+              <button className="icon-button" type="button" onClick={() => setDeleteDialog(null)}>
+                <X size={17} />
+              </button>
+            </div>
+            <div className="delete-modal-body">
+              <p>{t("assets.deleteWarning", { name: deleteDialog.row.name })}</p>
+              <label className="stack-form">
+                <span>{t("assets.typeName", { name: deleteDialog.row.name })}</span>
+                <input
+                  value={deleteDialog.confirmName}
+                  onChange={(event) => setDeleteDialog((current) => (
+                    current ? { ...current, confirmName: event.target.value, error: "" } : current
+                  ))}
+                />
+              </label>
+              {deleteDialog.error ? <p className="delete-modal-error">{deleteDialog.error}</p> : null}
+            </div>
+            <div className="modal-actions">
+              <button className="secondary" type="button" onClick={() => setDeleteDialog(null)}>
+                {t("common.cancel")}
+              </button>
+              <button
+                className="danger"
+                type="button"
+                onClick={() => void removeResource()}
+                disabled={busyAction === "delete"}
+              >
+                {busyAction === "delete" ? t("common.working") : t("common.confirm")}
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </section>
   );
 }
 
-type TargetOption = {
-  id: string;
-  label: string;
-  path: string;
-  installed: boolean;
-  exists: boolean;
-  disabled?: boolean;
-  note: string;
-};
-
-function ResourceActionPanel({
-  activePreview,
+function AssetActionPanel({
+  row,
   busy,
-  busyAction,
-  installTargets,
-  uninstallTargets,
-  openTargets,
-  selected,
   t,
+  onAction,
   onDelete,
-  onOpenTargetModal,
+  onOpen,
+  onUninstall,
 }: {
-  activePreview: ResourcePreviewResult | null;
+  row: AssetPlatformRow;
   busy: boolean;
-  busyAction: string;
-  installTargets: ResourceTargetState[];
-  uninstallTargets: ResourceTargetState[];
-  openTargets: ResourceTargetState[];
-  selected: ResourceInventoryItem;
   t: TFunction;
+  onAction: (row: AssetPlatformRow, action: AssetAction) => void;
   onDelete: () => void;
-  onOpenTargetModal: (action: TargetAction) => void;
+  onOpen: () => void;
+  onUninstall: () => void;
 }) {
   return (
     <div className="panel resource-action-panel">
-      <div className="resource-actions">
+      <div className="resource-actions asset-actions">
+        {row.available_actions.map((action) => (
+          <button
+            className={action === "download" || action === "upload" ? "primary" : "secondary"}
+            key={action}
+            type="button"
+            onClick={() => onAction(row, action)}
+            disabled={busy}
+          >
+            {assetActionIcon(action)}
+            {assetActionLabel(action, t)}
+          </button>
+        ))}
         <button
-          className="primary"
-          onClick={() => onOpenTargetModal("install")}
-          disabled={busy || !selected.actions.can_install || installTargets.length === 0}
-          title={selected.actions.install_reason}
+          className="secondary"
+          type="button"
+          onClick={onOpen}
+          disabled={busy || !(row.local_path || row.target_path)}
         >
-          <Download size={16} />
-          {busyAction === "install" ? t("common.working") : t("resources.downloadRegister")}
-        </button>
-        <button className="secondary" onClick={() => onOpenTargetModal("uninstall")} disabled={busy || uninstallTargets.length === 0}>
-          <Unplug size={16} />
-          {busyAction === "uninstall" ? t("common.working") : t("resources.uninstallLocal")}
-        </button>
-        <button className="secondary" onClick={() => onOpenTargetModal("preview")} disabled={busy || !selected.actions.can_preview}>
-          {activePreview ? <EyeOff size={16} /> : <Eye size={16} />}
-          {activePreview ? t("resources.hidePreview") : t("resources.previewContent")}
-        </button>
-        <button className="secondary" onClick={() => onOpenTargetModal("open")} disabled={busy || openTargets.length === 0}>
           <FolderOpen size={16} />
-          {t("resources.openDirectory")}
+          {t("assets.open")}
         </button>
-        <button className="danger" onClick={onDelete} disabled={busy || !selected.actions.can_delete_resource} title={selected.actions.delete_reason}>
+        <button
+          className="secondary"
+          type="button"
+          onClick={onUninstall}
+          disabled={busy || !row.local_exists || row.ownership !== "managed" || !row.entry}
+        >
+          <Unplug size={16} />
+          {t("assets.uninstall")}
+        </button>
+        <button
+          className="danger"
+          type="button"
+          onClick={onDelete}
+          disabled={busy || !row.remote_exists || !row.entry}
+        >
           <Trash2 size={16} />
-          {deleteButtonLabel(selected, t)}
+          {t("assets.deleteResource")}
         </button>
       </div>
-      {activePreview ? (
-        <div className="preview-panel resource-preview">
-          <strong>{activePreview.path}</strong>
-          {activePreview.warning ? <p className="discovery-warning">{activePreview.warning}</p> : null}
-          <pre>{activePreview.text}{activePreview.truncated ? "\n..." : ""}</pre>
-        </div>
-      ) : null}
     </div>
   );
 }
 
-function ResourceDetailPanel({ selected, t }: { selected: ResourceInventoryItem; t: TFunction }) {
+function AssetDetailPanel({ row, t }: { row: AssetPlatformRow; t: TFunction }) {
   return (
     <div className="panel detail-panel resource-detail-panel">
       <div className="detail-title">
         <div className="detail-title-main">
-          <KindBadge kind={selected.entry.kind} label={resourceKindLabel(selected.entry.kind, t)} />
-          <h2>{selected.entry.name}</h2>
+          <KindBadge kind={row.kind} label={resourceKindLabel(row.kind, t)} />
+          <h2>{row.name}</h2>
         </div>
-        <span className={selected.entry.lifecycle === "removed" ? "lifecycle-pill removed" : "lifecycle-pill"}>
-          {lifecycleLabel(selected.entry.lifecycle || "active", t)}
+        <span className={`asset-status status-${row.status}`}>
+          {assetStatusLabel(row.status, t)}
         </span>
       </div>
-      <DescriptionList
-        rows={[
-          [t("resources.source"), selected.entry.source],
-          [t("resources.lifecycle"), lifecycleLabel(selected.entry.lifecycle || "active", t)],
-          [t("resources.platforms"), selected.entry.platforms?.length ? selected.entry.platforms.join(", ") : t("resources.allEnabledPlatforms")],
-          [t("resources.repo"), selected.entry.repo || "-"],
-          [t("resources.path"), selected.entry.path || "-"],
-          [t("resources.ref"), selected.entry.ref || "-"],
-          [t("resources.subdir"), selected.entry.subdir || "-"],
-          [t("resources.remoteState"), remoteStateLabel(selected.remote_state.reachable, t)],
-          [t("resources.sourcePath"), selected.local_state.source_path || "-"],
-          [t("resources.sourceState"), selected.local_state.source_exists ? t("resources.sourceExists") : t("resources.sourceMissing")],
-          [t("resources.installPath"), selected.local_state.install_path || "-"],
-          [t("resources.installState"), selected.local_state.installed ? t("status.installed") : t("status.notInstalled")],
-          [t("sync.plannedAction"), selected.sync_preview?.planned_action || "-"],
-          [t("sync.targetPaths"), selected.local_state.target_paths.length ? selected.local_state.target_paths.join(", ") : "-"],
-          [t("resources.removedAt"), selected.entry.removed_at || "-"],
-          [t("resources.removedEffect"), selected.entry.removed_effect || "-"],
-        ]}
-      />
-      <div className="tag-row">
-        {selected.entry.tags?.map((tag) => <span key={tag}>{tag}</span>)}
-      </div>
-      {selected.sync_preview?.warnings.length ? (
-        <p className="discovery-warning">{selected.sync_preview.warnings.join(" ")}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function targetOptions(
-  action: TargetAction,
-  installTargets: ResourceTargetState[],
-  uninstallTargets: ResourceTargetState[],
-  installedTargets: ResourceTargetState[],
-  openTargets: ResourceTargetState[],
-  t: TFunction,
-): TargetOption[] {
-  if (action === "install") return installTargets.map((item) => targetOption(item, t));
-  if (action === "uninstall") return uninstallTargets.map((item) => targetOption(item, t));
-  if (action === "open") return openTargets.map((item) => targetOption(item, t));
-  if (installedTargets.length) return installedTargets.map((item) => targetOption(item, t));
-  return [
-    {
-      id: cachePreviewTarget,
-      label: t("resources.cacheRemotePreview"),
-      path: t("resources.cacheRemotePreviewPath"),
-      installed: false,
-      exists: true,
-      note: t("resources.cacheRemotePreviewNote"),
-    },
-  ];
-}
-
-function targetOption(item: ResourceTargetState, t: TFunction): TargetOption {
-  return {
-    id: item.platform,
-    label: item.platform,
-    path: item.path,
-    installed: item.installed,
-    exists: item.exists,
-    note: item.installed ? t("status.installed") : t("status.notInstalled"),
-  };
-}
-
-function defaultTargetSelection(action: TargetAction, options: TargetOption[]): string[] {
-  const enabled = options.filter((item) => !item.disabled);
-  if (action === "install" || action === "uninstall") return enabled.map((item) => item.id);
-  return enabled[0] ? [enabled[0].id] : [];
-}
-
-function ResourceTargetModal({
-  action,
-  busy,
-  multi,
-  options,
-  selected,
-  t,
-  onCancel,
-  onConfirm,
-  onToggle,
-  confirmDisabled,
-}: {
-  action: TargetAction;
-  busy: boolean;
-  multi: boolean;
-  options: TargetOption[];
-  selected: string[];
-  t: TFunction;
-  onCancel: () => void;
-  onConfirm: () => void;
-  onToggle: (id: string) => void;
-  confirmDisabled: boolean;
-}) {
-  return (
-    <div className="modal-backdrop">
-      <div className="modal resource-target-modal">
-        <div className="modal-head">
-          <FolderOpen size={20} />
-          <h2>{targetModalTitle(action, t)}</h2>
+      <dl className="description-list asset-description-list">
+        <div><dt>{t("assets.resourceKey")}</dt><dd>{row.resource_key}</dd></div>
+        <div><dt>{t("assets.platform")}</dt><dd>{row.platform}</dd></div>
+        <div><dt>{t("assets.installName")}</dt><dd>{row.install_name}</dd></div>
+        <div><dt>{t("assets.path")}</dt><dd>{row.local_path || row.target_path || "-"}</dd></div>
+        <div><dt>{t("assets.ownership")}</dt><dd>{row.ownership}</dd></div>
+        <div><dt>{t("assets.remoteCommit")}</dt><dd>{shortCommit(row.remote_commit)}</dd></div>
+        {row.reference_commit ? (
+          <div><dt>{t("assets.referenceCommit")}</dt><dd>{shortCommit(row.reference_commit)}</dd></div>
+        ) : null}
+        <div>
+          <dt>{t("assets.platformState")}</dt>
+          <dd>
+            {row.configured ? t("assets.configured") : t("assets.detectedOnly")}
+            {" / "}
+            {row.enabled ? t("assets.enabled") : t("assets.disabled")}
+          </dd>
         </div>
-        {options.length ? (
-          <div className="target-list">
-            {options.map((item) => (
-              <label key={item.id} className={item.disabled ? "target-row disabled" : "target-row"}>
-                <input
-                  type={multi ? "checkbox" : "radio"}
-                  checked={selected.includes(item.id)}
-                  disabled={item.disabled || busy}
-                  onChange={() => onToggle(item.id)}
-                  name="resource-target"
-                />
-                <span>
-                  <strong>{item.label}</strong>
-                  <small>{item.path}</small>
-                  <small>{item.note}</small>
-                </span>
-              </label>
-            ))}
-          </div>
+      </dl>
+      <div className="asset-diff-preview">
+        <h3>{t("assets.diffPreview")}</h3>
+        {row.diff_summary.length ? (
+          <ul>{row.diff_summary.map((item) => <li key={item}>{item}</li>)}</ul>
         ) : (
-          <p className="empty compact-empty">{emptyTargetText(action, t)}</p>
+          <p>{t("assets.noDiff")}</p>
         )}
-        <div className="modal-actions">
-          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
-          <button className="primary" type="button" onClick={onConfirm} disabled={busy || confirmDisabled || !options.length}>
-            {targetConfirmLabel(action, t, selected.length)}
-          </button>
-        </div>
+        {row.metadata_differences.length ? (
+          <p>{t("assets.metadataFields")}: {row.metadata_differences.join(", ")}</p>
+        ) : null}
       </div>
+      {row.warnings.map((warning) => (
+        <Banner key={warning} tone="danger" text={warning} />
+      ))}
+      {row.blockers.map((blocker) => (
+        <Banner key={blocker} tone="danger" text={blocker} />
+      ))}
     </div>
   );
 }
 
-function ResourceDeleteModal({
-  busy,
+function AssetActionDialog({
   state,
   t,
   onCancel,
-  onConfirm,
-  onNameChange,
+  onChange,
+  onPlan,
+  onError,
+  onApplied,
 }: {
-  busy: boolean;
-  state: DeleteDialogState;
+  state: ActionDialogState;
   t: TFunction;
   onCancel: () => void;
-  onConfirm: () => void;
-  onNameChange: (value: string) => void;
+  onChange: (changes: Partial<ActionDialogState>) => void;
+  onPlan: (plan: AssetActionPlan) => void;
+  onError: (error: string) => void;
+  onApplied: () => Promise<void>;
 }) {
-  const name = state.item.entry.name;
-  const remoteDelete = state.item.remote_state.can_delete_remote;
-  const confirmDisabled = remoteDelete && state.confirmName.trim() !== name;
+  const { runTask } = useTaskCenter();
+  const [busy, setBusy] = useState(false);
+  const needsName = state.action === "copy-to-local" || state.action === "copy-to-remote";
+  const needsInstallName = state.action === "set-platform-install-name";
+  const needsConfirmation = (
+    (state.action === "download" && state.row.local_exists)
+    || (state.action === "upload" && state.row.remote_exists)
+  );
+  const liveName = needsInstallName ? state.installName : state.newName;
+  const nameInvalid = (needsName || needsInstallName) && !safeNamePattern.test(liveName.trim());
+
+  async function createPlan() {
+    if (nameInvalid) {
+      onError(t("assets.invalidName"));
+      return;
+    }
+    if (needsConfirmation && !state.confirmed) {
+      onError(t("assets.confirmReplacement"));
+      return;
+    }
+    setBusy(true);
+    try {
+      const plan = await runTask({
+        kind: "asset-action-plan",
+        title: t("assets.createPlan"),
+        context: `${state.row.resource_key} / ${state.row.platform}`,
+        action: () => lpmAction<AssetActionPlan>("asset_action_plan", {
+          action: state.action,
+          kind: state.row.kind,
+          name: state.row.name,
+          platform: state.row.platform,
+          local_instance_id: state.row.local_instance_id,
+          new_name: state.newName.trim(),
+          new_install_name: state.installName.trim(),
+          overwrite_unmanaged: (
+            state.action === "download"
+            && state.row.ownership !== "managed"
+            && state.confirmed
+          ),
+        }),
+        successMessage: t("assets.planReady"),
+        retryPolicy: "none",
+      });
+      onPlan(plan);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyPlan() {
+    if (!state.plan || state.plan.blocked) return;
+    setBusy(true);
+    try {
+      await runTask({
+        kind: `asset-${state.action}`,
+        title: assetActionLabel(state.action, t),
+        context: `${state.plan.target_resource_key} / ${state.row.platform}`,
+        action: async () => {
+          const result = await lpmAction<AssetActionResult>("asset_action_apply", {
+            operation_id: state.plan?.operation_id,
+          });
+          if (!["succeeded", "unchanged"].includes(result.status)) {
+            throw new Error(result.message || result.status);
+          }
+          return result;
+        },
+        successMessage: (result) => result.message,
+        retryPolicy: "none",
+      });
+      await onApplied();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <div className="modal-backdrop">
-      <div className="modal resource-delete-modal">
-        <div className="modal-head danger-head">
-          <AlertTriangle size={20} />
-          <h2>{remoteDelete ? t("resources.deleteRemoteTitle") : t("resources.deleteTitle")}</h2>
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal asset-action-modal" role="dialog" aria-modal="true">
+        <div className="modal-head">
+          {assetActionIcon(state.action)}
+          <h2>{assetActionLabel(state.action, t)}</h2>
+          <button className="icon-button" type="button" onClick={onCancel}>
+            <X size={17} />
+          </button>
         </div>
-        <div className="delete-modal-body">
-          <p>{remoteDelete ? t("resources.deleteRemoteDescription", { name }) : t("resources.deleteDescription", { name })}</p>
-          {remoteDelete ? (
-            <label className="confirm-name-field">
-              <span>{t("resources.deleteConfirmNameLabel", { name })}</span>
-              <input value={state.confirmName} onChange={(event) => onNameChange(event.target.value)} disabled={busy} autoFocus />
-            </label>
-          ) : null}
-          {state.error ? <p className="delete-modal-error">{state.error}</p> : null}
-        </div>
+        <p>{state.row.resource_key} / {state.row.platform}</p>
+        {needsName ? (
+          <label className="stack-form">
+            <span>{t("assets.newName")}</span>
+            <input
+              value={state.newName}
+              onChange={(event) => onChange({ newName: event.target.value })}
+              placeholder={t("assets.namePlaceholder")}
+            />
+          </label>
+        ) : null}
+        {needsInstallName ? (
+          <label className="stack-form">
+            <span>{t("assets.installName")}</span>
+            <input
+              value={state.installName}
+              onChange={(event) => onChange({ installName: event.target.value })}
+              placeholder={t("assets.namePlaceholder")}
+            />
+          </label>
+        ) : null}
+        {needsConfirmation ? (
+          <label className="asset-confirm-choice">
+            <input
+              type="checkbox"
+              checked={state.confirmed}
+              onChange={(event) => onChange({ confirmed: event.target.checked })}
+            />
+            <span>
+              {state.action === "download"
+                ? t("assets.confirmLocalReplace")
+                : t("assets.confirmRemoteReplace")}
+            </span>
+          </label>
+        ) : null}
+        {nameInvalid && liveName ? <Banner tone="danger" text={t("assets.invalidName")} /> : null}
+        {state.error ? <Banner tone="danger" text={state.error} /> : null}
+        {state.plan?.warnings.map((warning) => (
+          <div className="asset-plan-message warning" key={warning}>
+            <AlertTriangle size={16} />
+            <span>{warning}</span>
+          </div>
+        ))}
+        {state.plan?.blockers.map((blocker) => (
+          <div className="asset-plan-message blocker" key={blocker}>
+            <AlertTriangle size={16} />
+            <span>{blocker}</span>
+          </div>
+        ))}
+        {state.plan ? (
+          <dl className="description-list asset-plan-summary">
+            <div><dt>{t("assets.operationId")}</dt><dd>{state.plan.operation_id}</dd></div>
+            <div><dt>{t("assets.target")}</dt><dd>{state.plan.target_resource_key}</dd></div>
+            <div><dt>{t("assets.remoteCommit")}</dt><dd>{shortCommit(state.plan.remote_commit)}</dd></div>
+          </dl>
+        ) : null}
         <div className="modal-actions">
-          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
-          <button className="danger solid-danger" type="button" onClick={onConfirm} disabled={busy || confirmDisabled}>
-            {busy ? t("common.working") : t("resources.confirmDeleteResource")}
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>
+            {t("common.cancel")}
+          </button>
+          <button
+            className="secondary"
+            type="button"
+            onClick={() => void createPlan()}
+            disabled={busy || nameInvalid}
+          >
+            {busy ? t("common.working") : t("assets.createPlan")}
+          </button>
+          <button
+            className="primary"
+            type="button"
+            onClick={() => void applyPlan()}
+            disabled={busy || !state.plan || state.plan.blocked}
+          >
+            {t("assets.apply")}
           </button>
         </div>
       </div>
@@ -603,46 +648,25 @@ function ResourceDeleteModal({
   );
 }
 
-function targetModalTitle(action: TargetAction, t: TFunction): string {
-  if (action === "install") return t("resources.selectInstallTargets");
-  if (action === "uninstall") return t("resources.selectUninstallTargets");
-  if (action === "preview") return t("resources.selectPreviewTarget");
-  return t("resources.selectOpenTarget");
+function rowId(row?: AssetPlatformRow): string {
+  return row ? `${row.resource_key}|${row.platform}|${row.local_instance_id}` : "";
 }
 
-function targetConfirmLabel(action: TargetAction, t: TFunction, count: number): string {
-  if (action === "install") return t("resources.confirmInstallTargets", { count });
-  if (action === "uninstall") return t("resources.confirmUninstallTargets", { count });
-  if (action === "preview") return t("resources.confirmPreviewTarget");
-  return t("resources.confirmOpenTarget");
+function shortCommit(commit?: string | null): string {
+  return commit ? commit.slice(0, 12) : "-";
 }
 
-function emptyTargetText(action: TargetAction, t: TFunction): string {
-  if (action === "install") return t("resources.noInstallTargets");
-  if (action === "uninstall") return t("resources.noUninstallTargets");
-  if (action === "preview") return t("resources.noPreviewTargets");
-  return t("resources.noOpenTargets");
+function assetStatusLabel(status: AssetStatus, t: TFunction): string {
+  return t(`assets.status.${status}` as Parameters<TFunction>[0]);
 }
 
-function statusFilterLabel(value: (typeof statusFilters)[number], t: TFunction) {
-  if (value === "available") return t("resources.availableOnly");
-  if (value === "installed") return t("status.installed");
-  if (value === "not-installed") return t("status.notInstalled");
-  return t("kind.all");
+function assetActionLabel(action: AssetAction, t: TFunction): string {
+  return t(`assets.action.${action}` as Parameters<TFunction>[0]);
 }
 
-function lifecycleLabel(value: "active" | "removed", t: TFunction) {
-  return value === "removed" ? t("resources.lifecycleRemoved") : t("resources.lifecycleActive");
-}
-
-function remoteStateLabel(value: boolean | null | undefined, t: TFunction) {
-  if (value === true) return t("resources.reachable");
-  if (value === false) return t("resources.unreachable");
-  return t("resources.unknown");
-}
-
-function deleteButtonLabel(item: ResourceInventoryItem, t: TFunction) {
-  if (item.remote_state.can_delete_remote) return t("resources.deleteRemote");
-  if (item.entry.source === "local") return t("resources.deleteUploaded");
-  return t("resources.removeIndex");
+function assetActionIcon(action: AssetAction) {
+  if (action === "download") return <Download size={16} />;
+  if (action === "upload") return <Upload size={16} />;
+  if (action === "set-platform-install-name") return <PencilLine size={16} />;
+  return <Copy size={16} />;
 }

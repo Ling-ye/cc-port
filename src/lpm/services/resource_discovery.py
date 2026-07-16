@@ -82,7 +82,10 @@ def discover_resources(
 ) -> list[DiscoveredResource]:
     """Discover resource candidates without modifying any source directory."""
     roots = _roots_for_scope(scope=scope, root_path=root_path)
-    registry_names = {item.name for item in load_registry(registry_path).items}
+    registry_keys = {
+        (item.kind, item.name)
+        for item in load_registry(registry_path).items
+    }
     candidates: list[DiscoveredResource] = []
     seen: set[tuple[str, str]] = set()
 
@@ -100,7 +103,7 @@ def discover_resources(
             )
         )
 
-    _mark_conflicts(candidates, registry_names)
+    _mark_conflicts(candidates, registry_keys)
     return sorted(candidates, key=lambda item: (item.tool, item.kind, item.name_hint, str(item.path)))
 
 
@@ -399,19 +402,30 @@ def _add_candidate(
     out.append(candidate)
 
 
-def _mark_conflicts(candidates: list[DiscoveredResource], registry_names: set[str]) -> None:
-    counts: dict[str, int] = {}
+def _mark_conflicts(
+    candidates: list[DiscoveredResource],
+    registry_keys: set[tuple[ItemKind, str]],
+) -> None:
+    counts: dict[tuple[ItemKind, str], int] = {}
     for candidate in candidates:
-        counts[candidate.name_hint] = counts.get(candidate.name_hint, 0) + 1
+        key = (candidate.kind, candidate.name_hint)
+        counts[key] = counts.get(key, 0) + 1
 
     for candidate in candidates:
-        if candidate.name_hint in registry_names:
+        key = (candidate.kind, candidate.name_hint)
+        if key in registry_keys:
             candidate.exists_in_registry = True
-            candidate.warnings.append("Name already exists in registry.")
-        if counts.get(candidate.name_hint, 0) > 1:
-            candidate.warnings.append("Another discovered resource has the same inferred name.")
+            candidate.warnings.append("Kind and name already exist in registry.")
+        if counts.get(key, 0) > 1:
+            candidate.warnings.append(
+                "Another discovered resource has the same inferred kind and name."
+            )
         if candidate.warnings:
-            candidate.status = "conflict" if candidate.name_hint in registry_names or counts[candidate.name_hint] > 1 else "warning"
+            candidate.status = (
+                "conflict"
+                if key in registry_keys or counts[key] > 1
+                else "warning"
+            )
 
 
 def _candidate_id(*, tool: str, source: str, kind: ItemKind, path: Path) -> str:

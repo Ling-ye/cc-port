@@ -583,6 +583,8 @@ def _resolve_registry(worktree: Path, choices: dict[str, str]) -> list[str]:
         else:
             conflict_id = f"resource:{name}"
             choice = choices.get(conflict_id)
+            if choice is None and ":" in name:
+                choice = choices.get(f"resource:{name.split(':', 1)[1]}")
             if choice is None:
                 unresolved.append(conflict_id)
                 continue
@@ -615,11 +617,14 @@ def _registry_item_map(text: str | None) -> dict[str, dict[str, Any]]:
     raw_items = data.get("items", data.get("skills", [])) if isinstance(data, dict) else []
     if not isinstance(raw_items, list):
         return {}
-    return {
-        str(item["name"]): dict(item)
-        for item in raw_items
-        if isinstance(item, dict) and item.get("name")
-    }
+    result: dict[str, dict[str, Any]] = {}
+    for item in raw_items:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        kind = str(item.get("kind") or "skill")
+        name = str(item["name"])
+        result[f"{kind}:{name}"] = dict(item)
+    return result
 
 
 def _registry_resource_paths(worktree: Path) -> dict[str, str]:

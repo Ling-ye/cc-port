@@ -12,7 +12,8 @@ LPM 用来管理和同步 AI coding 相关资源：
 - 从 GitHub 收集第三方资源，只记录引用，不复制无关内容。
 - 上传本地资源到你的私有资源仓库。
 - 维护私有 `registry.yaml`，用于跨设备同步资源。
-- 使用标准 Git ahead/behind/diverged 模型同步多台电脑；分歧历史在临时 worktree 中三方合并，不使用硬重置或强制推送。
+- 按“资产 × 平台”比较远端配置分支最新提交与本地安装，逐行下载、上传、另存副本或设置平台安装别名。
+- Git 隐藏承担远端快照、历史、目标并发检测和普通非强制推送；缺失资产绝不触发隐式删除。
 - 为单个资源配置可选的 `platforms` 白名单，避免平台专用资源被安装到不兼容的 AI 工具。
 - 自动发现本机 Codex、Claude Code、Cursor、Windsurf、opencode、Gemini CLI 等 AI 工具的非敏配置资源。
 - 采集 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置，并把 MCP `env` 字面值替换为 `${SECRET_NAME}` 占位符。
@@ -27,7 +28,7 @@ LPM 用来管理和同步 AI coding 相关资源：
 - 检查 Git、GitHub token、配置文件、私有资源仓库和平台安装状态。
 - 通过 CLI 执行自动化任务。
 - 通过 MCP Server 让 AI coding 工具调用 LPM 能力。
-- 通过桌面 GUI 管理资源、执行版本同步、部署环境、查看操作历史、恢复本地变更和运行健康检查。
+- 通过桌面 GUI 管理资源并执行资产级双向同步、部署环境、查看操作历史、恢复本地变更和运行健康检查。
 - 在桌面 GUI 的任务中心统一查看会话内异步操作的运行、成功和失败状态。
 
 ### 桌面任务反馈
@@ -125,7 +126,10 @@ maintenance/orphans/           # 等待二次确认的孤立备份隔离批次
 maintenance/trash/             # 状态清理失败暂存
 operations/                    # 持久化本地写操作历史
 ownership/mcp.json             # MCP server entry 所有权
-sync/<operation-id>/           # Git 同步计划与临时 worktree
+assets/remotes/                # 隐藏的远端传输缓存
+assets/snapshots/              # 按提交生成的只读远端快照
+asset-plans/<operation-id>/    # 资产级写计划与结果
+sync/<operation-id>/           # 弃用兼容：旧 Git 同步计划与临时 worktree
 ```
 
 更完整的模块边界、同步状态机和后续范围见 [项目架构](docs/architecture.md)；行为规格位于 [docs/specs](docs/specs)。
@@ -388,6 +392,8 @@ lpm doctor
 
 真实 `registry.yaml` 属于用户的私有资源仓库，不属于这个工具仓库。公开仓库默认忽略真实 `registry.yaml`、`skills/`、`rules/`、`prompts/`、`mcp/`、`plugins/` 和 `.claude-plugin/`。
 
+当前 registry 版本为 v6。资源唯一键为 `kind:name`；平台安装名称优先读取 `platform_install_dirs[platform]`，再回退到旧 `install_dir` 和资源名称。v5 文件在读取时无损迁移，旧名称查询只在同名资源唯一时兼容。
+
 
 ## 自动发现与跨电脑部署
 
@@ -404,14 +410,16 @@ LPM 的环境迁移主流程是：`发现 -> 预览 -> 脱敏 -> 保存 -> 同�
 - dry-run 预览部署计划。
 - 部署到当前电脑已启用的平台目录。
 
-桌面端 **版本同步** 页面用于多电脑 Git 同步：
+桌面端 **资源** 页面同时承担资产级双向同步：
 
-- fetch 后显示 `clean`、`ahead`、`behind`、`diverged`、`dirty` 等状态。
-- `dirty` 时先生成资源级提交计划，只显示 skill、prompt、rule、plugin、MCP 和元数据变化。
-- 非管理路径、真实 `.env`、疑似 token/私钥以及待推送提交中的敏感内容会阻断提交或 push。
-- `behind` 使用 fast-forward；`diverged` 在临时 worktree 中生成三方合并计划。
-- `registry.yaml` 冲突按资源名合并，资源内容冲突按整个资源选择“保留本地”或“采用远端”。
-- 用户确认后才把计划应用到正式分支，再执行普通 push；远端抢先更新时拒绝覆盖并要求重新规划。
+- 每一行表示一个 `kind:name × platform × local instance`，显示本地路径、所有权、内容状态、差异摘要、阻断原因和服务端计算的动作。
+- 普通加载检查已配置平台；“扫描本地”进一步包含已配置和已检测平台，并发现未注册资产和额外本地实例。
+- 下载已有目标、上传已有远端资产、另存副本和平台安装别名都先生成单行安全计划，再由用户显式执行。
+- 下载使用路径锁、备份、验证和失败回滚；未管理目标必须显式确认覆盖。
+- 上传以整个资产为边界更新，只安全改写成功派生出的元数据；不提供文件级 merge。
+- 远端提交变化但目标资产未变化时，操作会重放到最新提交；目标新增、删除或改变时返回 `stale-target`。
+- external 和无私库 `path` 的 owned 引用在同步页只读；已有平台内容可以显式另存到私库。
+- 一端缺失只表示可上传或下载；卸载和删除始终使用独立入口。
 
 桌面端 **操作历史** 页面用于本机恢复与维护：
 
@@ -443,7 +451,7 @@ choices 文件格式：
 operation: pull
 source: remote
 items:
-  resource:cursor-skill-demo-skill: incoming
+  resource:skill:cursor-skill-demo-skill: incoming
   meta:profiles/default.yaml: local
 ```
 
@@ -483,6 +491,14 @@ lpm --help
 lpm init
 lpm resource init
 lpm resource status
+lpm asset list
+lpm asset list --scan-local
+lpm asset plan download --kind skill --name demo --platform cursor
+lpm asset plan upload --kind skill --name demo --platform cursor
+lpm asset plan copy-to-local --kind skill --name demo --platform cursor --new-name demo-copy
+lpm asset plan copy-to-remote --kind skill --name demo --platform cursor --new-name demo-copy
+lpm asset plan set-platform-install-name --kind skill --name demo --platform cursor --new-install-name demo-cursor
+lpm asset apply <operation-id>
 lpm resource commit-plan
 lpm resource sync-status --fetch
 lpm resource sync-plan
@@ -517,15 +533,9 @@ lpm sync
 lpm doctor
 ```
 
-Git 分歧冲突选择文件示例：
+`lpm asset list/plan/apply` 支持 `--json`，参数与 Desktop API 一致。新写操作必须传入 `kind`、`name` 和 `platform`；同一平台有多个本地实例时还必须传入 `--local-instance-id`。
 
-```yaml
-items:
-  resource:cursor-skill-demo-skill: incoming
-  file:profiles/default.yaml: local
-```
-
-`lpm resource pull` 会复用安全同步计划；遇到需要人工选择的冲突时会返回 operation id。完成 `sync-resolve` 和 `sync-apply` 后，再运行 `lpm resource push`。
+`lpm resource pull`、`lpm resource push` 和 `lpm resource sync-*` 仅保留一个发布版本处理旧工作区状态，执行时会输出弃用警告。旧工作区处于 dirty、ahead、diverged、wrong-branch 或存在待处理旧计划时，新资产模型允许读取和扫描，但阻断远端写入。
 
 `--platform` 可重复使用。资源未设置平台白名单时沿用旧行为，安装到所有已启用且支持该资源类型的平台；设置后只安装到列出的平台：
 
@@ -545,7 +555,10 @@ Desktop API smoke test：
 ```bash
 lpm-desktop-api platforms {}
 lpm-desktop-api summary {}
+lpm-desktop-api asset_inventory "{\"scan_local\":true,\"refresh_remote\":true}"
 ```
+
+接口迁移、动作参数和兼容期说明见 [资产同步 API / CLI 迁移指南](docs/asset-api-cli-migration.md)。核心状态、比较与并发语义见 [资产级双向同步规格](docs/specs/asset-sync.md)，registry 结构见 [Registry v6 规格](docs/specs/registry-v6.md)。
 
 MCP Server：
 

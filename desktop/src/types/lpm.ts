@@ -12,7 +12,12 @@ export interface RegistryItem {
   subdir: string;
   ref: string;
   install_dir: string;
+  platform_install_dirs?: Record<string, string>;
   description: string;
+  version?: string;
+  author?: string;
+  license?: string;
+  mcp_config?: Record<string, unknown> | null;
   tags: string[];
   category: string;
   platforms?: string[];
@@ -187,6 +192,113 @@ export interface EditableConfig {
     max_backup_mb: number;
   };
   platforms: PlatformProfile[];
+}
+
+export type AssetStatus =
+  | "remote-only"
+  | "local-only"
+  | "same"
+  | "content-different"
+  | "metadata-only"
+  | "read-only-reference"
+  | "target-conflict"
+  | "uncomparable";
+
+export type AssetAction =
+  | "download"
+  | "upload"
+  | "copy-to-local"
+  | "copy-to-remote"
+  | "set-platform-install-name";
+
+export interface AssetPlatformRow {
+  resource_key: string;
+  kind: ResourceKind;
+  name: string;
+  platform: string;
+  local_instance_id: string;
+  local_locator: string;
+  install_name: string;
+  configured: boolean;
+  enabled: boolean;
+  detected: boolean;
+  supported: boolean;
+  remote_exists: boolean;
+  local_exists: boolean;
+  remote_writable: boolean;
+  read_only_reference: boolean;
+  remote_path?: string | null;
+  local_path?: string | null;
+  target_path?: string | null;
+  ownership: string;
+  status: AssetStatus;
+  remote_commit: string;
+  reference_commit: string;
+  remote_content_fingerprint: string;
+  remote_asset_fingerprint: string;
+  local_fingerprint: string;
+  metadata_differences: string[];
+  diff_summary: string[];
+  blockers: string[];
+  warnings: string[];
+  available_actions: AssetAction[];
+  entry?: RegistryItem | null;
+}
+
+export interface AssetInventory {
+  branch: string;
+  remote_commit: string;
+  repo_url: string;
+  remote_available: boolean;
+  remote_warning: string;
+  scanned_local: boolean;
+  generated_at: string;
+  legacy_write_blocker: string;
+  rows: AssetPlatformRow[];
+}
+
+export interface AssetActionPlan {
+  operation_id: string;
+  action: AssetAction;
+  resource_key: string;
+  target_resource_key: string;
+  kind: ResourceKind;
+  name: string;
+  platform: string;
+  local_instance_id: string;
+  local_locator: string;
+  remote_commit: string;
+  remote_target_exists: boolean;
+  remote_target_fingerprint: string;
+  local_source_fingerprint: string;
+  target_path?: string | null;
+  target_exists: boolean;
+  target_fingerprint: string;
+  target_managed: boolean;
+  overwrite_unmanaged: boolean;
+  new_name: string;
+  new_install_name: string;
+  warnings: string[];
+  blockers: string[];
+  blocked: boolean;
+  created_at: string;
+  schema_version: number;
+}
+
+export interface AssetActionResult {
+  operation_id: string;
+  action: AssetAction;
+  status: string;
+  resource_key: string;
+  target_resource_key: string;
+  platform: string;
+  message: string;
+  remote_commit: string;
+  local_path?: string | null;
+  replayed_on_latest: boolean;
+  push_retry_count: number;
+  warnings: string[];
+  operation_status: string;
 }
 
 export interface ConfigSettings {
@@ -658,6 +770,8 @@ export interface EnvDiffPlan {
 export interface LpmResponse<T> {
   ok: boolean;
   data?: T;
+  deprecated?: boolean;
+  warnings?: string[];
   error?: {
     code: string;
     message: string;

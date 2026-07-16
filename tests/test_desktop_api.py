@@ -6,6 +6,11 @@ from lpm.core.config import Config, GithubConfig, ResourcesConfig
 from lpm.core.models import RegistryItem
 from lpm.infrastructure.github_client import GithubAuthError
 from lpm.interfaces import desktop_api
+from lpm.services.asset_sync import (
+    AssetActionPlan,
+    AssetActionResult,
+    AssetInventory,
+)
 from lpm.services.env_manager import EnvDiffItem, EnvDiffPlan
 from lpm.services.local_resources import ImportLocalResult
 from lpm.services.resource_commit import (
@@ -192,6 +197,93 @@ def test_desktop_resource_sync_plan_serializes_conflicts(
     assert result["ok"] is True
     assert result["data"]["repo_path"] == str(tmp_path / "resources")
     assert result["data"]["conflicts"][0]["id"] == "resource:demo"
+    assert result["deprecated"] is True
+    assert "asset_inventory" in result["warnings"][0]
+
+
+def test_desktop_asset_inventory_plan_and_apply(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_inventory(**kwargs) -> AssetInventory:
+        calls.append(("inventory", (kwargs["scan_local"], kwargs["refresh_remote"])))
+        return AssetInventory(
+            branch="main",
+            remote_commit="abc123",
+            repo_url="https://example.test/resources.git",
+            remote_available=True,
+            remote_warning="",
+            scanned_local=kwargs["scan_local"],
+            generated_at="2026-07-17T00:00:00Z",
+            legacy_write_blocker="",
+            rows=[],
+        )
+
+    def fake_plan(action: str, **kwargs) -> AssetActionPlan:
+        calls.append(("plan", (action, kwargs["kind"], kwargs["name"], kwargs["platform"])))
+        return AssetActionPlan(
+            operation_id="plan-1",
+            action="download",
+            resource_key="skill:demo",
+            target_resource_key="skill:demo",
+            kind="skill",
+            name="demo",
+            platform="cursor",
+            local_instance_id="instance-1",
+            local_locator="expected",
+            remote_commit="abc123",
+            remote_target_exists=True,
+            remote_target_fingerprint="remote",
+            local_source_fingerprint="local",
+            target_path=None,
+            target_exists=False,
+            target_fingerprint="",
+            target_managed=False,
+        )
+
+    def fake_apply(operation_id: str, **_kwargs) -> AssetActionResult:
+        calls.append(("apply", operation_id))
+        return AssetActionResult(
+            operation_id=operation_id,
+            action="download",
+            status="succeeded",
+            resource_key="skill:demo",
+            target_resource_key="skill:demo",
+            platform="cursor",
+            message="done",
+        )
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "build_asset_inventory", fake_inventory)
+    monkeypatch.setattr(desktop_api, "build_asset_action_plan", fake_plan)
+    monkeypatch.setattr(desktop_api, "apply_asset_action_plan", fake_apply)
+
+    inventory = desktop_api.run_action(
+        "asset_inventory",
+        {"scan_local": True, "refresh_remote": False},
+    )
+    plan = desktop_api.run_action(
+        "asset_action_plan",
+        {
+            "action": "download",
+            "kind": "skill",
+            "name": "demo",
+            "platform": "cursor",
+            "local_instance_id": "instance-1",
+        },
+    )
+    applied = desktop_api.run_action(
+        "asset_action_apply",
+        {"operation_id": "plan-1"},
+    )
+
+    assert inventory["data"]["scanned_local"] is True
+    assert plan["data"]["resource_key"] == "skill:demo"
+    assert applied["data"]["status"] == "succeeded"
+    assert calls == [
+        ("inventory", (True, False)),
+        ("plan", ("download", "skill", "demo", "cursor")),
+        ("apply", "plan-1"),
+    ]
 
 
 def test_desktop_resource_commit_plan_serializes_resource_blockers(

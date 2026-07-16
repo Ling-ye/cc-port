@@ -346,12 +346,13 @@ def test_env_pull_diff_and_apply_incoming_choice(tmp_path: Path, monkeypatch) ->
 
     plan = build_env_pull_diff(config=cfg)
 
-    resource_item = next(item for item in plan.items if item.id == "resource:cursor-skill-demo-skill")
+    resource_id = "resource:skill:cursor-skill-demo-skill"
+    resource_item = next(item for item in plan.items if item.id == resource_id)
     assert resource_item.status == "conflict"
     assert resource_item.default_choice == "incoming"
     assert "Remote skill" in resource_item.preview
 
-    apply_env_pull(config=cfg, choices={"resource:cursor-skill-demo-skill": "incoming"})
+    apply_env_pull(config=cfg, choices={resource_id: "incoming"})
 
     assert local_skill.read_text(encoding="utf-8") == "# Remote skill\n"
 
@@ -374,11 +375,12 @@ def test_env_snapshot_import_dry_run_and_apply(tmp_path: Path, monkeypatch) -> N
 
     plan = build_env_import_diff(snapshot, config=cfg)
 
-    resource_item = next(item for item in plan.items if item.id == "resource:cursor-skill-demo-skill")
+    resource_id = "resource:skill:cursor-skill-demo-skill"
+    resource_item = next(item for item in plan.items if item.id == resource_id)
     assert resource_item.status == "conflict"
     assert resource_item.default_choice == "incoming"
 
-    apply_env_import(snapshot, config=cfg, choices={"resource:cursor-skill-demo-skill": "incoming"})
+    apply_env_import(snapshot, config=cfg, choices={resource_id: "incoming"})
 
     assert local_skill.read_text(encoding="utf-8") == "# Snapshot skill\n"
 

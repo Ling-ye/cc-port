@@ -17,6 +17,48 @@ ItemLifecycle = Literal["active", "removed"]
 RemovedEffect = Literal["", "index_only", "local_files_deleted", "remote_repo_deleted"]
 
 
+class ResourceKey(BaseModel):
+    """Stable composite identity for a registry resource."""
+
+    kind: ItemKind
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        if not ITEM_NAME_RE.match(v):
+            raise ValueError(
+                f"Invalid name {v!r}: must be 1-64 chars of [a-z0-9-] starting with [a-z0-9]."
+            )
+        return v
+
+    @property
+    def value(self) -> str:
+        return f"{self.kind}:{self.name}"
+
+    @classmethod
+    def parse(cls, value: str) -> ResourceKey:
+        kind, separator, name = value.partition(":")
+        if not separator:
+            raise ValueError("Resource key must use the '<kind>:<name>' format.")
+        return cls(kind=kind, name=name)  # type: ignore[arg-type]
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class AmbiguousResourceNameError(ValueError):
+    """Raised when a legacy name-only lookup matches multiple resource kinds."""
+
+    def __init__(self, name: str, matches: list[ResourceKey]):
+        self.name = name
+        self.matches = matches
+        values = ", ".join(str(item) for item in matches)
+        super().__init__(
+            f"Resource name {name!r} is ambiguous ({values}). Pass the resource kind."
+        )
+
+
 class RegistryItem(BaseModel):
     """A single resource (skill, MCP server config, or rule) in registry.yaml."""
 
@@ -42,6 +84,10 @@ class RegistryItem(BaseModel):
     install_dir: str = Field(
         default="",
         description="Optional override for the install directory name (defaults to `name`).",
+    )
+    platform_install_dirs: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional per-platform install directory overrides.",
     )
     description: str = Field(default="", description="Short description.")
     mcp_config: dict[str, Any] | None = Field(
@@ -123,6 +169,33 @@ class RegistryItem(BaseModel):
             raise ValueError("subdir must not contain '..' segments.")
         return v
 
+    @field_validator("install_dir")
+    @classmethod
+    def _validate_install_dir(cls, v: str) -> str:
+        value = (v or "").strip()
+        if value and not ITEM_NAME_RE.match(value):
+            raise ValueError(
+                "install_dir must be a safe single path segment using [a-z0-9-]."
+            )
+        return value
+
+    @field_validator("platform_install_dirs")
+    @classmethod
+    def _validate_platform_install_dirs(cls, values: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for platform, install_name in values.items():
+            platform_name = str(platform).strip()
+            target_name = str(install_name).strip()
+            if not platform_name:
+                raise ValueError("platform_install_dirs must not contain an empty platform.")
+            if not ITEM_NAME_RE.match(target_name):
+                raise ValueError(
+                    "platform_install_dirs values must be safe single path segments "
+                    "using [a-z0-9-]."
+                )
+            normalized[platform_name] = target_name
+        return normalized
+
     @field_validator("platforms")
     @classmethod
     def _validate_platforms(cls, values: list[str]) -> list[str]:
@@ -150,7 +223,18 @@ class RegistryItem(BaseModel):
                 raise ValueError("mcp_config must contain either 'command' or 'url'.")
         return self
 
-    def install_target_name(self) -> str:
+    @property
+    def resource_key(self) -> str:
+        return f"{self.kind}:{self.name}"
+
+    def key(self) -> ResourceKey:
+        return ResourceKey(kind=self.kind, name=self.name)
+
+    def install_target_name(self, platform_name: str | None = None) -> str:
+        if platform_name:
+            platform_name = platform_name.strip()
+            if platform_name and platform_name in self.platform_install_dirs:
+                return self.platform_install_dirs[platform_name]
         return self.install_dir or self.name
 
     def supports_platform(self, platform_name: str) -> bool:
@@ -163,9 +247,9 @@ SkillEntry = RegistryItem
 
 
 class Registry(BaseModel):
-    """Top-level registry document (supports v1 through v5 formats)."""
+    """Top-level registry document (supports v1 through v6 formats)."""
 
-    version: int = 5
+    version: int = 6
     items: list[RegistryItem] = Field(default_factory=list)
 
     def __init__(self, **data: Any) -> None:
@@ -179,23 +263,36 @@ class Registry(BaseModel):
         """Backward-compatible accessor: returns all items (regardless of kind)."""
         return self.items
 
-    def get(self, name: str) -> RegistryItem | None:
-        for item in self.items:
-            if item.name == name:
-                return item
-        return None
+    def get(self, name: str, kind: ItemKind | None = None) -> RegistryItem | None:
+        matches = [
+            item
+            for item in self.items
+            if item.name == name and (kind is None or item.kind == kind)
+        ]
+        if not matches:
+            return None
+        if kind is None and len(matches) > 1:
+            raise AmbiguousResourceNameError(name, [item.key() for item in matches])
+        return matches[0]
+
+    def get_key(self, key: ResourceKey | str) -> RegistryItem | None:
+        parsed = ResourceKey.parse(key) if isinstance(key, str) else key
+        return self.get(parsed.name, parsed.kind)
 
     def upsert(self, entry: RegistryItem) -> None:
         for i, item in enumerate(self.items):
-            if item.name == entry.name:
+            if item.name == entry.name and item.kind == entry.kind:
                 self.items[i] = entry
                 return
         self.items.append(entry)
-        self.items.sort(key=lambda s: s.name)
+        self.items.sort(key=lambda item: (item.kind, item.name))
 
-    def remove(self, name: str) -> RegistryItem | None:
+    def remove(self, name: str, kind: ItemKind | None = None) -> RegistryItem | None:
+        entry = self.get(name, kind)
+        if entry is None:
+            return None
         for i, item in enumerate(self.items):
-            if item.name == name:
+            if item.name == entry.name and item.kind == entry.kind:
                 return self.items.pop(i)
         return None
 

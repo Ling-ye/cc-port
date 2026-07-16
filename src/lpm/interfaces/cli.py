@@ -31,6 +31,11 @@ from ..core.resource_detection import (
 )
 from ..infrastructure import git_ops
 from ..services import publisher
+from ..services.asset_sync import (
+    apply_asset_action_plan,
+    build_asset_action_plan,
+    build_asset_inventory,
+)
 from ..services.doctor import build_doctor_checks, has_doctor_errors
 from ..services.env_manager import (
     apply_env_import,
@@ -99,19 +104,29 @@ app = typer.Typer(
     help="LPM (LingyePluginMarketplace): publish, register and sync skills, MCP servers and rules across AI coding platforms.",
 )
 resource_app = typer.Typer(help="Manage the private LPM resource repository.")
+asset_app = typer.Typer(help="Compare and synchronize assets per platform.")
 env_app = typer.Typer(help="Discover, capture, export and deploy local AI tool environment configs.")
 operations_app = typer.Typer(help="Inspect and restore persisted local write operations.")
 app.add_typer(resource_app, name="resource")
+app.add_typer(asset_app, name="asset")
 app.add_typer(env_app, name="env")
 app.add_typer(operations_app, name="operations")
 console = Console()
 VALID_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
+DEPRECATED_SYNC_MESSAGE = (
+    "Deprecated: use `lpm asset list`, `lpm asset plan`, and `lpm asset apply`. "
+    "Git workspace sync commands will be removed in the next release."
+)
 
 
 def _load() -> Config:
     cfg = load_config()
     git_ops.configure_git_executable(cfg.git.executable)
     return cfg
+
+
+def _print_sync_deprecation() -> None:
+    console.print(f"[yellow]{DEPRECATED_SYNC_MESSAGE}[/yellow]")
 
 
 # ---- init ---- #
@@ -203,6 +218,7 @@ def cmd_resource_status() -> None:
 @resource_app.command("pull")
 def cmd_resource_pull() -> None:
     """Pull the private resource repository after checking it is clean."""
+    _print_sync_deprecation()
     try:
         info = pull_resource_repo(_load())
     except Exception as exc:
@@ -216,6 +232,7 @@ def cmd_resource_push(
     message: str = typer.Option("lpm: update resources", "--message", "-m"),
 ) -> None:
     """Commit local resource changes if needed and push the private repo."""
+    _print_sync_deprecation()
     try:
         info = push_resource_repo(message=message, config=_load())
     except Exception as exc:
@@ -255,6 +272,7 @@ def cmd_resource_sync_status(
     fetch: bool = typer.Option(False, "--fetch", help="Fetch remote refs before reporting."),
 ) -> None:
     """Show ahead/behind/diverged state without changing the working tree."""
+    _print_sync_deprecation()
     try:
         plan = inspect_resource_sync(config=_load(), fetch=fetch)
     except Exception as exc:
@@ -266,6 +284,7 @@ def cmd_resource_sync_status(
 @resource_app.command("sync-plan")
 def cmd_resource_sync_plan() -> None:
     """Fetch and build a safe fast-forward or three-way merge plan."""
+    _print_sync_deprecation()
     try:
         plan = build_resource_sync_plan(config=_load())
     except Exception as exc:
@@ -287,6 +306,7 @@ def cmd_resource_sync_resolve(
     ),
 ) -> None:
     """Resolve a persisted three-way merge plan."""
+    _print_sync_deprecation()
     raw = yaml.safe_load(choices.read_text(encoding="utf-8")) or {}
     values = raw.get("items", raw) if isinstance(raw, dict) else {}
     if not isinstance(values, dict):
@@ -309,6 +329,7 @@ def cmd_resource_sync_apply(
     operation_id: str = typer.Argument(..., help="Operation id returned by sync-plan."),
 ) -> None:
     """Apply a ready sync plan to the resource repository."""
+    _print_sync_deprecation()
     try:
         plan = apply_resource_sync_plan(operation_id, config=_load())
     except Exception as exc:
@@ -322,6 +343,7 @@ def cmd_resource_sync_cancel(
     operation_id: str = typer.Argument(..., help="Operation id returned by sync-plan."),
 ) -> None:
     """Cancel a pending sync plan and remove its temporary worktree."""
+    _print_sync_deprecation()
     try:
         plan = cancel_resource_sync_plan(operation_id, config=_load())
     except Exception as exc:
@@ -340,6 +362,7 @@ def cmd_resource_sync_stale(
     ),
 ) -> None:
     """List abandoned-looking merge worktrees without modifying them."""
+    _print_sync_deprecation()
     plans = list_stale_resource_sync_plans(min_age_hours=min_age_hours)
     table = Table(title="Stale resource sync worktrees")
     table.add_column("Operation")
@@ -366,6 +389,7 @@ def cmd_resource_sync_cleanup(
     ),
 ) -> None:
     """Explicitly abandon a pending sync plan and remove its worktree."""
+    _print_sync_deprecation()
     try:
         plan = cleanup_stale_resource_sync_plan(
             operation_id,
@@ -376,6 +400,161 @@ def cmd_resource_sync_cleanup(
         console.print(f"[red]Resource sync cleanup failed:[/red] {exc}")
         raise typer.Exit(1) from exc
     _print_resource_sync_plan(plan)
+
+
+# ---- asset-level sync ---- #
+
+
+@asset_app.command("list")
+def cmd_asset_list(
+    scan_local: bool = typer.Option(
+        False,
+        "--scan-local",
+        help="Scan configured and detected platforms for unregistered assets and extra instances.",
+    ),
+    refresh_remote: bool = typer.Option(
+        True,
+        "--refresh-remote/--cached-remote",
+        help="Fetch the configured branch before building the inventory.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """List one asset row per platform without modifying local targets."""
+    try:
+        inventory = build_asset_inventory(
+            config=_load(),
+            scan_local=scan_local,
+            refresh_remote=refresh_remote,
+        )
+    except Exception as exc:
+        console.print(f"[red]Asset inventory failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if json_output:
+        console.print_json(
+            json=json.dumps(asdict(inventory), default=str, ensure_ascii=False)
+        )
+        return
+
+    table = Table(title=f"LPM assets ({inventory.branch or 'unconfigured branch'})")
+    table.add_column("Resource", style="bold")
+    table.add_column("Platform")
+    table.add_column("Install name")
+    table.add_column("Status")
+    table.add_column("Ownership")
+    table.add_column("Path")
+    table.add_column("Actions")
+    for row in inventory.rows:
+        table.add_row(
+            row.resource_key,
+            row.platform,
+            row.install_name,
+            row.status,
+            row.ownership,
+            str(row.local_path or row.target_path or "-"),
+            ", ".join(row.available_actions) or "-",
+        )
+    console.print(table)
+    if inventory.remote_warning:
+        console.print(f"[yellow]{inventory.remote_warning}[/yellow]")
+    if inventory.legacy_write_blocker:
+        console.print(f"[red]Remote writes blocked:[/red] {inventory.legacy_write_blocker}")
+
+
+@asset_app.command("plan")
+def cmd_asset_plan(
+    action: str = typer.Argument(
+        ...,
+        help="download | upload | copy-to-local | copy-to-remote | set-platform-install-name",
+    ),
+    kind: str = typer.Option(..., "--kind", "-k", help="Asset kind."),
+    name: str = typer.Option(..., "--name", "-n", help="Asset name."),
+    platform: str = typer.Option(..., "--platform", "-p", help="Platform id."),
+    local_instance_id: str = typer.Option(
+        "",
+        "--local-instance-id",
+        help="Required when a platform has multiple local instances.",
+    ),
+    new_name: str = typer.Option(
+        "",
+        "--new-name",
+        help="New asset name for copy-to-local or copy-to-remote.",
+    ),
+    new_install_name: str = typer.Option(
+        "",
+        "--new-install-name",
+        help="Platform install alias for set-platform-install-name.",
+    ),
+    overwrite_unmanaged: bool = typer.Option(
+        False,
+        "--overwrite-unmanaged",
+        help="Explicitly allow replacing an unmanaged local target.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Persist one revalidatable asset action plan."""
+    if kind not in VALID_KINDS:
+        console.print(f"[red]Unsupported resource kind:[/red] {kind}")
+        raise typer.Exit(2)
+    try:
+        plan = build_asset_action_plan(
+            action,
+            kind=kind,  # type: ignore[arg-type]
+            name=name,
+            platform=platform,
+            local_instance_id=local_instance_id,
+            new_name=new_name,
+            new_install_name=new_install_name,
+            overwrite_unmanaged=overwrite_unmanaged,
+            config=_load(),
+        )
+    except Exception as exc:
+        console.print(f"[red]Asset planning failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if json_output:
+        console.print_json(json=json.dumps(asdict(plan), default=str, ensure_ascii=False))
+        return
+    table = Table(title="LPM asset action plan")
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    for label, value in (
+        ("Operation", plan.operation_id),
+        ("Action", plan.action),
+        ("Source", plan.resource_key),
+        ("Target", plan.target_resource_key),
+        ("Platform", plan.platform),
+        ("Remote commit", plan.remote_commit),
+        ("Blocked", str(plan.blocked).lower()),
+    ):
+        table.add_row(label, str(value))
+    console.print(table)
+    for warning in plan.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+    for blocker in plan.blockers:
+        console.print(f"[red]Blocked:[/red] {blocker}")
+
+
+@asset_app.command("apply")
+def cmd_asset_apply(
+    operation_id: str = typer.Argument(..., help="Operation id returned by asset plan."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Revalidate and apply one persisted asset action plan."""
+    try:
+        result = apply_asset_action_plan(operation_id, config=_load())
+    except Exception as exc:
+        console.print(f"[red]Asset apply failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if json_output:
+        console.print_json(json=json.dumps(asdict(result), default=str, ensure_ascii=False))
+    else:
+        console.print(
+            f"[bold]{result.status}[/bold] {result.target_resource_key} "
+            f"on {result.platform}: {result.message}"
+        )
+        for warning in result.warnings:
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
+    if result.status not in {"succeeded", "unchanged"}:
+        raise typer.Exit(1)
 
 
 def _print_resource_info(info: object) -> None:
@@ -1436,6 +1615,7 @@ def cmd_export_plugin(
 @app.command("remove")
 def cmd_remove(
     name: str = typer.Argument(...),
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Resource type."),
     uninstall: bool = typer.Option(
         False, "--uninstall", help="Also delete the local installation."
     ),
@@ -1443,8 +1623,8 @@ def cmd_remove(
     """Remove an item from the registry."""
     cfg = _load()
     registry = load_registry()
-    entry = registry.get(name)
-    removed = publisher.remove_skill(name)
+    entry = registry.get(name, kind)
+    removed = publisher.remove_skill(name, kind=kind)
     if removed is None:
         console.print(f"[yellow]No item named[/yellow] {name}")
         raise typer.Exit(1)
@@ -1848,11 +2028,14 @@ def _print_doctor_check(check: dict, *, indent: str = "") -> None:
 
 
 @app.command("uninstall")
-def cmd_uninstall(name: str = typer.Argument(...)) -> None:
+def cmd_uninstall(
+    name: str = typer.Argument(...),
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Resource type."),
+) -> None:
     """Remove an item's local files (without touching the registry)."""
     cfg = _load()
     registry = load_registry()
-    entry = registry.get(name)
+    entry = registry.get(name, kind)
     if entry is None:
         console.print(f"[yellow]No item named[/yellow] {name}")
         raise typer.Exit(1)
@@ -1982,11 +2165,14 @@ def cmd_platforms() -> None:
 
 
 @app.command("update")
-def cmd_update(name: str = typer.Argument(...)) -> None:
+def cmd_update(
+    name: str = typer.Argument(...),
+    kind: str | None = typer.Option(None, "--kind", "-k", help="Resource type."),
+) -> None:
     """Force-sync a single item."""
     cfg = _load()
     registry = load_registry()
-    entry = registry.get(name)
+    entry = registry.get(name, kind)
     if entry is None:
         console.print(f"[yellow]No item named[/yellow] {name}")
         raise typer.Exit(1)

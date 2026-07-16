@@ -59,6 +59,8 @@ class SkillStatus:
     local_commit: str | None
     remote_commit: str | None
     has_update: bool
+    kind: str = ""
+    resource_key: str = ""
 
 
 @dataclass
@@ -128,7 +130,10 @@ def _install_skill_to_platform(
     force_unmanaged: bool = False,
 ) -> Path | None:
     """Copy a skill directory to a platform's skills_dir."""
-    target_dir = platform.resolve_install_path("skill", entry.install_target_name())
+    target_dir = platform.resolve_install_path(
+        "skill",
+        entry.install_target_name(platform.name),
+    )
     if target_dir is None:
         return None
     try:
@@ -140,11 +145,11 @@ def _install_skill_to_platform(
     if target_dir.exists():
         if (
             not force_unmanaged
-            and not is_lpm_managed(target_dir, resource_name=entry.name)
+            and not is_lpm_managed(target_dir, resource_key=entry.resource_key)
         ):
             raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
         if (
-            is_lpm_managed(target_dir, resource_name=entry.name)
+            is_lpm_managed(target_dir, resource_key=entry.resource_key)
             and resource_hash_path(source_path) == resource_hash_path(target_dir)
         ):
             return target_dir
@@ -163,35 +168,38 @@ def _install_mcp_to_platform(
     mcp_path = platform.mcp_json_path()
     if mcp_path is None or entry.mcp_config is None:
         return None
+    server_name = entry.install_target_name(platform.name)
     if (
         mcp_path.exists()
-        and has_mcp_server(mcp_path, entry.name)
+        and has_mcp_server(mcp_path, server_name)
         and not force_unmanaged
         and not is_lpm_managed_mcp(
             mcp_path,
-            entry.name,
-            resource_name=entry.name,
+            server_name,
+            resource_key=entry.resource_key,
         )
     ):
         raise RuntimeError(
-            f"MCP server exists and is not managed by LPM: {entry.name} in {mcp_path}"
+            f"MCP server exists and is not managed by LPM: {server_name} in {mcp_path}"
         )
     expected = sanitize_mcp_config_for_storage(entry.mcp_config)
     if (
         mcp_path.exists()
-        and list_mcp_servers(mcp_path).get(entry.name) == expected
+        and list_mcp_servers(mcp_path).get(server_name) == expected
         and is_lpm_managed_mcp(
             mcp_path,
-            entry.name,
-            resource_name=entry.name,
+            server_name,
+            resource_key=entry.resource_key,
         )
     ):
         return mcp_path
-    inject_mcp_server(mcp_path, entry.name, expected)
+    inject_mcp_server(mcp_path, server_name, expected)
     mark_lpm_managed_mcp(
         mcp_path,
-        entry.name,
+        server_name,
         resource_name=entry.name,
+        resource_kind=entry.kind,
+        resource_key=entry.resource_key,
         platform=platform.name,
     )
     return mcp_path
@@ -205,7 +213,10 @@ def _install_rule_to_platform(
     force_unmanaged: bool = False,
 ) -> Path | None:
     """Copy rule files to a platform's rules_dir."""
-    target_dir = platform.resolve_install_path("rule", entry.install_target_name())
+    target_dir = platform.resolve_install_path(
+        "rule",
+        entry.install_target_name(platform.name),
+    )
     if target_dir is None:
         return None
     try:
@@ -217,11 +228,11 @@ def _install_rule_to_platform(
     if target_dir.exists():
         if (
             not force_unmanaged
-            and not is_lpm_managed(target_dir, resource_name=entry.name)
+            and not is_lpm_managed(target_dir, resource_key=entry.resource_key)
         ):
             raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
         if (
-            is_lpm_managed(target_dir, resource_name=entry.name)
+            is_lpm_managed(target_dir, resource_key=entry.resource_key)
             and resource_hash_path(source_path) == resource_hash_path(target_dir)
         ):
             return target_dir
@@ -238,7 +249,10 @@ def _install_plugin_to_platform(
     force_unmanaged: bool = False,
 ) -> Path | None:
     """Copy a plugin directory to a platform's plugin target."""
-    target_dir = platform.resolve_install_path("plugin", entry.install_target_name())
+    target_dir = platform.resolve_install_path(
+        "plugin",
+        entry.install_target_name(platform.name),
+    )
     if target_dir is None:
         return None
     try:
@@ -249,11 +263,11 @@ def _install_plugin_to_platform(
     if target_dir.exists():
         if (
             not force_unmanaged
-            and not is_lpm_managed(target_dir, resource_name=entry.name)
+            and not is_lpm_managed(target_dir, resource_key=entry.resource_key)
         ):
             raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
         if (
-            is_lpm_managed(target_dir, resource_name=entry.name)
+            is_lpm_managed(target_dir, resource_key=entry.resource_key)
             and resource_hash_path(source_path) == resource_hash_path(target_dir)
         ):
             return target_dir
@@ -319,7 +333,7 @@ def _distribute_to_platforms(
         if result_path is not None:
             if (
                 entry.kind != "mcp"
-                and not is_lpm_managed(result_path, resource_name=entry.name)
+                and not is_lpm_managed(result_path, resource_key=entry.resource_key)
             ):
                 write_managed_marker(result_path, entry, platform=plat.name)
             installed_on.append(plat.name)
@@ -343,7 +357,10 @@ def _platform_targets(
 
     targets: list[tuple[str, Path]] = []
     for platform in platforms:
-        target_path = platform.resolve_install_path(entry.kind, entry.install_target_name())
+        target_path = platform.resolve_install_path(
+            entry.kind,
+            entry.install_target_name(platform.name),
+        )
         if target_path is not None:
             targets.append((platform.name, target_path))
     return targets
@@ -396,7 +413,7 @@ def sync_one(
         "resource-install",
         targets,
         metadata={
-            "resource": entry.name,
+            "resource": entry.resource_key,
             "platform": platform_filter or "",
         },
         lock_timeout_seconds=config.state.lock_timeout_seconds,
@@ -635,7 +652,7 @@ def sync_all(
     for entry in reg.items:
         if entry.lifecycle != "active":
             continue
-        if only and entry.name not in only:
+        if only and entry.name not in only and entry.resource_key not in only:
             continue
         if entry.kind not in allowed_kinds:
             continue
@@ -699,7 +716,7 @@ def preview_sync_all(
     for entry in reg.items:
         if entry.lifecycle != "active":
             continue
-        if only and entry.name not in only:
+        if only and entry.name not in only and entry.resource_key not in only:
             continue
         if entry.kind not in allowed_kinds:
             continue
@@ -708,7 +725,7 @@ def preview_sync_all(
         preview_entries.append(entry)
 
     statuses = {
-        entry.name: _skill_status(entry, config, registry_root=registry_root)
+        entry.resource_key: _skill_status(entry, config, registry_root=registry_root)
         for entry in preview_entries
     }
 
@@ -718,7 +735,7 @@ def preview_sync_all(
             _preview_sync_item(
                 config,
                 entry,
-                status=statuses.get(entry.name),
+                status=statuses.get(entry.resource_key),
                 platform_filter=platform_filter,
                 registry_root=registry_root,
             )
@@ -804,17 +821,20 @@ def _preview_sync_item(
         unmanaged_directory = (
             entry.kind != "mcp"
             and target_path.exists()
-            and not is_lpm_managed(target_path, resource_name=entry.name)
+            and not is_lpm_managed(target_path, resource_key=entry.resource_key)
         )
         unmanaged_mcp = False
         if entry.kind == "mcp" and target_path.exists():
             try:
                 unmanaged_mcp = (
-                    has_mcp_server(target_path, entry.name)
+                    has_mcp_server(
+                        target_path,
+                        entry.install_target_name(platform_name),
+                    )
                     and not is_lpm_managed_mcp(
                         target_path,
-                        entry.name,
-                        resource_name=entry.name,
+                        entry.install_target_name(platform_name),
+                        resource_key=entry.resource_key,
                     )
                 )
             except (OSError, ValueError) as exc:
@@ -878,6 +898,8 @@ def _skill_status(
             local_commit=None,
             remote_commit=None,
             has_update=False,
+            kind=entry.kind,
+            resource_key=entry.resource_key,
         )
     clone_path = _clone_path(config, entry)
     installed = install_path.exists()
@@ -891,6 +913,8 @@ def _skill_status(
         local_commit=local,
         remote_commit=remote,
         has_update=has_update,
+        kind=entry.kind,
+        resource_key=entry.resource_key,
     )
 
 
@@ -918,7 +942,7 @@ def uninstall_one(
         "resource-uninstall",
         targets,
         metadata={
-            "resource": entry.name,
+            "resource": entry.resource_key,
             "platform": platform_filter or "",
         },
         lock_timeout_seconds=config.state.lock_timeout_seconds,
@@ -997,7 +1021,7 @@ def _resource_change_targets(
                 ChangeTarget(
                     path=_install_path(config, entry),
                     change_action=change_action,
-                    resource=entry.name,
+                    resource=entry.resource_key,
                 )
             )
             clone_path = _clone_path(config, entry)
@@ -1006,7 +1030,7 @@ def _resource_change_targets(
                     ChangeTarget(
                         path=clone_path,
                         change_action=change_action,
-                        resource=entry.name,
+                        resource=entry.resource_key,
                     )
                 )
 
@@ -1020,7 +1044,7 @@ def _resource_change_targets(
             ChangeTarget(
                 path=path,
                 change_action=change_action,
-                resource=entry.name,
+                resource=entry.resource_key,
                 platform=platform,
             )
         )
@@ -1029,7 +1053,7 @@ def _resource_change_targets(
             ChangeTarget(
                 path=mcp_ownership_path(),
                 change_action=change_action,
-                resource=entry.name,
+                resource=entry.resource_key,
             )
         )
     return targets
@@ -1050,13 +1074,14 @@ def _verify_resource_install(
         for platform_name in platforms_installed:
             platform = config.platforms.get(platform_name)
             mcp_path = platform.mcp_json_path() if platform else None
+            server_name = entry.install_target_name(platform_name)
             if (
                 mcp_path is None
-                or list_mcp_servers(mcp_path).get(entry.name) != expected
+                or list_mcp_servers(mcp_path).get(server_name) != expected
                 or not is_lpm_managed_mcp(
                     mcp_path,
-                    entry.name,
-                    resource_name=entry.name,
+                    server_name,
+                    resource_key=entry.resource_key,
                 )
             ):
                 raise RuntimeError(
@@ -1071,13 +1096,16 @@ def _verify_resource_install(
     for platform_name in platforms_installed:
         platform = config.platforms.get(platform_name)
         target = (
-            platform.resolve_install_path(entry.kind, entry.install_target_name())
+            platform.resolve_install_path(
+                entry.kind,
+                entry.install_target_name(platform_name),
+            )
             if platform
             else None
         )
         if (
             target is None
-            or not is_lpm_managed(target, resource_name=entry.name)
+            or not is_lpm_managed(target, resource_key=entry.resource_key)
             or resource_hash_path(target) != cache_hash
         ):
             raise RuntimeError(
@@ -1104,20 +1132,24 @@ def _verify_resource_uninstall(
     for platform in platforms:
         if entry.kind == "mcp":
             mcp_path = platform.mcp_json_path()
+            server_name = entry.install_target_name(platform.name)
             if (
                 mcp_path
                 and is_lpm_managed_mcp(
                     mcp_path,
-                    entry.name,
-                    resource_name=entry.name,
+                    server_name,
+                    resource_key=entry.resource_key,
                 )
             ):
                 raise RuntimeError(
                     f"Uninstall verification failed for {entry.name} on {platform.name}."
                 )
             continue
-        target = platform.resolve_install_path(entry.kind, entry.install_target_name())
-        if target and is_lpm_managed(target, resource_name=entry.name):
+        target = platform.resolve_install_path(
+            entry.kind,
+            entry.install_target_name(platform.name),
+        )
+        if target and is_lpm_managed(target, resource_key=entry.resource_key):
             raise RuntimeError(
                 f"Uninstall verification failed for {entry.name} on {platform.name}."
             )
@@ -1125,31 +1157,41 @@ def _verify_resource_uninstall(
 
 def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile) -> bool:
     if entry.kind == "skill":
-        target = platform.resolve_install_path("skill", entry.install_target_name())
+        target = platform.resolve_install_path(
+            "skill",
+            entry.install_target_name(platform.name),
+        )
     elif entry.kind == "mcp":
         mcp_path = platform.mcp_json_path()
+        server_name = entry.install_target_name(platform.name)
         if (
             not mcp_path
             or not is_lpm_managed_mcp(
                 mcp_path,
-                entry.name,
-                resource_name=entry.name,
+                server_name,
+                resource_key=entry.resource_key,
             )
         ):
             return False
-        removed = remove_mcp_server(mcp_path, entry.name)
+        removed = remove_mcp_server(mcp_path, server_name)
         if removed:
-            unmark_lpm_managed_mcp(mcp_path, entry.name)
+            unmark_lpm_managed_mcp(mcp_path, server_name)
         return removed
     elif entry.kind in {"rule", "prompt"}:
-        target = platform.resolve_install_path("rule", entry.install_target_name())
+        target = platform.resolve_install_path(
+            "rule",
+            entry.install_target_name(platform.name),
+        )
     elif entry.kind == "plugin":
-        target = platform.resolve_install_path("plugin", entry.install_target_name())
+        target = platform.resolve_install_path(
+            "plugin",
+            entry.install_target_name(platform.name),
+        )
     else:
         target = None
 
     if target and target.exists():
-        if not is_lpm_managed(target, resource_name=entry.name):
+        if not is_lpm_managed(target, resource_key=entry.resource_key):
             return False
         _remove_path(target)
         return True

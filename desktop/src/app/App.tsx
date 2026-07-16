@@ -21,9 +21,8 @@ import { GuideView } from "@/features/guide/GuideView";
 import { HealthView } from "@/features/health/HealthView";
 import { OperationsView } from "@/features/operations/OperationsView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
-import { RepositorySyncView } from "@/features/repository-sync/RepositorySyncView";
 import { SettingsView } from "@/features/settings/SettingsView";
-import type { PlatformProfile, RegistryItem, ResourceInventoryResult, ResourceInventoryItem, Summary } from "@/types/lpm";
+import type { AssetInventory, AssetPlatformRow, RegistryItem, Summary } from "@/types/lpm";
 
 export default function App() {
   const { runTask, runningCount } = useTaskCenter();
@@ -31,28 +30,38 @@ export default function App() {
   const [language, setLanguage] = useState<Language>(() => readStoredLanguage());
   const [summary, setSummary] = useState<Summary | null>(null);
   const [items, setItems] = useState<RegistryItem[]>([]);
-  const [resourceItems, setResourceItems] = useState<ResourceInventoryItem[]>([]);
-  const [platforms, setPlatforms] = useState<PlatformProfile[]>([]);
-  const [selectedName, setSelectedName] = useState<string>("");
+  const [assetInventory, setAssetInventory] = useState<AssetInventory | null>(null);
+  const [selectedRowId, setSelectedRowId] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const t = useMemo(() => createTranslator(language), [language]);
 
-  async function loadData() {
-    const [nextSummary, itemData, platformData] = await Promise.all([
+  async function loadData(scanLocal = false) {
+    const [nextSummary, inventory] = await Promise.all([
       lpmAction<Summary>("summary"),
-      lpmAction<ResourceInventoryResult>("resource_inventory"),
-      lpmAction<{ platforms: PlatformProfile[] }>("platforms"),
+      lpmAction<AssetInventory>("asset_inventory", {
+        scan_local: scanLocal,
+        refresh_remote: true,
+      }),
     ]);
     setSummary(nextSummary);
-    setResourceItems(itemData.items);
-    setItems(itemData.items.map((item) => item.entry));
-    setPlatforms(platformData.platforms);
-    setSelectedName((current) => current || itemData.items[0]?.entry.name || "");
+    setAssetInventory(inventory);
+    const entries = new Map<string, RegistryItem>();
+    inventory.rows.forEach((row) => {
+      if (row.entry) entries.set(row.resource_key, row.entry);
+    });
+    setItems([...entries.values()]);
+    setSelectedRowId((current) => (
+      inventory.rows.some((row) => assetRowId(row) === current)
+        ? current
+        : inventory.rows[0]
+          ? assetRowId(inventory.rows[0])
+          : ""
+    ));
   }
 
-  async function refresh(track = true) {
+  async function refresh(track = true, scanLocal = false) {
     setBusy(true);
     setError("");
     try {
@@ -60,11 +69,11 @@ export default function App() {
         await runTask({
           kind: "refresh",
           title: t("common.refresh"),
-          action: loadData,
+          action: () => loadData(scanLocal),
           retryPolicy: "safe-read",
         });
       } else {
-        await loadData();
+        await loadData(scanLocal);
       }
     } catch (err) {
       if (!track) setError(err instanceof Error ? err.message : String(err));
@@ -89,7 +98,8 @@ export default function App() {
     });
   }
 
-  const selected = resourceItems.find((item) => item.entry.name === selectedName) || resourceItems[0];
+  const selected = assetInventory?.rows.find((row) => assetRowId(row) === selectedRowId)
+    || assetInventory?.rows[0];
 
   return (
     <div className="app-shell">
@@ -138,12 +148,12 @@ export default function App() {
         ) : null}
         {view === "resources" ? (
           <ResourcesView
-            items={resourceItems}
-            platforms={platforms}
+            inventory={assetInventory}
             selected={selected}
             t={t}
-            onSelect={setSelectedName}
-            onChanged={() => refresh(false)}
+            onSelect={setSelectedRowId}
+            onInventory={setAssetInventory}
+            onChanged={() => refresh(false, Boolean(assetInventory?.scanned_local))}
             onError={setError}
           />
         ) : null}
@@ -160,7 +170,6 @@ export default function App() {
             onError={setError}
           />
         ) : null}
-        {view === "version-sync" ? <RepositorySyncView t={t} /> : null}
         {view === "operations" ? <OperationsView t={t} /> : null}
         {view === "health" ? <HealthView t={t} /> : null}
         {view === "settings" ? (
@@ -177,6 +186,10 @@ export default function App() {
       <ToastViewport t={t} />
     </div>
   );
+}
+
+function assetRowId(row: AssetPlatformRow): string {
+  return `${row.resource_key}|${row.platform}|${row.local_instance_id}`;
 }
 
 function Topbar({

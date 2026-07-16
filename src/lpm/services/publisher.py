@@ -305,10 +305,11 @@ def add_external_skill(
 def remove_skill(
     name: str,
     *,
+    kind: ItemKind | None = None,
     registry_path: Path | None = None,
 ) -> RegistryItem | None:
     registry = load_registry(registry_path)
-    removed = registry.remove(name)
+    removed = registry.remove(name, kind)
     if removed is not None:
         save_registry(registry, registry_path)
     return removed

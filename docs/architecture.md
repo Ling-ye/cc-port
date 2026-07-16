@@ -11,7 +11,7 @@ LPM 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skil
 - Tauri/Rust 只负责桌面外壳、sidecar 调用和系统路径打开。
 - CLI、Desktop API 和 MCP Server 复用同一套 Python services。
 
-当前不提供第三方适配器插件 API，不引入 SQLite，也不升级 registry schema。适配器契约先作为内部 API 演进，稳定后再决定是否外部开放。
+当前不提供第三方适配器插件 API，也不引入 SQLite。registry 已升级为 v6，以 `kind:name` 作为复合资源身份；适配器契约先作为内部 API 演进，稳定后再决定是否外部开放。
 
 ## 组件关系
 
@@ -34,12 +34,13 @@ flowchart LR
 
 | 模块 | 职责 | 主要约束 |
 | --- | --- | --- |
-| `core.models` / `core.registry` | registry v5 模型、迁移和读写 | 私有仓库中的资源索引是跨设备事实源 |
+| `core.models` / `core.registry` | registry v6 复合键模型、v5 迁移和读写 | 私有仓库配置分支中的资源索引是跨设备事实源 |
 | `core.tool_adapters` | 工具能力、默认路径、发现信号和安装机制 | 当前仅内部使用，不承诺第三方兼容性 |
 | `core.resource_files` | 采集、复制、快照共用的文件策略 | 排除真实 `.env`、构建产物、依赖目录和符号链接 |
 | `core.secret_scan` | 资源和环境文本的凭据模式检查 | 只返回脱敏预览，不在日志中保存真实值 |
 | `core.ownership` | 目录与 MCP entry 的所有权 | 未管理目标不能被普通覆盖或卸载 |
-| `services.resource_sync` | Git 分歧检测、计划、冲突选择、应用与推送 | 不硬重置、不强推、不静默丢弃提交 |
+| `services.asset_sync` | 远端只读快照、每平台清单、资产动作计划、并发重放和单资产提交 | 不信任持久化路径或指纹；不强推；不隐式删除 |
+| `services.resource_sync` | 弃用兼容：旧 Git 分歧检测、worktree 合并与推送 | 仅保留一个发布版本，用于清理遗留工作区状态 |
 | `services.resource_commit` | 资源级提交预览、管理路径限制和待推送内容扫描 | 不提供通用 Git 暂存区；非管理路径和敏感内容默认阻断 |
 | `services.resource_repo_lock` | 资源仓库进程内/跨进程写锁 | 同仓库写操作串行；嵌套服务调用可重入 |
 | `services.env_manager` | 环境发现、采集、差异和事务部署 | 部署失败时恢复本次已尝试写入的目标 |
@@ -81,44 +82,45 @@ maintenance/orphans/<quarantine-id>/
 maintenance/trash/<cleanup-id>/
 operations/
 ownership/mcp.json
-sync/<operation-id>/
+assets/remotes/
+assets/snapshots/
+asset-plans/<operation-id>/
+sync/<operation-id>/  # 弃用兼容
 ```
 
 ### AI 工具目标
 
 工具目标路径来自 `PlatformProfile` 和内部 `ToolAdapter`。目录型资源写入 `.lpm-managed.json`；MCP 只拥有指定 server entry，不拥有整个 JSON 配置文件。
 
-## Git 同步状态机
+## 资产同步状态机
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Inspect
-    Inspect --> Dirty: working tree changed
-    Dirty --> CommitReady: managed resource plan is safe
-    Dirty --> CommitBlocked: unmanaged or secret-like content
-    CommitReady --> Ahead: user confirms resource commit
-    Inspect --> Clean: ahead=0, behind=0
-    Inspect --> Ahead: ahead>0, behind=0
-    Inspect --> Behind: ahead=0, behind>0
-    Inspect --> Diverged: ahead>0, behind>0
-    Inspect --> WrongBranch: current branch differs
-    Behind --> Ready: exact remote fast-forward plan
-    Diverged --> Ready: automatic three-way merge
-    Diverged --> Conflict: unresolved resource changes
-    Conflict --> Ready: local/incoming choices committed
-    Ready --> Applied: user confirms
-    Ahead --> Applied: user confirms
-    Clean --> Applied: user confirms
-    Applied --> [*]: normal push
-    Conflict --> Cancelled: user cancels
-    Ready --> Cancelled: user cancels
-    Conflict --> Abandoned: explicit stale cleanup
-    Ready --> Abandoned: explicit stale cleanup
+    [*] --> Inventory
+    Inventory --> Plan: user chooses one row action
+    Plan --> Blocked: target conflict, unsafe comparison, legacy write blocker
+    Plan --> Ready: assertions and user choices recorded
+    Ready --> Revalidate: apply
+    Revalidate --> LocalTransaction: local action and assertions still hold
+    Revalidate --> RemoteReplay: remote action and target assertion still holds
+    Revalidate --> StaleTarget: target asset changed, appeared, or disappeared
+    LocalTransaction --> Succeeded: backup, write, verify
+    LocalTransaction --> RolledBack: write or verification failed
+    RemoteReplay --> Succeeded: one asset commit and normal push
+    RemoteReplay --> RetryOnce: push race
+    RetryOnce --> Succeeded: latest target assertion still holds
+    RetryOnce --> StaleTarget: second race or changed target
+    Blocked --> [*]
+    StaleTarget --> [*]
+    RolledBack --> [*]
+    Succeeded --> [*]
 ```
 
-同步计划记录本地提交、远端提交和 merge-base。远端在计划后再次变化不会被覆盖：普通 push 会失败，用户必须重新 fetch 和规划。
+清单从配置分支最新提交生成只读快照，不修改旧本地 Git 工作区。计划记录远端提交、目标资产存在性与指纹、本地源指纹、解析出的目标路径和用户选择；apply 时全部重新计算。
 
-Git 仅作为提交图、对象存储、传输和三方合并引擎。产品界面不复刻通用 Git 客户端，而是把工作区变化映射为受管理 AI 资源，并在 commit/push 前执行路径与敏感内容策略。
+若远端分支只发生无关变化，远端写操作会在最新提交上重放并普通推送。若目标资产新增、删除或改变，则返回 `stale-target`。推送竞态只自动重试一次，且每次远端写入只创建一个资产级提交。
+
+旧 `services.resource_sync` 状态机和 `sync/<operation-id>` worktree 仅作为一版兼容层存在。遗留工作区处于 dirty、ahead、diverged、wrong-branch 或有待处理旧计划时，资产清单仍可读取，但远端写入被阻断。
 
 ## 本地变更事务
 

@@ -35,7 +35,7 @@ def _global_skill_path(config: Config, entry: RegistryItem) -> Path | None:
     for plat in config.platforms.enabled():
         sp = plat.skills_path()
         if sp:
-            candidate = sp / entry.install_target_name()
+            candidate = sp / entry.install_target_name(plat.name)
             if candidate.exists():
                 return candidate
     fallback = config.install.target_path / entry.install_target_name()

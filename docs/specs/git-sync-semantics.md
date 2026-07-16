@@ -1,5 +1,7 @@
 # Git 同步语义规格
 
+> 弃用兼容规格：该工作区级 Git 同步模型仅保留一个发布版本。新桌面页面和新自动化应使用 `asset-sync.md`；本规格只用于处理遗留 dirty/ahead/diverged 状态和未完成 worktree。
+
 ## 目标
 
 资源仓库遵循标准 Git 历史模型，支持多台电脑的本地提交、远端提交、三方合并和冲突解决，不以硬重置代替同步。
@@ -16,7 +18,7 @@
 2. `fetch` 后生成同步计划。
 3. 仅 behind 时允许快进。
 4. diverged 时在临时 worktree 中执行三方合并。
-5. `registry.yaml` 按资源名称语义合并；资源内容冲突按整个资源选择 local 或 incoming。
+5. `registry.yaml` 按 `kind:name` 资源身份语义合并；资源内容冲突按整个资源选择 local 或 incoming。
 6. 用户确认后将临时结果应用到正式分支。
 7. push 只允许普通非强制推送；远端抢先更新时重新 fetch 和规划。
 

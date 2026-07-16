@@ -380,12 +380,16 @@ def check_items(
 
 
 @mcp.tool()
-def remove_skill(name: str, uninstall: bool = False) -> dict[str, Any]:
+def remove_skill(
+    name: str,
+    uninstall: bool = False,
+    kind: str | None = None,
+) -> dict[str, Any]:
     """Remove an item from the registry. Optionally also delete its local installation."""
     cfg = load_config()
     registry = load_registry()
-    entry = registry.get(name)
-    removed = publisher.remove_skill(name)
+    entry = registry.get(name, kind)
+    removed = publisher.remove_skill(name, kind=kind)
     detail: dict[str, Any] = {
         "removed": redact_item_dump(removed.model_dump()) if removed else None,
         "uninstalled": False,
@@ -440,10 +444,19 @@ def sync_skills(
 
 
 @mcp.tool()
-def plan_resource_install(name: str, platform: str | None = None) -> dict[str, Any]:
+def plan_resource_install(
+    name: str,
+    platform: str | None = None,
+    kind: str | None = None,
+) -> dict[str, Any]:
     """Build an install plan for one registered resource without writing files."""
     try:
-        plan = resource_install_plan(name, config=load_config(), platform_filter=platform)
+        plan = resource_install_plan(
+            name,
+            kind=kind,
+            config=load_config(),
+            platform_filter=platform,
+        )
     except Exception as exc:  # noqa: BLE001 - MCP tools return errors as data
         return {"error": str(exc)}
     return {
@@ -481,11 +494,11 @@ def plan_resource_install(name: str, platform: str | None = None) -> dict[str, A
 
 
 @mcp.tool()
-def update_skill(name: str) -> dict[str, Any]:
+def update_skill(name: str, kind: str | None = None) -> dict[str, Any]:
     """Force-sync a single item by name."""
     cfg = load_config()
     registry = load_registry()
-    entry = registry.get(name)
+    entry = registry.get(name, kind)
     if entry is None:
         return {"error": f"No item named {name!r} in registry."}
     result = sync_one(entry, config=cfg)

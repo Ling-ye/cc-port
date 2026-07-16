@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import Config, load_config
-from ..core.models import RegistryItem, RemovedEffect
+from ..core.models import ItemKind, RegistryItem, RemovedEffect
 from ..core.registry import find_registry_path, load_registry, save_registry
 from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubClient
@@ -113,11 +113,11 @@ def build_resource_inventory(
     registry = load_registry(reg_path)
     entries = [entry for entry in registry.items if not kind or entry.kind == kind]
     statuses = {
-        item.name: item
+        item.resource_key: item
         for item in status_all(config=cfg, registry=registry, registry_path=reg_path, kind=kind)
     }
     previews = {
-        item.name: item
+        f"{item.kind}:{item.name}": item
         for item in preview_sync_all(
             config=cfg,
             registry=registry,
@@ -134,8 +134,8 @@ def build_resource_inventory(
                 entry,
                 cfg,
                 reg_path,
-                status=statuses.get(entry.name),
-                preview=previews.get(entry.name),
+                status=statuses.get(entry.resource_key),
+                preview=previews.get(entry.resource_key),
             )
             for entry in entries
         ],
@@ -145,13 +145,14 @@ def build_resource_inventory(
 def install_resource(
     name: str,
     *,
+    kind: ItemKind | None = None,
     config: Config | None = None,
     registry_path: Path | None = None,
     platform_filter: str | None = None,
 ) -> SyncResult:
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
-    entry = _require_entry(name, reg_path)
+    entry = _require_entry(name, reg_path, kind=kind)
     if entry.lifecycle != "active":
         raise ValueError(f"Resource {name!r} has been removed from the active registry.")
     result = sync_one(
@@ -177,16 +178,21 @@ def install_resource(
 def uninstall_resource(
     name: str,
     *,
+    kind: ItemKind | None = None,
     config: Config | None = None,
     registry_path: Path | None = None,
     platform_filter: str | None = None,
 ) -> dict[str, Any]:
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
-    entry = _require_entry(name, reg_path)
+    entry = _require_entry(name, reg_path, kind=kind)
     removed = uninstall_one(entry, config=cfg, platform_filter=platform_filter)
     status = next(
-        (item for item in status_all(config=cfg, registry_path=reg_path) if item.name == name),
+        (
+            item
+            for item in status_all(config=cfg, registry_path=reg_path)
+            if item.name == name and (kind is None or item.kind == kind)
+        ),
         None,
     )
     return {"name": name, "uninstalled": removed, "status": status}
@@ -195,6 +201,7 @@ def uninstall_resource(
 def preview_resource(
     name: str,
     *,
+    kind: ItemKind | None = None,
     config: Config | None = None,
     registry_path: Path | None = None,
     platform_filter: str | None = None,
@@ -202,7 +209,7 @@ def preview_resource(
 ) -> ResourcePreviewResult:
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
-    entry = _require_entry(name, reg_path)
+    entry = _require_entry(name, reg_path, kind=kind)
 
     roots: list[Path] = []
     if platform_filter:
@@ -243,6 +250,7 @@ def preview_resource(
 def delete_resource(
     name: str,
     *,
+    kind: ItemKind | None = None,
     config: Config | None = None,
     registry_path: Path | None = None,
     confirm_name: str | None = None,
@@ -251,7 +259,7 @@ def delete_resource(
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
     registry = load_registry(reg_path)
-    entry = registry.get(name)
+    entry = registry.get(name, kind)
     if entry is None:
         raise ValueError(f"No item named {name!r} in registry.")
 
@@ -296,13 +304,14 @@ def delete_resource(
 def resource_open_path(
     name: str,
     *,
+    kind: ItemKind | None = None,
     config: Config | None = None,
     registry_path: Path | None = None,
     platform_filter: str | None = None,
 ) -> Path:
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
-    entry = _require_entry(name, reg_path)
+    entry = _require_entry(name, reg_path, kind=kind)
     if platform_filter:
         path = _platform_open_path(entry, cfg, platform_filter)
     else:
@@ -315,13 +324,14 @@ def resource_open_path(
 def resource_install_plan(
     name: str,
     *,
+    kind: ItemKind | None = None,
     config: Config | None = None,
     registry_path: Path | None = None,
     platform_filter: str | None = None,
 ) -> Any:
     cfg = config or load_config()
     reg_path = registry_path or find_registry_path()
-    entry = _require_entry(name, reg_path)
+    entry = _require_entry(name, reg_path, kind=kind)
     return create_install_plan(
         entry,
         config=cfg,
@@ -389,8 +399,13 @@ def _inventory_item(
     )
 
 
-def _require_entry(name: str, registry_path: Path) -> RegistryItem:
-    entry = load_registry(registry_path).get(name)
+def _require_entry(
+    name: str,
+    registry_path: Path,
+    *,
+    kind: ItemKind | None = None,
+) -> RegistryItem:
+    entry = load_registry(registry_path).get(name, kind)
     if entry is None:
         raise ValueError(f"No item named {name!r} in registry.")
     return entry
@@ -443,7 +458,10 @@ def _remote_preview_roots(entry: RegistryItem, config: Config, registry_path: Pa
 def _target_states(entry: RegistryItem, config: Config) -> list[ResourceTargetState]:
     states: list[ResourceTargetState] = []
     for platform in config.platforms.enabled():
-        target = platform.resolve_install_path(entry.kind, entry.install_target_name())
+        target = platform.resolve_install_path(
+            entry.kind,
+            entry.install_target_name(platform.name),
+        )
         if target is None:
             continue
         states.append(
@@ -461,7 +479,13 @@ def _target_states(entry: RegistryItem, config: Config) -> list[ResourceTargetSt
 def _target_installed(entry: RegistryItem, platform: Any, target: Path) -> bool:
     if entry.kind == "mcp":
         mcp_path = platform.mcp_json_path()
-        return bool(mcp_path and has_mcp_server(mcp_path, entry.name))
+        return bool(
+            mcp_path
+            and has_mcp_server(
+                mcp_path,
+                entry.install_target_name(platform.name),
+            )
+        )
     return target.exists()
 
 
@@ -479,7 +503,10 @@ def _platform_content_roots(
         or not entry.supports_platform(platform.name)
     ):
         return []
-    target = platform.resolve_install_path(entry.kind, entry.install_target_name())
+    target = platform.resolve_install_path(
+        entry.kind,
+        entry.install_target_name(platform.name),
+    )
     if target is None:
         return []
     if require_exists and not _target_installed(entry, platform, target):

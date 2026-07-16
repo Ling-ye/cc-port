@@ -15,8 +15,19 @@ vi.mock("@/api/client", () => ({
         resource_repo_display_name: "Test repository",
       };
     }
-    if (action === "resource_inventory") return { registry_path: "~/LPM/registry.yaml", items: [] };
-    if (action === "platforms") return { platforms: [] };
+    if (action === "asset_inventory") {
+      return {
+        branch: "main",
+        remote_commit: "abc123",
+        repo_url: "",
+        remote_available: true,
+        remote_warning: "",
+        scanned_local: false,
+        generated_at: "",
+        legacy_write_blocker: "",
+        rows: [],
+      };
+    }
     if (action === "doctor") return { checks: [{ id: "git", label: "Git", ok: true, detail: "Ready" }] };
     throw new Error(`Unexpected action: ${action}`);
   }),
@@ -48,4 +59,3 @@ describe("App task feedback", () => {
     await waitFor(() => expect(screen.getByText("已完成")).toBeVisible());
   });
 });
-

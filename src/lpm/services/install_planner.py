@@ -146,7 +146,10 @@ def plan_install(
 
     detections_by_id = {item.provider.id: item for item in detected}
     for platform in enabled:
-        target_path = platform.resolve_install_path(entry.kind, entry.install_target_name())
+        target_path = platform.resolve_install_path(
+            entry.kind,
+            entry.install_target_name(platform.name),
+        )
         if target_path is None:
             continue
         detection = detections_by_id.get(platform.name)

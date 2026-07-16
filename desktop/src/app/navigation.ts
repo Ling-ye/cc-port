@@ -3,7 +3,6 @@ import {
   BookOpenText,
   Database,
   HeartPulse,
-  GitCompareArrows,
   History,
   Info,
   MonitorDown,
@@ -16,7 +15,6 @@ export type View =
   | "dashboard"
   | "resources"
   | "environment"
-  | "version-sync"
   | "operations"
   | "add"
   | "health"
@@ -28,7 +26,6 @@ export const navItems = [
   { id: "dashboard", labelKey: "nav.dashboard", icon: Activity },
   { id: "resources", labelKey: "nav.resources", icon: Database },
   { id: "environment", labelKey: "nav.environment", icon: MonitorDown },
-  { id: "version-sync", labelKey: "nav.versionSync", icon: GitCompareArrows },
   { id: "operations", labelKey: "nav.operations", icon: History },
   { id: "add", labelKey: "nav.add", icon: PackagePlus },
   { id: "health", labelKey: "nav.health", icon: HeartPulse },

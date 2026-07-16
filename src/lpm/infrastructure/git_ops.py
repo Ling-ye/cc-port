@@ -639,6 +639,25 @@ def remote_commit(
         _cleanup_askpass(env)
 
 
+def remote_url_commit(
+    url: str,
+    ref: str = "main",
+    *,
+    token: str | None = None,
+) -> str | None:
+    """Resolve one ref on a remote URL without creating or modifying a repository."""
+    url = strip_url_credentials(_validate_argument(url, "remote URL"))
+    ref = _validate_argument(ref, "ref")
+    env = _token_env(token)
+    try:
+        res = _run(["ls-remote", url, ref], check=False, extra_env=env)
+        if res.returncode != 0 or not res.stdout.strip():
+            return None
+        return res.stdout.split()[0]
+    finally:
+        _cleanup_askpass(env)
+
+
 def remote_branches(
     url: str,
     *,

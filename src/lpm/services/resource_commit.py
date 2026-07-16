@@ -232,7 +232,7 @@ def _build_resource_commit_plan_unlocked(root: Path) -> ResourceCommitPlan:
     elif registry_path.is_file():
         try:
             registry_items = {
-                item.name: item
+                item.resource_key: item
                 for item in load_registry(registry_path).items
             }
         except Exception as exc:
