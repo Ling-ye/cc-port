@@ -19,7 +19,9 @@ import { DashboardView } from "@/features/dashboard/DashboardView";
 import { EnvironmentView } from "@/features/environment/EnvironmentView";
 import { GuideView } from "@/features/guide/GuideView";
 import { HealthView } from "@/features/health/HealthView";
+import { OperationsView } from "@/features/operations/OperationsView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
+import { RepositorySyncView } from "@/features/repository-sync/RepositorySyncView";
 import { SettingsView } from "@/features/settings/SettingsView";
 import type { PlatformProfile, RegistryItem, ResourceInventoryResult, ResourceInventoryItem, Summary } from "@/types/lpm";
 
@@ -158,6 +160,8 @@ export default function App() {
             onError={setError}
           />
         ) : null}
+        {view === "version-sync" ? <RepositorySyncView t={t} /> : null}
+        {view === "operations" ? <OperationsView t={t} /> : null}
         {view === "health" ? <HealthView t={t} /> : null}
         {view === "settings" ? (
           <SettingsView

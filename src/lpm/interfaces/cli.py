@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import asdict
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
@@ -27,6 +29,7 @@ from ..core.resource_detection import (
     detect_local_resource_type,
     detect_remote_resource,
 )
+from ..infrastructure import git_ops
 from ..services import publisher
 from ..services.doctor import build_doctor_checks, has_doctor_errors
 from ..services.env_manager import (
@@ -52,6 +55,12 @@ from ..services.installer import (
     uninstall_one,
 )
 from ..services.local_resources import export_claude_plugin, import_local_resource
+from ..services.operation_history import (
+    operation_detail,
+    operation_history_page,
+    restore_operation,
+)
+from ..services.resource_commit import build_resource_commit_plan
 from ..services.resource_manager import resource_install_plan
 from ..services.resource_repo import (
     init_resource_repo,
@@ -59,6 +68,29 @@ from ..services.resource_repo import (
     pull_resource_repo,
     push_resource_repo,
     use_resource_repo,
+)
+from ..services.resource_sync import (
+    apply_resource_sync_plan,
+    build_resource_sync_plan,
+    cancel_resource_sync_plan,
+    cleanup_stale_resource_sync_plan,
+    inspect_resource_sync,
+    list_stale_resource_sync_plans,
+    resolve_resource_sync_plan,
+)
+from ..services.state_maintenance import (
+    delete_orphan_quarantine,
+    export_orphan_backup,
+    list_maintenance_audits,
+    list_orphan_backups,
+    list_orphan_quarantines,
+    load_maintenance_audit,
+    quarantine_orphan_backups,
+)
+from ..services.state_retention import (
+    StateRetentionPlan,
+    build_state_retention_plan,
+    prune_state,
 )
 
 app = typer.Typer(
@@ -68,14 +100,18 @@ app = typer.Typer(
 )
 resource_app = typer.Typer(help="Manage the private LPM resource repository.")
 env_app = typer.Typer(help="Discover, capture, export and deploy local AI tool environment configs.")
+operations_app = typer.Typer(help="Inspect and restore persisted local write operations.")
 app.add_typer(resource_app, name="resource")
 app.add_typer(env_app, name="env")
+app.add_typer(operations_app, name="operations")
 console = Console()
 VALID_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
 
 
 def _load() -> Config:
-    return load_config()
+    cfg = load_config()
+    git_ops.configure_git_executable(cfg.git.executable)
+    return cfg
 
 
 # ---- init ---- #
@@ -188,6 +224,160 @@ def cmd_resource_push(
     _print_resource_info(info)
 
 
+@resource_app.command("commit-plan")
+def cmd_resource_commit_plan() -> None:
+    """Preview resource-level changes and safety blockers before committing."""
+    try:
+        plan = build_resource_commit_plan(config=_load())
+    except Exception as exc:
+        console.print(f"[red]Resource commit planning failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    table = Table(title="LPM resource commit plan")
+    table.add_column("Resource")
+    table.add_column("Kind")
+    table.add_column("Action")
+    table.add_column("Paths")
+    for item in plan.resources:
+        table.add_row(item.name, item.kind, item.action, ", ".join(item.paths))
+    console.print(table)
+    if plan.blocked_paths or plan.secret_findings:
+        blocked = Table(title="Blocked resource changes")
+        blocked.add_column("Path")
+        blocked.add_column("Reason")
+        for item in [*plan.blocked_paths, *plan.secret_findings]:
+            blocked.add_row(item.path, item.reason)
+        console.print(blocked)
+    console.print(f"Suggested message: {plan.suggested_message}")
+
+
+@resource_app.command("sync-status")
+def cmd_resource_sync_status(
+    fetch: bool = typer.Option(False, "--fetch", help="Fetch remote refs before reporting."),
+) -> None:
+    """Show ahead/behind/diverged state without changing the working tree."""
+    try:
+        plan = inspect_resource_sync(config=_load(), fetch=fetch)
+    except Exception as exc:
+        console.print(f"[red]Resource sync status failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_sync_plan(plan)
+
+
+@resource_app.command("sync-plan")
+def cmd_resource_sync_plan() -> None:
+    """Fetch and build a safe fast-forward or three-way merge plan."""
+    try:
+        plan = build_resource_sync_plan(config=_load())
+    except Exception as exc:
+        console.print(f"[red]Resource sync planning failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_sync_plan(plan)
+
+
+@resource_app.command("sync-resolve")
+def cmd_resource_sync_resolve(
+    operation_id: str = typer.Argument(..., help="Operation id returned by sync-plan."),
+    choices: Path = typer.Option(
+        ...,
+        "--choices",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="YAML file mapping conflict ids to local or incoming.",
+    ),
+) -> None:
+    """Resolve a persisted three-way merge plan."""
+    raw = yaml.safe_load(choices.read_text(encoding="utf-8")) or {}
+    values = raw.get("items", raw) if isinstance(raw, dict) else {}
+    if not isinstance(values, dict):
+        console.print("[red]Choices must be a YAML mapping.[/red]")
+        raise typer.Exit(2)
+    try:
+        plan = resolve_resource_sync_plan(
+            operation_id,
+            {str(key): str(value) for key, value in values.items()},
+            config=_load(),
+        )
+    except Exception as exc:
+        console.print(f"[red]Resource sync resolution failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_sync_plan(plan)
+
+
+@resource_app.command("sync-apply")
+def cmd_resource_sync_apply(
+    operation_id: str = typer.Argument(..., help="Operation id returned by sync-plan."),
+) -> None:
+    """Apply a ready sync plan to the resource repository."""
+    try:
+        plan = apply_resource_sync_plan(operation_id, config=_load())
+    except Exception as exc:
+        console.print(f"[red]Resource sync apply failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_sync_plan(plan)
+
+
+@resource_app.command("sync-cancel")
+def cmd_resource_sync_cancel(
+    operation_id: str = typer.Argument(..., help="Operation id returned by sync-plan."),
+) -> None:
+    """Cancel a pending sync plan and remove its temporary worktree."""
+    try:
+        plan = cancel_resource_sync_plan(operation_id, config=_load())
+    except Exception as exc:
+        console.print(f"[red]Resource sync cancellation failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_sync_plan(plan)
+
+
+@resource_app.command("sync-stale")
+def cmd_resource_sync_stale(
+    min_age_hours: float = typer.Option(
+        24,
+        "--min-age-hours",
+        min=0,
+        help="Only show pending worktrees at least this old.",
+    ),
+) -> None:
+    """List abandoned-looking merge worktrees without modifying them."""
+    plans = list_stale_resource_sync_plans(min_age_hours=min_age_hours)
+    table = Table(title="Stale resource sync worktrees")
+    table.add_column("Operation")
+    table.add_column("Status")
+    table.add_column("Age hours")
+    table.add_column("Worktree")
+    for plan in plans:
+        table.add_row(
+            plan.operation_id,
+            plan.status,
+            str(plan.age_hours),
+            str(plan.worktree_path),
+        )
+    console.print(table)
+
+
+@resource_app.command("sync-cleanup")
+def cmd_resource_sync_cleanup(
+    operation_id: str = typer.Argument(...),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Abandon a newer pending plan instead of requiring stale age.",
+    ),
+) -> None:
+    """Explicitly abandon a pending sync plan and remove its worktree."""
+    try:
+        plan = cleanup_stale_resource_sync_plan(
+            operation_id,
+            force=force,
+            config=_load(),
+        )
+    except Exception as exc:
+        console.print(f"[red]Resource sync cleanup failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    _print_resource_sync_plan(plan)
+
+
 def _print_resource_info(info: object) -> None:
     table = Table(title="LPM resource repository")
     table.add_column("Field", style="bold")
@@ -209,6 +399,35 @@ def _print_resource_info(info: object) -> None:
     console.print(table)
 
 
+def _print_resource_sync_plan(plan: object) -> None:
+    table = Table(title="LPM resource Git synchronization")
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    for field in (
+        "operation_id",
+        "status",
+        "branch",
+        "local_commit",
+        "remote_commit",
+        "merge_base",
+        "ahead",
+        "behind",
+        "merge_commit",
+        "detail",
+    ):
+        table.add_row(field, str(getattr(plan, field)))
+    console.print(table)
+    conflicts = plan.conflicts
+    if conflicts:
+        conflict_table = Table(title="Conflicts")
+        conflict_table.add_column("Id")
+        conflict_table.add_column("Path")
+        conflict_table.add_column("Reason")
+        for conflict in conflicts:
+            conflict_table.add_row(conflict.id, conflict.path, conflict.reason)
+        console.print(conflict_table)
+
+
 def _maybe_push_resource_repo(cfg: Config, *, push: bool, no_push: bool) -> None:
     if push and no_push:
         console.print("[red]Choose only one of --push or --no-push.[/red]")
@@ -225,6 +444,318 @@ def _maybe_push_resource_repo(cfg: Config, *, push: bool, no_push: bool) -> None
         console.print(f"[red]Resource push failed:[/red] {exc}")
         raise typer.Exit(1) from exc
     console.print(f"[green]Pushed[/green] {info.local_path}")
+
+
+# ---- persisted operations ---- #
+
+
+@operations_app.command("list")
+def cmd_operations_list(
+    limit: int = typer.Option(20, "--limit", min=1, max=100),
+    offset: int = typer.Option(0, "--offset", min=0),
+) -> None:
+    """List local write operations in reverse chronological order."""
+    page = operation_history_page(offset=offset, limit=limit)
+    table = Table(title="LPM operation history")
+    table.add_column("Operation")
+    table.add_column("Kind")
+    table.add_column("Status")
+    table.add_column("Changed")
+    table.add_column("Started")
+    table.add_column("Restorable")
+    for item in page.operations:
+        table.add_row(
+            item.operation_id,
+            item.kind,
+            item.status,
+            str(item.changed_target_count),
+            item.started_at,
+            "yes" if item.restorable else "no",
+        )
+    console.print(table)
+    console.print(
+        f"Showing {len(page.operations)} of {page.total} operation(s) "
+        f"from offset {page.offset}."
+    )
+
+
+@operations_app.command("show")
+def cmd_operations_show(
+    operation_id: str = typer.Argument(...),
+) -> None:
+    """Show one operation including metadata and target details."""
+    try:
+        detail = operation_detail(operation_id)
+    except Exception as exc:
+        console.print(f"[red]Operation detail failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print_json(data=asdict(detail))
+
+
+@operations_app.command("restore")
+def cmd_operations_restore(
+    operation_id: str = typer.Argument(...),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Restore even when targets changed after the original operation.",
+    ),
+) -> None:
+    """Restore a successful operation to its before-state."""
+    try:
+        result = restore_operation(operation_id, force=force)
+    except Exception as exc:
+        console.print(f"[red]Operation restore failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]Restored[/green] {result.source_operation_id} "
+        f"with operation {result.operation.operation_id}"
+    )
+
+
+@operations_app.command("retention-plan")
+def cmd_operations_retention_plan(
+    retention_days: int | None = typer.Option(None, "--retention-days", min=0),
+    keep_latest: int | None = typer.Option(None, "--keep-latest", min=0),
+    max_backup_mb: int | None = typer.Option(None, "--max-backup-mb", min=0),
+) -> None:
+    """Preview operation and backup cleanup without deleting anything."""
+    plan = build_state_retention_plan(
+        config=_load(),
+        retention_days=retention_days,
+        keep_latest_operations=keep_latest,
+        max_backup_mb=max_backup_mb,
+    )
+    _print_retention_plan(plan)
+
+
+@operations_app.command("prune")
+def cmd_operations_prune(
+    operation_id: list[str] = typer.Option(
+        [],
+        "--operation-id",
+        help="Delete only this eligible operation. Repeatable; defaults to all candidates.",
+    ),
+    retention_days: int | None = typer.Option(None, "--retention-days", min=0),
+    keep_latest: int | None = typer.Option(None, "--keep-latest", min=0),
+    max_backup_mb: int | None = typer.Option(None, "--max-backup-mb", min=0),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip cleanup confirmation."),
+) -> None:
+    """Explicitly delete operations selected by a fresh retention plan."""
+    cfg = _load()
+    plan = build_state_retention_plan(
+        config=cfg,
+        retention_days=retention_days,
+        keep_latest_operations=keep_latest,
+        max_backup_mb=max_backup_mb,
+    )
+    selected = operation_id or [item.operation_id for item in plan.candidates]
+    _print_retention_plan(plan)
+    if not selected:
+        console.print("[yellow]No operations are eligible for cleanup.[/yellow]")
+        return
+    if not yes and not typer.confirm(
+        f"Delete {len(selected)} operation record(s) and their backups?",
+        default=False,
+    ):
+        console.print("[yellow]Cleanup cancelled.[/yellow]")
+        return
+    try:
+        result = prune_state(
+            selected,
+            config=cfg,
+            retention_days=retention_days,
+            keep_latest_operations=keep_latest,
+            max_backup_mb=max_backup_mb,
+        )
+    except Exception as exc:
+        console.print(f"[red]State cleanup failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]Deleted[/green] {len(result.deleted_operation_ids)} operation(s); "
+        f"reclaimed {result.reclaimed_bytes} bytes."
+    )
+    if result.failed:
+        for failure in result.failed:
+            console.print(f"[red]{failure.operation_id}:[/red] {failure.error}")
+    console.print(f"Audit: {result.audit_path}")
+
+
+def _print_retention_plan(plan: StateRetentionPlan) -> None:
+    summary = Table(title="LPM state retention plan")
+    summary.add_column("Field")
+    summary.add_column("Value")
+    for field in (
+        "operation_count",
+        "running_operation_count",
+        "protected_operation_count",
+        "operation_record_bytes",
+        "backup_bytes",
+        "orphan_backup_count",
+        "orphan_backup_bytes",
+        "candidate_count",
+        "reclaimable_bytes",
+        "projected_backup_bytes",
+    ):
+        summary.add_row(field, str(getattr(plan, field)))
+    console.print(summary)
+    if plan.candidates:
+        candidates = Table(title="Cleanup candidates")
+        candidates.add_column("Operation")
+        candidates.add_column("Kind")
+        candidates.add_column("Age days")
+        candidates.add_column("Bytes")
+        candidates.add_column("Reasons")
+        for item in plan.candidates:
+            candidates.add_row(
+                item.operation_id,
+                item.kind,
+                str(item.age_days),
+                str(item.reclaimable_bytes),
+                ", ".join(item.reasons),
+            )
+        console.print(candidates)
+
+
+@operations_app.command("orphans")
+def cmd_operations_orphans() -> None:
+    """List backup entries that have no valid operation record."""
+    table = Table(title="Orphan backups")
+    table.add_column("Name")
+    table.add_column("Kind")
+    table.add_column("Bytes")
+    table.add_column("Modified")
+    for item in list_orphan_backups():
+        table.add_row(
+            item.name,
+            item.kind,
+            str(item.size_bytes),
+            item.modified_at,
+        )
+    console.print(table)
+
+
+@operations_app.command("orphan-export")
+def cmd_operations_orphan_export(
+    name: str = typer.Argument(...),
+    out: Path | None = typer.Option(None, "--out", "-o"),
+) -> None:
+    """Export one orphan backup to a ZIP without following symlinks."""
+    try:
+        result = export_orphan_backup(name, output_path=out, config=_load())
+    except Exception as exc:
+        console.print(f"[red]Orphan export failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]Exported[/green] {result.name} to {result.output_path}")
+
+
+@operations_app.command("orphan-quarantine")
+def cmd_operations_orphan_quarantine(
+    name: list[str] = typer.Option(
+        [],
+        "--name",
+        help="Orphan backup name. Repeat for multiple items.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+) -> None:
+    """Move explicitly selected orphan backups into quarantine."""
+    if not name:
+        console.print("[red]Select at least one orphan with --name.[/red]")
+        raise typer.Exit(2)
+    if not yes and not typer.confirm(
+        f"Quarantine {len(set(name))} orphan backup(s)?",
+        default=False,
+    ):
+        console.print("[yellow]Quarantine cancelled.[/yellow]")
+        return
+    try:
+        result = quarantine_orphan_backups(name, config=_load())
+    except Exception as exc:
+        console.print(f"[red]Orphan quarantine failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]Quarantined[/green] {result.quarantine.item_count} item(s) "
+        f"as {result.quarantine.quarantine_id}"
+    )
+    console.print(f"Audit: {result.audit_path}")
+
+
+@operations_app.command("quarantines")
+def cmd_operations_quarantines() -> None:
+    """List orphan backup quarantine batches."""
+    table = Table(title="Orphan backup quarantines")
+    table.add_column("Quarantine")
+    table.add_column("Items")
+    table.add_column("Bytes")
+    table.add_column("Created")
+    for item in list_orphan_quarantines():
+        table.add_row(
+            item.quarantine_id,
+            str(item.item_count),
+            str(item.size_bytes),
+            item.created_at,
+        )
+    console.print(table)
+
+
+@operations_app.command("quarantine-delete")
+def cmd_operations_quarantine_delete(
+    quarantine_id: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+) -> None:
+    """Permanently delete one orphan backup quarantine batch."""
+    if not yes and not typer.confirm(
+        f"Permanently delete quarantine {quarantine_id}?",
+        default=False,
+    ):
+        console.print("[yellow]Delete cancelled.[/yellow]")
+        return
+    result = delete_orphan_quarantine(quarantine_id, config=_load())
+    if not result.deleted:
+        console.print(f"[red]Quarantine delete failed:[/red] {result.error}")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]Deleted[/green] {quarantine_id}; "
+        f"reclaimed {result.reclaimed_bytes} bytes."
+    )
+    console.print(f"Audit: {result.audit_path}")
+
+
+@operations_app.command("audits")
+def cmd_operations_audits(
+    limit: int = typer.Option(50, "--limit", min=1, max=500),
+) -> None:
+    """List state maintenance audit records."""
+    table = Table(title="State maintenance audits")
+    table.add_column("Audit")
+    table.add_column("Action")
+    table.add_column("Status")
+    table.add_column("Items")
+    table.add_column("Reclaimed")
+    table.add_column("Created")
+    for item in list_maintenance_audits(limit=limit):
+        table.add_row(
+            item.audit_id,
+            item.action,
+            item.status,
+            str(item.item_count),
+            str(item.reclaimed_bytes),
+            item.created_at,
+        )
+    console.print(table)
+
+
+@operations_app.command("audit")
+def cmd_operations_audit(
+    audit_id: str = typer.Argument(...),
+) -> None:
+    """Show one state maintenance audit record."""
+    try:
+        payload = load_maintenance_audit(audit_id)
+    except Exception as exc:
+        console.print(f"[red]Maintenance audit failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print_json(data=payload)
 
 
 
@@ -1120,6 +1651,7 @@ def cmd_sync(
     table.add_column("Action")
     table.add_column("Path")
     table.add_column("Platforms")
+    table.add_column("Operation")
     table.add_column("Detail")
     style = {
         SyncAction.INSTALLED: "green",
@@ -1141,6 +1673,7 @@ def cmd_sync(
             f"[{style[r.action]}]{r.action.value}[/{style[r.action]}]",
             str(r.install_path),
             ", ".join(r.platforms_installed) or "-",
+            r.operation_id or "-",
             r.detail,
         )
     console.print(table)

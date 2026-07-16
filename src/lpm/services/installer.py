@@ -11,12 +11,30 @@ from pathlib import Path
 
 from ..core.config import Config
 from ..core.models import Registry, RegistryItem
+from ..core.ownership import (
+    is_lpm_managed,
+    is_lpm_managed_mcp,
+    mark_lpm_managed_mcp,
+    mcp_ownership_path,
+    unmark_lpm_managed_mcp,
+    write_managed_marker,
+)
 from ..core.platforms import PlatformProfile
 from ..core.registry import find_registry_path, load_registry, save_registry
 from ..core.secrets import sanitize_mcp_config_for_storage
 from ..infrastructure import git_ops
 from .install_planner import InstallPlan, copy_resource_tree, plan_install
-from .mcp_installer import inject_mcp_server, remove_mcp_server
+from .local_transaction import (
+    ChangeTarget,
+    LocalChangeTransaction,
+    resource_hash_path,
+)
+from .mcp_installer import (
+    has_mcp_server,
+    inject_mcp_server,
+    list_mcp_servers,
+    remove_mcp_server,
+)
 
 # Backward-compatible alias
 SkillEntry = RegistryItem
@@ -50,6 +68,10 @@ class SyncResult:
     action: SyncAction
     detail: str = ""
     platforms_installed: list[str] = field(default_factory=list)
+    operation_id: str = ""
+    operation_status: str = ""
+    backup_root: Path | None = None
+    rolled_back: bool = False
 
 
 @dataclass
@@ -99,7 +121,11 @@ def _clone_path(config: Config, entry: RegistryItem) -> Path:
 
 
 def _install_skill_to_platform(
-    source_path: Path, platform: PlatformProfile, entry: RegistryItem
+    source_path: Path,
+    platform: PlatformProfile,
+    entry: RegistryItem,
+    *,
+    force_unmanaged: bool = False,
 ) -> Path | None:
     """Copy a skill directory to a platform's skills_dir."""
     target_dir = platform.resolve_install_path("skill", entry.install_target_name())
@@ -112,24 +138,71 @@ def _install_skill_to_platform(
         pass
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     if target_dir.exists():
+        if (
+            not force_unmanaged
+            and not is_lpm_managed(target_dir, resource_name=entry.name)
+        ):
+            raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
+        if (
+            is_lpm_managed(target_dir, resource_name=entry.name)
+            and resource_hash_path(source_path) == resource_hash_path(target_dir)
+        ):
+            return target_dir
         _remove_path(target_dir)
     copy_resource_tree(source_path, target_dir)
     return target_dir
 
 
 def _install_mcp_to_platform(
-    platform: PlatformProfile, entry: RegistryItem
+    platform: PlatformProfile,
+    entry: RegistryItem,
+    *,
+    force_unmanaged: bool = False,
 ) -> Path | None:
     """Inject MCP config into a platform's mcp.json."""
     mcp_path = platform.mcp_json_path()
     if mcp_path is None or entry.mcp_config is None:
         return None
-    inject_mcp_server(mcp_path, entry.name, sanitize_mcp_config_for_storage(entry.mcp_config))
+    if (
+        mcp_path.exists()
+        and has_mcp_server(mcp_path, entry.name)
+        and not force_unmanaged
+        and not is_lpm_managed_mcp(
+            mcp_path,
+            entry.name,
+            resource_name=entry.name,
+        )
+    ):
+        raise RuntimeError(
+            f"MCP server exists and is not managed by LPM: {entry.name} in {mcp_path}"
+        )
+    expected = sanitize_mcp_config_for_storage(entry.mcp_config)
+    if (
+        mcp_path.exists()
+        and list_mcp_servers(mcp_path).get(entry.name) == expected
+        and is_lpm_managed_mcp(
+            mcp_path,
+            entry.name,
+            resource_name=entry.name,
+        )
+    ):
+        return mcp_path
+    inject_mcp_server(mcp_path, entry.name, expected)
+    mark_lpm_managed_mcp(
+        mcp_path,
+        entry.name,
+        resource_name=entry.name,
+        platform=platform.name,
+    )
     return mcp_path
 
 
 def _install_rule_to_platform(
-    source_path: Path, platform: PlatformProfile, entry: RegistryItem
+    source_path: Path,
+    platform: PlatformProfile,
+    entry: RegistryItem,
+    *,
+    force_unmanaged: bool = False,
 ) -> Path | None:
     """Copy rule files to a platform's rules_dir."""
     target_dir = platform.resolve_install_path("rule", entry.install_target_name())
@@ -142,13 +215,27 @@ def _install_rule_to_platform(
         pass
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     if target_dir.exists():
+        if (
+            not force_unmanaged
+            and not is_lpm_managed(target_dir, resource_name=entry.name)
+        ):
+            raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
+        if (
+            is_lpm_managed(target_dir, resource_name=entry.name)
+            and resource_hash_path(source_path) == resource_hash_path(target_dir)
+        ):
+            return target_dir
         _remove_path(target_dir)
     copy_resource_tree(source_path, target_dir)
     return target_dir
 
 
 def _install_plugin_to_platform(
-    source_path: Path, platform: PlatformProfile, entry: RegistryItem
+    source_path: Path,
+    platform: PlatformProfile,
+    entry: RegistryItem,
+    *,
+    force_unmanaged: bool = False,
 ) -> Path | None:
     """Copy a plugin directory to a platform's plugin target."""
     target_dir = platform.resolve_install_path("plugin", entry.install_target_name())
@@ -160,6 +247,16 @@ def _install_plugin_to_platform(
     except OSError:
         pass
     if target_dir.exists():
+        if (
+            not force_unmanaged
+            and not is_lpm_managed(target_dir, resource_name=entry.name)
+        ):
+            raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
+        if (
+            is_lpm_managed(target_dir, resource_name=entry.name)
+            and resource_hash_path(source_path) == resource_hash_path(target_dir)
+        ):
+            return target_dir
         _remove_path(target_dir)
     copy_resource_tree(source_path, target_dir)
     return target_dir
@@ -171,6 +268,7 @@ def _distribute_to_platforms(
     clone_path: Path,
     *,
     platform_filter: str | None = None,
+    force_unmanaged: bool = False,
 ) -> list[str]:
     """Distribute an item to all enabled platforms based on its kind.
 
@@ -191,15 +289,39 @@ def _distribute_to_platforms(
     for plat in platforms:
         result_path: Path | None = None
         if entry.kind == "skill":
-            result_path = _install_skill_to_platform(source, plat, entry)
+            result_path = _install_skill_to_platform(
+                source,
+                plat,
+                entry,
+                force_unmanaged=force_unmanaged,
+            )
         elif entry.kind == "mcp":
-            result_path = _install_mcp_to_platform(plat, entry)
+            result_path = _install_mcp_to_platform(
+                plat,
+                entry,
+                force_unmanaged=force_unmanaged,
+            )
         elif entry.kind in {"rule", "prompt"}:
-            result_path = _install_rule_to_platform(source, plat, entry)
+            result_path = _install_rule_to_platform(
+                source,
+                plat,
+                entry,
+                force_unmanaged=force_unmanaged,
+            )
         elif entry.kind == "plugin":
-            result_path = _install_plugin_to_platform(source, plat, entry)
+            result_path = _install_plugin_to_platform(
+                source,
+                plat,
+                entry,
+                force_unmanaged=force_unmanaged,
+            )
 
         if result_path is not None:
+            if (
+                entry.kind != "mcp"
+                and not is_lpm_managed(result_path, resource_name=entry.name)
+            ):
+                write_managed_marker(result_path, entry, platform=plat.name)
             installed_on.append(plat.name)
 
     return installed_on
@@ -237,6 +359,105 @@ def sync_one(
     token: str | None = None,
     platform_filter: str | None = None,
     registry_root: Path | None = None,
+    force_unmanaged: bool = False,
+    transactional: bool = True,
+) -> SyncResult:
+    if not transactional:
+        return _sync_one_unsafe(
+            entry,
+            config=config,
+            token=token,
+            platform_filter=platform_filter,
+            registry_root=registry_root,
+            force_unmanaged=force_unmanaged,
+        )
+    if entry.lifecycle != "active":
+        return SyncResult(
+            name=entry.name,
+            install_path=_install_path(config, entry),
+            action=SyncAction.SKIPPED,
+            detail="Resource has been removed from the active registry.",
+        )
+    if platform_filter and not entry.supports_platform(platform_filter):
+        return SyncResult(
+            name=entry.name,
+            install_path=_install_path(config, entry),
+            action=SyncAction.SKIPPED,
+            detail=f"Resource is not allowed on platform {platform_filter!r}.",
+        )
+
+    targets = _resource_change_targets(
+        config,
+        entry,
+        platform_filter=platform_filter,
+        change_action="install",
+    )
+    transaction = LocalChangeTransaction.begin(
+        "resource-install",
+        targets,
+        metadata={
+            "resource": entry.name,
+            "platform": platform_filter or "",
+        },
+        lock_timeout_seconds=config.state.lock_timeout_seconds,
+    )
+    transaction.mark_attempted(target.path for target in targets)
+    result: SyncResult | None = None
+    try:
+        result = _sync_one_unsafe(
+            entry,
+            config=config,
+            token=token,
+            platform_filter=platform_filter,
+            registry_root=registry_root,
+            force_unmanaged=force_unmanaged,
+        )
+        if result.action in {
+            SyncAction.FAILED,
+            SyncAction.REPO_GONE,
+            SyncAction.SKIPPED,
+        }:
+            raise RuntimeError(result.detail or result.action.value)
+        _verify_resource_install(
+            entry,
+            config=config,
+            platforms_installed=result.platforms_installed,
+        )
+        transaction.complete()
+        result.operation_id = transaction.record.operation_id
+        result.operation_status = transaction.record.status
+        result.backup_root = transaction.backup_root
+        return result
+    except Exception as exc:
+        rollback_errors = transaction.rollback(str(exc))
+        detail = str(exc)
+        if rollback_errors:
+            detail += " | rollback errors: " + "; ".join(rollback_errors)
+        return SyncResult(
+            name=entry.name,
+            install_path=_install_path(config, entry),
+            action=(
+                result.action
+                if result is not None
+                and result.action in {SyncAction.FAILED, SyncAction.REPO_GONE}
+                else SyncAction.FAILED
+            ),
+            detail=detail,
+            operation_id=transaction.record.operation_id,
+            operation_status=transaction.record.status,
+            backup_root=transaction.backup_root,
+            rolled_back=transaction.record.rolled_back,
+        )
+
+
+def _sync_one_unsafe(
+    entry: RegistryItem,
+    *,
+    config: Config,
+    token: str | None = None,
+    platform_filter: str | None = None,
+    registry_root: Path | None = None,
+    force_unmanaged: bool = False,
 ) -> SyncResult:
     install_path = _install_path(config, entry)
     clone_path = _clone_path(config, entry)
@@ -271,7 +492,11 @@ def sync_one(
                 )
             if entry.kind == "mcp":
                 platforms_installed = _distribute_to_platforms(
-                    config, entry, source_path, platform_filter=platform_filter
+                    config,
+                    entry,
+                    source_path,
+                    platform_filter=platform_filter,
+                    force_unmanaged=force_unmanaged,
                 )
                 return SyncResult(
                     name=entry.name,
@@ -289,7 +514,11 @@ def sync_one(
                 install_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_path, install_path)
             platforms_installed = _distribute_to_platforms(
-                config, entry, install_path, platform_filter=platform_filter
+                config,
+                entry,
+                install_path,
+                platform_filter=platform_filter,
+                force_unmanaged=force_unmanaged,
             )
             return SyncResult(
                 name=entry.name,
@@ -300,7 +529,11 @@ def sync_one(
 
         if entry.kind == "mcp" and entry.mcp_config and not _needs_clone(entry):
             platforms_installed = _distribute_to_platforms(
-                config, entry, clone_path, platform_filter=platform_filter
+                config,
+                entry,
+                clone_path,
+                platform_filter=platform_filter,
+                force_unmanaged=force_unmanaged,
             )
             return SyncResult(
                 name=entry.name,
@@ -328,7 +561,11 @@ def sync_one(
             _materialize_subdir(clone_path, entry.subdir, install_path)
 
         platforms_installed = _distribute_to_platforms(
-            config, entry, clone_path, platform_filter=platform_filter
+            config,
+            entry,
+            clone_path,
+            platform_filter=platform_filter,
+            force_unmanaged=force_unmanaged,
         )
 
         return SyncResult(
@@ -382,6 +619,8 @@ def sync_all(
     include_optional: bool = False,
     include_kinds: set[str] | None = None,
     platform_filter: str | None = None,
+    force_unmanaged: bool = False,
+    transactional: bool = True,
 ) -> list[SyncResult]:
     effective_registry_path = registry_path or (find_registry_path() if registry is None else None)
     reg = registry or load_registry(effective_registry_path)
@@ -408,6 +647,8 @@ def sync_all(
                 config=config,
                 platform_filter=platform_filter,
                 registry_root=registry_root,
+                force_unmanaged=force_unmanaged,
+                transactional=transactional,
             )
         )
     return results
@@ -559,6 +800,34 @@ def _preview_sync_item(
                 + ", ".join(sorted(soft_targets))
             )
 
+    for platform_name, target_path in target_pairs:
+        unmanaged_directory = (
+            entry.kind != "mcp"
+            and target_path.exists()
+            and not is_lpm_managed(target_path, resource_name=entry.name)
+        )
+        unmanaged_mcp = False
+        if entry.kind == "mcp" and target_path.exists():
+            try:
+                unmanaged_mcp = (
+                    has_mcp_server(target_path, entry.name)
+                    and not is_lpm_managed_mcp(
+                        target_path,
+                        entry.name,
+                        resource_name=entry.name,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                blocked = True
+                warnings.append(
+                    f"Cannot read MCP target for {platform_name}: {target_path}: {exc}"
+                )
+        if unmanaged_directory or unmanaged_mcp:
+            blocked = True
+            warnings.append(
+                f"Target for {platform_name} exists and is not managed by LPM: {target_path}"
+            )
+
     return SyncPreviewItem(
         name=entry.name,
         kind=entry.kind,
@@ -630,6 +899,60 @@ def uninstall_one(
     *,
     config: Config,
     platform_filter: str | None = None,
+    transactional: bool = True,
+) -> bool:
+    if not transactional:
+        return _uninstall_one_unsafe(
+            entry,
+            config=config,
+            platform_filter=platform_filter,
+        )
+    targets = _resource_change_targets(
+        config,
+        entry,
+        platform_filter=platform_filter,
+        change_action="uninstall",
+        include_cache=platform_filter is None,
+    )
+    transaction = LocalChangeTransaction.begin(
+        "resource-uninstall",
+        targets,
+        metadata={
+            "resource": entry.name,
+            "platform": platform_filter or "",
+        },
+        lock_timeout_seconds=config.state.lock_timeout_seconds,
+    )
+    transaction.mark_attempted(target.path for target in targets)
+    try:
+        removed = _uninstall_one_unsafe(
+            entry,
+            config=config,
+            platform_filter=platform_filter,
+        )
+        _verify_resource_uninstall(
+            entry,
+            config=config,
+            platform_filter=platform_filter,
+        )
+        transaction.complete()
+        return removed
+    except Exception as exc:
+        errors = transaction.rollback(str(exc))
+        detail = str(exc)
+        if errors:
+            detail += " | rollback errors: " + "; ".join(errors)
+        raise RuntimeError(
+            f"{detail} (operation {transaction.record.operation_id}, "
+            f"status {transaction.record.status})"
+        ) from exc
+
+
+def _uninstall_one_unsafe(
+    entry: RegistryItem,
+    *,
+    config: Config,
+    platform_filter: str | None = None,
 ) -> bool:
     """Remove an item's local files and clean up platform installations."""
     install_path = _install_path(config, entry)
@@ -653,12 +976,171 @@ def uninstall_one(
     return removed
 
 
+def _resource_change_targets(
+    config: Config,
+    entry: RegistryItem,
+    *,
+    platform_filter: str | None,
+    change_action: str,
+    include_cache: bool = True,
+) -> list[ChangeTarget]:
+    targets: list[ChangeTarget] = []
+    if include_cache:
+        if not (
+            entry.kind == "mcp"
+            and (
+                _is_local_resource(entry)
+                or (entry.mcp_config and not _needs_clone(entry))
+            )
+        ):
+            targets.append(
+                ChangeTarget(
+                    path=_install_path(config, entry),
+                    change_action=change_action,
+                    resource=entry.name,
+                )
+            )
+            clone_path = _clone_path(config, entry)
+            if clone_path != _install_path(config, entry):
+                targets.append(
+                    ChangeTarget(
+                        path=clone_path,
+                        change_action=change_action,
+                        resource=entry.name,
+                    )
+                )
+
+    platform_targets = _platform_targets(
+        config,
+        entry,
+        platform_filter=platform_filter,
+    )
+    for platform, path in platform_targets:
+        targets.append(
+            ChangeTarget(
+                path=path,
+                change_action=change_action,
+                resource=entry.name,
+                platform=platform,
+            )
+        )
+    if entry.kind == "mcp" and platform_targets:
+        targets.append(
+            ChangeTarget(
+                path=mcp_ownership_path(),
+                change_action=change_action,
+                resource=entry.name,
+            )
+        )
+    return targets
+
+
+def _verify_resource_install(
+    entry: RegistryItem,
+    *,
+    config: Config,
+    platforms_installed: list[str],
+) -> None:
+    if entry.kind == "mcp":
+        if _needs_clone(entry) and not _clone_path(config, entry).exists():
+            raise RuntimeError(
+                f"Install cache is missing for {entry.name}: {_clone_path(config, entry)}"
+            )
+        expected = sanitize_mcp_config_for_storage(entry.mcp_config or {})
+        for platform_name in platforms_installed:
+            platform = config.platforms.get(platform_name)
+            mcp_path = platform.mcp_json_path() if platform else None
+            if (
+                mcp_path is None
+                or list_mcp_servers(mcp_path).get(entry.name) != expected
+                or not is_lpm_managed_mcp(
+                    mcp_path,
+                    entry.name,
+                    resource_name=entry.name,
+                )
+            ):
+                raise RuntimeError(
+                    f"Install verification failed for {entry.name} on {platform_name}."
+                )
+        return
+
+    cache_path = _install_path(config, entry)
+    if not cache_path.exists():
+        raise RuntimeError(f"Install cache is missing for {entry.name}: {cache_path}")
+    cache_hash = resource_hash_path(cache_path)
+    for platform_name in platforms_installed:
+        platform = config.platforms.get(platform_name)
+        target = (
+            platform.resolve_install_path(entry.kind, entry.install_target_name())
+            if platform
+            else None
+        )
+        if (
+            target is None
+            or not is_lpm_managed(target, resource_name=entry.name)
+            or resource_hash_path(target) != cache_hash
+        ):
+            raise RuntimeError(
+                f"Install verification failed for {entry.name} on {platform_name}."
+            )
+
+
+def _verify_resource_uninstall(
+    entry: RegistryItem,
+    *,
+    config: Config,
+    platform_filter: str | None,
+) -> None:
+    if platform_filter is None:
+        for path in {_install_path(config, entry), _clone_path(config, entry)}:
+            if path.exists() or path.is_symlink():
+                raise RuntimeError(
+                    f"Uninstall verification failed; cache still exists for {entry.name}: {path}"
+                )
+
+    platforms = config.platforms.enabled()
+    if platform_filter:
+        platforms = [platform for platform in platforms if platform.name == platform_filter]
+    for platform in platforms:
+        if entry.kind == "mcp":
+            mcp_path = platform.mcp_json_path()
+            if (
+                mcp_path
+                and is_lpm_managed_mcp(
+                    mcp_path,
+                    entry.name,
+                    resource_name=entry.name,
+                )
+            ):
+                raise RuntimeError(
+                    f"Uninstall verification failed for {entry.name} on {platform.name}."
+                )
+            continue
+        target = platform.resolve_install_path(entry.kind, entry.install_target_name())
+        if target and is_lpm_managed(target, resource_name=entry.name):
+            raise RuntimeError(
+                f"Uninstall verification failed for {entry.name} on {platform.name}."
+            )
+
+
 def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile) -> bool:
     if entry.kind == "skill":
         target = platform.resolve_install_path("skill", entry.install_target_name())
     elif entry.kind == "mcp":
         mcp_path = platform.mcp_json_path()
-        return bool(mcp_path and remove_mcp_server(mcp_path, entry.name))
+        if (
+            not mcp_path
+            or not is_lpm_managed_mcp(
+                mcp_path,
+                entry.name,
+                resource_name=entry.name,
+            )
+        ):
+            return False
+        removed = remove_mcp_server(mcp_path, entry.name)
+        if removed:
+            unmark_lpm_managed_mcp(mcp_path, entry.name)
+        return removed
     elif entry.kind in {"rule", "prompt"}:
         target = platform.resolve_install_path("rule", entry.install_target_name())
     elif entry.kind == "plugin":
@@ -667,6 +1149,8 @@ def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile
         target = None
 
     if target and target.exists():
+        if not is_lpm_managed(target, resource_name=entry.name):
+            return False
         _remove_path(target)
         return True
     return False
@@ -698,8 +1182,7 @@ def check_one(
             reachable=reachable,
         )
 
-    probe_url = git_ops.with_token(entry.repo, token) if token else entry.repo
-    reachable = git_ops.probe_remote(probe_url, entry.ref)
+    reachable = git_ops.probe_remote(entry.repo, entry.ref, token=token)
 
     entry.reachable = reachable
     entry.last_checked = datetime.now(timezone.utc).isoformat(timespec="seconds")

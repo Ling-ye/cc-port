@@ -176,6 +176,8 @@ def _scan_root(
 
     while stack:
         current, depth = stack.pop()
+        if current != root and current.is_symlink():
+            continue
         if current.is_dir():
             if _is_excluded_dir(current, root=root):
                 continue
@@ -190,6 +192,8 @@ def _scan_root(
             except OSError:
                 continue
             for child in reversed(children):
+                if child.is_symlink():
+                    continue
                 if child.is_dir():
                     stack.append((child, depth + 1))
                 elif child.is_file():
@@ -205,7 +209,7 @@ def _candidate_from_directory(path: Path, *, tool: str, source: str) -> Discover
         return manifest_candidate
 
     skill_md = path / "SKILL.md"
-    if skill_md.is_file():
+    if skill_md.is_file() and not skill_md.is_symlink():
         warnings: list[str] = []
         name_hint = _slug(path.name)
         description = ""
@@ -228,7 +232,7 @@ def _candidate_from_directory(path: Path, *, tool: str, source: str) -> Discover
         )
 
     for marker in (path / ".claude-plugin" / "plugin.json", path / ".codex-plugin" / "plugin.json"):
-        if marker.is_file():
+        if marker.is_file() and not marker.is_symlink():
             return _resource(
                 path=path,
                 marker=marker,

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from .models import ItemKind
+from .tool_adapters import TOOL_ADAPTERS
 
 DetectionSignalKind = Literal[
     "command",
@@ -45,80 +46,19 @@ class AgentDetection:
     notes: tuple[str, ...] = ()
 
 
-PROVIDERS: tuple[AgentProvider, ...] = (
+PROVIDERS: tuple[AgentProvider, ...] = tuple(
     AgentProvider(
-        id="codex",
-        name="Codex",
-        install_mechanism="copy_skills_dir",
-        supports_kinds=("skill",),
-        signals=(
-            DetectionSignal("known_skills_dir", "~/.codex/skills"),
-            DetectionSignal("config_file", "~/.codex/config.toml", soft=True),
+        id=adapter.id,
+        name=adapter.name,
+        install_mechanism=adapter.install_mechanism(adapter.supports_kinds[0]),
+        supports_kinds=adapter.supports_kinds,
+        signals=tuple(
+            DetectionSignal(signal.kind, signal.value, signal.soft)
+            for signal in adapter.signals
         ),
-    ),
-    AgentProvider(
-        id="claude-code",
-        name="Claude Code",
-        install_mechanism="claude_plugin_or_copy",
-        supports_kinds=("skill", "mcp", "plugin"),
-        signals=(
-            DetectionSignal("command", "claude"),
-            DetectionSignal("config_file", "~/.claude.json", soft=True),
-            DetectionSignal("known_skills_dir", "~/.claude/skills", soft=True),
-        ),
-    ),
-    AgentProvider(
-        id="cursor",
-        name="Cursor",
-        install_mechanism="skills_cli_or_copy",
-        supports_kinds=("skill", "mcp", "rule", "prompt"),
-        signals=(
-            DetectionSignal("known_skills_dir", "~/.cursor/skills"),
-            DetectionSignal("config_file", "~/.cursor/mcp.json", soft=True),
-        ),
-    ),
-    AgentProvider(
-        id="windsurf",
-        name="Windsurf",
-        install_mechanism="skills_cli_or_copy",
-        supports_kinds=("skill", "mcp", "rule", "prompt"),
-        signals=(
-            DetectionSignal("known_skills_dir", "~/.windsurf/skills"),
-            DetectionSignal("config_file", "~/.windsurf/mcp.json", soft=True),
-        ),
-    ),
-    AgentProvider(
-        id="cline",
-        name="Cline",
-        install_mechanism="skills_cli_or_copy",
-        supports_kinds=("skill", "mcp", "rule", "prompt"),
-        signals=(
-            DetectionSignal("extension_dir", "~/.vscode/extensions", soft=True),
-            DetectionSignal("extension_dir", "~/.cursor/extensions", soft=True),
-        ),
-        soft=True,
-    ),
-    AgentProvider(
-        id="opencode",
-        name="opencode",
-        install_mechanism="native_plugin_commands_agents",
-        supports_kinds=("skill", "mcp", "rule", "prompt", "plugin"),
-        signals=(
-            DetectionSignal("command", "opencode"),
-            DetectionSignal("config_file", "~/.config/opencode/opencode.json", soft=True),
-            DetectionSignal("known_skills_dir", "~/.config/opencode/skills", soft=True),
-        ),
-    ),
-    AgentProvider(
-        id="gemini",
-        name="Gemini CLI",
-        install_mechanism="copy_gemini_commands",
-        supports_kinds=("rule", "prompt"),
-        signals=(
-            DetectionSignal("command", "gemini"),
-            DetectionSignal("config_file", "~/.gemini/settings.json", soft=True),
-        ),
-    ),
+        soft=adapter.soft_detection,
+    )
+    for adapter in TOOL_ADAPTERS
 )
 
 

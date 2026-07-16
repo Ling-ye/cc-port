@@ -134,9 +134,18 @@ def test_manifest_limits_copied_resource_paths(tmp_path: Path) -> None:
     (src / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n", encoding="utf-8")
     (src / "keep").mkdir()
     (src / "keep" / "tool.md").write_text("keep", encoding="utf-8")
+    (src / "node_modules" / "pkg").mkdir(parents=True)
+    (src / "node_modules" / "pkg" / "index.js").write_text("drop", encoding="utf-8")
+    (src / ".env").write_text("TOKEN=secret", encoding="utf-8")
     (src / "extra.md").write_text("drop", encoding="utf-8")
     (src / "lpm.resource.json").write_text(
-        json.dumps({"skills": ["SKILL.md"], "commands": ["keep"]}),
+        json.dumps(
+            {
+                "skills": ["SKILL.md"],
+                "commands": ["keep", "node_modules/pkg/index.js"],
+                "hooks": [".env"],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -146,6 +155,8 @@ def test_manifest_limits_copied_resource_paths(tmp_path: Path) -> None:
     assert (dest / "SKILL.md").is_file()
     assert (dest / "keep" / "tool.md").is_file()
     assert not (dest / "extra.md").exists()
+    assert not (dest / "node_modules").exists()
+    assert not (dest / ".env").exists()
     assert (dest / "lpm.resource.json").is_file()
 
 
@@ -225,7 +236,9 @@ def test_sync_installs_plugin_to_platform_plugin_dir(tmp_path: Path) -> None:
     assert (plugin_target / "demo-plugin" / "plugin.json").is_file()
 
 
-def test_mcp_injection_creates_one_backup_and_preserves_other_servers(tmp_path: Path) -> None:
+def test_mcp_injection_uses_state_backups_and_preserves_other_servers(
+    tmp_path: Path,
+) -> None:
     mcp_json = tmp_path / "mcp.json"
     mcp_json.write_text(
         json.dumps({"mcpServers": {"existing": {"command": "old"}}}, indent=2),
@@ -233,10 +246,17 @@ def test_mcp_injection_creates_one_backup_and_preserves_other_servers(tmp_path: 
     )
 
     inject_mcp_server(mcp_json, "demo", {"command": "demo"})
-    first_backup_text = (tmp_path / "mcp.json.lpm.bak").read_text(encoding="utf-8")
     inject_mcp_server(mcp_json, "demo", {"command": "demo2"})
 
     data = json.loads(mcp_json.read_text(encoding="utf-8"))
     assert data["mcpServers"]["existing"] == {"command": "old"}
     assert data["mcpServers"]["demo"] == {"command": "demo2"}
-    assert (tmp_path / "mcp.json.lpm.bak").read_text(encoding="utf-8") == first_backup_text
+    backups = sorted((tmp_path / ".lpm-state" / "backups" / "mcp").rglob("*-mcp.json"))
+    assert len(backups) == 2
+    assert json.loads(backups[0].read_text(encoding="utf-8")) == {
+        "mcpServers": {"existing": {"command": "old"}}
+    }
+    assert json.loads(backups[1].read_text(encoding="utf-8"))["mcpServers"]["demo"] == {
+        "command": "demo"
+    }
+    assert not (tmp_path / "mcp.json.lpm.bak").exists()

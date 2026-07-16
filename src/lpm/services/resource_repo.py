@@ -18,6 +18,8 @@ from ..core.config import (
 from ..core.registry import CURRENT_REGISTRY_VERSION, DEFAULT_REGISTRY_FILENAME, load_registry
 from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubClient
+from .resource_commit import commit_resource_changes_unlocked
+from .resource_repo_lock import resource_repo_write_lock
 
 RESOURCE_DIRS = ("skills", "rules", "prompts", "mcp", "plugins", ".claude-plugin")
 LPM_HOMEPAGE = "https://github.com/Ling-ye/LingyePluginMarketplace"
@@ -89,6 +91,7 @@ def init_resource_repo(
 ) -> ResourceRepoInfo:
     """Create or connect the user's private GitHub resource repository."""
     cfg = config or load_config(config_path)
+    git_ops.configure_git_executable(cfg.git.executable)
     repo_name = name or cfg.resources.repo_name or DEFAULT_RESOURCE_REPO_NAME
     branch = cfg.resources.branch or DEFAULT_RESOURCE_BRANCH
     if not cfg.github.token:
@@ -106,14 +109,13 @@ def init_resource_repo(
     )
 
     local_path = _local_path_for_repo(cfg.resources, repo_name)
-    connect_local_resource_repo(
+    prepare_local_resource_repo(
         local_path,
         repo_url=repo.https_url,
         branch=branch,
         token=cfg.github.token,
+        config=cfg,
     )
-    ensure_structure(local_path)
-    _commit_and_push_if_needed(local_path, branch=branch, token=cfg.github.token)
 
     cfg.resources.repo_name = repo_name
     cfg.resources.repo_url = repo.https_url
@@ -125,28 +127,38 @@ def init_resource_repo(
 
 def use_resource_repo(target: str, *, config: Config | None = None, config_path: Path | None = None) -> ResourceRepoInfo:
     cfg = config or load_config(config_path)
+    git_ops.configure_git_executable(cfg.git.executable)
     branch = cfg.resources.branch or DEFAULT_RESOURCE_BRANCH
 
     if _looks_like_git_url(target):
         repo_url = target.rstrip("/")
         repo_name = _repo_name_from_url(repo_url)
         local_path = _local_path_for_repo(cfg.resources, repo_name)
-        connect_local_resource_repo(
+        with resource_repo_write_lock(
             local_path,
-            repo_url=repo_url,
-            branch=branch,
-            token=cfg.github.token or None,
-        )
+            timeout_seconds=cfg.state.lock_timeout_seconds,
+        ):
+            _connect_local_resource_repo_unlocked(
+                local_path,
+                repo_url=repo_url,
+                branch=branch,
+                token=cfg.github.token or None,
+            )
+            ensure_structure(local_path)
     else:
         local_path = Path(target).expanduser().resolve()
-        if not local_path.exists():
-            local_path.mkdir(parents=True, exist_ok=True)
-        if not git_ops.is_repo(local_path):
-            git_ops.init_repo(local_path, default_branch=branch)
+        with resource_repo_write_lock(
+            local_path,
+            timeout_seconds=cfg.state.lock_timeout_seconds,
+        ):
+            if not local_path.exists():
+                local_path.mkdir(parents=True, exist_ok=True)
+            if not git_ops.is_repo(local_path):
+                git_ops.init_repo(local_path, default_branch=branch)
+            ensure_structure(local_path)
         repo_url = git_ops.current_remote_url(local_path) if git_ops.is_repo(local_path) else ""
         repo_name = local_path.name
 
-    ensure_structure(local_path)
     cfg.resources.repo_name = repo_name
     cfg.resources.repo_url = repo_url or ""
     cfg.resources.local_path = str(local_path)
@@ -161,6 +173,7 @@ def connect_local_resource_repo(
     repo_url: str,
     branch: str = DEFAULT_RESOURCE_BRANCH,
     token: str | None = None,
+    config: Config | None = None,
 ) -> None:
     """Ensure a local resource directory is connected to its configured remote.
 
@@ -169,6 +182,27 @@ def connect_local_resource_repo(
     the common case where settings saved a repo URL while continuing to read an
     unconnected empty local registry.
     """
+    cfg = config or load_config()
+    git_ops.configure_git_executable(cfg.git.executable)
+    with resource_repo_write_lock(
+        local_path,
+        timeout_seconds=cfg.state.lock_timeout_seconds,
+    ):
+        _connect_local_resource_repo_unlocked(
+            local_path,
+            repo_url=repo_url,
+            branch=branch,
+            token=token,
+        )
+
+
+def _connect_local_resource_repo_unlocked(
+    local_path: Path,
+    *,
+    repo_url: str,
+    branch: str,
+    token: str | None,
+) -> None:
     local_path = local_path.expanduser().resolve()
     if not local_path.exists():
         git_ops.clone(repo_url, local_path, token=token)
@@ -181,8 +215,38 @@ def connect_local_resource_repo(
     _sync_branch_from_remote_if_present(local_path, branch=branch, token=token)
 
 
+def prepare_local_resource_repo(
+    local_path: Path,
+    *,
+    repo_url: str,
+    branch: str = DEFAULT_RESOURCE_BRANCH,
+    token: str | None = None,
+    config: Config | None = None,
+) -> None:
+    """Connect, scaffold, commit, and push one resource repo under one lock."""
+    cfg = config or load_config()
+    git_ops.configure_git_executable(cfg.git.executable)
+    with resource_repo_write_lock(
+        local_path,
+        timeout_seconds=cfg.state.lock_timeout_seconds,
+    ):
+        _connect_local_resource_repo_unlocked(
+            local_path,
+            repo_url=repo_url,
+            branch=branch,
+            token=token,
+        )
+        ensure_structure(local_path)
+        _commit_and_push_if_needed(
+            local_path,
+            branch=branch,
+            token=token,
+        )
+
+
 def inspect_resource_repo(config: Config | None = None) -> ResourceRepoInfo:
     cfg = config or load_config()
+    git_ops.configure_git_executable(cfg.git.executable)
     root = resource_root(cfg)
     is_repo = git_ops.is_repo(root)
     status = git_ops.status_short(root) if is_repo else ""
@@ -202,30 +266,45 @@ def inspect_resource_repo(config: Config | None = None) -> ResourceRepoInfo:
 
 def pull_resource_repo(config: Config | None = None) -> ResourceRepoInfo:
     cfg = config or load_config()
+    git_ops.configure_git_executable(cfg.git.executable)
     root = resource_root(cfg)
-    if not git_ops.is_repo(root):
-        raise git_ops.GitError(f"Resource repo is not a git repository: {root}")
-    if git_ops.status_short(root):
-        raise git_ops.GitError("Resource repo has local changes. Commit or push them before pulling.")
-    git_ops.pull(root, ref=cfg.resources.branch or DEFAULT_RESOURCE_BRANCH, token=cfg.github.token or None)
-    ensure_structure(root)
+    with resource_repo_write_lock(
+        root,
+        timeout_seconds=cfg.state.lock_timeout_seconds,
+    ):
+        if not git_ops.is_repo(root):
+            raise git_ops.GitError(f"Resource repo is not a git repository: {root}")
+        from .resource_sync import apply_resource_sync_plan, build_resource_sync_plan
+
+        plan = build_resource_sync_plan(config=cfg)
+        if plan.status == "conflict":
+            raise git_ops.GitError(
+                "Resource history has conflicts. Resolve sync operation "
+                f"{plan.operation_id} before pulling."
+            )
+        if plan.blocked:
+            raise git_ops.GitError(plan.detail or f"Resource sync is blocked: {plan.status}")
+        apply_resource_sync_plan(plan.operation_id, config=cfg)
+        ensure_structure(root)
     return inspect_resource_repo(cfg)
 
 
 def push_resource_repo(message: str = "lpm: update resources", config: Config | None = None) -> ResourceRepoInfo:
     cfg = config or load_config()
+    git_ops.configure_git_executable(cfg.git.executable)
     root = resource_root(cfg)
-    if not git_ops.is_repo(root):
-        raise git_ops.GitError(f"Resource repo is not a git repository: {root}")
-    ensure_structure(root)
-    if git_ops.status_short(root):
-        git_ops.add_all(root)
-        git_ops.commit(root, message=message)
-    git_ops.push(
+    with resource_repo_write_lock(
         root,
-        branch=cfg.resources.branch or DEFAULT_RESOURCE_BRANCH,
-        token=cfg.github.token or None,
-    )
+        timeout_seconds=cfg.state.lock_timeout_seconds,
+    ):
+        if not git_ops.is_repo(root):
+            raise git_ops.GitError(f"Resource repo is not a git repository: {root}")
+        ensure_structure(root)
+        if git_ops.status_short(root):
+            commit_resource_changes_unlocked(root, message=message)
+        from .resource_sync import push_resource_sync
+
+        push_resource_sync(config=cfg)
     return inspect_resource_repo(cfg)
 
 
@@ -292,8 +371,10 @@ def _is_generated_empty_scaffold(root: Path) -> bool:
 
 def _commit_and_push_if_needed(path: Path, *, branch: str, token: str | None) -> None:
     if git_ops.status_short(path):
-        git_ops.add_all(path)
-        git_ops.commit(path, message="lpm: initialize resource repository")
+        commit_resource_changes_unlocked(
+            path,
+            message="lpm: initialize resource repository",
+        )
     git_ops.push(path, branch=branch, token=token)
 
 

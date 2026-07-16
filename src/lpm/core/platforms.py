@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import ItemKind
+from .tool_adapters import TOOL_ADAPTERS
 
 
 @dataclass
@@ -66,44 +67,16 @@ class PlatformProfile:
 #   mcp_json = "~/.windsurf/mcp.json"
 
 PLATFORM_PRESETS: dict[str, PlatformProfile] = {
-    "cursor": PlatformProfile(
-        name="cursor",
-        enabled=True,
-        skills_dir="~/.cursor/skills",
-        mcp_json="~/.cursor/mcp.json",
-        rules_dir="",
-    ),
-    "claude-code": PlatformProfile(
-        name="claude-code",
-        enabled=False,
-        skills_dir="~/.claude/skills",
-        mcp_json="~/.claude.json",
-        rules_dir="",
-        plugins_dir="~/.claude/plugins",
-    ),
-    "windsurf": PlatformProfile(
-        name="windsurf",
-        enabled=False,
-        skills_dir="~/.windsurf/skills",
-        mcp_json="~/.windsurf/mcp.json",
-        rules_dir="",
-    ),
-    "codex": PlatformProfile(
-        name="codex",
-        enabled=False,
-        skills_dir="~/.codex/skills",
-        mcp_json="",
-        rules_dir="",
-        plugins_dir="~/.codex/plugins",
-    ),
-    "opencode": PlatformProfile(
-        name="opencode",
-        enabled=False,
-        skills_dir="~/.config/opencode/skills",
-        mcp_json="~/.config/opencode/opencode.json",
-        rules_dir="~/.config/opencode/rules",
-        plugins_dir="~/.config/opencode/plugins",
-    ),
+    adapter.id: PlatformProfile(
+        name=adapter.id,
+        enabled=adapter.default_enabled,
+        skills_dir=adapter.skills_dir,
+        mcp_json=adapter.mcp_json,
+        rules_dir=adapter.rules_dir,
+        plugins_dir=adapter.plugins_dir,
+    )
+    for adapter in TOOL_ADAPTERS
+    if adapter.expose_platform_preset
 }
 
 

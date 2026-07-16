@@ -222,7 +222,8 @@ def _parse_owner_repo(github_url: str) -> tuple[str, str]:
 def _git_publish(skill_dir: Path, https_url: str, branch: str, token: str) -> bool:
     """Initialize (if needed), commit, and push the skill directory.
 
-    Authentication uses GIT_ASKPASS so the token never touches .git/config.
+    Authentication uses process-local Git configuration so the token never
+    touches command arguments, remote URLs, or .git/config.
     """
     if not git_ops.is_repo(skill_dir):
         git_ops.init_repo(skill_dir, default_branch=branch)
@@ -277,8 +278,7 @@ def add_external_skill(
     effective_ref = ref or "main"
 
     if not skip_verify:
-        probe_url = git_ops.with_token(repo_url, token) if token else repo_url
-        if not git_ops.probe_remote(probe_url, effective_ref):
+        if not git_ops.probe_remote(repo_url, effective_ref, token=token):
             raise RepoUnreachableError(repo_url, effective_ref)
 
     inferred_name = name or _infer_name_from_url(github_url, subdir)

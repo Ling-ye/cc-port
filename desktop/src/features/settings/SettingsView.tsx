@@ -118,8 +118,22 @@ export function SettingsView({
     setDraft((current) => current && { ...current, install: { ...current.install, [key]: value } });
   }
 
+  function updateGit(key: keyof EditableConfig["git"], value: string) {
+    setDraft((current) => current && { ...current, git: { ...current.git, [key]: value } });
+  }
+
   function updateResources(key: keyof EditableConfig["resources"], value: string) {
     setDraft((current) => current && { ...current, resources: { ...current.resources, [key]: value } });
+  }
+
+  function updateState(
+    key: keyof EditableConfig["state"],
+    value: number,
+  ) {
+    setDraft((current) => current && {
+      ...current,
+      state: { ...current.state, [key]: value },
+    });
   }
 
   function updatePlatform(index: number, patch: Partial<PlatformProfile>) {
@@ -400,6 +414,77 @@ export function SettingsView({
                 />
               </label>
             </div>
+          </div>
+
+          <div className="settings-section">
+            <h3>{t("settings.gitRuntime")}</h3>
+            <div className="stack-form">
+              <label>
+                <span>{t("settings.gitExecutable")}</span>
+                <input
+                  value={draft.git.executable}
+                  placeholder={t("settings.gitExecutablePlaceholder")}
+                  onChange={(event) => updateGit("executable", event.target.value)}
+                />
+                <small className="field-note">{t("settings.gitExecutableNote")}</small>
+              </label>
+            </div>
+          </div>
+
+          <div className="settings-section">
+            <h3>{t("settings.localState")}</h3>
+            <div className="stack-form four-column">
+              <label>
+                <span>{t("settings.lockTimeout")}</span>
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={draft.state.lock_timeout_seconds}
+                  onChange={(event) => updateState(
+                    "lock_timeout_seconds",
+                    Math.max(0.1, Number(event.target.value) || 0.1),
+                  )}
+                />
+              </label>
+              <label>
+                <span>{t("settings.retentionDays")}</span>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.state.retention_days}
+                  onChange={(event) => updateState(
+                    "retention_days",
+                    Math.max(0, Number.parseInt(event.target.value, 10) || 0),
+                  )}
+                />
+              </label>
+              <label>
+                <span>{t("settings.keepLatest")}</span>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.state.keep_latest_operations}
+                  onChange={(event) => updateState(
+                    "keep_latest_operations",
+                    Math.max(0, Number.parseInt(event.target.value, 10) || 0),
+                  )}
+                />
+              </label>
+              <label>
+                <span>{t("settings.maxBackupMb")}</span>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.state.max_backup_mb}
+                  onChange={(event) => updateState(
+                    "max_backup_mb",
+                    Math.max(0, Number.parseInt(event.target.value, 10) || 0),
+                  )}
+                />
+              </label>
+            </div>
+            <small className="field-note">{t("settings.stateNote")}</small>
           </div>
 
           <div className="settings-section">

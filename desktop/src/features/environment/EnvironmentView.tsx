@@ -375,6 +375,24 @@ export function EnvironmentView({
             <p>{deployPlan ? t("environment.planned", { count: deployPlan.items.length }) : t("environment.noPlan")}</p>
           </div>
         </div>
+        {deployPlan?.operation_id ? (
+          <dl className="description-list environment-operation-meta">
+            <div>
+              <dt>{t("environment.operationId")}</dt>
+              <dd>{deployPlan.operation_id}</dd>
+            </div>
+            <div>
+              <dt>{t("environment.operationStatus")}</dt>
+              <dd>{deployPlan.status}</dd>
+            </div>
+            {deployPlan.backup_root ? (
+              <div>
+                <dt>{t("environment.backupRoot")}</dt>
+                <dd>{deployPlan.backup_root}</dd>
+              </div>
+            ) : null}
+          </dl>
+        ) : null}
         <div className="environment-list">
           {deployPlan?.items.map((item) => (
             <div key={`${item.name}-${item.platform}-${item.target_path}`} className={`environment-row action-${item.action}`}>

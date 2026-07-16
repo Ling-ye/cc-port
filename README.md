@@ -12,14 +12,22 @@ LPM 用来管理和同步 AI coding 相关资源：
 - 从 GitHub 收集第三方资源，只记录引用，不复制无关内容。
 - 上传本地资源到你的私有资源仓库。
 - 维护私有 `registry.yaml`，用于跨设备同步资源。
+- 使用标准 Git ahead/behind/diverged 模型同步多台电脑；分歧历史在临时 worktree 中三方合并，不使用硬重置或强制推送。
 - 为单个资源配置可选的 `platforms` 白名单，避免平台专用资源被安装到不兼容的 AI 工具。
 - 自动发现本机 Codex、Claude Code、Cursor、Windsurf、opencode、Gemini CLI 等 AI 工具的非敏配置资源。
 - 采集 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置，并把 MCP `env` 字面值替换为 `${SECRET_NAME}` 占位符。
 - 把资源同步安装到 Cursor、Claude Code 等配置的平台目录。
+- 为目录资源和 MCP server entry 记录 LPM 所有权，避免覆盖或卸载用户手工维护的同名配置。
+- 安装、卸载和环境部署统一使用持久化事务记录、集中备份、结果校验和失败回滚。
+- 对相同本地目标使用跨进程路径锁，避免桌面端和 CLI 同时写入时互相覆盖快照或回滚结果。
+- 分页查看跨重启保存的操作历史，按需加载目标详情，并把成功操作显式恢复到执行前状态；目标发生后续修改时默认阻断恢复。
+- 预览操作历史与备份的保留策略，并在用户显式选择后批量清理；运行中操作、最近恢复点和孤立备份不会被自动删除。
+- 检查孤立备份，将其导出为 ZIP 或先移入隔离区；只有隔离批次可以被再次确认后永久删除。
+- 统一查看状态清理、孤立备份隔离和永久删除产生的维护审计。
 - 检查 Git、GitHub token、配置文件、私有资源仓库和平台安装状态。
 - 通过 CLI 执行自动化任务。
 - 通过 MCP Server 让 AI coding 工具调用 LPM 能力。
-- 通过桌面 GUI 管理资源、同步安装、查看平台状态和运行健康检查。
+- 通过桌面 GUI 管理资源、执行版本同步、部署环境、查看操作历史、恢复本地变更和运行健康检查。
 - 在桌面 GUI 的任务中心统一查看会话内异步操作的运行、成功和失败状态。
 
 ### 桌面任务反馈
@@ -57,8 +65,8 @@ Rust/Tauri 不实现业务逻辑，只负责：
 
 Python 分层：
 
-- `core`：模型、配置、registry、平台定义、资源识别、校验和安全处理。
-- `services`：资源收集、上传、发布、同步、安装、卸载、私有资源仓库管理。
+- `core`：模型、配置、registry、内部工具适配器、资源所有权、资源识别、校验和安全处理。
+- `services`：资源收集、上传、发布、Git 同步计划、事务部署、安装、卸载、私有资源仓库管理。
 - `infrastructure`：Git、GitHub、外部命令等基础设施适配。
 - `interfaces`：CLI、MCP Server、Desktop JSON API。
 
@@ -106,6 +114,22 @@ release/desktop/                # 对外发布的最终 exe/installer，可忽�
 build/sidecar/                  # PyInstaller 中间产物，可忽略
 ```
 
+本机状态与用户的私有资源 Git 仓库分离。Windows 默认使用 `%LOCALAPPDATA%\LPM`，其他系统使用用户状态目录；可通过 `LPM_STATE_HOME` 覆盖。该目录保存：
+
+```text
+backups/                       # 安装、卸载、部署和恢复备份
+exports/orphans/               # 用户显式导出的孤立备份 ZIP
+locks/                         # 跨进程目标路径锁载体
+maintenance/*.json             # 状态清理和孤立备份维护审计
+maintenance/orphans/           # 等待二次确认的孤立备份隔离批次
+maintenance/trash/             # 状态清理失败暂存
+operations/                    # 持久化本地写操作历史
+ownership/mcp.json             # MCP server entry 所有权
+sync/<operation-id>/           # Git 同步计划与临时 worktree
+```
+
+更完整的模块边界、同步状态机和后续范围见 [项目架构](docs/architecture.md)；行为规格位于 [docs/specs](docs/specs)。
+
 ## 用户使用方式
 
 ### 使用编译好的安装包
@@ -116,13 +140,13 @@ build/sidecar/                  # PyInstaller 中间产物，可忽略
 
 用户机器需要：
 
-- Git 可用。
+- Git 可用；LPM 会搜索配置路径、系统 PATH 和常见安装目录。
 - LPM 运行时配置可用。
 - 如果使用 GitHub 私有资源仓库，需要 GitHub token。
 
 安装后：
 
-1. 确认 `git` 在系统 PATH 中可用。
+1. 安装 Git；通常无需手工配置 PATH，非标准位置可在设置页填写 Git 可执行文件。
 2. 创建或编辑配置文件：`~/.config/lpm/config.toml`。
 3. 可参考仓库中的 `config/config.example.toml`。
 4. 启动桌面应用。
@@ -135,7 +159,7 @@ build/sidecar/                  # PyInstaller 中间产物，可忽略
 需要安装：
 
 - Python 3.10+
-- Node.js 18+
+- Node.js 20.19+ 或 22.12+
 - Rust / Cargo
 - Git
 - Windows 构建桌面端时还需要 Microsoft C++ Build Tools（Tauri / Rust MSVC 链接器依赖）。
@@ -329,9 +353,20 @@ Windows 下等价路径通常是：
 
 - `LPM_CONFIG`：指定配置文件路径。
 - `LPM_GITHUB_TOKEN`：覆盖配置文件中的 GitHub token。
+- `LPM_GIT_EXECUTABLE`：覆盖 `[git].executable`，指定 Git 可执行文件。
 - 设置页读取远端分支时优先使用 GitHub API；Token 无效或未配置时，会尝试复用本机 GitHub SSH 密钥读取分支，并明确提示当前鉴权状态。回退过程使用非交互 SSH，不会弹出登录窗口。
 - `LPM_RESOURCE_HOME`：覆盖私有资源仓库本地路径。
 - `LPM_DESKTOP_API_BIN`：指定桌面 GUI 使用的 `lpm-desktop-api` 可执行文件，主要用于调试。
+
+`[git].executable` 可填写 Git 的绝对路径或命令名；留空时按 PATH、常见系统安装目录和应用邻近目录自动发现。
+
+`[state]` 配置控制本机写锁和清理默认值：
+
+- `lock_timeout_seconds`：等待另一个 LPM 进程释放相同目标的秒数，默认 `10`。
+- `retention_days`：已结束操作的保留期，默认 `90` 天。
+- `keep_latest_operations`：无论年龄都保护的最近操作数量，默认 `20`。
+- `max_backup_mb`：备份容量软上限，默认 `2048` MiB；`0` 表示不按容量选择候选。
+- 清理不会自动执行；桌面端和 CLI 都必须先预览，再显式确认候选操作。
 
 初始化 CLI 配置：
 
@@ -368,6 +403,22 @@ LPM 的环境迁移主流程是：`发现 -> 预览 -> 脱敏 -> 保存 -> 同�
 - 导入 zip 快照前预览快照和本地差异，并按资源选择 local 或 incoming。
 - dry-run 预览部署计划。
 - 部署到当前电脑已启用的平台目录。
+
+桌面端 **版本同步** 页面用于多电脑 Git 同步：
+
+- fetch 后显示 `clean`、`ahead`、`behind`、`diverged`、`dirty` 等状态。
+- `dirty` 时先生成资源级提交计划，只显示 skill、prompt、rule、plugin、MCP 和元数据变化。
+- 非管理路径、真实 `.env`、疑似 token/私钥以及待推送提交中的敏感内容会阻断提交或 push。
+- `behind` 使用 fast-forward；`diverged` 在临时 worktree 中生成三方合并计划。
+- `registry.yaml` 冲突按资源名合并，资源内容冲突按整个资源选择“保留本地”或“采用远端”。
+- 用户确认后才把计划应用到正式分支，再执行普通 push；远端抢先更新时拒绝覆盖并要求重新规划。
+
+桌面端 **操作历史** 页面用于本机恢复与维护：
+
+- 查看安装、卸载、环境部署和恢复操作的持久化记录。
+- 恢复成功操作影响的目标；默认检测操作完成后的内容漂移。
+- 显式选择“允许覆盖漂移目标”后才可覆盖后续修改。
+- 列出超过 24 小时仍处于 conflict/ready 的 Git 临时工作树，并由用户显式清理。
 
 CLI 对应命令：
 
@@ -418,7 +469,10 @@ resources/
 - push、pull、snapshot import 的 apply 前会扫描选定数据源中的疑似 token-like 内容；命中时阻断写入或上传。
 - zip 快照导入拒绝绝对路径、`..`、`.git/` 和 Windows drive-like 路径。
 - 恢复部署先生成 plan；目标已有同名资源且没有 LPM 管理标记时进入 `conflict`，不会静默覆盖。
-- 部署前会在私有资源仓库下创建 `.lpm-backups/<timestamp>/`，用于保存被更新的原文件。
+- 目录资源使用 `.lpm-managed.json`，MCP 使用本机 entry 级所有权记录；未归 LPM 管理的目标不会被普通覆盖或卸载。
+- 部署备份写入本机状态目录的 `backups/<operation-id>/`，不会让私有资源 Git 仓库产生备份脏文件。
+- 任一部署项失败时回滚本次已尝试写入的工具目标、安装缓存与 MCP 所有权状态，并持久化操作结果。
+- 普通资源安装和卸载也使用相同事务边界；批量同步由多个可独立恢复的资源事务组成。
 
 ## CLI
 
@@ -429,6 +483,27 @@ lpm --help
 lpm init
 lpm resource init
 lpm resource status
+lpm resource commit-plan
+lpm resource sync-status --fetch
+lpm resource sync-plan
+lpm resource sync-resolve <operation-id> --choices choices.yaml
+lpm resource sync-apply <operation-id>
+lpm resource sync-cancel <operation-id>
+lpm resource sync-stale
+lpm resource sync-cleanup <operation-id>
+lpm resource push
+lpm operations list
+lpm operations show <operation-id>
+lpm operations restore <operation-id>
+lpm operations retention-plan
+lpm operations prune
+lpm operations orphans
+lpm operations orphan-export <name>
+lpm operations orphan-quarantine --name <name>
+lpm operations quarantines
+lpm operations quarantine-delete <quarantine-id>
+lpm operations audits
+lpm operations audit <audit-id>
 lpm env discover
 lpm env capture
 lpm env capture --push
@@ -441,6 +516,16 @@ lpm list
 lpm sync
 lpm doctor
 ```
+
+Git 分歧冲突选择文件示例：
+
+```yaml
+items:
+  resource:cursor-skill-demo-skill: incoming
+  file:profiles/default.yaml: local
+```
+
+`lpm resource pull` 会复用安全同步计划；遇到需要人工选择的冲突时会返回 operation id。完成 `sync-resolve` 和 `sync-apply` 后，再运行 `lpm resource push`。
 
 `--platform` 可重复使用。资源未设置平台白名单时沿用旧行为，安装到所有已启用且支持该资源类型的平台；设置后只安装到列出的平台：
 

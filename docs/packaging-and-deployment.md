@@ -4,7 +4,7 @@
 
 ## 第一次构建
 
-需要 Python 3.10+、Node.js 18+、Rust、Git，以及 Visual Studio Build Tools 的 **Desktop development with C++** 工作负载。
+需要 Python 3.10+、Node.js 20.19+（或 22.12+）、Rust、Git，以及 Visual Studio Build Tools 的 **Desktop development with C++** 工作负载。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1
@@ -32,12 +32,14 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 [KNOWN] `release-desktop.ps1` 固定执行以下步骤：
 
 1. 检查 Python、npm、Git、Cargo 和 Rust。
-2. 安装 `.[dev,desktop]` Python 依赖，并使用 `desktop/package-lock.json` 安装前端依赖。
+2. 安装 `.[dev,desktop]` Python 依赖，并使用 `desktop/package-lock.json` 以 `npm ci --ignore-scripts` 安装前端依赖；当前依赖使用预构建平台包，发布流程不执行第三方安装脚本。
 3. 运行 pytest、Ruff 和 Vitest。
-4. 完整重建 Python sidecar。
-5. 执行 Tauri release build，生成 MSI 和 NSIS 安装包。
-6. 收集产物到 `release/desktop/<target-triple>/`。
-7. 检查本次产物的更新时间并打印 SHA-256。
+4. 运行 `npm audit --omit=dev`，生产依赖存在已知漏洞时阻断发布。
+5. 完整重建 Python sidecar。
+6. 执行 Tauri release build，生成 MSI 和 NSIS 安装包。
+7. 收集产物到 `release/desktop/<target-triple>/`。
+8. 检查本次产物的更新时间并打印 SHA-256。
+9. 直接运行收集后的 sidecar，并验证 `operation_history_page` JSON API。
 
 [KNOWN] 该命令只生成可部署产物，不自动安装、不上传 Release，也不修改用户配置。
 
@@ -141,13 +143,13 @@ Start-Process -FilePath "$ReleaseDir\lpm-desktop.exe"
 
 - [KNOWN] 当前 CI 只运行 Python Ruff 和 pytest，不构建或上传桌面安装包。
 - [KNOWN] 当前没有代码签名、自动更新器或自动创建 GitHub Release 的流程。
-- [KNOWN] 目标电脑不需要 Python、Node.js 或 Rust，但仍需要 Git 和有效的 LPM 配置。
+- [KNOWN] 目标电脑不需要 Python、Node.js 或 Rust，但仍需要 Git 和有效的 LPM 配置；运行时会搜索配置路径、PATH 和常见安装目录。
 - [INFERRED] 升级或回退前应备份 `~/.config/lpm/config.toml` 和私有资源仓库；回退安装包不会自动回退用户数据。
 
 ## 部署后检查
 
 1. 在没有 Python、Node.js 和 Rust 的目标机上安装并启动应用。
-2. 运行“健康检查”，确认 Git、配置、资源仓库和平台目录正常。
+2. 运行“健康检查”，确认 Git 的实际路径/来源、配置、资源仓库和平台目录正常。
 3. 执行一次手动刷新，确认 Toast 和任务中心正常更新。
 4. 验证 sidecar 能启动，不依赖开发机环境。
 5. 从上一个版本升级一次，确认原配置仍可读取。
@@ -183,7 +185,9 @@ Get-ChildItem .\desktop\src-tauri\binaries
 
 - [ ] 桌面版本和锁文件已同步。
 - [ ] pytest、Ruff、`npm test`、`npm run build` 全部通过。
+- [ ] `npm audit --omit=dev` 为 0；开发依赖告警已单独评估。
 - [ ] sidecar 使用当前 Python 源码重新构建。
+- [ ] 收集后的 sidecar JSON API 烟雾测试通过。
 - [ ] MSI/NSIS 的时间、大小和 SHA-256 已核对。
 - [ ] 已在干净目标机完成安装、启动和升级验证。
 - [ ] 已备份配置、私有资源仓库和上一个可用安装包。

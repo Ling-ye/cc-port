@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from typing import Any, Literal
 
 from ..core.config import CONFIG_ENV_VAR, Config, default_config_path, load_config
 from ..core.platforms import PlatformProfile
+from ..infrastructure import git_ops
 from .resource_repo import ResourceRepoInfo, inspect_resource_repo
 
 DoctorStatus = Literal["ok", "warning", "error", "skipped"]
@@ -23,8 +23,25 @@ def build_doctor_checks(config: Config | None = None) -> list[DoctorCheck]:
     """
 
     cfg = config or load_config()
-    git_path = shutil.which("git")
-    resource = inspect_resource_repo(cfg)
+    git_ops.configure_git_executable(cfg.git.executable)
+    git_runtime = git_ops.discover_git_executable(cfg.git.executable)
+    git_path = str(git_runtime.path) if git_runtime.path else None
+    try:
+        resource = inspect_resource_repo(cfg)
+    except git_ops.GitError:
+        root = cfg.resources.local_path_value.expanduser().resolve()
+        resource = ResourceRepoInfo(
+            local_path=root,
+            registry_path=root / "registry.yaml",
+            repo_name=cfg.resources.repo_name or root.name,
+            repo_url=cfg.resources.repo_url,
+            branch=cfg.resources.branch,
+            exists=root.exists(),
+            is_git_repo=(root / ".git").exists(),
+            dirty=False,
+            current_branch="",
+            remote_url="",
+        )
     resource_configured = _resource_repo_configured(cfg, resource)
 
     checks: list[DoctorCheck] = [
@@ -32,7 +49,15 @@ def build_doctor_checks(config: Config | None = None) -> list[DoctorCheck]:
             "git",
             "Git",
             "ok" if git_path else "error",
-            _git_version(git_path) if git_path else "git not found on PATH",
+            (
+                f"{_git_version(git_path)}; {git_path} ({git_runtime.source})"
+                if git_path
+                else (
+                    f"configured path not found: {git_runtime.requested}"
+                    if git_runtime.requested
+                    else "Git not found in PATH or standard install locations"
+                )
+            ),
         ),
         _config_check(cfg),
         _github_token_check(cfg, resource_configured),

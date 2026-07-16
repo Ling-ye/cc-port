@@ -27,13 +27,19 @@ from .. import __version__
 from ..core.config import (
     CONFIG_ENV_VAR,
     DEFAULT_INSTALL_TARGET,
+    DEFAULT_KEEP_LATEST_OPERATIONS,
+    DEFAULT_LOCK_TIMEOUT_SECONDS,
+    DEFAULT_MAX_BACKUP_MB,
     DEFAULT_REPO_PREFIX,
     DEFAULT_RESOURCE_BRANCH,
     DEFAULT_RESOURCE_REPO_NAME,
+    DEFAULT_RETENTION_DAYS,
     Config,
+    GitConfig,
     GithubConfig,
     InstallConfig,
     ResourcesConfig,
+    StateConfig,
     default_config_path,
     load_config,
     load_raw_config,
@@ -62,6 +68,13 @@ from ..services.env_manager import (
 )
 from ..services.installer import check_all, preview_sync_all, status_all, sync_all, uninstall_one
 from ..services.local_resources import import_local_resource
+from ..services.operation_history import (
+    operation_detail,
+    operation_history,
+    operation_history_page,
+    restore_operation,
+)
+from ..services.resource_commit import build_resource_commit_plan
 from ..services.resource_discovery import (
     discover_resources,
     read_discovered_resource,
@@ -77,14 +90,33 @@ from ..services.resource_manager import (
     uninstall_resource,
 )
 from ..services.resource_repo import (
-    connect_local_resource_repo,
-    ensure_structure,
     init_resource_repo,
     inspect_resource_repo,
+    prepare_local_resource_repo,
     pull_resource_repo,
     push_resource_repo,
     use_resource_repo,
 )
+from ..services.resource_sync import (
+    apply_resource_sync_plan,
+    build_resource_sync_plan,
+    cancel_resource_sync_plan,
+    cleanup_stale_resource_sync_plan,
+    inspect_resource_sync,
+    list_stale_resource_sync_plans,
+    push_resource_sync,
+    resolve_resource_sync_plan,
+)
+from ..services.state_maintenance import (
+    delete_orphan_quarantine,
+    export_orphan_backup,
+    list_maintenance_audits,
+    list_orphan_backups,
+    list_orphan_quarantines,
+    load_maintenance_audit,
+    quarantine_orphan_backups,
+)
+from ..services.state_retention import build_state_retention_plan, prune_state
 
 JsonDict = dict[str, Any]
 Handler = Callable[[JsonDict], Any]
@@ -93,6 +125,8 @@ Handler = Callable[[JsonDict], Any]
 def run_action(action: str, payload: JsonDict | None = None) -> JsonDict:
     """Run one desktop API action and return a JSON-serializable envelope."""
     data = payload or {}
+    runtime_config = load_config()
+    git_ops.configure_git_executable(runtime_config.git.executable)
     try:
         handler = ACTIONS[action]
     except KeyError:
@@ -467,6 +501,161 @@ def _resource_push(payload: JsonDict) -> Any:
     )
 
 
+def _resource_commit_plan(_: JsonDict) -> Any:
+    return build_resource_commit_plan(config=load_config())
+
+
+def _resource_commit_push(payload: JsonDict) -> Any:
+    return push_resource_repo(
+        message=_optional_str(payload.get("message")) or "lpm: update resources",
+        config=load_config(),
+    )
+
+
+def _resource_sync_status(payload: JsonDict) -> Any:
+    return inspect_resource_sync(
+        config=load_config(),
+        fetch=bool(payload.get("fetch", False)),
+    )
+
+
+def _resource_sync_plan(_: JsonDict) -> Any:
+    return build_resource_sync_plan(config=load_config())
+
+
+def _resource_sync_resolve(payload: JsonDict) -> Any:
+    return resolve_resource_sync_plan(
+        _required_str(payload, "operation_id"),
+        _choices_payload(payload) or {},
+        config=load_config(),
+    )
+
+
+def _resource_sync_apply(payload: JsonDict) -> Any:
+    return apply_resource_sync_plan(
+        _required_str(payload, "operation_id"),
+        config=load_config(),
+    )
+
+
+def _resource_sync_cancel(payload: JsonDict) -> Any:
+    return cancel_resource_sync_plan(
+        _required_str(payload, "operation_id"),
+        config=load_config(),
+    )
+
+
+def _resource_sync_push(_: JsonDict) -> Any:
+    return push_resource_sync(config=load_config())
+
+
+def _operation_history(payload: JsonDict) -> JsonDict:
+    limit = int(payload.get("limit", 100))
+    return {"operations": operation_history(limit=max(1, min(limit, 500)))}
+
+
+def _operation_history_page(payload: JsonDict) -> Any:
+    return operation_history_page(
+        offset=max(0, int(payload.get("offset", 0))),
+        limit=max(1, min(int(payload.get("limit", 20)), 100)),
+    )
+
+
+def _operation_detail(payload: JsonDict) -> Any:
+    return operation_detail(_required_str(payload, "operation_id"))
+
+
+def _operation_restore(payload: JsonDict) -> Any:
+    return restore_operation(
+        _required_str(payload, "operation_id"),
+        force=bool(payload.get("force", False)),
+        config=load_config(),
+    )
+
+
+def _state_retention_plan(payload: JsonDict) -> Any:
+    return build_state_retention_plan(
+        config=load_config(),
+        retention_days=_optional_non_negative_int(payload.get("retention_days")),
+        keep_latest_operations=_optional_non_negative_int(
+            payload.get("keep_latest_operations")
+        ),
+        max_backup_mb=_optional_non_negative_int(payload.get("max_backup_mb")),
+    )
+
+
+def _state_prune(payload: JsonDict) -> Any:
+    return prune_state(
+        _str_list(payload.get("operation_ids")),
+        config=load_config(),
+        retention_days=_optional_non_negative_int(payload.get("retention_days")),
+        keep_latest_operations=_optional_non_negative_int(
+            payload.get("keep_latest_operations")
+        ),
+        max_backup_mb=_optional_non_negative_int(payload.get("max_backup_mb")),
+    )
+
+
+def _orphan_backups(_: JsonDict) -> JsonDict:
+    return {"orphans": list_orphan_backups()}
+
+
+def _orphan_export(payload: JsonDict) -> Any:
+    output = _optional_str(payload.get("output_path"))
+    return export_orphan_backup(
+        _required_str(payload, "name"),
+        output_path=Path(output) if output else None,
+        config=load_config(),
+    )
+
+
+def _orphan_quarantine(payload: JsonDict) -> Any:
+    return quarantine_orphan_backups(
+        _str_list(payload.get("names")),
+        config=load_config(),
+    )
+
+
+def _orphan_quarantines(_: JsonDict) -> JsonDict:
+    return {"quarantines": list_orphan_quarantines()}
+
+
+def _orphan_quarantine_delete(payload: JsonDict) -> Any:
+    return delete_orphan_quarantine(
+        _required_str(payload, "quarantine_id"),
+        config=load_config(),
+    )
+
+
+def _maintenance_audits(payload: JsonDict) -> JsonDict:
+    limit = max(1, min(int(payload.get("limit", 50)), 500))
+    return {"audits": list_maintenance_audits(limit=limit)}
+
+
+def _maintenance_audit(payload: JsonDict) -> JsonDict:
+    return {
+        "audit": load_maintenance_audit(_required_str(payload, "audit_id"))
+    }
+
+
+def _resource_sync_stale(payload: JsonDict) -> JsonDict:
+    minimum = float(payload.get("min_age_hours", 24))
+    return {
+        "plans": list_stale_resource_sync_plans(
+            min_age_hours=max(0, minimum),
+        )
+    }
+
+
+def _resource_sync_cleanup(payload: JsonDict) -> Any:
+    return cleanup_stale_resource_sync_plan(
+        _required_str(payload, "operation_id"),
+        min_age_hours=max(0, float(payload.get("min_age_hours", 24))),
+        force=bool(payload.get("force", False)),
+        config=load_config(),
+    )
+
+
 def _config_get(_: JsonDict) -> JsonDict:
     raw_cfg = load_raw_config()
     effective_cfg = load_config()
@@ -599,11 +788,18 @@ def _editable_config(cfg: Config) -> JsonDict:
             "default_private": cfg.github.default_private,
         },
         "install": {"target": cfg.install.target},
+        "git": {"executable": cfg.git.executable},
         "resources": {
             "repo_name": cfg.resources.repo_name,
             "repo_url": cfg.resources.repo_url,
             "local_path": cfg.resources.local_path,
             "branch": cfg.resources.branch,
+        },
+        "state": {
+            "lock_timeout_seconds": cfg.state.lock_timeout_seconds,
+            "retention_days": cfg.state.retention_days,
+            "keep_latest_operations": cfg.state.keep_latest_operations,
+            "max_backup_mb": cfg.state.max_backup_mb,
         },
         "platforms": [_platform_to_json(p) for p in _platforms_with_presets(cfg.platforms.profiles)],
     }
@@ -648,8 +844,10 @@ def _config_from_draft(payload: JsonDict, base: Config) -> Config:
         raise ValueError("Missing required field: draft")
 
     github_data = _dict_field(draft, "github")
+    git_data = _dict_field(draft, "git")
     install_data = _dict_field(draft, "install")
     resources_data = _dict_field(draft, "resources")
+    state_data = _dict_field(draft, "state")
 
     return Config(
         github=GithubConfig(
@@ -676,6 +874,37 @@ def _config_from_draft(payload: JsonDict, base: Config) -> Config:
                 base.resources.branch or DEFAULT_RESOURCE_BRANCH,
             )
             or DEFAULT_RESOURCE_BRANCH,
+        ),
+        git=GitConfig(
+            executable=_field_str(git_data, "executable", base.git.executable),
+        ),
+        state=StateConfig(
+            lock_timeout_seconds=_field_positive_float(
+                state_data,
+                "lock_timeout_seconds",
+                base.state.lock_timeout_seconds or DEFAULT_LOCK_TIMEOUT_SECONDS,
+            ),
+            retention_days=_field_non_negative_int(
+                state_data,
+                "retention_days",
+                base.state.retention_days
+                if base.state.retention_days >= 0
+                else DEFAULT_RETENTION_DAYS,
+            ),
+            keep_latest_operations=_field_non_negative_int(
+                state_data,
+                "keep_latest_operations",
+                base.state.keep_latest_operations
+                if base.state.keep_latest_operations >= 0
+                else DEFAULT_KEEP_LATEST_OPERATIONS,
+            ),
+            max_backup_mb=_field_non_negative_int(
+                state_data,
+                "max_backup_mb",
+                base.state.max_backup_mb
+                if base.state.max_backup_mb >= 0
+                else DEFAULT_MAX_BACKUP_MB,
+            ),
         ),
         platforms=PlatformsConfig(
             profiles=_platforms_from_payload(draft.get("platforms"), base.platforms.profiles),
@@ -742,6 +971,30 @@ def _field_bool(data: JsonDict, key: str, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _field_non_negative_int(data: JsonDict, key: str, default: int) -> int:
+    if key not in data:
+        return default
+    try:
+        value = int(data[key])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be a non-negative integer.") from exc
+    if value < 0:
+        raise ValueError(f"{key} must be a non-negative integer.")
+    return value
+
+
+def _field_positive_float(data: JsonDict, key: str, default: float) -> float:
+    if key not in data:
+        return default
+    try:
+        value = float(data[key])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be greater than zero.") from exc
+    if value <= 0:
+        raise ValueError(f"{key} must be greater than zero.")
+    return value
 
 
 def _mask_token(token: str) -> str:
@@ -894,17 +1147,13 @@ def _prepare_resource_target(cfg: Config, token: str) -> JsonDict:
     branch = cfg.resources.branch or DEFAULT_RESOURCE_BRANCH
     local_path = cfg.resources.local_path_value.expanduser().resolve()
 
-    connect_local_resource_repo(
+    prepare_local_resource_repo(
         local_path,
         repo_url=repo.https_url,
         branch=branch,
         token=token,
+        config=cfg,
     )
-    ensure_structure(local_path)
-    if git_ops.status_short(local_path):
-        git_ops.add_all(local_path)
-        git_ops.commit(local_path, message="lpm: initialize resource repository")
-    git_ops.push(local_path, branch=branch, token=token)
 
     cfg.resources.repo_name = name
     cfg.resources.repo_url = repo.https_url
@@ -1012,7 +1261,9 @@ def _config_summary(cfg: Config) -> JsonDict:
             "default_private": cfg.github.default_private,
         },
         "resources": cfg.resources,
+        "git": cfg.git,
         "install": cfg.install,
+        "state": cfg.state,
     }
 
 
@@ -1095,6 +1346,18 @@ def _str_list(value: Any) -> list[str]:
     raise ValueError("Expected a string list.")
 
 
+def _optional_non_negative_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Expected a non-negative integer.") from exc
+    if result < 0:
+        raise ValueError("Expected a non-negative integer.")
+    return result
+
+
 def _discovery_selections(value: Any) -> list[JsonDict]:
     if not isinstance(value, list):
         return []
@@ -1136,6 +1399,29 @@ ACTIONS: dict[str, Handler] = {
     "resource_use": _resource_use,
     "resource_pull": _resource_pull,
     "resource_push": _resource_push,
+    "resource_commit_plan": _resource_commit_plan,
+    "resource_commit_push": _resource_commit_push,
+    "resource_sync_status": _resource_sync_status,
+    "resource_sync_plan": _resource_sync_plan,
+    "resource_sync_resolve": _resource_sync_resolve,
+    "resource_sync_apply": _resource_sync_apply,
+    "resource_sync_cancel": _resource_sync_cancel,
+    "resource_sync_push": _resource_sync_push,
+    "resource_sync_stale": _resource_sync_stale,
+    "resource_sync_cleanup": _resource_sync_cleanup,
+    "operation_history": _operation_history,
+    "operation_history_page": _operation_history_page,
+    "operation_detail": _operation_detail,
+    "operation_restore": _operation_restore,
+    "state_retention_plan": _state_retention_plan,
+    "state_prune": _state_prune,
+    "orphan_backups": _orphan_backups,
+    "orphan_export": _orphan_export,
+    "orphan_quarantine": _orphan_quarantine,
+    "orphan_quarantines": _orphan_quarantines,
+    "orphan_quarantine_delete": _orphan_quarantine_delete,
+    "maintenance_audits": _maintenance_audits,
+    "maintenance_audit": _maintenance_audit,
     "env_discover": _env_discover,
     "env_capture": _env_capture,
     "env_export": _env_export,

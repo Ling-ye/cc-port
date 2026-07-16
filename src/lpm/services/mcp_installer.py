@@ -15,10 +15,14 @@ settings object.  This module handles both layouts transparently.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from ..core.config import default_state_dir
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -32,20 +36,25 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _backup_once(path)
+    _backup_before_write(path)
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
 
-def _backup_once(path: Path) -> None:
+def _backup_before_write(path: Path) -> Path | None:
     if not path.is_file():
-        return
-    backup = path.with_name(f"{path.name}.lpm.bak")
-    if backup.exists():
-        return
+        return None
+    key = hashlib.sha256(
+        str(path.expanduser().absolute()).encode("utf-8")
+    ).hexdigest()[:16]
+    backup_dir = default_state_dir() / "backups" / "mcp" / key
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = backup_dir / f"{timestamp}-{path.name}"
     shutil.copy2(path, backup)
+    return backup
 
 
 def _get_servers_section(data: dict[str, Any]) -> dict[str, Any]:

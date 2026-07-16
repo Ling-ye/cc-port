@@ -19,16 +19,24 @@ import yaml
 
 from ..core.config import Config, load_config
 from ..core.models import ItemKind, Registry, RegistryItem
+from ..core.ownership import (
+    is_lpm_managed,
+    is_lpm_managed_mcp,
+    mcp_ownership_path,
+    write_managed_marker,
+)
 from ..core.platforms import PlatformProfile
 from ..core.registry import load_registry, save_registry
+from ..core.resource_files import is_resource_path_excluded, resource_copy_ignore
 from ..core.secrets import sanitize_mcp_config_for_storage
+from ..core.tool_adapters import TOOL_ADAPTERS
 from ..infrastructure import git_ops
-from .install_planner import (
-    DEFAULT_EXCLUDED_DIRS,
-    DEFAULT_EXCLUDED_FILES,
-    DEFAULT_EXCLUDED_SUFFIXES,
+from .installer import SyncAction, sync_all
+from .local_transaction import (
+    ChangeTarget,
+    LocalChangeTransaction,
+    resource_hash_path,
 )
-from .installer import sync_all
 from .mcp_installer import list_mcp_servers
 from .publisher import _slug
 from .resource_discovery import DiscoveredResource, discover_resources
@@ -42,8 +50,7 @@ from .resource_repo import (
 
 ENV_PROFILE_PATH = Path("profiles/default.yaml")
 SECRETS_EXAMPLE_PATH = Path("secrets.example.yaml")
-BACKUP_DIR = ".lpm-backups"
-MANAGED_MARKER = ".lpm-managed.json"
+BACKUP_DIR = "backups"
 CAPTURE_SOURCE = "env-capture"
 RESOURCE_SUBDIRS: dict[ItemKind, str] = {
     "skill": "skills",
@@ -152,6 +159,17 @@ class DeployPlan:
     items: list[DeployPlanItem]
     missing_secrets: list[SecretPlaceholder] = field(default_factory=list)
     selected_names: list[str] = field(default_factory=list)
+    operation_id: str = ""
+    status: str = "planned"
+    rolled_back: bool = False
+
+
+class DeploymentTransactionError(RuntimeError):
+    """Raised after a failed deployment transaction."""
+
+    def __init__(self, message: str, plan: DeployPlan) -> None:
+        super().__init__(message)
+        self.plan = plan
 
 
 @dataclass
@@ -194,53 +212,17 @@ class EnvDiffPlan:
     secret_findings: list[EnvSecretFinding] = field(default_factory=list)
 
 
-TOOL_SPECS: tuple[ToolScanSpec, ...] = (
+TOOL_SPECS: tuple[ToolScanSpec, ...] = tuple(
     ToolScanSpec(
-        id="codex",
-        name="Codex",
-        root="~/.codex",
-        config_files=("config.toml",),
-        resource_dirs=("skills", "prompts", "rules", "plugins"),
-    ),
-    ToolScanSpec(
-        id="claude-code",
-        name="Claude Code",
-        root="~/.claude",
-        config_files=("settings.json", "../.claude.json"),
-        resource_dirs=("skills", "commands", "prompts", "rules", "plugins"),
-        mcp_config_files=("../.claude.json",),
-    ),
-    ToolScanSpec(
-        id="cursor",
-        name="Cursor",
-        root="~/.cursor",
-        config_files=("mcp.json",),
-        resource_dirs=("skills", "rules", "prompts", "plugins"),
-        mcp_config_files=("mcp.json",),
-    ),
-    ToolScanSpec(
-        id="windsurf",
-        name="Windsurf",
-        root="~/.windsurf",
-        config_files=("mcp.json",),
-        resource_dirs=("skills", "rules", "prompts", "plugins"),
-        mcp_config_files=("mcp.json",),
-    ),
-    ToolScanSpec(
-        id="opencode",
-        name="opencode",
-        root="~/.config/opencode",
-        config_files=("opencode.json",),
-        resource_dirs=("skills", "rules", "prompts", "commands", "plugins"),
-        mcp_config_files=("opencode.json",),
-    ),
-    ToolScanSpec(
-        id="gemini",
-        name="Gemini CLI",
-        root="~/.gemini",
-        config_files=("settings.json",),
-        resource_dirs=("commands", "prompts", "rules"),
-    ),
+        id=adapter.id,
+        name=adapter.name,
+        root=adapter.discovery_root,
+        config_files=adapter.config_files,
+        resource_dirs=adapter.resource_dirs,
+        mcp_config_files=adapter.mcp_config_files,
+    )
+    for adapter in TOOL_ADAPTERS
+    if adapter.discovery_root
 )
 
 SECRET_KEY_RE = re.compile(r"(token|secret|api[_-]?key|auth|password|credential)", re.IGNORECASE)
@@ -356,7 +338,7 @@ def export_environment_snapshot(
         for path in sorted(root.rglob("*")):
             if path.resolve() == out_path:
                 continue
-            if not path.is_file() or _is_snapshot_excluded(path, root):
+            if path.is_symlink() or not path.is_file() or _is_snapshot_excluded(path, root):
                 continue
             archive.write(path, path.relative_to(root).as_posix())
     return out_path
@@ -492,7 +474,13 @@ def build_deploy_plan(
         if requested and entry.name not in requested:
             continue
         selected.add(entry.name)
-        entry_items = _plan_entry(entry, cfg.platforms.enabled(), force=force)
+        entry_items = _plan_entry(
+            entry,
+            cfg.platforms.enabled(),
+            force=force,
+            resource_repo_root=root,
+            install_root=cfg.install.target_path,
+        )
         items.extend(entry_items)
 
     return DeployPlan(
@@ -519,31 +507,88 @@ def deploy_environment(
         return plan
 
     cfg = config or load_config()
-    backup_root = resource_root(cfg) / BACKUP_DIR / _timestamp()
     eligible_items = [
         item
         for item in plan.items
         if item.action in {"create", "update"} and item.platform
     ]
+    registry = load_registry(registry_path(cfg))
+    change_targets: list[ChangeTarget] = []
     for item in eligible_items:
-        if item.action == "update":
-            item.backup_path = _backup_target(item.target_path, backup_root)
-
+        for path in _deploy_item_paths(item, config=cfg, registry=registry):
+            change_targets.append(
+                ChangeTarget(
+                    path=path,
+                    change_action=item.action,
+                    resource=item.name,
+                    platform=item.platform if path == item.target_path else "",
+                )
+            )
+    transaction = LocalChangeTransaction.begin(
+        "environment-deploy",
+        change_targets,
+        metadata={"selected_names": plan.selected_names},
+        lock_timeout_seconds=cfg.state.lock_timeout_seconds,
+    )
+    plan.operation_id = transaction.record.operation_id
+    plan.backup_root = transaction.backup_root
+    plan.status = "running"
     for item in eligible_items:
-        sync_all(
-            config=cfg,
-            registry_path=registry_path(cfg),
-            only=[item.name],
-            include_optional=True,
-            include_kinds={"mcp", "rule", "prompt", "plugin"},
-            platform_filter=item.platform,
-        )
-    if eligible_items:
-        _write_managed_markers(eligible_items)
+        snapshot = transaction.snapshots.get(item.target_path.expanduser().absolute())
+        if snapshot is not None:
+            item.backup_path = snapshot.backup_path
+    try:
+        for item in eligible_items:
+            transaction.mark_attempted(
+                _deploy_item_paths(item, config=cfg, registry=registry)
+            )
+            results = sync_all(
+                config=cfg,
+                registry_path=registry_path(cfg),
+                only=[item.name],
+                include_optional=True,
+                include_kinds={"mcp", "rule", "prompt", "plugin"},
+                platform_filter=item.platform,
+                force_unmanaged=force,
+                transactional=False,
+            )
+            matched = [result for result in results if result.name == item.name]
+            if not matched:
+                raise RuntimeError(
+                    f"No deployment result for {item.name} on {item.platform}"
+                )
+            failed = [
+                result
+                for result in matched
+                if result.action
+                in {SyncAction.FAILED, SyncAction.REPO_GONE, SyncAction.SKIPPED}
+            ]
+            if failed:
+                details = "; ".join(
+                    result.detail or result.action.value for result in failed
+                )
+                raise RuntimeError(
+                    f"Failed to deploy {item.name} on {item.platform}: {details}"
+                )
+            _verify_deploy_item(item, config=cfg, registry=registry)
 
-    plan.dry_run = False
-    plan.backup_root = backup_root if backup_root.exists() else None
-    return plan
+        if eligible_items:
+            _write_managed_markers(eligible_items, registry)
+        plan.dry_run = False
+        plan.status = "succeeded"
+        transaction.complete()
+        return plan
+    except Exception as exc:
+        rollback_errors = transaction.rollback(str(exc))
+        plan.status = "rolled_back" if not rollback_errors else "rollback_failed"
+        plan.rolled_back = not rollback_errors
+        message = str(exc)
+        if rollback_errors:
+            message += " | rollback errors: " + "; ".join(rollback_errors)
+        raise DeploymentTransactionError(
+            f"{message} (operation {plan.operation_id}, status {plan.status})",
+            plan,
+        ) from exc
 
 
 def _prepared_local_env_root(cfg: Config) -> Path:
@@ -776,7 +821,7 @@ def _path_signature(path: Path) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for item in files:
         rel = Path(item.name) if path.is_file() else item.relative_to(path)
-        if _is_copy_excluded(rel):
+        if item.is_symlink() or _is_copy_excluded(rel):
             continue
         try:
             digest = hashlib.sha256(item.read_bytes()).hexdigest()
@@ -836,6 +881,8 @@ def _text_file_map(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for item in files:
         rel = item.name if path.is_file() else item.relative_to(path).as_posix()
+        if item.is_symlink() or is_resource_path_excluded(Path(rel)):
+            continue
         try:
             raw = item.read_bytes()
         except OSError:
@@ -985,7 +1032,7 @@ def _copy_path_exact(src: Path, dest: Path) -> None:
         _remove_path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir() and not src.is_symlink():
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        shutil.copytree(src, dest, ignore=resource_copy_ignore)
     else:
         shutil.copy2(src, dest)
 
@@ -1000,7 +1047,7 @@ def _scan_root_for_secrets(root: Path) -> list[EnvSecretFinding]:
     if not root.exists():
         return findings
     for path in sorted(root.rglob("*")):
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             continue
         rel = path.relative_to(root)
         if _is_secret_scan_excluded(rel):
@@ -1197,9 +1244,18 @@ def _capture_mcp_server(
     )
 
 
-def _plan_entry(entry: RegistryItem, platforms: list[PlatformProfile], *, force: bool) -> list[DeployPlanItem]:
+def _plan_entry(
+    entry: RegistryItem,
+    platforms: list[PlatformProfile],
+    *,
+    force: bool,
+    resource_repo_root: Path,
+    install_root: Path,
+) -> list[DeployPlanItem]:
     items: list[DeployPlanItem] = []
     for platform in platforms:
+        if not entry.supports_platform(platform.name):
+            continue
         target = platform.resolve_install_path(entry.kind, entry.install_target_name())
         if target is None:
             continue
@@ -1208,8 +1264,20 @@ def _plan_entry(entry: RegistryItem, platforms: list[PlatformProfile], *, force:
         if entry.kind == "mcp":
             action, reason = _mcp_target_action(target, entry, force=force)
         elif target.exists():
-            if _is_lpm_managed(target) or force:
-                action = "update"
+            if is_lpm_managed(target, resource_name=entry.name) or force:
+                source = _deploy_source_path(
+                    entry,
+                    resource_repo_root=resource_repo_root,
+                    install_root=install_root,
+                )
+                if (
+                    source is not None
+                    and resource_hash_path(source) == resource_hash_path(target)
+                ):
+                    action = "skip"
+                    reason = "Target already matches the resource content."
+                else:
+                    action = "update"
             else:
                 action = "conflict"
                 reason = "Target exists and is not marked as LPM-managed."
@@ -1246,36 +1314,88 @@ def _mcp_target_action(target: Path, entry: RegistryItem, *, force: bool) -> tup
         return "conflict", f"Cannot read MCP config: {exc}"
     if entry.name not in servers:
         return "update", ""
+    if is_lpm_managed_mcp(
+        target,
+        entry.name,
+        resource_name=entry.name,
+    ):
+        expected = sanitize_mcp_config_for_storage(entry.mcp_config or {})
+        if servers.get(entry.name) == expected:
+            return "skip", "MCP server already matches the managed configuration."
+        return "update", ""
     return ("update", "") if force else ("conflict", "MCP server already exists in target config.")
 
 
-def _backup_target(target: Path, backup_root: Path) -> Path | None:
-    if not target.exists():
-        return None
-    backup = backup_root / _safe_backup_name(target)
-    backup.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_dir() and not target.is_symlink():
-        shutil.copytree(target, backup)
-    else:
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(target, backup)
-    return backup
+def _deploy_source_path(
+    entry: RegistryItem,
+    *,
+    resource_repo_root: Path,
+    install_root: Path,
+) -> Path | None:
+    if entry.source in {"local", "owned"} and entry.path:
+        return resource_repo_root / entry.path
+    install_path = install_root / entry.install_target_name()
+    return install_path if install_path.exists() else None
 
 
-def _write_managed_markers(items: list[DeployPlanItem]) -> None:
-    payload = {"managed_by": "lpm", "updated_at": _timestamp()}
+def _deploy_item_paths(
+    item: DeployPlanItem,
+    *,
+    config: Config,
+    registry: Registry,
+) -> list[Path]:
+    paths = [item.target_path]
+    entry = registry.get(item.name)
+    if entry is None:
+        return paths
+    if entry.kind == "mcp":
+        paths.append(mcp_ownership_path())
+        return paths
+    paths.append(config.install.target_path / entry.install_target_name())
+    if entry.source == "external" and entry.subdir:
+        paths.append(config.install.target_path / ".lpm" / "clones" / entry.name)
+    return paths
+
+
+def _verify_deploy_item(
+    item: DeployPlanItem,
+    *,
+    config: Config,
+    registry: Registry,
+) -> None:
+    entry = registry.get(item.name)
+    if entry is None:
+        raise RuntimeError(f"Registry entry disappeared during deploy: {item.name}")
+    if entry.kind == "mcp":
+        expected = sanitize_mcp_config_for_storage(entry.mcp_config or {})
+        actual = list_mcp_servers(item.target_path).get(entry.name)
+        if actual != expected:
+            raise RuntimeError(
+                f"Deployment verification failed for {item.name} on {item.platform}"
+            )
+        return
+
+    cache_path = config.install.target_path / entry.install_target_name()
+    source_hash = resource_hash_path(cache_path)
+    target_hash = resource_hash_path(item.target_path)
+    if not source_hash or source_hash != target_hash:
+        raise RuntimeError(
+            f"Deployment verification failed for {item.name} on {item.platform}"
+        )
+
+
+def _write_managed_markers(items: list[DeployPlanItem], registry: Registry) -> None:
     for item in items:
         if item.action not in {"create", "update"} or item.kind == "mcp":
             continue
+        entry = registry.get(item.name)
+        if entry is None:
+            continue
         target = item.target_path
-        if target.is_dir():
-            try:
-                (target / MANAGED_MARKER).write_text(
-                    json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8",
-                )
-            except OSError:
-                continue
+        try:
+            write_managed_marker(target, entry, platform=item.platform)
+        except OSError:
+            continue
 
 
 def _copy_resource_sanitized(src: Path, dest: Path) -> None:
@@ -1289,7 +1409,7 @@ def _copy_resource_sanitized(src: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for path in sorted(src.rglob("*")):
         rel = path.relative_to(src)
-        if _is_copy_excluded(rel):
+        if path.is_symlink() or _is_copy_excluded(rel):
             continue
         target = dest / rel
         if path.is_dir():
@@ -1479,34 +1599,18 @@ def _captured_name(tool: str, kind: str, name_hint: str) -> str:
 
 
 def _is_copy_excluded(path: Path) -> bool:
-    lower_parts = {part.lower() for part in path.parts}
-    if lower_parts & DEFAULT_EXCLUDED_DIRS:
-        return True
-    name = path.name.lower()
-    return name in DEFAULT_EXCLUDED_FILES or path.suffix.lower() in DEFAULT_EXCLUDED_SUFFIXES
+    return is_resource_path_excluded(path)
 
 
 def _is_snapshot_excluded(path: Path, root: Path) -> bool:
     rel = path.relative_to(root)
     first = rel.parts[0] if rel.parts else ""
-    return first in {".git", BACKUP_DIR} or any(part == "__pycache__" for part in rel.parts)
-
-
-def _is_lpm_managed(path: Path) -> bool:
-    if path.is_dir() and (path / MANAGED_MARKER).is_file():
-        return True
-    return False
+    return first in {".git", BACKUP_DIR} or is_resource_path_excluded(rel)
 
 
 def _is_placeholder(value: str) -> bool:
     value = value.strip()
     return value.startswith("${") and value.endswith("}") and len(value) > 3
-
-
-def _safe_backup_name(target: Path) -> Path:
-    raw = str(target.expanduser().resolve()).replace(":", "").strip("/\\")
-    safe = raw.replace("/", "__").replace("\\", "__")
-    return Path(safe or "target")
 
 
 def _write_yaml(path: Path, payload: dict[str, Any]) -> None:

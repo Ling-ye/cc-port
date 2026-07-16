@@ -145,13 +145,20 @@ Write-Host "  target : $TargetTriple"
 Invoke-NativeStep -Description "Installing Python release dependencies" `
     -FilePath $Python -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--quiet", "-e", ".[dev,desktop]")
 Invoke-NativeStep -Description "Installing locked frontend dependencies" `
-    -FilePath $Npm -Arguments @("ci") -WorkingDirectory (Join-Path $RepoRoot "desktop")
+    -FilePath $Npm -Arguments @(
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+    ) -WorkingDirectory (Join-Path $RepoRoot "desktop")
 Invoke-NativeStep -Description "Running Python tests" `
     -FilePath $Python -Arguments @("-m", "pytest", "-q", "-s")
 Invoke-NativeStep -Description "Running Ruff" `
     -FilePath $Python -Arguments @("-m", "ruff", "check", "src/lpm", "tests")
 Invoke-NativeStep -Description "Running frontend tests" `
     -FilePath $Npm -Arguments @("test") -WorkingDirectory (Join-Path $RepoRoot "desktop")
+Invoke-NativeStep -Description "Auditing production frontend dependencies" `
+    -FilePath $Npm -Arguments @("audit", "--omit=dev") -WorkingDirectory (Join-Path $RepoRoot "desktop")
 
 Write-Section "Building and collecting desktop release"
 & (Join-Path $RepoRoot "scripts\build-desktop.ps1")
@@ -176,6 +183,30 @@ $Artifacts | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoS
 
 Write-Section "SHA-256"
 $Artifacts | Get-FileHash -Algorithm SHA256 | Format-Table Path, Hash -AutoSize
+
+Write-Section "Smoke testing packaged sidecar"
+$SidecarArtifact = $Artifacts | Where-Object { $_.Name -eq "lpm-desktop-api.exe" } | Select-Object -First 1
+if (-not $SidecarArtifact) {
+    throw "Collected sidecar artifact was not found."
+}
+$PreviousStateHome = $env:LPM_STATE_HOME
+$SmokeState = Join-Path $env:TEMP "lpm-release-smoke-$PID-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $SmokeState | Out-Null
+try {
+    $env:LPM_STATE_HOME = $SmokeState
+    $SmokeOutput = & $SidecarArtifact.FullName "operation_history_page"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Packaged sidecar smoke test failed (exit $LASTEXITCODE): $SmokeOutput"
+    }
+    $SmokeResponse = ($SmokeOutput -join [Environment]::NewLine) | ConvertFrom-Json
+    if (-not $SmokeResponse.ok) {
+        throw "Packaged sidecar returned an error: $SmokeOutput"
+    }
+    Write-Host "  operation_history_page: ok" -ForegroundColor Green
+} finally {
+    $env:LPM_STATE_HOME = $PreviousStateHome
+    Remove-Item -LiteralPath $SmokeState -Force -ErrorAction SilentlyContinue
+}
 
 Write-Section "Release complete"
 Write-Host "  Output: $ReleaseDir" -ForegroundColor Green

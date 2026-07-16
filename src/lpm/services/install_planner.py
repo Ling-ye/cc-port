@@ -10,48 +10,11 @@ from pathlib import Path
 from ..core.agent_providers import AgentDetection, detect_agents
 from ..core.models import ItemKind, RegistryItem
 from ..core.platforms import PlatformProfile
+from ..core.resource_files import is_resource_path_excluded, resource_copy_ignore
+from ..core.tool_adapters import tool_adapter_by_id
 
 MANIFEST_FILENAMES = ("lpm.resource.json", "lpm-resource.json")
 RESOURCE_BUCKETS = ("skills", "agents", "commands", "hooks", "mcp", "rules", "prompts", "plugins")
-DEFAULT_EXCLUDED_DIRS = {
-    ".cache",
-    ".git",
-    ".hg",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "cache",
-    "coverage",
-    "dist",
-    "env",
-    "node_modules",
-    "out",
-    "target",
-    "temp",
-    "tmp",
-    "venv",
-}
-DEFAULT_EXCLUDED_FILES = {
-    ".DS_Store",
-    "Thumbs.db",
-}
-DEFAULT_EXCLUDED_SUFFIXES = {
-    ".7z",
-    ".dll",
-    ".dylib",
-    ".exe",
-    ".lock",
-    ".log",
-    ".msi",
-    ".pyc",
-    ".so",
-    ".zip",
-}
-SAFE_ENV_SUFFIXES = {".example", ".sample", ".template"}
 
 
 @dataclass(frozen=True)
@@ -94,6 +57,8 @@ def load_resource_manifest(root: Path) -> ResourceManifest:
         manifest_path = next((root / name for name in MANIFEST_FILENAMES if (root / name).is_file()), None)
     if manifest_path is None:
         return ResourceManifest()
+    if manifest_path.is_symlink():
+        raise ValueError(f"{manifest_path}: symbolic-link manifests are not allowed.")
 
     try:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -124,19 +89,24 @@ def copy_resource_tree(src: Path, dest: Path, *, manifest: ResourceManifest | No
 
     effective_manifest = manifest or load_resource_manifest(src)
     if src.is_file():
+        if _is_excluded_path(src):
+            raise ValueError(f"Resource file is excluded by policy: {src}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
         return
     if effective_manifest.has_entries:
         dest.mkdir(parents=True, exist_ok=True)
         for rel in _manifest_paths_for_copy(effective_manifest):
-            source_item = (src / rel).resolve()
+            source_candidate = src / rel
+            if _is_excluded_path(source_candidate, root=src):
+                continue
+            source_item = source_candidate.resolve()
             _assert_inside(src, source_item)
             if not source_item.exists():
                 continue
             target_item = dest / rel
             if source_item.is_dir():
-                shutil.copytree(source_item, target_item, ignore=_copy_ignore)
+                shutil.copytree(source_item, target_item, ignore=resource_copy_ignore)
             else:
                 target_item.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_item, target_item)
@@ -144,7 +114,7 @@ def copy_resource_tree(src: Path, dest: Path, *, manifest: ResourceManifest | No
             shutil.copy2(effective_manifest.path, dest / effective_manifest.path.name)
         return
 
-    shutil.copytree(src, dest, ignore=_copy_ignore)
+    shutil.copytree(src, dest, ignore=resource_copy_ignore)
 
 
 def plan_install(
@@ -212,7 +182,7 @@ def list_resource_files(src: Path, *, manifest: ResourceManifest | None = None) 
     src = src.expanduser().resolve()
     effective_manifest = manifest or load_resource_manifest(src)
     if src.is_file():
-        return [src]
+        return [] if _is_excluded_path(src) else [src]
     if not src.exists():
         return []
     if effective_manifest.has_entries:
@@ -220,25 +190,30 @@ def list_resource_files(src: Path, *, manifest: ResourceManifest | None = None) 
         for rel in _manifest_paths_for_copy(effective_manifest):
             item = (src / rel).resolve()
             _assert_inside(src, item)
-            if item.is_file() and not _is_excluded_path(item):
+            if item.is_file() and not _is_excluded_path(item, root=src):
                 files.append(item)
             elif item.is_dir():
-                files.extend(p for p in item.rglob("*") if p.is_file() and not _is_excluded_path(p))
+                files.extend(
+                    path
+                    for path in item.rglob("*")
+                    if path.is_file() and not _is_excluded_path(path, root=src)
+                )
         return sorted(set(files))
-    return sorted(p for p in src.rglob("*") if p.is_file() and not _is_excluded_path(p))
+    return sorted(
+        path
+        for path in src.rglob("*")
+        if path.is_file() and not _is_excluded_path(path, root=src)
+    )
 
 
 def _platform_install_mechanism(platform_name: str, kind: ItemKind) -> str:
+    adapter = tool_adapter_by_id(platform_name)
+    if adapter is not None:
+        return adapter.install_mechanism(kind)
     if kind == "mcp":
         return "json_mcp_servers_patch"
     if kind == "plugin":
-        if platform_name == "opencode":
-            return "native_plugin_commands_agents"
-        if platform_name == "claude-code":
-            return "claude_plugin_manifest"
         return "copy_plugin_dir"
-    if platform_name in {"cursor", "windsurf", "cline"}:
-        return "skills_cli_or_copy"
     return "copy_directory"
 
 
@@ -262,41 +237,16 @@ def _normalize_manifest_path(value: str, manifest_root: Path) -> str:
     return text
 
 
-def _copy_ignore(directory: str, names: list[str]) -> set[str]:
-    ignored: set[str] = set()
-    for name in names:
-        path = Path(directory) / name
-        lower = name.lower()
-        if path.is_dir() and lower in DEFAULT_EXCLUDED_DIRS:
-            ignored.add(name)
-        elif path.is_file() and (
-            lower in DEFAULT_EXCLUDED_FILES
-            or path.suffix.lower() in DEFAULT_EXCLUDED_SUFFIXES
-            or _is_sensitive_env_file(path)
-        ):
-            ignored.add(name)
-    return ignored
-
-
-def _is_excluded_path(path: Path) -> bool:
-    lower_parts = {part.lower() for part in path.parts}
-    if lower_parts & DEFAULT_EXCLUDED_DIRS:
+def _is_excluded_path(path: Path, *, root: Path | None = None) -> bool:
+    if path.is_symlink():
         return True
-    name = path.name.lower()
-    return (
-        name in DEFAULT_EXCLUDED_FILES
-        or path.suffix.lower() in DEFAULT_EXCLUDED_SUFFIXES
-        or _is_sensitive_env_file(path)
-    )
-
-
-def _is_sensitive_env_file(path: Path) -> bool:
-    name = path.name.lower()
-    if name == ".env":
-        return True
-    if not name.startswith(".env."):
-        return False
-    return Path(name).suffix not in SAFE_ENV_SUFFIXES
+    candidate = path
+    if root is not None:
+        try:
+            candidate = path.relative_to(root)
+        except ValueError:
+            return True
+    return is_resource_path_excluded(candidate)
 
 
 def _assert_inside(root: Path, target: Path) -> None:

@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  python:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -37,3 +37,38 @@ jobs:
 
       - name: Test
         run: pytest -q
+
+  desktop:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Type-check and build
+        run: npm run build
+
+      - name: Test frontend
+        run: npm test
+
+  tauri:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Tauri backend
+        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml

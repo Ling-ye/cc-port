@@ -162,7 +162,15 @@ def install_resource(
     )
     if result.action in {SyncAction.FAILED, SyncAction.REPO_GONE, SyncAction.SKIPPED}:
         detail = f": {result.detail}" if result.detail else ""
-        raise RuntimeError(f"Resource install failed for {name}: {result.action.value}{detail}")
+        operation = (
+            f" (operation {result.operation_id}, status {result.operation_status})"
+            if result.operation_id
+            else ""
+        )
+        raise RuntimeError(
+            f"Resource install failed for {name}: "
+            f"{result.action.value}{detail}{operation}"
+        )
     return result
 
 
@@ -524,7 +532,7 @@ def _can_preview(entry: RegistryItem, config: Config, registry_path: Path) -> bo
 
 def _preview_file(root: Path, entry: RegistryItem) -> Path | None:
     if root.is_file():
-        return root if _is_probably_text(root) else None
+        return root if not root.is_symlink() and _is_probably_text(root) else None
 
     preferred = {
         "skill": ["SKILL.md", "README.md"],
@@ -536,7 +544,11 @@ def _preview_file(root: Path, entry: RegistryItem) -> Path | None:
 
     for name in preferred:
         candidate = root / name
-        if candidate.is_file() and _is_probably_text(candidate):
+        if (
+            candidate.is_file()
+            and not candidate.is_symlink()
+            and _is_probably_text(candidate)
+        ):
             return candidate
 
     extensions = {".md", ".mdc", ".txt", ".json", ".yaml", ".yml", ".toml"}
@@ -545,7 +557,7 @@ def _preview_file(root: Path, entry: RegistryItem) -> Path | None:
             rel_parts = candidate.relative_to(root).parts
         except ValueError:
             continue
-        if ".git" in rel_parts or not candidate.is_file():
+        if ".git" in rel_parts or candidate.is_symlink() or not candidate.is_file():
             continue
         if candidate.suffix.lower() in extensions and _is_probably_text(candidate):
             return candidate

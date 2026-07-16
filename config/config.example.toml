@@ -18,6 +18,11 @@ repo_prefix = "cursor-skill-"
 # Default visibility for newly created repositories.
 default_private = false
 
+[git]
+# Optional absolute path or command name. Leave empty to search PATH and
+# standard installation locations.
+executable = ""
+
 [install]
 # Fallback directory used when no platform-specific skills_dir is configured.
 target = "~/.cursor/skills"
@@ -29,6 +34,15 @@ repo_name = "LingyeAIResources"
 repo_url = ""
 local_path = ""
 branch = "main"
+
+[state]
+# Wait time when another LPM process is writing the same target.
+lock_timeout_seconds = 10
+
+# Local operation and backup cleanup defaults. Cleanup is never automatic.
+retention_days = 90
+keep_latest_operations = 20
+max_backup_mb = 2048
 
 # ---- Platform configuration ----
 # Enable one or more AI coding platforms. LPM installs skills, MCP

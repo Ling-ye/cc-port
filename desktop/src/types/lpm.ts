@@ -62,6 +62,10 @@ export interface SyncResultItem {
   action: string;
   detail?: string;
   platforms_installed: string[];
+  operation_id?: string;
+  operation_status?: string;
+  backup_root?: string | null;
+  rolled_back?: boolean;
 }
 
 export interface ResourceRepoInfo {
@@ -164,6 +168,9 @@ export interface EditableConfig {
     repo_prefix: string;
     default_private: boolean;
   };
+  git: {
+    executable: string;
+  };
   install: {
     target: string;
   };
@@ -172,6 +179,12 @@ export interface EditableConfig {
     repo_url: string;
     local_path: string;
     branch: string;
+  };
+  state: {
+    lock_timeout_seconds: number;
+    retention_days: number;
+    keep_latest_operations: number;
+    max_backup_mb: number;
   };
   platforms: PlatformProfile[];
 }
@@ -366,6 +379,246 @@ export interface DeployPlan {
   items: DeployPlanItem[];
   missing_secrets: SecretPlaceholder[];
   selected_names: string[];
+  operation_id: string;
+  status: string;
+  rolled_back: boolean;
+}
+
+export interface ResourceSyncConflict {
+  id: string;
+  path: string;
+  resource: string;
+  reason: string;
+}
+
+export interface ResourceCommitIssue {
+  path: string;
+  reason: string;
+}
+
+export interface ResourceSecretFinding extends ResourceCommitIssue {
+  preview: string;
+  commit: string;
+}
+
+export interface ResourceCommitChange {
+  name: string;
+  kind: string;
+  action: string;
+  paths: string[];
+}
+
+export interface ResourceCommitPlan {
+  repo_path: string;
+  changed_paths: string[];
+  managed_paths: string[];
+  resources: ResourceCommitChange[];
+  blocked_paths: ResourceCommitIssue[];
+  secret_findings: ResourceSecretFinding[];
+  suggested_message: string;
+  blocked: boolean;
+}
+
+export interface ResourceSyncPlan {
+  operation_id: string;
+  repo_path: string;
+  branch: string;
+  status:
+    | "clean"
+    | "ahead"
+    | "behind"
+    | "diverged"
+    | "unborn"
+    | "no-remote"
+    | "wrong-branch"
+    | "dirty"
+    | "conflict"
+    | "ready"
+    | "applied"
+    | "cancelled"
+    | "abandoned"
+    | string;
+  local_commit?: string | null;
+  remote_commit?: string | null;
+  merge_base?: string | null;
+  ahead: number;
+  behind: number;
+  worktree_path?: string | null;
+  merge_commit?: string | null;
+  conflicts: ResourceSyncConflict[];
+  detail: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationTarget {
+  path: string;
+  action: "restore" | "remove" | string;
+  change_action: string;
+  backup_path: string;
+  resource: string;
+  platform: string;
+  before_hash: string;
+  after_hash: string;
+  verified: boolean;
+}
+
+export interface OperationHistorySummary {
+  operation_id: string;
+  kind: string;
+  status: string;
+  started_at: string;
+  finished_at: string;
+  message: string;
+  rolled_back: boolean;
+  target_count: number;
+  changed_target_count: number;
+  restorable: boolean;
+}
+
+export interface OperationHistoryEntry extends OperationHistorySummary {
+  metadata: Record<string, unknown>;
+  targets: OperationTarget[];
+}
+
+export interface OperationHistoryResult {
+  operations: OperationHistoryEntry[];
+}
+
+export interface OperationHistoryPage {
+  operations: OperationHistorySummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
+}
+
+export interface OperationRestoreResult {
+  source_operation_id: string;
+  operation: {
+    operation_id: string;
+    status: string;
+  };
+}
+
+export interface StateRetentionCandidate {
+  operation_id: string;
+  kind: string;
+  status: string;
+  timestamp: string;
+  age_days: number;
+  record_bytes: number;
+  backup_bytes: number;
+  reclaimable_bytes: number;
+  reasons: string[];
+}
+
+export interface StateRetentionPlan {
+  generated_at: string;
+  state_root: string;
+  policy: {
+    retention_days: number;
+    keep_latest_operations: number;
+    max_backup_mb: number;
+    max_backup_bytes: number;
+  };
+  operation_count: number;
+  running_operation_count: number;
+  protected_operation_count: number;
+  operation_record_bytes: number;
+  backup_bytes: number;
+  orphan_backup_count: number;
+  orphan_backup_bytes: number;
+  candidate_count: number;
+  reclaimable_bytes: number;
+  projected_backup_bytes: number;
+  candidates: StateRetentionCandidate[];
+}
+
+export interface StatePruneResult {
+  cleanup_id: string;
+  deleted_operation_ids: string[];
+  failed: Array<{ operation_id: string; error: string }>;
+  reclaimed_bytes: number;
+  audit_path: string;
+}
+
+export interface OrphanBackup {
+  name: string;
+  path: string;
+  kind: string;
+  size_bytes: number;
+  modified_at: string;
+}
+
+export interface OrphanBackupResult {
+  orphans: OrphanBackup[];
+}
+
+export interface OrphanBackupExport {
+  name: string;
+  output_path: string;
+  size_bytes: number;
+  exported_at: string;
+}
+
+export interface OrphanQuarantine {
+  quarantine_id: string;
+  created_at: string;
+  names: string[];
+  item_count: number;
+  size_bytes: number;
+  path: string;
+}
+
+export interface OrphanQuarantineList {
+  quarantines: OrphanQuarantine[];
+}
+
+export interface OrphanQuarantineResult {
+  quarantine: OrphanQuarantine;
+  audit_path: string;
+}
+
+export interface OrphanDeleteResult {
+  delete_id: string;
+  quarantine_id: string;
+  deleted: boolean;
+  reclaimed_bytes: number;
+  error: string;
+  audit_path: string;
+}
+
+export interface MaintenanceAudit {
+  audit_id: string;
+  action: string;
+  status: string;
+  created_at: string;
+  item_count: number;
+  reclaimed_bytes: number;
+  path: string;
+}
+
+export interface MaintenanceAuditList {
+  audits: MaintenanceAudit[];
+}
+
+export interface MaintenanceAuditDetail {
+  audit: Record<string, unknown>;
+}
+
+export interface StaleResourceSyncPlan {
+  operation_id: string;
+  status: string;
+  repo_path: string;
+  worktree_path: string;
+  updated_at: string;
+  age_hours: number;
+  reason: string;
+}
+
+export interface StaleResourceSyncResult {
+  plans: StaleResourceSyncPlan[];
 }
 
 export type EnvDiffStatus = "added" | "modified" | "deleted" | "same" | "conflict" | string;

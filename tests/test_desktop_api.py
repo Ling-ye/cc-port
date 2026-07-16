@@ -8,7 +8,13 @@ from lpm.infrastructure.github_client import GithubAuthError
 from lpm.interfaces import desktop_api
 from lpm.services.env_manager import EnvDiffItem, EnvDiffPlan
 from lpm.services.local_resources import ImportLocalResult
+from lpm.services.resource_commit import (
+    ResourceCommitChange,
+    ResourceCommitIssue,
+    ResourceCommitPlan,
+)
 from lpm.services.resource_manager import ResourceDeleteResult
+from lpm.services.resource_sync import ResourceSyncPlan, SyncConflict
 
 
 def test_desktop_upload_pushes_resource_repo_by_default(tmp_path: Path, monkeypatch) -> None:
@@ -149,6 +155,256 @@ def test_desktop_env_diff_import_serializes_paths_and_choices(tmp_path: Path, mo
     assert data["local_root"] == str(tmp_path / "local")
     assert data["default_choices"] == {"resource:demo": "incoming"}
     assert Path(data["items"][0]["local_path"]) == tmp_path / "local" / "resources" / "skills" / "demo"
+
+
+def test_desktop_resource_sync_plan_serializes_conflicts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(
+        desktop_api,
+        "build_resource_sync_plan",
+        lambda **_kwargs: ResourceSyncPlan(
+            operation_id="abc123",
+            repo_path=tmp_path / "resources",
+            branch="main",
+            status="conflict",
+            local_commit="local",
+            remote_commit="remote",
+            merge_base="base",
+            ahead=1,
+            behind=1,
+            worktree_path=tmp_path / "state" / "worktree",
+            conflicts=[
+                SyncConflict(
+                    id="resource:demo",
+                    path="skills/demo/SKILL.md",
+                    resource="demo",
+                    reason="changed on both sides",
+                )
+            ],
+        ),
+    )
+
+    result = desktop_api.run_action("resource_sync_plan")
+
+    assert result["ok"] is True
+    assert result["data"]["repo_path"] == str(tmp_path / "resources")
+    assert result["data"]["conflicts"][0]["id"] == "resource:demo"
+
+
+def test_desktop_resource_commit_plan_serializes_resource_blockers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(
+        desktop_api,
+        "build_resource_commit_plan",
+        lambda **_kwargs: ResourceCommitPlan(
+            repo_path=tmp_path / "resources",
+            changed_paths=["notes.txt"],
+            managed_paths=[],
+            resources=[
+                ResourceCommitChange(
+                    name="notes.txt",
+                    kind="metadata",
+                    action="added",
+                    paths=["notes.txt"],
+                )
+            ],
+            blocked_paths=[
+                ResourceCommitIssue(
+                    path="notes.txt",
+                    reason="outside managed scope",
+                )
+            ],
+            secret_findings=[],
+            suggested_message="lpm: update resource metadata",
+        ),
+    )
+
+    result = desktop_api.run_action("resource_commit_plan")
+
+    assert result["ok"] is True
+    assert result["data"]["blocked"] is True
+    assert result["data"]["blocked_paths"][0]["path"] == "notes.txt"
+
+
+def test_desktop_operation_history_and_force_restore(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        desktop_api,
+        "operation_history",
+        lambda *, limit: [
+            {
+                "operation_id": "abc123",
+                "kind": "resource-install",
+                "status": "succeeded",
+                "restorable": True,
+                "limit": limit,
+            }
+        ],
+    )
+
+    def fake_restore(operation_id: str, *, force: bool, config: Config):
+        assert isinstance(config, Config)
+        calls.append((operation_id, force))
+        return {"source_operation_id": operation_id, "status": "succeeded"}
+
+    monkeypatch.setattr(desktop_api, "restore_operation", fake_restore)
+
+    history = desktop_api.run_action("operation_history", {"limit": 20})
+    restored = desktop_api.run_action(
+        "operation_restore",
+        {"operation_id": "abc123", "force": True},
+    )
+
+    assert history["ok"] is True
+    assert history["data"]["operations"][0]["limit"] == 20
+    assert restored["ok"] is True
+    assert calls == [("abc123", True)]
+
+
+def test_desktop_operation_page_detail_and_state_maintenance(monkeypatch) -> None:
+    monkeypatch.setattr(
+        desktop_api,
+        "operation_history_page",
+        lambda *, offset, limit: {
+            "operations": [{"operation_id": "abc123"}],
+            "offset": offset,
+            "limit": limit,
+            "total": 1,
+            "has_more": False,
+        },
+    )
+    monkeypatch.setattr(
+        desktop_api,
+        "operation_detail",
+        lambda operation_id: {
+            "operation_id": operation_id,
+            "targets": [{"path": "/target"}],
+        },
+    )
+    monkeypatch.setattr(
+        desktop_api,
+        "list_orphan_backups",
+        lambda: [{"name": "lost", "size_bytes": 42}],
+    )
+    monkeypatch.setattr(
+        desktop_api,
+        "list_orphan_quarantines",
+        lambda: [{"quarantine_id": "def456", "item_count": 1}],
+    )
+    monkeypatch.setattr(
+        desktop_api,
+        "list_maintenance_audits",
+        lambda *, limit: [{"audit_id": "audit123", "limit": limit}],
+    )
+    monkeypatch.setattr(
+        desktop_api,
+        "load_maintenance_audit",
+        lambda audit_id: {"audit_id": audit_id, "status": "succeeded"},
+    )
+
+    page = desktop_api.run_action(
+        "operation_history_page",
+        {"offset": 20, "limit": 20},
+    )
+    detail = desktop_api.run_action(
+        "operation_detail",
+        {"operation_id": "abc123"},
+    )
+    orphans = desktop_api.run_action("orphan_backups")
+    quarantines = desktop_api.run_action("orphan_quarantines")
+    audits = desktop_api.run_action("maintenance_audits", {"limit": 10})
+    audit = desktop_api.run_action(
+        "maintenance_audit",
+        {"audit_id": "audit123"},
+    )
+
+    assert page["data"]["offset"] == 20
+    assert detail["data"]["targets"][0]["path"] == "/target"
+    assert orphans["data"]["orphans"][0]["name"] == "lost"
+    assert quarantines["data"]["quarantines"][0]["quarantine_id"] == "def456"
+    assert audits["data"]["audits"][0]["limit"] == 10
+    assert audit["data"]["audit"]["audit_id"] == "audit123"
+
+
+def test_desktop_state_retention_plan_and_prune(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_plan(**kwargs):
+        calls.append(("plan", kwargs["retention_days"]))
+        return {"candidate_count": 1, "candidates": [{"operation_id": "abc123"}]}
+
+    def fake_prune(operation_ids: list[str], **kwargs):
+        calls.append(("prune", (operation_ids, kwargs["max_backup_mb"])))
+        return {"deleted_operation_ids": operation_ids, "reclaimed_bytes": 42}
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "build_state_retention_plan", fake_plan)
+    monkeypatch.setattr(desktop_api, "prune_state", fake_prune)
+
+    plan = desktop_api.run_action(
+        "state_retention_plan",
+        {
+            "retention_days": 30,
+            "keep_latest_operations": 5,
+            "max_backup_mb": 100,
+        },
+    )
+    pruned = desktop_api.run_action(
+        "state_prune",
+        {
+            "operation_ids": ["abc123"],
+            "retention_days": 30,
+            "keep_latest_operations": 5,
+            "max_backup_mb": 100,
+        },
+    )
+
+    assert plan["ok"] is True
+    assert plan["data"]["candidate_count"] == 1
+    assert pruned["ok"] is True
+    assert calls == [
+        ("plan", 30),
+        ("prune", (["abc123"], 100)),
+    ]
+
+
+def test_desktop_lists_and_cleans_stale_sync_worktrees(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        desktop_api,
+        "list_stale_resource_sync_plans",
+        lambda *, min_age_hours: [
+            {
+                "operation_id": "abc123",
+                "worktree_path": tmp_path / "worktree",
+                "age_hours": min_age_hours,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        desktop_api,
+        "cleanup_stale_resource_sync_plan",
+        lambda operation_id, **_kwargs: {"operation_id": operation_id, "status": "abandoned"},
+    )
+
+    stale = desktop_api.run_action("resource_sync_stale", {"min_age_hours": 12})
+    cleaned = desktop_api.run_action(
+        "resource_sync_cleanup",
+        {"operation_id": "abc123"},
+    )
+
+    assert stale["ok"] is True
+    assert stale["data"]["plans"][0]["worktree_path"] == str(tmp_path / "worktree")
+    assert stale["data"]["plans"][0]["age_hours"] == 12
+    assert cleaned["data"]["status"] == "abandoned"
 
 
 def test_config_branches_falls_back_to_git_credentials_when_token_is_rejected(
