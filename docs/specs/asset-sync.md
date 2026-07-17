@@ -26,6 +26,7 @@
 
 - Desktop API 固定为 `asset_inventory`、`asset_action_plan`、`asset_action_apply`。
 - CLI 固定为 `lpm asset list`、`lpm asset plan`、`lpm asset apply`，并提供 `--json` 机器输出。
+- 所有机器 JSON 输出必须是可直接解析的 UTF-8 JSON，不得包含 ANSI 颜色码、Rich 样式或终端相关转义序列；终端是否支持颜色不得改变输出字节语义。
 - 新写接口必须携带 `kind`、`name`、`platform`；多本地实例时再携带 `local_instance_id`。
 - `AssetPlatformRow.available_actions` 由服务端计算，前端不得自行推导可写性。
 - 旧 `resource_sync_*`、`resource_commit_*` Desktop API 和 `lpm resource pull/push/sync-*` 只保留一个发布版本，并返回或输出弃用警告。

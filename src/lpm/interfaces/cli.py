@@ -125,6 +125,11 @@ def _load() -> Config:
     return cfg
 
 
+def _print_machine_json(data: object) -> None:
+    """Write stable JSON without terminal styling or ANSI escape sequences."""
+    typer.echo(json.dumps(data, default=str, ensure_ascii=False, indent=2))
+
+
 def _print_sync_deprecation() -> None:
     console.print(f"[yellow]{DEPRECATED_SYNC_MESSAGE}[/yellow]")
 
@@ -430,9 +435,7 @@ def cmd_asset_list(
         console.print(f"[red]Asset inventory failed:[/red] {exc}")
         raise typer.Exit(1) from exc
     if json_output:
-        console.print_json(
-            json=json.dumps(asdict(inventory), default=str, ensure_ascii=False)
-        )
+        _print_machine_json(asdict(inventory))
         return
 
     table = Table(title=f"LPM assets ({inventory.branch or 'unconfigured branch'})")
@@ -511,7 +514,7 @@ def cmd_asset_plan(
         console.print(f"[red]Asset planning failed:[/red] {exc}")
         raise typer.Exit(1) from exc
     if json_output:
-        console.print_json(json=json.dumps(asdict(plan), default=str, ensure_ascii=False))
+        _print_machine_json(asdict(plan))
         return
     table = Table(title="LPM asset action plan")
     table.add_column("Field", style="bold")
@@ -545,7 +548,7 @@ def cmd_asset_apply(
         console.print(f"[red]Asset apply failed:[/red] {exc}")
         raise typer.Exit(1) from exc
     if json_output:
-        console.print_json(json=json.dumps(asdict(result), default=str, ensure_ascii=False))
+        _print_machine_json(asdict(result))
     else:
         console.print(
             f"[bold]{result.status}[/bold] {result.target_resource_key} "
@@ -668,7 +671,7 @@ def cmd_operations_show(
     except Exception as exc:
         console.print(f"[red]Operation detail failed:[/red] {exc}")
         raise typer.Exit(1) from exc
-    console.print_json(data=asdict(detail))
+    _print_machine_json(asdict(detail))
 
 
 @operations_app.command("restore")
@@ -934,7 +937,7 @@ def cmd_operations_audit(
     except Exception as exc:
         console.print(f"[red]Maintenance audit failed:[/red] {exc}")
         raise typer.Exit(1) from exc
-    console.print_json(data=payload)
+    _print_machine_json(payload)
 
 
 

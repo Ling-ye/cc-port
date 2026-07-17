@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+
+from rich.console import Console
 from typer.testing import CliRunner
 
 from lpm.core.config import Config
@@ -12,6 +15,11 @@ runner = CliRunner()
 
 def test_asset_cli_list_plan_and_apply(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli,
+        "console",
+        Console(force_terminal=True, color_system="standard"),
+    )
     monkeypatch.setattr(cli, "_load", Config)
     monkeypatch.setattr(
         cli,
@@ -90,6 +98,9 @@ def test_asset_cli_list_plan_and_apply(monkeypatch) -> None:
     assert '"operation_id": "plan-1"' in planned.stdout
     assert applied.exit_code == 0
     assert '"status": "succeeded"' in applied.stdout
+    for result in (listed, planned, applied):
+        assert "\x1b[" not in result.stdout
+        assert isinstance(json.loads(result.stdout), dict)
     assert calls == [
         ("plan", ("download", "skill", "demo", "cursor")),
         ("apply", "plan-1"),
