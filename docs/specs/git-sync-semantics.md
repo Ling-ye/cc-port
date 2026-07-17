@@ -19,6 +19,7 @@
 3. 仅 behind 时允许快进。
 4. diverged 时在临时 worktree 中执行三方合并。
 5. `registry.yaml` 按 `kind:name` 资源身份语义合并；资源内容冲突按整个资源选择 local 或 incoming。
+   对外冲突 ID 必须使用 `resource:<kind>:<name>`，不得退化为仅名称 ID，避免不同资源类型同名时互相覆盖。
 6. 用户确认后将临时结果应用到正式分支。
 7. push 只允许普通非强制推送；远端抢先更新时重新 fetch 和规划。
 

@@ -1,6 +1,6 @@
 # 桌面打包与部署
 
-> [KNOWN] 本文默认在仓库根目录使用 Windows PowerShell，所有命令块均可直接复制执行。置信度：HIGH。
+> [KNOWN] 权威发布入口使用 Python 标准库编排，可在 Windows、macOS 和 Linux 的仓库根目录运行；安装包仍只能为当前宿主系统生成。置信度：HIGH。
 
 ## 第一次构建
 
@@ -25,21 +25,27 @@ rustc --version
 
 每次更新代码后只需要执行这一条命令：
 
+```bash
+python scripts/release_desktop.py
+```
+
+Windows 旧命令仍然兼容，但它仅转发到上述 Python 脚本：
+
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1
 ```
 
-[KNOWN] `release-desktop.ps1` 固定执行以下步骤：
+[KNOWN] `release_desktop.py` 固定执行以下步骤：
 
 1. 检查 Python、npm、Git、Cargo 和 Rust。
 2. 安装 `.[dev,desktop]` Python 依赖，并使用 `desktop/package-lock.json` 以 `npm ci --ignore-scripts` 安装前端依赖；当前依赖使用预构建平台包，发布流程不执行第三方安装脚本。
 3. 运行 pytest、Ruff 和 Vitest。
-4. 运行 `npm audit --omit=dev`，生产依赖存在已知漏洞时阻断发布。
+4. 运行全依赖 `npm audit --audit-level=moderate` 和前端生产构建，运行时或开发工具依赖存在中高危漏洞时阻断发布。
 5. 完整重建 Python sidecar。
-6. 执行 Tauri release build，生成 MSI 和 NSIS 安装包。
-7. 收集产物到 `release/desktop/<target-triple>/`。
-8. 检查本次产物的更新时间并打印 SHA-256。
-9. 直接运行收集后的 sidecar，并验证 `operation_history_page` JSON API。
+6. 执行当前宿主系统的 Tauri release build；Windows 生成 MSI 和 NSIS，macOS 至少生成 DMG，Linux 至少生成 DEB、AppImage 或 RPM 之一。
+7. 在 `release/desktop/` 下的隔离临时目录收集并检查产物。
+8. 直接运行临时目录中的 sidecar，并验证 `operation_history_page` JSON API。
+9. 全部验证成功后替换 `release/desktop/<target-triple>/`，并打印 SHA-256；失败时保留上一次已验证产物。
 
 [KNOWN] 该命令只生成可部署产物，不自动安装、不上传 Release，也不修改用户配置。
 
@@ -97,7 +103,7 @@ Get-ChildItem $ReleaseDir -Recurse -File |
   Get-FileHash -Algorithm SHA256
 ```
 
-[KNOWN] 不要仅凭文件存在判断打包成功；必须确认构建退出码、文件更新时间和哈希均来自本次构建。
+[KNOWN] 不要仅凭文件存在判断打包成功；必须确认 Python 发布命令退出码为 0，并保存该命令打印的正式产物路径和哈希。
 
 ## 部署方式
 
@@ -185,7 +191,7 @@ Get-ChildItem .\desktop\src-tauri\binaries
 
 - [ ] 桌面版本和锁文件已同步。
 - [ ] pytest、Ruff、`npm test`、`npm run build` 全部通过。
-- [ ] `npm audit --omit=dev` 为 0；开发依赖告警已单独评估。
+- [ ] `npm audit --audit-level=moderate` 为 0。
 - [ ] sidecar 使用当前 Python 源码重新构建。
 - [ ] 收集后的 sidecar JSON API 烟雾测试通过。
 - [ ] MSI/NSIS 的时间、大小和 SHA-256 已核对。

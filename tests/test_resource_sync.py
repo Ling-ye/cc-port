@@ -199,7 +199,7 @@ def test_resource_sync_fast_forward_and_three_way_conflict(tmp_path: Path, monke
     conflict = build_resource_sync_plan(config=cfg_b)
 
     assert conflict.status == "conflict"
-    assert any(item.id == "resource:demo" for item in conflict.conflicts)
+    assert any(item.id == "resource:skill:demo" for item in conflict.conflicts)
     with pytest.raises(GitError, match="pending synchronization"):
         build_resource_sync_plan(config=cfg_b)
     worktree = conflict.worktree_path
@@ -210,7 +210,7 @@ def test_resource_sync_fast_forward_and_three_way_conflict(tmp_path: Path, monke
     conflict = build_resource_sync_plan(config=cfg_b)
     ready = resolve_resource_sync_plan(
         conflict.operation_id,
-        {"resource:demo": "incoming"},
+        {"resource:skill:demo": "incoming"},
     )
     assert ready.status == "ready"
     final = apply_resource_sync_plan(ready.operation_id)

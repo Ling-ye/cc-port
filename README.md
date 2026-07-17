@@ -107,8 +107,9 @@ tools/packaging/
 scripts/
   setup.*                       # 初始化开发/构建环境
   dev.*                         # 启动 Tauri 桌面调试环境
-  release-desktop.ps1           # Windows 一键验收、打包和产物验证
-  build-desktop.*               # 构建桌面发布产物
+  release_desktop.py            # 跨平台桌面发布权威入口
+  release-desktop.ps1           # Windows 旧命令兼容转发层
+  build-desktop.*               # 旧的专项构建入口
 
 desktop/dist/                   # Vite 前端静态资源，中间产物，可忽略
 release/desktop/                # 对外发布的最终 exe/installer，可忽略
@@ -276,24 +277,33 @@ desktop/src-tauri/target/debug/                # Tauri/Cargo dev 调试输出
 
 完整的环境要求、版本同步、验收矩阵、产物校验、安装方式和回退边界见 [桌面打包与部署](docs/packaging-and-deployment.md)。
 
+```bash
+python scripts/release_desktop.py
+```
+
+Windows 仍可继续使用旧命令；它只会转发到同一个 Python 流程：
+
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1
 ```
 
-每次更新代码后只需要执行这一条命令。它会按顺序执行：
+每次更新代码后只需要执行其中一条命令。它会按顺序执行：
 
 1. 安装 Python 发布依赖和锁定的前端依赖。
-2. 运行 pytest、Ruff 和 Vitest。
-3. 完整构建 sidecar 和 Tauri 安装包。
-4. 收集并验证本次产物。
+2. 运行 pytest、Ruff、Vitest、全依赖审计和前端生产构建。
+3. 完整构建 sidecar 和当前操作系统的 Tauri 安装包。
+4. 在临时目录收集产物并执行 sidecar 冒烟；全部成功后才替换上一次正式产物。
 5. 打印 SHA-256。
+
+“跨平台”表示同一个 Python 编排器可分别在 Windows、macOS 和 Linux 上运行；它不在一个操作系统上交叉生成其他系统的安装包。
 
 简单区分：
 
 - `scripts/dev.*`：本地调试入口，启动的是带热更新能力的桌面开发环境。
-- `scripts/release-desktop.ps1`：Windows 完整发布入口；更新代码后默认只执行这一条命令。
+- `scripts/release_desktop.py`：唯一完整发布入口；更新代码后默认只执行这一条命令。
+- `scripts/release-desktop.ps1`：Windows 兼容入口，仅定位 Python 并转发参数。
 - `scripts/check-release.*`：端到端构建验收入口，串联 Python 测试、Ruff、前端 build、sidecar build 和 Tauri build，并打印原始产物路径；当前不运行 Vitest，也不收集到 `release/desktop/`。
-- `scripts/build-desktop.*`：`release-desktop.ps1` 使用的底层构建与收集入口，不单独承担完整发布验收。
+- `scripts/build-desktop.*`：旧的专项构建与收集入口，不参与完整发布流程。
 
 Windows 上最终通常会得到：
 
@@ -321,7 +331,8 @@ desktop/src-tauri/target/release/bundle/  # Tauri 原始安装包输出
 
 - `scripts/setup.*`：初始化 Python、Node.js、Rust/Tauri 相关依赖。
 - `scripts/dev.*`：启动完整的 Tauri 桌面调试环境，用于开发和联调。
-- `scripts/release-desktop.ps1`：执行 Windows 完整验收、构建、收集和产物哈希。
+- `scripts/release_desktop.py`：执行当前平台的完整验收、构建、事务式收集、冒烟和产物哈希。
+- `scripts/release-desktop.ps1`：Windows 兼容转发层。
 - `scripts/check-release.*`、`scripts/build-desktop.*`：专项或底层入口，完整发布时不需要手动组合。
 
 `desktop/package.json` 中的 npm 脚本属于内部步骤或专项检查：Tauri 会调用 `npm run build` 构建前端，根目录脚本会调用 `npm run tauri dev/build` 启动或打包桌面外壳，`npm run sidecar` 和 `npm run icons` 主要用于维护单个打包环节。完整构建请使用根目录脚本，不需要手动拼接这些内部命令。
