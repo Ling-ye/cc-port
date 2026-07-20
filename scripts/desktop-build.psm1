@@ -414,6 +414,21 @@ function Get-LpmVisualStudioPath {
     return $null
 }
 
+function Get-LpmMinimalWindowsPath {
+    $systemRoot = if ($env:SystemRoot) { $env:SystemRoot } else { [Environment]::SystemDirectory }
+    if (-not $systemRoot) {
+        $systemRoot = "C:\Windows"
+    } elseif ($systemRoot -match '\\System32$') {
+        $systemRoot = Split-Path -Parent $systemRoot
+    }
+    return @(
+        (Join-Path $systemRoot "System32"),
+        (Join-Path $systemRoot "System32\Wbem"),
+        (Join-Path $systemRoot "System32\WindowsPowerShell\v1.0"),
+        $systemRoot
+    ) -join ";"
+}
+
 function Enable-LpmVisualStudioEnvironment {
     param([Parameter(Mandatory = $true)][string]$InstallationPath)
 
@@ -423,16 +438,38 @@ function Enable-LpmVisualStudioEnvironment {
     }
     $commandProcessor = if ($env:ComSpec) { $env:ComSpec } else { Join-Path $env:SystemRoot "System32\cmd.exe" }
     $command = '"' + $vsDevCmd + '" -no_logo -arch=x64 -host_arch=x64 >nul && set'
-    $result = Invoke-LpmNative -FilePath $commandProcessor -ArgumentList @("/d", "/s", "/c", $command) -Capture -Description "Visual Studio developer environment"
-    foreach ($line in $result.Output -split "`r?`n") {
-        if ($line -notmatch '^([^=]+)=(.*)$') {
-            continue
+
+    # VsDevCmd.bat expands PATH inside cmd.exe. A Conda/tool-bloated process PATH
+    # easily crosses the 8191-character command-line limit ("输入行太长"). Run the
+    # bat with a minimal Windows PATH, then merge MSVC directories back onto the
+    # caller's PATH so node/cargo/python entries are preserved.
+    $savedPath = $env:PATH
+    $env:PATH = Get-LpmMinimalWindowsPath
+    try {
+        $result = Invoke-LpmNative -FilePath $commandProcessor -ArgumentList @("/d", "/s", "/c", $command) -Capture -Description "Visual Studio developer environment"
+        $vsPath = $null
+        foreach ($line in $result.Output -split "`r?`n") {
+            if ($line -notmatch '^([^=]+)=(.*)$') {
+                continue
+            }
+            $name = $Matches[1]
+            $value = $Matches[2]
+            if ($name.StartsWith("=")) {
+                continue
+            }
+            if ($name -ieq "Path") {
+                $vsPath = $value
+                continue
+            }
+            [Environment]::SetEnvironmentVariable($name, $value, "Process")
         }
-        $name = $Matches[1]
-        if ($name.StartsWith("=")) {
-            continue
+        $env:PATH = $savedPath
+        if ($vsPath) {
+            Add-LpmPathDirectories -Directories @($vsPath -split ";")
         }
-        [Environment]::SetEnvironmentVariable($name, $Matches[2], "Process")
+    } catch {
+        $env:PATH = $savedPath
+        throw
     }
 
     # Some Build Tools installations select the legacy winv6.3 placeholder
@@ -594,6 +631,7 @@ Export-ModuleMember -Function @(
     "Get-LpmRustTarget",
     "Get-LpmRustTools",
     "Get-LpmVisualStudioPath",
+    "Get-LpmMinimalWindowsPath",
     "Get-LpmWinget",
     "Get-LpmWingetHelpUrl",
     "Get-LpmWindowsPackageArtifacts",

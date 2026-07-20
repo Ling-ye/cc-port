@@ -195,6 +195,38 @@ try {
         Assert-True -Condition ($source -match 'setup\.ps1"\) -NonInteractive') -Message "Release must bind the setup switch explicitly"
         Assert-True -Condition ($source -notmatch '@setupArguments') -Message "Array splatting must not be used for named setup switches"
     }
+
+    Invoke-Test "Minimal Windows PATH stays short" {
+        $minimal = Get-LpmMinimalWindowsPath
+        Assert-True -Condition ($minimal.Length -lt 512) -Message "Minimal PATH must stay well under the cmd.exe limit"
+        Assert-True -Condition ($minimal -match 'System32') -Message "Minimal PATH must include System32"
+    }
+
+    $visualStudioForPathTest = Get-LpmVisualStudioPath
+    if ($visualStudioForPathTest) {
+        Invoke-Test "VsDevCmd import tolerates oversized PATH" {
+            $savedPath = $env:PATH
+            $savedInclude = $env:INCLUDE
+            $savedLib = $env:LIB
+            try {
+                $pad = (1..80 | ForEach-Object {
+                    "C:\LpmPathPad\very\long\directory\name\segment$_\Scripts"
+                }) -join ";"
+                $env:PATH = $savedPath + ";" + $pad
+                Assert-True -Condition ($env:PATH.Length -gt 7000) -Message "Test PATH must exceed the historical failure threshold"
+                Enable-LpmVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
+                $link = Resolve-LpmExecutable -Names @("link.exe")
+                Assert-True -Condition ($null -ne $link) -Message "link.exe must resolve after fat-PATH VsDevCmd import"
+                Assert-True -Condition ($env:PATH -like "*LpmPathPad*") -Message "Caller PATH entries must be preserved"
+            } finally {
+                $env:PATH = $savedPath
+                if ($null -eq $savedInclude) { Remove-Item Env:INCLUDE -ErrorAction SilentlyContinue } else { $env:INCLUDE = $savedInclude }
+                if ($null -eq $savedLib) { Remove-Item Env:LIB -ErrorAction SilentlyContinue } else { $env:LIB = $savedLib }
+            }
+        }
+    } else {
+        Write-Host "  SKIP VsDevCmd import tolerates oversized PATH (Visual Studio not installed)"
+    }
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-LpmSafePath -Path $tempRoot -Parent $tempParent

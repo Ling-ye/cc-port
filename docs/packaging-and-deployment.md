@@ -34,7 +34,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -NonInte
 1. 验证 Windows x64 和 Windows PowerShell 5.1。
 2. 检测 Python 3.10–3.12、Node.js 20.19+/22.12+、npm、Git、Rustup/Cargo/rustc、Visual Studio Build Tools 与 C++ workload。
 3. 使用精确 WinGet 包 ID 安装缺失的 Python 3.12、Node.js LTS、Git、Rustup 和 Visual Studio 2022 Build Tools。
-4. 刷新当前进程 PATH，并通过 `vswhere.exe` 与 `VsDevCmd.bat` 导入 MSVC/Windows SDK 环境。
+4. 刷新当前进程 PATH，并通过 `vswhere.exe` 与 `VsDevCmd.bat` 导入 MSVC/Windows SDK 环境（`VsDevCmd` 在最小 Windows PATH 下执行，再合并回原 PATH，避免 Conda 等过长 PATH 触发 cmd「输入行太长」）。
    如果 Build Tools 错选旧版 `winv6.3` 占位环境，脚本会从已安装的 Windows 10/11 SDK 中选择包含 `kernel32.lib` 与 UCRT 的最新 x64 版本，只修复当前构建进程。
 5. 选择 `stable-x86_64-pc-windows-msvc` Rust toolchain。
 6. 创建仓库 `.venv`；不兼容的旧环境会先重命名为 `.venv.backup-<timestamp>`。
@@ -129,6 +129,10 @@ Pop-Location
 ### `link.exe` 不存在
 
 - [KNOWN] 重新运行 `setup.ps1`；脚本会检查 Visual Studio C++ workload、导入 `VsDevCmd.bat` 并验证 `link.exe`。置信度：HIGH。
+
+### `Visual Studio developer environment failed` / `输入行太长`
+
+- [KNOWN] 根因是当前进程 PATH（常见于 Conda `base` + 多层工具链）过长，`VsDevCmd.bat` 在 cmd.exe 内展开 PATH 时超过 8191 字符限制。脚本会用最小 Windows PATH 调用 `VsDevCmd.bat`，再把 MSVC 目录合并回原 PATH。置信度：HIGH。
 
 ### Python 或 npm 首次安装很慢
 
