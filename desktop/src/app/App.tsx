@@ -17,7 +17,6 @@ import { AddResourceView } from "@/features/add/AddResourceView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
 import { EnvironmentView } from "@/features/environment/EnvironmentView";
 import { GuideView } from "@/features/guide/GuideView";
-import { HealthView } from "@/features/health/HealthView";
 import { OperationsView } from "@/features/operations/OperationsView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
 import { SettingsView } from "@/features/settings/SettingsView";
@@ -170,7 +169,6 @@ export default function App() {
           />
         ) : null}
         {view === "operations" ? <OperationsView t={t} /> : null}
-        {view === "health" ? <HealthView t={t} /> : null}
         {view === "settings" ? (
           <SettingsView
             t={t}

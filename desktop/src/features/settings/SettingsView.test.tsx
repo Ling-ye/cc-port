@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyText, lpmAction, openExternalUrl } from "@/api/client";
@@ -8,6 +8,7 @@ import { SettingsView } from "@/features/settings/SettingsView";
 import type {
   ConfigBindRepoResult,
   ConfigSettings,
+  DoctorCheck,
   GithubAuthSession,
   GithubAuthStatus,
 } from "@/types/lpm";
@@ -142,8 +143,11 @@ describe("SettingsView simplified settings", () => {
     expect(screen.queryByText("Advanced settings")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Branch")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Local path")).not.toBeInTheDocument();
+    const toolList = screen.getByRole("list", { name: "Target tools" });
+    expect(within(toolList).getAllByRole("listitem")).toHaveLength(5);
+    expect(within(toolList).queryByText("Automatic paths")).not.toBeInTheDocument();
     for (const name of ["Codex", "Claude Code", "Cursor", "Windsurf", "opencode"]) {
-      expect(screen.getByRole("checkbox", { name })).toBeChecked();
+      expect(within(toolList).getByRole("checkbox", { name })).toBeChecked();
     }
   });
 
@@ -204,6 +208,79 @@ describe("SettingsView simplified settings", () => {
       enabled: false,
     });
     await waitFor(() => expect(screen.getByRole("checkbox", { name: "Windsurf" })).not.toBeChecked());
+  });
+
+  it("keeps diagnostics collapsed and does not run them automatically", async () => {
+    mockInitial();
+    renderView();
+
+    const title = await screen.findByText("Diagnostics");
+    expect(title.closest("details")).not.toHaveAttribute("open");
+    expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action === "doctor")).toBe(false);
+  });
+
+  it("summarizes diagnostics and lists only warnings and errors", async () => {
+    const checks: DoctorCheck[] = [
+      { id: "git", label: "Git", ok: true, status: "ok", detail: "Ready" },
+      { id: "config", label: "Config", ok: true, status: "skipped", detail: "Using defaults" },
+      { id: "resource_repo", label: "Resource repo", ok: true, status: "warning", detail: "Remote differs" },
+      { id: "platform:cursor", label: "Platform: cursor", ok: false, status: "error", detail: "Directory is not writable" },
+    ];
+    vi.mocked(lpmAction).mockImplementation(async (action) => {
+      if (action === "config_get") return settings();
+      if (action === "github_auth_status") return auth();
+      if (action === "doctor") return { checks };
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    renderView();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Diagnostics"));
+    await user.click(screen.getByRole("button", { name: "Run diagnostics" }));
+
+    expect(await screen.findByText("1 passed · 1 warnings · 1 errors · 1 skipped")).toBeVisible();
+    const issues = screen.getByRole("list", { name: "Diagnostic issues" });
+    expect(within(issues).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(issues).getByText("Resource repository")).toBeVisible();
+    expect(within(issues).getByText("AI tool: Cursor")).toBeVisible();
+    expect(within(issues).queryByText("Ready")).not.toBeInTheDocument();
+    expect(within(issues).queryByText("Using defaults")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run again" })).toBeEnabled();
+  });
+
+  it("clears stale diagnostics on failure without disabling other settings", async () => {
+    const checks: DoctorCheck[] = [
+      { id: "git", label: "Git", ok: true, status: "ok", detail: "Ready" },
+    ];
+    let doctorCalls = 0;
+    let rejectDoctor: ((reason: Error) => void) | undefined;
+    const failedRun = new Promise<never>((_, reject) => {
+      rejectDoctor = reject;
+    });
+    vi.mocked(lpmAction).mockImplementation(async (action) => {
+      if (action === "config_get") return settings();
+      if (action === "github_auth_status") return auth();
+      if (action === "doctor") {
+        doctorCalls += 1;
+        if (doctorCalls === 1) return { checks };
+        return failedRun;
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    renderView();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Diagnostics"));
+    await user.click(screen.getByRole("button", { name: "Run diagnostics" }));
+    expect(await screen.findByText("Environment is healthy · 1 passed · 0 skipped")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Run again" }));
+    expect(screen.queryByText("Environment is healthy · 1 passed · 0 skipped")).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Codex" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeEnabled();
+
+    rejectDoctor?.(new Error("diagnostics failed"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run diagnostics" })).toBeEnabled());
   });
 
   it("starts the fixed standard OAuth device flow and opens GitHub", async () => {

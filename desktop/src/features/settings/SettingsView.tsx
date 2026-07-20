@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   BadgeCheck,
+  CheckCircle2,
   Copy,
   Eye,
   EyeOff,
@@ -9,7 +10,9 @@ import {
   RefreshCcw,
   Save,
   ShieldCheck,
+  TerminalSquare,
   Trash2,
+  XCircle,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { copyText, LpmApiError, lpmAction, openExternalUrl } from "@/api/client";
@@ -18,6 +21,8 @@ import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
   ConfigBindRepoResult,
   ConfigSettings,
+  DoctorCheck,
+  DoctorStatus,
   GithubAuthPollResult,
   GithubAuthPurpose,
   GithubAuthSession,
@@ -54,6 +59,8 @@ export function SettingsView({
   const [authStarting, setAuthStarting] = useState(false);
   const [ownerSaving, setOwnerSaving] = useState(false);
   const [platformSaving, setPlatformSaving] = useState("");
+  const [diagnosticChecks, setDiagnosticChecks] = useState<DoctorCheck[] | null>(null);
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const revealTimerRef = useRef<number | null>(null);
   const authSessionRef = useRef<GithubAuthSession | null>(null);
 
@@ -321,6 +328,28 @@ export function SettingsView({
     }
   }
 
+  async function runDiagnostics() {
+    setDiagnosticChecks(null);
+    setDiagnosticsBusy(true);
+    try {
+      await runTask({
+        kind: "settings-diagnostics",
+        title: t("settings.diagnostics.run"),
+        action: async () => {
+          const result = await lpmAction<{ checks: DoctorCheck[] }>("doctor");
+          setDiagnosticChecks(result.checks);
+          return result;
+        },
+        successMessage: (result) => t("settings.diagnostics.completed", { count: result.checks.length }),
+        retryPolicy: "safe-read",
+      });
+    } catch {
+      // TaskCenter owns feedback for tracked operations.
+    } finally {
+      setDiagnosticsBusy(false);
+    }
+  }
+
   if (!settings || !auth) {
     return (
       <section className="panel">
@@ -520,26 +549,43 @@ export function SettingsView({
               <p>{t("settings.targetToolsDescription")}</p>
             </div>
           </div>
-          <div className="platform-toggle-list">
+          <ul className="platform-toggle-list" aria-label={t("settings.targetTools")}>
             {settings.config.platforms.filter((platform) => SIMPLE_PLATFORM_NAMES.has(platform.name)).map((platform) => (
-              <label className="platform-toggle" key={platform.name}>
-                <span>
+              <li className="platform-toggle-item" key={platform.name}>
+                <label className={`platform-toggle${anyBusy ? " is-disabled" : ""}`}>
                   <strong>{platformDisplayName(platform.name)}</strong>
-                  <small>{t("settings.automaticPaths")}</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={platform.enabled}
-                  disabled={anyBusy}
-                  onChange={(event) => void setPlatformEnabled(platform.name, event.target.checked)}
-                  aria-label={platformDisplayName(platform.name)}
-                />
-                {platformSaving === platform.name ? <RefreshCcw className="spin" size={15} /> : null}
-              </label>
+                  <span className="platform-toggle-control">
+                    {platformSaving === platform.name ? <RefreshCcw className="spin" size={15} /> : null}
+                    <input
+                      type="checkbox"
+                      checked={platform.enabled}
+                      disabled={anyBusy}
+                      onChange={(event) => void setPlatformEnabled(platform.name, event.target.checked)}
+                      aria-label={platformDisplayName(platform.name)}
+                    />
+                  </span>
+                </label>
+              </li>
             ))}
-          </div>
+          </ul>
           <small className="field-note">{t("settings.toolDirectoryWarning")}</small>
         </section>
+
+        <details className="settings-diagnostics">
+          <summary>
+            <span>
+              <strong>{t("settings.diagnostics.title")}</strong>
+              <small>{t("settings.diagnostics.description")}</small>
+            </span>
+          </summary>
+          <div className="settings-diagnostics-body">
+            <button className="secondary" type="button" onClick={() => void runDiagnostics()} disabled={diagnosticsBusy}>
+              {diagnosticsBusy ? <RefreshCcw className="spin" size={17} /> : <TerminalSquare size={17} />}
+              {diagnosticChecks === null ? t("settings.diagnostics.run") : t("settings.diagnostics.rerun")}
+            </button>
+            {diagnosticChecks !== null ? <DiagnosticsResults checks={diagnosticChecks} t={t} /> : null}
+          </div>
+        </details>
       </div>
 
       {pendingRebindUrl ? (
@@ -554,6 +600,67 @@ export function SettingsView({
       ) : null}
     </section>
   );
+}
+
+function DiagnosticsResults({ checks, t }: { checks: DoctorCheck[]; t: TFunction }) {
+  const counts = checks.reduce<Record<DoctorStatus, number>>((current, check) => {
+    current[doctorStatus(check)] += 1;
+    return current;
+  }, { ok: 0, warning: 0, error: 0, skipped: 0 });
+  const issues = checks.filter((check) => {
+    const status = doctorStatus(check);
+    return status === "warning" || status === "error";
+  });
+  const healthy = counts.warning === 0 && counts.error === 0;
+
+  return (
+    <div className="diagnostics-results">
+      <div className={`diagnostics-summary status-${healthy ? "ok" : counts.error ? "error" : "warning"}`} role="status">
+        {healthy ? <CheckCircle2 size={18} /> : counts.error ? <XCircle size={18} /> : <AlertTriangle size={18} />}
+        <span>
+          {healthy
+            ? t("settings.diagnostics.healthy", { ok: counts.ok, skipped: counts.skipped })
+            : t("settings.diagnostics.summary", counts)}
+        </span>
+      </div>
+      {issues.length ? (
+        <ul className="diagnostics-issues" aria-label={t("settings.diagnostics.issues")}>
+          {issues.map((check) => {
+            const status = doctorStatus(check);
+            return (
+              <li className={`diagnostics-issue status-${status}`} key={check.id}>
+                {status === "error" ? <XCircle size={18} /> : <AlertTriangle size={18} />}
+                <div>
+                  <strong>{doctorLabel(check, t)}</strong>
+                  <p>{check.detail}</p>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function doctorStatus(check: DoctorCheck): DoctorStatus {
+  return check.status ?? (check.ok ? "ok" : "error");
+}
+
+function doctorLabel(check: DoctorCheck, t: TFunction): string {
+  const labels: Record<string, string> = {
+    git: t("settings.diagnostics.check.git"),
+    config: t("settings.diagnostics.check.config"),
+    github_token: t("settings.diagnostics.check.githubToken"),
+    resource_repo: t("settings.diagnostics.check.resourceRepo"),
+    install_target: t("settings.diagnostics.check.installTarget"),
+  };
+  if (check.id.startsWith("platform:")) {
+    return t("settings.diagnostics.check.platform", {
+      name: platformDisplayName(check.id.slice("platform:".length)),
+    });
+  }
+  return labels[check.id] || check.label;
 }
 
 function RebindModal({

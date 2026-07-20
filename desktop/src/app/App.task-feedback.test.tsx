@@ -28,7 +28,6 @@ vi.mock("@/api/client", () => ({
         rows: [],
       };
     }
-    if (action === "doctor") return { checks: [{ id: "git", label: "Git", ok: true, detail: "Ready" }] };
     throw new Error(`Unexpected action: ${action}`);
   }),
   openPath: vi.fn(),
@@ -48,14 +47,14 @@ describe("App task feedback", () => {
       </TaskCenterProvider>,
     );
 
-    await user.click(await screen.findByRole("button", { name: "健康检查" }));
-    await user.click(screen.getByRole("button", { name: "运行检查" }));
+    await screen.findByText("资源类型");
+    await user.click(screen.getByTitle("刷新"));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("已完成 1 项检查");
+    expect(await screen.findByRole("status")).toHaveTextContent("刷新");
     expect(document.querySelector(".banner.success")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "任务中心" }));
-    expect(screen.getByRole("complementary", { name: "任务中心" })).toHaveTextContent("运行检查");
+    expect(screen.getByRole("complementary", { name: "任务中心" })).toHaveTextContent("刷新");
     await waitFor(() => expect(screen.getByText("已完成")).toBeVisible());
   });
 });

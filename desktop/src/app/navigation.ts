@@ -2,7 +2,6 @@ import {
   Activity,
   BookOpenText,
   Database,
-  HeartPulse,
   History,
   MonitorDown,
   PackagePlus,
@@ -16,7 +15,6 @@ export type View =
   | "environment"
   | "operations"
   | "add"
-  | "health"
   | "settings"
   | "guide";
 
@@ -26,7 +24,6 @@ export const navItems = [
   { id: "environment", labelKey: "nav.environment", icon: MonitorDown },
   { id: "operations", labelKey: "nav.operations", icon: History },
   { id: "add", labelKey: "nav.add", icon: PackagePlus },
-  { id: "health", labelKey: "nav.health", icon: HeartPulse },
   { id: "settings", labelKey: "nav.settings", icon: SlidersHorizontal },
   { id: "guide", labelKey: "nav.guide", icon: BookOpenText },
 ] satisfies Array<{ id: View; labelKey: I18nKey; icon: typeof Activity }>;
