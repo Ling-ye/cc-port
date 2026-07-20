@@ -27,6 +27,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 
 - [KNOWN] 正式支持 Windows 10/11 x64、Windows PowerShell 5.1 和 `x86_64-pc-windows-msvc`。置信度：HIGH。
 - [KNOWN] 环境脚本检测 Python 3.10–3.12 x64、受支持的 Node.js、npm、Git、Rustup/Cargo/rustc 和 Visual Studio C++ Build Tools。置信度：HIGH。
+- [KNOWN] 构建测试必须使用当前机器动态发现的 Git 可执行文件，不得包含开发机专属绝对路径。置信度：HIGH。
 - [KNOWN] 缺失的系统工具通过精确 WinGet 包 ID 安装；WinGet 缺失时必须在系统修改前停止。置信度：HIGH。
 - [KNOWN] 安装完成后必须刷新当前进程 PATH，并通过 `vswhere.exe` 与 `VsDevCmd.bat` 导入和验证 MSVC linker 环境。置信度：HIGH。
 - [KNOWN] 不兼容的仓库 `.venv` 必须重命名备份，不得直接删除。置信度：HIGH。

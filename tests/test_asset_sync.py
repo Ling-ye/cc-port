@@ -18,7 +18,13 @@ from lpm.services.asset_sync import RemoteSnapshot
 from lpm.services.env_manager import DiscoveredTool, EnvDiscoveryResult
 from lpm.services.resource_commit import ResourceCommitBlocked
 
-GIT = Path("D:/Git/cmd/git.exe")
+_GIT_RUNTIME = git_ops.discover_git_executable(configured="")
+if _GIT_RUNTIME.path is None:
+    raise RuntimeError(
+        "Git is required for asset sync tests but was not found in PATH or "
+        "standard installation locations. Run scripts/setup.ps1 first."
+    )
+GIT = _GIT_RUNTIME.path
 
 
 def _config(
