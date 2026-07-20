@@ -38,8 +38,18 @@ def test_remote_branches_parses_default_and_named_branches(monkeypatch) -> None:
     assert branches == ["dev", "main"]
 
 
-def test_remote_branches_uses_ssh_for_github_without_token(monkeypatch) -> None:
+def test_remote_branches_falls_back_to_ssh_for_github_without_native_https_credentials(
+    monkeypatch,
+) -> None:
+    calls = 0
+
     def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert args[0][3] == "https://github.com/Ling-ye/LingyeAIResources.git"
+            assert kwargs["env"]["GCM_INTERACTIVE"] == "never"
+            return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="no credentials")
         assert args[0][3] == "git@github.com:Ling-ye/LingyeAIResources.git"
         assert kwargs["env"]["GIT_SSH_COMMAND"].startswith("ssh -o BatchMode=yes")
         return subprocess.CompletedProcess(
@@ -57,6 +67,100 @@ def test_remote_branches_uses_ssh_for_github_without_token(monkeypatch) -> None:
 
     assert default_branch == "main"
     assert branches == ["main"]
+    assert calls == 2
+
+
+def test_remote_branches_drops_rejected_token_before_native_fallback(monkeypatch) -> None:
+    environments: list[dict[str, str]] = []
+
+    def fake_run(args, **kwargs):
+        environments.append(kwargs["env"])
+        if len(environments) == 1:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="bad token")
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="ref: refs/heads/main\tHEAD\nabc\trefs/heads/main\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_run)
+
+    default_branch, branches = git_ops.remote_branches(
+        "https://github.com/example/resources.git",
+        token="expired-token",
+    )
+
+    assert default_branch == "main"
+    assert branches == ["main"]
+    assert "GIT_CONFIG_COUNT" in environments[0]
+    assert "GIT_CONFIG_COUNT" not in environments[1]
+
+
+def test_probe_remote_binding_allows_gcm_only_for_explicit_binding(monkeypatch) -> None:
+    subprocess_calls: list[tuple[list[str], dict[str, str]]] = []
+    local_calls: list[list[str]] = []
+
+    def fake_subprocess_run(args, **kwargs):
+        subprocess_calls.append((args, kwargs["env"]))
+        if "ls-remote" in args:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout=(
+                    "ref: refs/heads/main\tHEAD\n"
+                    "abc123\tHEAD\n"
+                    "abc123\trefs/heads/main\n"
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(args, 0, stdout="ok\n", stderr="")
+
+    def fake_run(args, **_kwargs):
+        local_calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(git_ops, "_run", fake_run)
+
+    result = git_ops.probe_remote_binding(
+        "https://github.com/example/resources.git",
+        transport="https",
+    )
+
+    assert result.default_branch == "main"
+    assert result.branches == ["main"]
+    assert result.remote_empty is False
+    assert subprocess_calls[0][1]["GCM_INTERACTIVE"] == "auto"
+    assert subprocess_calls[0][1]["GIT_TERMINAL_PROMPT"] == "0"
+    assert "ls-remote" in subprocess_calls[0][0]
+    assert "--dry-run" in subprocess_calls[1][0]
+    assert "push" in subprocess_calls[1][0]
+    assert not any("clone" in call or "fetch" in call or "pull" in call for call in local_calls)
+
+
+def test_probe_remote_binding_keeps_ssh_non_interactive(monkeypatch) -> None:
+    environments: list[dict[str, str]] = []
+
+    def fake_subprocess_run(args, **kwargs):
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        git_ops,
+        "_run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+
+    result = git_ops.probe_remote_binding(
+        "git@github.com:example/resources.git",
+        transport="ssh",
+    )
+
+    assert result.remote_empty is True
+    assert all(env["GCM_INTERACTIVE"] == "never" for env in environments)
+    assert all(env["GIT_SSH_COMMAND"].startswith("ssh -o BatchMode=yes") for env in environments)
 
 
 def test_pull_with_ref_fetches_and_fast_forwards_without_hard_reset(monkeypatch, tmp_path) -> None:

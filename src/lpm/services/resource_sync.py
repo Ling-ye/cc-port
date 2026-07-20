@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from ..core.config import Config, default_state_dir, load_config
+from ..core.config import Config, default_state_dir, load_config, resource_repo_auth_token
 from ..core.models import Registry, RegistryItem
 from ..core.registry import CURRENT_REGISTRY_VERSION, save_registry
 from ..infrastructure import git_ops
@@ -92,7 +92,7 @@ def _inspect_resource_sync_unlocked(*, cfg: Config, fetch: bool) -> ResourceSync
     if not git_ops.is_repo(root):
         raise git_ops.GitError(f"Resource repo is not a git repository: {root}")
     if fetch:
-        git_ops.fetch(root, token=cfg.github.token or None)
+        git_ops.fetch(root, token=resource_repo_auth_token(cfg))
     divergence = git_ops.divergence(root, branch=branch)
     current_branch = git_ops.current_branch(root)
     if git_ops.status_short(root):
@@ -178,7 +178,7 @@ def _build_resource_sync_plan_unlocked(*, cfg: Config) -> ResourceSyncPlan:
             )
         )
 
-    git_ops.fetch(root, token=cfg.github.token or None)
+    git_ops.fetch(root, token=resource_repo_auth_token(cfg))
     divergence = git_ops.divergence(root, branch=branch)
     plan = ResourceSyncPlan(
         operation_id=uuid.uuid4().hex,
@@ -349,7 +349,7 @@ def _push_resource_sync_unlocked(*, cfg: Config) -> ResourceSyncPlan:
     git_ops.push(
         plan.repo_path,
         branch=plan.branch,
-        token=cfg.github.token or None,
+        token=resource_repo_auth_token(cfg),
     )
     return _inspect_resource_sync_unlocked(cfg=cfg, fetch=False)
 

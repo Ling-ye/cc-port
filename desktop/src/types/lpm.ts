@@ -166,6 +166,7 @@ export interface PlatformProfile {
 }
 
 export type TokenSource = "env" | "config" | "none";
+export type ResourceCredentialMode = "auto" | "native" | "token";
 
 export interface EditableConfig {
   github: {
@@ -184,6 +185,7 @@ export interface EditableConfig {
     repo_url: string;
     local_path: string;
     branch: string;
+    credential_mode: ResourceCredentialMode;
   };
   state: {
     lock_timeout_seconds: number;
@@ -338,6 +340,26 @@ export interface ConfigBranchOptions {
   default_branch: string;
   selected_branch: string;
   warning: string;
+}
+
+export interface ResourceRepoBinding {
+  owner: string;
+  repo_name: string;
+  repo_url: string;
+  branch: string;
+  branches: string[];
+  transport: "https" | "ssh";
+  credential_mode: "native";
+  read_verified: boolean;
+  write_verified: boolean;
+  remote_empty: boolean;
+  local_path: string;
+  replaced_repo_url: string;
+}
+
+export interface ConfigBindRepoResult {
+  settings: ConfigSettings;
+  binding: ResourceRepoBinding;
 }
 
 export interface Summary {

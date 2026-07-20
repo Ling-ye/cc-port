@@ -74,7 +74,7 @@ section "Setup complete"
 if [[ "${SKIP_DESKTOP}" -eq 0 ]]; then
     echo "Next steps:"
     echo "  bash scripts/dev.sh            # run desktop in dev mode"
-    echo "  bash scripts/build-desktop.sh  # produce installer + exe"
+    echo "  Desktop release packaging is supported on Windows x64 via scripts/release-desktop.ps1."
 else
     echo "Next steps:"
     echo "  lpm doctor         # verify CLI"

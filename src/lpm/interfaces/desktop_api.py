@@ -32,6 +32,7 @@ from ..core.config import (
     DEFAULT_MAX_BACKUP_MB,
     DEFAULT_REPO_PREFIX,
     DEFAULT_RESOURCE_BRANCH,
+    DEFAULT_RESOURCE_CREDENTIAL_MODE,
     DEFAULT_RESOURCE_REPO_NAME,
     DEFAULT_RETENTION_DAYS,
     Config,
@@ -43,6 +44,7 @@ from ..core.config import (
     default_config_path,
     load_config,
     load_raw_config,
+    resource_repo_auth_token,
     write_config,
 )
 from ..core.models import ItemKind, RegistryItem
@@ -79,6 +81,7 @@ from ..services.operation_history import (
     operation_history_page,
     restore_operation,
 )
+from ..services.resource_binding import bind_resource_repo
 from ..services.resource_commit import build_resource_commit_plan
 from ..services.resource_discovery import (
     discover_resources,
@@ -760,7 +763,8 @@ def _config_branches(payload: JsonDict) -> JsonDict:
             warning="Only github.com repositories can be checked from Settings.",
         )
 
-    if cfg.github.token.strip():
+    native_credentials = cfg.resources.credential_mode == "native"
+    if cfg.github.token.strip() and not native_credentials:
         try:
             client = GithubClient(cfg.github.token)
             owner, name = _target_repo_owner_name(cfg, client)
@@ -783,14 +787,19 @@ def _config_branches(payload: JsonDict) -> JsonDict:
             api_warning = str(exc)
         except Exception as exc:  # noqa: BLE001 - branch loading is optional in Settings
             api_warning = f"GitHub API branch lookup failed: {exc}"
-    else:
+    elif not native_credentials:
         api_warning = (
             f"No API token is configured in config or {CONFIG_ENV_VAR}."
         )
+    else:
+        api_warning = ""
 
     if cfg.resources.repo_url:
         try:
-            git_default, git_branches = git_ops.remote_branches(cfg.resources.repo_url)
+            git_default, git_branches = git_ops.remote_branches(
+                cfg.resources.repo_url,
+                token=resource_repo_auth_token(cfg),
+            )
             default_branch = git_default or DEFAULT_RESOURCE_BRANCH
             return {
                 "branches": _branch_options(
@@ -802,9 +811,11 @@ def _config_branches(payload: JsonDict) -> JsonDict:
                 "selected_branch": selected_branch,
                 "warning": (
                     f"{api_warning} Branches were loaded using local Git/SSH credentials."
+                    if api_warning
+                    else ""
                 ),
             }
-        except git_ops.GitError as exc:
+        except (git_ops.GitError, ValueError) as exc:
             return _branch_options_response(
                 selected_branch=selected_branch,
                 default_branch=default_branch,
@@ -818,10 +829,25 @@ def _config_branches(payload: JsonDict) -> JsonDict:
     )
 
 
+def _config_bind_repo(payload: JsonDict) -> JsonDict:
+    result = bind_resource_repo(
+        _required_str(payload, "repo_url"),
+        expected_current_repo_url=str(payload.get("expected_current_repo_url") or ""),
+    )
+    return {
+        "settings": _config_get({}),
+        "binding": result,
+    }
+
+
 def _config_save(payload: JsonDict) -> JsonDict:
     raw_cfg = load_raw_config()
     cfg = _config_from_draft(payload, raw_cfg)
     config_path = raw_cfg.source_path or default_config_path()
+    if cfg.resources.credential_mode == "token" and not _effective_token(cfg.github.token):
+        raise ValueError(
+            "Resource repository credential mode is token, but no GitHub token is configured."
+        )
 
     resource_result = None
     if bool(payload.get("prepare_resource_repo", False)):
@@ -860,6 +886,7 @@ def _editable_config(cfg: Config) -> JsonDict:
             "repo_url": cfg.resources.repo_url,
             "local_path": cfg.resources.local_path,
             "branch": cfg.resources.branch,
+            "credential_mode": cfg.resources.credential_mode,
         },
         "state": {
             "lock_timeout_seconds": cfg.state.lock_timeout_seconds,
@@ -940,6 +967,12 @@ def _config_from_draft(payload: JsonDict, base: Config) -> Config:
                 base.resources.branch or DEFAULT_RESOURCE_BRANCH,
             )
             or DEFAULT_RESOURCE_BRANCH,
+            credential_mode=_field_choice(
+                resources_data,
+                "credential_mode",
+                base.resources.credential_mode or DEFAULT_RESOURCE_CREDENTIAL_MODE,
+                {"auto", "native", "token"},
+            ),
         ),
         git=GitConfig(
             executable=_field_str(git_data, "executable", base.git.executable),
@@ -1037,6 +1070,14 @@ def _field_bool(data: JsonDict, key: str, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _field_choice(data: JsonDict, key: str, default: str, choices: set[str]) -> str:
+    value = _field_str(data, key, default).lower()
+    if value not in choices:
+        allowed = ", ".join(sorted(choices))
+        raise ValueError(f"{key} must be one of: {allowed}.")
+    return value
 
 
 def _field_non_negative_int(data: JsonDict, key: str, default: int) -> int:
@@ -1513,6 +1554,7 @@ ACTIONS: dict[str, Handler] = {
     "config_get": _config_get,
     "config_check": _config_check,
     "config_branches": _config_branches,
+    "config_bind_repo": _config_bind_repo,
     "config_save": _config_save,
     "write_default_config": _write_default_config,
 }

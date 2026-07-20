@@ -105,11 +105,11 @@ tools/packaging/
   sidecar/                      # PyInstaller sidecar 打包工具
 
 scripts/
-  setup.*                       # 初始化开发/构建环境
+  setup.ps1                     # Windows 一键检查并安装桌面构建环境
+  desktop-build.psm1            # 两个公开入口共享的 PowerShell 内部模块
+  release-desktop.ps1           # Windows 桌面发布唯一入口
+  setup.sh                      # 非 Windows 开发环境初始化
   dev.*                         # 启动 Tauri 桌面调试环境
-  release_desktop.py            # 跨平台桌面发布权威入口
-  release-desktop.ps1           # Windows 旧命令兼容转发层
-  build-desktop.*               # 旧的专项构建入口
 
 desktop/dist/                   # Vite 前端静态资源，中间产物，可忽略
 release/desktop/                # 对外发布的最终 exe/installer，可忽略
@@ -147,7 +147,7 @@ sync/<operation-id>/           # 弃用兼容：旧 Git 同步计划与临时 wo
 
 - Git 可用；LPM 会搜索配置路径、系统 PATH 和常见安装目录。
 - LPM 运行时配置可用。
-- 如果使用 GitHub 私有资源仓库，需要 GitHub token。
+- 如果使用 GitHub 私有资源仓库，需要 Git Credential Manager、SSH Key 或 GitHub token 中的一种可用凭据。
 
 安装后：
 
@@ -159,53 +159,11 @@ sync/<operation-id>/           # 弃用兼容：旧 Git 同步计划与临时 wo
 
 ### 从源码构建最终工具
 
-适合开发者，或希望自己编译 exe/installer 的用户。
+[KNOWN] 桌面发布构建正式支持 Windows 10/11 x64 和 Windows PowerShell 5.1；构建机只需预装 WinGet 并能够联网。置信度：HIGH。
 
-需要安装：
+[KNOWN] Python、Node.js、Git、Rust 和 Visual Studio C++ Build Tools 由 PowerShell 环境脚本检查并按需安装；用户不需要手工执行 Python 命令。置信度：HIGH。
 
-- Python 3.10+
-- Node.js 20.19+ 或 22.12+
-- Rust / Cargo
-- Git
-- Windows 构建桌面端时还需要 Microsoft C++ Build Tools（Tauri / Rust MSVC 链接器依赖）。
-
-Windows Tauri 构建依赖：
-
-- Tauri 官方前置依赖说明：<https://v2.tauri.app/start/prerequisites/>
-- 需要安装 Visual Studio Build Tools，并选择 **Desktop development with C++** 工作负载。
-- 如果本机可用 `winget`，可以运行：
-
-```powershell
-winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-```
-
-- 如果构建时报 `linker link.exe not found`，说明 MSVC 链接器不可用；安装上面的 C++ Build Tools 后重新打开 PowerShell，再运行构建命令。
-- Windows 10 1803 及以上 / Windows 11 通常已包含 WebView2；旧系统可能还需要按 Tauri 文档安装 WebView2 Runtime。
-
-Rust / Cargo 安装指引：
-
-- 官方安装页：<https://www.rust-lang.org/tools/install>
-- Windows 推荐使用 `rustup` 安装器；如果本机可用 `winget`，可以运行：
-
-```powershell
-winget install --id Rustlang.Rustup -e
-```
-
-- macOS / Linux / WSL 可以运行：
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-```
-
-安装完成后请重新打开终端，并确认 `rustc` 和 `cargo` 可用：
-
-```bash
-rustc --version
-cargo --version
-```
-
-如果命令仍然找不到，通常是 PATH 尚未生效；Windows 下检查 `%USERPROFILE%\.cargo\bin`，macOS / Linux 下检查 `~/.cargo/bin` 是否在 PATH 中。
+[KNOWN] 如果 `winget` 不存在，先按微软文档安装或修复 App Installer：<https://learn.microsoft.com/windows/package-manager/winget/>。置信度：HIGH。
 
 克隆仓库：
 
@@ -214,44 +172,27 @@ git clone https://github.com/Ling-ye/LingyePluginMarketplace.git
 cd LingyePluginMarketplace
 ```
 
-Windows 初始化：
+[KNOWN] 一键检查并准备完整构建环境：置信度：HIGH。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1
 ```
 
-如果安装了 PowerShell 7，也可以使用：
+[KNOWN] 只检查、不安装、不修改 `.venv`：置信度：HIGH。
 
 ```powershell
-pwsh scripts/setup.ps1
+Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -CheckOnly
 ```
 
-macOS / Linux 初始化：
+[KNOWN] 默认安装模式先汇总所有操作并确认一次；显式传入 `-NonInteractive` 才跳过确认。置信度：HIGH。
 
-```bash
-bash scripts/setup.sh
-```
-
-初始化脚本会做这些事：
-
-- 检查 Python、Node.js、npm、Cargo。
-- 安装 Python 包：`pip install -e ".[dev,desktop]"`。
-- 安装桌面端 npm 依赖。
-- 确保 Tauri 图标存在。
-
-启动 Tauri 桌面调试环境：
+[KNOWN] 启动 Tauri 桌面调试环境：置信度：HIGH。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\dev.ps1
 ```
 
-或：
-
-```bash
-bash scripts/dev.sh
-```
-
-该脚本会先构建 `lpm-desktop-api` sidecar，再启动 Tauri dev shell。Tauri 会在内部启动 Vite 前端开发服务器、编译 Rust 桌面外壳，并打开桌面窗口。这个入口适合日常开发、联调和问题复现，不会生成最终安装包。
+[KNOWN] 调试脚本会先构建 `lpm-desktop-api` sidecar，再启动 Tauri dev shell；它不会生成最终安装包。置信度：HIGH。
 
 `scripts/dev.*` 生成和使用的主要产物路径：
 
@@ -273,39 +214,21 @@ build/sidecar/work/                            # PyInstaller 工作目录
 desktop/src-tauri/target/debug/                # Tauri/Cargo dev 调试输出
 ```
 
-构建桌面发布产物：
-
-完整的环境要求、版本同步、验收矩阵、产物校验、安装方式和回退边界见 [桌面打包与部署](docs/packaging-and-deployment.md)。
-
-```bash
-python scripts/release_desktop.py
-```
-
-Windows 仍可继续使用旧命令；它只会转发到同一个 Python 流程：
+[KNOWN] 一键构建并验证桌面发布产物；该命令会自动执行环境准备，不要求先单独运行 `setup.ps1`。置信度：HIGH。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1
 ```
 
-每次更新代码后只需要执行其中一条命令。它会按顺序执行：
+[KNOWN] 发布命令按顺序执行：置信度：HIGH。
 
-1. 安装 Python 发布依赖和锁定的前端依赖。
-2. 运行 pytest、Ruff、Vitest、全依赖审计和前端生产构建。
-3. 完整构建 sidecar 和当前操作系统的 Tauri 安装包。
-4. 在临时目录收集产物并执行 sidecar 冒烟；全部成功后才替换上一次正式产物。
-5. 打印 SHA-256。
+1. 检查或安装 Windows 构建工具，创建仓库 `.venv`，同步锁定依赖。
+2. 运行 PowerShell 自测、pytest、Ruff、Vitest、锁文件安全审计和前端生产构建。
+3. 完整构建 PyInstaller sidecar、Tauri MSI 和 NSIS 安装包。
+4. 在临时目录验证产物与 sidecar JSON API，全部成功后才替换上一次正式产物。
+5. 输出正式产物的绝对路径、大小和 SHA-256。
 
-“跨平台”表示同一个 Python 编排器可分别在 Windows、macOS 和 Linux 上运行；它不在一个操作系统上交叉生成其他系统的安装包。
-
-简单区分：
-
-- `scripts/dev.*`：本地调试入口，启动的是带热更新能力的桌面开发环境。
-- `scripts/release_desktop.py`：唯一完整发布入口；更新代码后默认只执行这一条命令。
-- `scripts/release-desktop.ps1`：Windows 兼容入口，仅定位 Python 并转发参数。
-- `scripts/check-release.*`：端到端构建验收入口，串联 Python 测试、Ruff、前端 build、sidecar build 和 Tauri build，并打印原始产物路径；当前不运行 Vitest，也不收集到 `release/desktop/`。
-- `scripts/build-desktop.*`：旧的专项构建与收集入口，不参与完整发布流程。
-
-Windows 上最终通常会得到：
+[KNOWN] Windows x64 最终产物结构为：置信度：HIGH。
 
 ```text
 release/desktop/x86_64-pc-windows-msvc/
@@ -317,7 +240,7 @@ release/desktop/x86_64-pc-windows-msvc/
     LPM Desktop_*-setup.exe
 ```
 
-中间产物和 Tauri 原始输出仍保留在：
+[KNOWN] 中间产物和 Tauri 原始输出保留在：置信度：HIGH。
 
 ```text
 desktop/dist/                         # Vite 前端静态资源
@@ -325,17 +248,9 @@ desktop/src-tauri/target/release/     # Tauri/Cargo release 输出
 desktop/src-tauri/target/release/bundle/  # Tauri 原始安装包输出
 ```
 
-### 命令分层说明
+[KNOWN] `desktop/package.json` 中的 npm 命令和 `tools/packaging/` 下的 Python 文件都是内部构建步骤；完整发布不要手工拼接这些命令。置信度：HIGH。
 
-源码构建和发布时，对外推荐只使用仓库根目录下的脚本：
-
-- `scripts/setup.*`：初始化 Python、Node.js、Rust/Tauri 相关依赖。
-- `scripts/dev.*`：启动完整的 Tauri 桌面调试环境，用于开发和联调。
-- `scripts/release_desktop.py`：执行当前平台的完整验收、构建、事务式收集、冒烟和产物哈希。
-- `scripts/release-desktop.ps1`：Windows 兼容转发层。
-- `scripts/check-release.*`、`scripts/build-desktop.*`：专项或底层入口，完整发布时不需要手动组合。
-
-`desktop/package.json` 中的 npm 脚本属于内部步骤或专项检查：Tauri 会调用 `npm run build` 构建前端，根目录脚本会调用 `npm run tauri dev/build` 启动或打包桌面外壳，`npm run sidecar` 和 `npm run icons` 主要用于维护单个打包环节。完整构建请使用根目录脚本，不需要手动拼接这些内部命令。
+[KNOWN] 更完整的环境规则、验收门禁、产物校验和故障处理见 [桌面打包与部署](docs/packaging-and-deployment.md)。置信度：HIGH。
 
 ## 配置
 
@@ -362,14 +277,21 @@ Windows 下等价路径通常是：
 
 - 推荐填写 GitHub HTTPS 仓库地址：`https://github.com/<owner>/<repo>`。
 - 也可以填写：`https://github.com/<owner>/<repo>.git` 或 `git@github.com:<owner>/<repo>.git`。
-- 桌面设置页里的检查、创建和连接资源仓库功能目前只支持 `github.com` 仓库。
+- 桌面设置页的一键绑定目前只支持 `github.com` 根仓库链接，不接受 tree、issue 或文件子路径。
+
+桌面端推荐直接在“设置 -> 连接资源仓库”粘贴链接并点击“绑定仓库”：
+
+- HTTPS 缺少凭据时，Git Credential Manager 可以打开一次 GitHub 浏览器登录；SSH 链接复用现有 SSH Key。
+- 绑定只执行远端引用读取和 `push --dry-run` 权限探测，不 clone、pull、fetch、commit 或实际 push。
+- 绑定成功后，本地目录会在首次显式拉取时创建；重新绑定不会移动或删除旧目录。
+- `[resources].credential_mode` 可选 `native`、`auto` 或 `token`；一键绑定使用 `native`，旧配置默认按 `auto` 兼容。
 
 常用环境变量：
 
 - `LPM_CONFIG`：指定配置文件路径。
 - `LPM_GITHUB_TOKEN`：覆盖配置文件中的 GitHub token。
 - `LPM_GIT_EXECUTABLE`：覆盖 `[git].executable`，指定 Git 可执行文件。
-- 设置页读取远端分支时优先使用 GitHub API；Token 无效或未配置时，会尝试复用本机 GitHub SSH 密钥读取分支，并明确提示当前鉴权状态。回退过程使用非交互 SSH，不会弹出登录窗口。
+- 后台分支刷新优先复用已绑定协议的非交互凭据；HTTPS 失败后可兼容回退到本机 GitHub SSH Key。只有用户显式点击绑定时允许浏览器登录。
 - `LPM_RESOURCE_HOME`：覆盖私有资源仓库本地路径。
 - `LPM_DESKTOP_API_BIN`：指定桌面 GUI 使用的 `lpm-desktop-api` 可执行文件，主要用于调试。
 

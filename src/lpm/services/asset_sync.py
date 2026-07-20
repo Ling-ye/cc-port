@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 import frontmatter
 
-from ..core.config import Config, default_state_dir, load_config
+from ..core.config import Config, default_state_dir, load_config, resource_repo_auth_token
 from ..core.models import ITEM_NAME_RE, ItemKind, Registry, RegistryItem, ResourceKey
 from ..core.ownership import (
     is_lpm_managed,
@@ -568,14 +568,14 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                         repo_url,
                         transport,
                         ref=branch,
-                        token=cfg.github.token or None,
+                        token=resource_repo_auth_token(cfg),
                     )
                 except git_ops.GitError:
                     _remove_internal_path(transport, state_root)
                     git_ops.clone(
                         repo_url,
                         transport,
-                        token=cfg.github.token or None,
+                        token=resource_repo_auth_token(cfg),
                     )
             else:
                 git_ops.set_remote(transport, "origin", repo_url)
@@ -584,7 +584,7 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                 git_ops.fetch(
                     transport,
                     ref=branch,
-                    token=cfg.github.token or None,
+                    token=resource_repo_auth_token(cfg),
                 )
             remote_commit = git_ops.rev_parse(transport, f"origin/{branch}")
             if remote_commit is None:
@@ -1635,7 +1635,7 @@ def _apply_remote_asset_action(
                 git_ops.push(
                     worktree,
                     branch=cfg.resources.branch or "main",
-                    token=cfg.github.token or None,
+                    token=resource_repo_auth_token(cfg),
                 )
             except git_ops.GitError as exc:
                 last_push_error = exc
@@ -1665,7 +1665,7 @@ def _clone_remote_for_write(repo_url: str, destination: Path, cfg: Config) -> No
             repo_url,
             destination,
             ref=branch,
-            token=cfg.github.token or None,
+            token=resource_repo_auth_token(cfg),
         )
     except git_ops.GitError:
         if destination.exists():
@@ -1673,7 +1673,7 @@ def _clone_remote_for_write(repo_url: str, destination: Path, cfg: Config) -> No
         git_ops.clone(
             repo_url,
             destination,
-            token=cfg.github.token or None,
+            token=resource_repo_auth_token(cfg),
         )
         git_ops.checkout_local_branch(destination, branch)
 
@@ -1998,7 +1998,7 @@ def _legacy_write_blocker(cfg: Config, *, fetch: bool) -> str:
                 git_ops.fetch(
                     root,
                     ref=cfg.resources.branch or "main",
-                    token=cfg.github.token or None,
+                    token=resource_repo_auth_token(cfg),
                 )
             divergence = git_ops.divergence(
                 root,

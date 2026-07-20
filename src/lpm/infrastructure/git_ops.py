@@ -12,6 +12,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -72,6 +74,13 @@ class GitRuntime:
     path: Path | None
     source: str
     requested: str = ""
+
+
+@dataclass(frozen=True)
+class RemoteBindingProbe:
+    default_branch: str
+    branches: list[str]
+    remote_empty: bool
 
 
 _CONFIGURED_GIT_EXECUTABLE = ""
@@ -191,6 +200,13 @@ _NO_PROMPT_ENV: dict[str, str] = {
     "GCM_INTERACTIVE": "never",
 }
 """Baseline env overrides that prevent git from ever opening credential popups."""
+
+_BIND_HTTPS_ENV: dict[str, str] = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "auto",
+    "GCM_PROVIDER": "github",
+}
+"""Explicit binding may open GCM's GUI, but never prompt in the hidden terminal."""
 
 
 def _run(
@@ -666,34 +682,27 @@ def remote_branches(
 ) -> tuple[str, list[str]]:
     """Return the default branch and branch names advertised by a remote.
 
-    Without an explicit token, GitHub HTTPS URLs are converted to SSH so a
-    configured SSH key can be used without opening credential prompts.
+    Native HTTPS credentials are tried first without opening prompts. GitHub
+    HTTPS URLs fall back to SSH for compatibility with older SSH-only setups.
     """
     env = {**os.environ, **_NO_PROMPT_ENV}
     query_url = strip_url_credentials(_validate_argument(url, "remote URL"))
-    if not token:
-        ssh_url = _github_ssh_url(url)
-        if ssh_url:
-            query_url = ssh_url
-            env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=10"
     token_env = _token_env(token)
     env.update(token_env)
     try:
-        result = subprocess.run(
-            [
-                _git_executable(),
-                "ls-remote",
-                "--symref",
-                query_url,
-                "HEAD",
-                "refs/heads/*",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
+        result = _run_remote_branch_query(query_url, timeout=timeout, env=env)
+        if result.returncode != 0 and token:
+            native_env = {**os.environ, **_NO_PROMPT_ENV}
+            result = _run_remote_branch_query(query_url, timeout=timeout, env=native_env)
+        if result.returncode != 0:
+            ssh_url = _github_ssh_url(url)
+            if ssh_url:
+                ssh_env = {
+                    **os.environ,
+                    **_NO_PROMPT_ENV,
+                    "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10",
+                }
+                result = _run_remote_branch_query(ssh_url, timeout=timeout, env=ssh_env)
     except FileNotFoundError as exc:
         raise GitError("`git` executable not found on PATH.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -708,6 +717,149 @@ def remote_branches(
     default_branch = ""
     branches: set[str] = set()
     for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "ref:" and parts[2] == "HEAD":
+            default_branch = parts[1].removeprefix("refs/heads/")
+        elif len(parts) >= 2 and parts[1].startswith("refs/heads/"):
+            branches.add(parts[1].removeprefix("refs/heads/"))
+    if default_branch:
+        branches.add(default_branch)
+    return default_branch, sorted(branches)
+
+
+def _run_remote_branch_query(
+    url: str,
+    *,
+    timeout: int,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            _git_executable(),
+            "ls-remote",
+            "--symref",
+            url,
+            "HEAD",
+            "refs/heads/*",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+    )
+
+
+def probe_remote_binding(
+    url: str,
+    *,
+    transport: str,
+    read_timeout: int = 180,
+    write_timeout: int = 60,
+) -> RemoteBindingProbe:
+    """Verify read and write authentication without transferring repository data.
+
+    The write check uses ``git push --dry-run`` from a temporary repository to
+    a unique branch name. Git performs authentication and policy checks but
+    sends no ref update.
+    """
+    safe_url = strip_url_credentials(_validate_argument(url, "remote URL"))
+    if transport not in {"https", "ssh"}:
+        raise ValueError(f"Unsupported Git binding transport: {transport}")
+    env = _binding_env(transport)
+    try:
+        read_result = _run_remote_branch_query(
+            safe_url,
+            timeout=read_timeout if transport == "https" else min(read_timeout, 30),
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError("Timed out while authenticating with the GitHub repository.") from exc
+    except FileNotFoundError as exc:
+        raise GitError("`git` executable not found on PATH.") from exc
+    if read_result.returncode != 0:
+        raise GitError(_binding_error(read_result.stderr, transport, action="read"))
+
+    default_branch, branches = _parse_remote_branches(read_result.stdout)
+    branch = default_branch or "main"
+    probe_ref = f"refs/heads/lpm-bind-probe-{uuid.uuid4().hex}"
+    try:
+        with tempfile.TemporaryDirectory(prefix="lpm-bind-probe-") as temp_dir:
+            probe_root = Path(temp_dir)
+            _run(["init", "-q"], cwd=probe_root)
+            _run(
+                [
+                    "-c",
+                    "user.name=LingyePluginMarketplace",
+                    "-c",
+                    "user.email=lpm@local",
+                    "commit",
+                    "--allow-empty",
+                    "-q",
+                    "-m",
+                    "lpm: connection probe",
+                ],
+                cwd=probe_root,
+            )
+            write_result = subprocess.run(
+                [
+                    _git_executable(),
+                    "-C",
+                    str(probe_root),
+                    "push",
+                    "--dry-run",
+                    "--porcelain",
+                    safe_url,
+                    f"HEAD:{probe_ref}",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=write_timeout,
+                env=env,
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError("Timed out while verifying GitHub write access.") from exc
+    except FileNotFoundError as exc:
+        raise GitError("`git` executable not found on PATH.") from exc
+    if write_result.returncode != 0:
+        detail = write_result.stderr or write_result.stdout
+        raise GitError(_binding_error(detail, transport, action="write"))
+
+    return RemoteBindingProbe(
+        default_branch=branch,
+        branches=branches,
+        remote_empty=not branches,
+    )
+
+
+def _binding_env(transport: str) -> dict[str, str]:
+    if transport == "https":
+        return {**os.environ, **_BIND_HTTPS_ENV}
+    return {
+        **os.environ,
+        **_NO_PROMPT_ENV,
+        "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10",
+    }
+
+
+def _binding_error(detail: str | None, transport: str, *, action: str) -> str:
+    safe_detail = redact_git_text((detail or "").strip())
+    if transport == "https":
+        guidance = (
+            "Configure Git Credential Manager, use an SSH URL, or select token authentication "
+            "in Advanced settings."
+        )
+    else:
+        guidance = "Load a GitHub SSH key into your agent or bind the HTTPS URL instead."
+    reason = safe_detail or "Authentication or repository policy rejected the request."
+    return f"Unable to {action} the GitHub repository. {reason} {guidance}"
+
+
+def _parse_remote_branches(output: str) -> tuple[str, list[str]]:
+    default_branch = ""
+    branches: set[str] = set()
+    for line in output.splitlines():
         parts = line.split()
         if len(parts) >= 3 and parts[0] == "ref:" and parts[2] == "HEAD":
             default_branch = parts[1].removeprefix("refs/heads/")

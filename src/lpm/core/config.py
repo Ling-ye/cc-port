@@ -28,6 +28,8 @@ DEFAULT_INSTALL_TARGET = "~/.cursor/skills"
 DEFAULT_REPO_PREFIX = "cursor-skill-"
 DEFAULT_RESOURCE_REPO_NAME = "LingyeAIResources"
 DEFAULT_RESOURCE_BRANCH = "main"
+DEFAULT_RESOURCE_CREDENTIAL_MODE = "auto"
+RESOURCE_CREDENTIAL_MODES = {"auto", "native", "token"}
 DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0
 DEFAULT_RETENTION_DAYS = 90
 DEFAULT_KEEP_LATEST_OPERATIONS = 20
@@ -62,6 +64,7 @@ class ResourcesConfig:
     repo_url: str = ""
     local_path: str = ""
     branch: str = DEFAULT_RESOURCE_BRANCH
+    credential_mode: str = DEFAULT_RESOURCE_CREDENTIAL_MODE
 
     @property
     def local_path_value(self) -> Path:
@@ -152,6 +155,9 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
             repo_url=str(resources_data.get("repo_url", "") or ""),
             local_path=str(resources_data.get("local_path", "") or ""),
             branch=str(resources_data.get("branch", DEFAULT_RESOURCE_BRANCH) or DEFAULT_RESOURCE_BRANCH),
+            credential_mode=_resource_credential_mode(
+                resources_data.get("credential_mode", DEFAULT_RESOURCE_CREDENTIAL_MODE)
+            ),
         ),
         state=StateConfig(
             lock_timeout_seconds=_positive_float(
@@ -234,6 +240,7 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         f'repo_url = "{_escape(cfg.resources.repo_url)}"',
         f'local_path = "{_escape(cfg.resources.local_path)}"',
         f'branch = "{_escape(cfg.resources.branch)}"',
+        f'credential_mode = "{_escape(_resource_credential_mode(cfg.resources.credential_mode))}"',
         "",
         "[state]",
         "# Seconds to wait for another LPM process writing the same target.",
@@ -287,3 +294,29 @@ def _positive_float(value: object, field_name: str) -> float:
     if result <= 0:
         raise ValueError(f"{field_name} must be greater than zero.")
     return result
+
+
+def _resource_credential_mode(value: object) -> str:
+    mode = str(value or DEFAULT_RESOURCE_CREDENTIAL_MODE).strip().lower()
+    if mode not in RESOURCE_CREDENTIAL_MODES:
+        choices = ", ".join(sorted(RESOURCE_CREDENTIAL_MODES))
+        raise ValueError(f"resources.credential_mode must be one of: {choices}.")
+    return mode
+
+
+def resource_repo_auth_token(cfg: Config) -> str | None:
+    """Return the API token only when the resource Git transport should use it.
+
+    ``native`` deliberately keeps the global GitHub API token out of Git
+    subprocesses so HTTPS can use Git Credential Manager and SSH can use the
+    user's key. ``auto`` preserves the legacy token-first behavior.
+    """
+    mode = _resource_credential_mode(cfg.resources.credential_mode)
+    if mode == "native":
+        return None
+    token = cfg.github.token.strip()
+    if mode == "token" and not token:
+        raise ValueError(
+            "Resource repository credential mode is token, but no GitHub token is configured."
+        )
+    return token or None

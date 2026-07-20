@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from lpm.core.config import Config, GithubConfig, ResourcesConfig
 from lpm.core.models import RegistryItem
 from lpm.infrastructure.github_client import GithubAuthError
@@ -524,7 +526,7 @@ def test_config_branches_falls_back_to_git_credentials_when_token_is_rejected(
     monkeypatch.setattr(
         desktop_api.git_ops,
         "remote_branches",
-        lambda url: ("main", ["dev", "main"]),
+        lambda url, **_kwargs: ("main", ["dev", "main"]),
     )
 
     result = desktop_api._config_branches(
@@ -555,7 +557,7 @@ def test_config_branches_uses_git_credentials_without_api_token(monkeypatch) -> 
     monkeypatch.setattr(
         desktop_api.git_ops,
         "remote_branches",
-        lambda url: ("main", ["main", "release"]),
+        lambda url, **_kwargs: ("main", ["main", "release"]),
     )
 
     result = desktop_api._config_branches(
@@ -571,3 +573,54 @@ def test_config_branches_uses_git_credentials_without_api_token(monkeypatch) -> 
     assert result["branches"] == ["main", "release"]
     assert result["selected_branch"] == "release"
     assert "No API token is configured" in result["warning"]
+
+
+def test_config_bind_repo_exposes_binding_and_updated_settings(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_bind(repo_url: str, *, expected_current_repo_url: str):
+        calls.append((repo_url, expected_current_repo_url))
+        return {
+            "repo_url": "https://github.com/example/resources.git",
+            "read_verified": True,
+            "write_verified": True,
+        }
+
+    monkeypatch.setattr(desktop_api, "bind_resource_repo", fake_bind)
+    monkeypatch.setattr(
+        desktop_api,
+        "_config_get",
+        lambda _payload: {"config": {"resources": {"repo_name": "resources"}}},
+    )
+
+    result = desktop_api.run_action(
+        "config_bind_repo",
+        {
+            "repo_url": "https://github.com/example/resources",
+            "expected_current_repo_url": "",
+        },
+    )
+
+    assert result["ok"] is True
+    assert calls == [("https://github.com/example/resources", "")]
+    assert result["data"]["binding"]["write_verified"] is True
+    assert result["data"]["settings"]["config"]["resources"]["repo_name"] == "resources"
+
+
+def test_config_save_rejects_token_mode_without_a_token(monkeypatch) -> None:
+    monkeypatch.setattr(desktop_api, "load_raw_config", Config)
+
+    with pytest.raises(ValueError, match="no GitHub token"):
+        desktop_api._config_save(
+            {
+                "draft": {
+                    "github": {},
+                    "git": {},
+                    "install": {},
+                    "resources": {"credential_mode": "token"},
+                    "state": {},
+                    "platforms": [],
+                },
+                "token_action": "preserve",
+            }
+        )

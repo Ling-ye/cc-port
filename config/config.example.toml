@@ -34,6 +34,9 @@ repo_name = "LingyeAIResources"
 repo_url = ""
 local_path = ""
 branch = "main"
+# auto keeps legacy token-first behavior; native uses GCM/SSH; token requires
+# the configured GitHub token.
+credential_mode = "auto"
 
 [state]
 # Wait time when another LPM process is writing the same target.

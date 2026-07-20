@@ -13,6 +13,7 @@ from ..core.config import (
     ResourcesConfig,
     default_config_path,
     load_config,
+    resource_repo_auth_token,
     write_config,
 )
 from ..core.registry import CURRENT_REGISTRY_VERSION, DEFAULT_REGISTRY_FILENAME, load_registry
@@ -113,7 +114,7 @@ def init_resource_repo(
         local_path,
         repo_url=repo.https_url,
         branch=branch,
-        token=cfg.github.token,
+        token=resource_repo_auth_token(cfg),
         config=cfg,
     )
 
@@ -142,7 +143,7 @@ def use_resource_repo(target: str, *, config: Config | None = None, config_path:
                 local_path,
                 repo_url=repo_url,
                 branch=branch,
-                token=cfg.github.token or None,
+                token=resource_repo_auth_token(cfg),
             )
             ensure_structure(local_path)
     else:
@@ -264,6 +265,47 @@ def inspect_resource_repo(config: Config | None = None) -> ResourceRepoInfo:
     )
 
 
+def _clone_resource_repo_for_first_pull(cfg: Config, root: Path) -> None:
+    repo_url = cfg.resources.repo_url.strip()
+    if not repo_url:
+        raise git_ops.GitError("No bound resource repository URL is configured.")
+    if root.exists():
+        if not root.is_dir():
+            raise git_ops.GitError(f"Resource repo path is not a directory: {root}")
+        if any(root.iterdir()):
+            raise git_ops.GitError(
+                f"Resource repo path exists and is not an empty Git repository: {root}"
+            )
+    git_ops.clone(repo_url, root, token=resource_repo_auth_token(cfg))
+    branch = cfg.resources.branch or DEFAULT_RESOURCE_BRANCH
+    remote_branch = git_ops.rev_parse(root, f"origin/{branch}")
+    if remote_branch:
+        if git_ops.current_branch(root) != branch:
+            git_ops.checkout_remote_branch(root, branch)
+    elif git_ops.head_commit(root) is None:
+        git_ops.checkout_local_branch(root, branch)
+    else:
+        raise git_ops.GitError(
+            f"Configured resource branch {branch!r} does not exist in the bound repository."
+        )
+
+
+def _assert_expected_remote(cfg: Config, root: Path) -> None:
+    expected = _normalized_remote(cfg.resources.repo_url)
+    actual_url = git_ops.current_remote_url(root) or ""
+    actual = _normalized_remote(actual_url)
+    if not actual_url:
+        raise git_ops.GitError(f"Resource repo has no origin remote: {root}")
+    if expected and actual != expected:
+        raise git_ops.GitError(
+            f"Resource repo origin is {actual_url}, not the bound repository {cfg.resources.repo_url}."
+        )
+
+
+def _normalized_remote(value: str) -> str:
+    return value.strip().removesuffix(".git").rstrip("/").lower()
+
+
 def pull_resource_repo(config: Config | None = None) -> ResourceRepoInfo:
     cfg = config or load_config()
     git_ops.configure_git_executable(cfg.git.executable)
@@ -273,7 +315,10 @@ def pull_resource_repo(config: Config | None = None) -> ResourceRepoInfo:
         timeout_seconds=cfg.state.lock_timeout_seconds,
     ):
         if not git_ops.is_repo(root):
-            raise git_ops.GitError(f"Resource repo is not a git repository: {root}")
+            _clone_resource_repo_for_first_pull(cfg, root)
+            ensure_structure(root)
+            return inspect_resource_repo(cfg)
+        _assert_expected_remote(cfg, root)
         from .resource_sync import apply_resource_sync_plan, build_resource_sync_plan
 
         plan = build_resource_sync_plan(config=cfg)
@@ -298,7 +343,10 @@ def push_resource_repo(message: str = "lpm: update resources", config: Config | 
         timeout_seconds=cfg.state.lock_timeout_seconds,
     ):
         if not git_ops.is_repo(root):
-            raise git_ops.GitError(f"Resource repo is not a git repository: {root}")
+            raise git_ops.GitError(
+                f"Resource repo has not been pulled yet: {root}. Pull it before pushing."
+            )
+        _assert_expected_remote(cfg, root)
         ensure_structure(root)
         if git_ops.status_short(root):
             commit_resource_changes_unlocked(root, message=message)

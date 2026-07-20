@@ -156,7 +156,7 @@ def build(target_triple: str, out_dir: Path, *, clean: bool) -> Path:
     print(f"[build_sidecar] python: {python}")
     print(f"[build_sidecar] target: {target_triple}")
     print(f"[build_sidecar] output: {out_dir}")
-    print(f"[build_sidecar] running PyInstaller...")
+    print("[build_sidecar] running PyInstaller...")
 
     completed = subprocess.run(cmd, check=False)
     if completed.returncode != 0:

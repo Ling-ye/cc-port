@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from ..core.config import Config, load_config
+from ..core.config import Config, load_config, resource_repo_auth_token
 from ..core.models import ItemKind, Registry, RegistryItem
 from ..core.ownership import (
     is_lpm_managed,
@@ -608,7 +608,7 @@ def _clone_remote_environment_repo(cfg: Config) -> Path:
         temp_root,
         ref=cfg.resources.branch or "main",
         depth=1,
-        token=cfg.github.token or None,
+        token=resource_repo_auth_token(cfg),
     )
     return temp_root
 
