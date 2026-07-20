@@ -56,6 +56,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 
 ## 产物与失败语义
 
+- [KNOWN] staging 目录必须在移动现有正式产物前通过安全路径检查并确认为真实目录；缺失时抛出与操作系统语言无关的项目错误，正式产物保持不变。置信度：HIGH。
 - [KNOWN] 正式目录固定为 `release/desktop/x86_64-pc-windows-msvc/`。置信度：HIGH。
 - [KNOWN] Windows 发布必须同时存在 MSI 与名称以 `-setup.exe` 结尾的 NSIS。置信度：HIGH。
 - [KNOWN] 测试、构建、安装包验证或 sidecar 冒烟失败不得覆盖上一次已验证目录。置信度：HIGH。
@@ -66,6 +67,6 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 ## 验收标准
 
 - [KNOWN] Windows PowerShell 5.1 解析两个入口、共享模块和自测文件时没有语法错误。置信度：HIGH。
-- [KNOWN] 自测覆盖版本规则、Rust 装饰输出、可执行文件 fallback、安全目录、MSI/NSIS 判断以及发布替换与回滚。置信度：HIGH。
+- [KNOWN] 自测覆盖版本规则、Rust 装饰输出、可执行文件 fallback、安全目录、MSI/NSIS 判断、staging 缺失预检以及发布替换与回滚。置信度：HIGH。
 - [KNOWN] `setup.ps1 -CheckOnly` 在环境完整时返回 0，并保持 `.venv` 与 `node_modules` 不变。置信度：HIGH。
 - [KNOWN] 一条 `release-desktop.ps1` 命令完成所有门禁，生成并哈希桌面 exe、sidecar、MSI 和 NSIS，且 sidecar 冒烟通过。置信度：HIGH。

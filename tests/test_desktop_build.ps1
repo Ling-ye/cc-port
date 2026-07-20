@@ -148,16 +148,40 @@ try {
         Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $publishRoot -Force | Where-Object Name -like ".*.backup-*").Count -Message "Backup cleanup"
     }
 
-    Invoke-Test "Failed release replacement restores prior output" {
-        $publishRoot = Join-Path $tempRoot "publish-failure"
+    Invoke-Test "Missing staging leaves prior output untouched" {
+        $publishRoot = Join-Path $tempRoot "publish-missing-staging"
         $final = Join-Path $publishRoot "x86_64-pc-windows-msvc"
         $missingStaging = Join-Path $publishRoot ".missing-staging"
         New-Item -ItemType Directory -Path $final | Out-Null
         [IO.File]::WriteAllText((Join-Path $final "artifact.txt"), "old")
         Assert-Throws -Action {
             Publish-LpmStagingDirectory -StagingDirectory $missingStaging -FinalDirectory $final -ReleaseRoot $publishRoot
-        } -Pattern "Cannot find path|does not exist" -Message "Missing staging should fail"
+        } -Pattern "^Staging directory does not exist or is not a directory:" -Message "Missing staging should fail"
+        Assert-Equal -Expected "old" -Actual ([IO.File]::ReadAllText((Join-Path $final "artifact.txt"))) -Message "Prior release preservation"
+        Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $publishRoot -Force | Where-Object Name -like ".*.backup-*").Count -Message "Missing staging must not create a backup"
+    }
+
+    Invoke-Test "Failed release replacement restores prior output" {
+        $publishRoot = Join-Path $tempRoot "publish-failure"
+        $final = Join-Path $publishRoot "x86_64-pc-windows-msvc"
+        $staging = Join-Path $publishRoot ".x86_64-pc-windows-msvc.staging"
+        New-Item -ItemType Directory -Path $final, $staging | Out-Null
+        [IO.File]::WriteAllText((Join-Path $final "artifact.txt"), "old")
+        [IO.File]::WriteAllText((Join-Path $staging "artifact.txt"), "new")
+        $stagingToFail = [IO.Path]::GetFullPath($staging)
+        $moveDirectory = {
+            param([string]$Source, [string]$Destination)
+            if ([IO.Path]::GetFullPath($Source) -eq $stagingToFail) {
+                throw "Simulated staging publish failure."
+            }
+            Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+        }.GetNewClosure()
+        Assert-Throws -Action {
+            Publish-LpmStagingDirectory -StagingDirectory $staging -FinalDirectory $final -ReleaseRoot $publishRoot -MoveDirectory $moveDirectory
+        } -Pattern "^Simulated staging publish failure\." -Message "Replacement failure should propagate"
         Assert-Equal -Expected "old" -Actual ([IO.File]::ReadAllText((Join-Path $final "artifact.txt"))) -Message "Prior release restoration"
+        Assert-Equal -Expected "new" -Actual ([IO.File]::ReadAllText((Join-Path $staging "artifact.txt"))) -Message "Failed staging preservation"
+        Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $publishRoot -Force | Where-Object Name -like ".*.backup-*").Count -Message "Rollback backup cleanup"
     }
 
     Invoke-Test "Setup exposes cancel and missing WinGet paths" {

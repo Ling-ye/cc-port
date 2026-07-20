@@ -505,23 +505,33 @@ function Publish-LpmStagingDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$StagingDirectory,
         [Parameter(Mandatory = $true)][string]$FinalDirectory,
-        [Parameter(Mandatory = $true)][string]$ReleaseRoot
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+        [AllowNull()][scriptblock]$MoveDirectory = $null
     )
 
     $staging = Assert-LpmDirectChild -Path $StagingDirectory -Parent $ReleaseRoot
     $final = Assert-LpmDirectChild -Path $FinalDirectory -Parent $ReleaseRoot
+    if (-not (Test-Path -LiteralPath $staging -PathType Container)) {
+        throw "Staging directory does not exist or is not a directory: $staging"
+    }
+    if ($null -eq $MoveDirectory) {
+        $MoveDirectory = {
+            param([string]$Source, [string]$Destination)
+            Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+        }
+    }
     $backup = Join-Path $ReleaseRoot ("." + [IO.Path]::GetFileName($final) + ".backup-" + [guid]::NewGuid().ToString("N"))
     Assert-LpmDirectChild -Path $backup -Parent $ReleaseRoot | Out-Null
     $movedOld = $false
     try {
         if (Test-Path -LiteralPath $final) {
-            Move-Item -LiteralPath $final -Destination $backup -ErrorAction Stop
+            & $MoveDirectory $final $backup | Out-Null
             $movedOld = $true
         }
-        Move-Item -LiteralPath $staging -Destination $final -ErrorAction Stop
+        & $MoveDirectory $staging $final | Out-Null
     } catch {
         if ($movedOld -and (Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $final)) {
-            Move-Item -LiteralPath $backup -Destination $final -ErrorAction Stop
+            & $MoveDirectory $backup $final | Out-Null
         }
         throw
     }
