@@ -260,3 +260,42 @@ def test_mcp_injection_uses_state_backups_and_preserves_other_servers(
         "command": "demo"
     }
     assert not (tmp_path / "mcp.json.lpm.bak").exists()
+
+
+def test_mcp_backup_names_stay_unique_when_clock_does_not_advance(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    import lpm.services.mcp_installer as mcp_installer
+
+    frozen = datetime(2026, 7, 20, 14, 45, 51, 790342, tzinfo=timezone.utc)
+
+    class FrozenDateTime:
+        @staticmethod
+        def now(tz=None):
+            return frozen
+
+    monkeypatch.setattr(mcp_installer, "datetime", FrozenDateTime)
+
+    mcp_json = tmp_path / "mcp.json"
+    mcp_json.write_text(
+        json.dumps({"mcpServers": {"existing": {"command": "old"}}}, indent=2),
+        encoding="utf-8",
+    )
+
+    inject_mcp_server(mcp_json, "demo", {"command": "demo"})
+    inject_mcp_server(mcp_json, "demo", {"command": "demo2"})
+
+    backups = sorted((tmp_path / ".lpm-state" / "backups" / "mcp").rglob("*-mcp.json"))
+    assert [path.name for path in backups] == [
+        "20260720T144551790342Z-0000-mcp.json",
+        "20260720T144551790342Z-0001-mcp.json",
+    ]
+    assert json.loads(backups[0].read_text(encoding="utf-8")) == {
+        "mcpServers": {"existing": {"command": "old"}}
+    }
+    assert json.loads(backups[1].read_text(encoding="utf-8"))["mcpServers"]["demo"] == {
+        "command": "demo"
+    }

@@ -51,8 +51,16 @@ def _backup_before_write(path: Path) -> Path | None:
     ).hexdigest()[:16]
     backup_dir = default_state_dir() / "backups" / "mcp" / key
     backup_dir.mkdir(parents=True, exist_ok=True)
+    # Windows datetime resolution can be coarse; pad a sequence so rapid
+    # writes never overwrite a same-timestamp backup, and sorted names stay
+    # chronological (timestamp first, then sequence).
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup = backup_dir / f"{timestamp}-{path.name}"
+    seq = 0
+    while True:
+        backup = backup_dir / f"{timestamp}-{seq:04d}-{path.name}"
+        if not backup.exists():
+            break
+        seq += 1
     shutil.copy2(path, backup)
     return backup
 

@@ -120,6 +120,7 @@ build/sidecar/                  # PyInstaller 中间产物，可忽略
 
 ```text
 backups/                       # 安装、卸载、部署和恢复备份
+backups/mcp/<path-hash>/       # mcp.json 写入前备份：<UTC时间戳>-<4位序号>-<原文件名>
 exports/orphans/               # 用户显式导出的孤立备份 ZIP
 locks/                         # 跨进程目标路径锁载体
 maintenance/*.json             # 状态清理和孤立备份维护审计

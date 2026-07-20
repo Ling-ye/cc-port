@@ -129,6 +129,10 @@ Pop-Location
 
 - [KNOWN] 首次准备会下载完整开发、测试和 PyInstaller 依赖；后续仍会校验依赖，但通常复用本机缓存。置信度：HIGH。
 
+### Python 测试 `test_mcp_injection_uses_state_backups_*` 偶发失败
+
+- [KNOWN] 根因是 Windows 上 `datetime.now()` 分辨率过粗，两次紧挨的 MCP 写入会生成同名备份并互相覆盖。当前实现已用 `timestamp-序列号-文件名` 保证唯一。置信度：HIGH。
+
 ### 正式目录无法替换
 
 - [KNOWN] 关闭从 `release/desktop/` 启动的便携版或安装程序后重试；运行中的 exe 可能阻止目录移动。置信度：HIGH。
