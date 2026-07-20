@@ -4,7 +4,6 @@ import {
   Database,
   HeartPulse,
   History,
-  Info,
   MonitorDown,
   PackagePlus,
   SlidersHorizontal,
@@ -19,8 +18,7 @@ export type View =
   | "add"
   | "health"
   | "settings"
-  | "guide"
-  | "about";
+  | "guide";
 
 export const navItems = [
   { id: "dashboard", labelKey: "nav.dashboard", icon: Activity },
@@ -31,5 +29,4 @@ export const navItems = [
   { id: "health", labelKey: "nav.health", icon: HeartPulse },
   { id: "settings", labelKey: "nav.settings", icon: SlidersHorizontal },
   { id: "guide", labelKey: "nav.guide", icon: BookOpenText },
-  { id: "about", labelKey: "nav.about", icon: Info },
 ] satisfies Array<{ id: View; labelKey: I18nKey; icon: typeof Activity }>;

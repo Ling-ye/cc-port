@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, GithubConfig, ResourcesConfig
+from lpm.core.config import (
+    Config,
+    GitConfig,
+    GithubConfig,
+    ResourcesConfig,
+    StateConfig,
+    load_raw_config,
+    write_config,
+)
 from lpm.core.models import RegistryItem
+from lpm.core.platforms import PlatformProfile, PlatformsConfig
 from lpm.infrastructure.github_client import GithubAuthError
 from lpm.interfaces import desktop_api
 from lpm.services.asset_sync import (
@@ -22,6 +32,35 @@ from lpm.services.resource_commit import (
 )
 from lpm.services.resource_manager import ResourceDeleteResult
 from lpm.services.resource_sync import ResourceSyncPlan, SyncConflict
+
+
+def test_desktop_main_reads_bom_tolerant_json_from_stdin(monkeypatch) -> None:
+    responses: list[dict] = []
+    monkeypatch.setitem(desktop_api.ACTIONS, "stdin_test", lambda payload: payload)
+    monkeypatch.setattr(desktop_api.sys, "stdin", io.StringIO("\ufeff{\"value\": 7}"))
+    monkeypatch.setattr(desktop_api, "_write_json_response", responses.append)
+
+    exit_code = desktop_api.main(["stdin_test"])
+
+    assert exit_code == 0
+    assert responses == [{"ok": True, "data": {"value": 7}}]
+
+
+def test_desktop_main_consumes_packaged_payload_environment_before_action(monkeypatch) -> None:
+    responses: list[dict] = []
+
+    def handler(payload: dict) -> dict:
+        assert desktop_api.DESKTOP_PAYLOAD_ENV_VAR not in desktop_api.os.environ
+        return payload
+
+    monkeypatch.setitem(desktop_api.ACTIONS, "environment_payload_test", handler)
+    monkeypatch.setenv(desktop_api.DESKTOP_PAYLOAD_ENV_VAR, '{"value": 9}')
+    monkeypatch.setattr(desktop_api, "_write_json_response", responses.append)
+
+    exit_code = desktop_api.main(["environment_payload_test"])
+
+    assert exit_code == 0
+    assert responses == [{"ok": True, "data": {"value": 9}}]
 
 
 def test_desktop_upload_pushes_resource_repo_by_default(tmp_path: Path, monkeypatch) -> None:
@@ -115,6 +154,7 @@ def test_desktop_resource_delete_pushes_resource_repo_by_default(
         return {"local_path": str(tmp_path / "resources")}
 
     monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "resource_delete_requires_remote_scope", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(desktop_api, "delete_resource", fake_delete_resource)
     monkeypatch.setattr(desktop_api, "push_resource_repo", fake_push_resource_repo)
 
@@ -125,6 +165,83 @@ def test_desktop_resource_delete_pushes_resource_repo_by_default(
     assert result["data"]["name"] == "demo"
     assert result["data"]["deleted_local_files"] is True
     assert result["data"]["push"]["local_path"].endswith("resources")
+
+
+def test_desktop_owned_remote_delete_enforces_scope_before_side_effects(monkeypatch) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(
+        desktop_api,
+        "resource_delete_requires_remote_scope",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        desktop_api.github_oauth,
+        "require_authorization",
+        lambda _purpose: (_ for _ in ()).throw(
+            desktop_api.github_oauth.GithubDeleteScopeRequired("delete_repo required")
+        ),
+    )
+    monkeypatch.setattr(
+        desktop_api,
+        "delete_resource",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("delete must not run before scope validation")
+        ),
+    )
+
+    result = desktop_api.run_action("resource_delete", {"name": "demo", "kind": "skill"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "GithubDeleteScopeRequired"
+
+
+def test_platform_toggle_preserves_hidden_and_custom_configuration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    cfg = Config(
+        github=GithubConfig(token="token", owner="Lingye", repo_prefix="keep-"),
+        git=GitConfig(executable="D:/Git/bin/git.exe"),
+        resources=ResourcesConfig(
+            repo_url="https://github.com/Lingye/resources.git",
+            local_path="D:/private/resources",
+            branch="release",
+            credential_mode="auto",
+        ),
+        state=StateConfig(retention_days=17),
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="cursor",
+                    enabled=True,
+                    skills_dir="D:/custom/cursor/skills",
+                ),
+                PlatformProfile(
+                    name="private-tool",
+                    enabled=True,
+                    skills_dir="D:/custom/private/skills",
+                ),
+            ]
+        ),
+    )
+    write_config(cfg, config_path)
+    monkeypatch.setenv("LPM_CONFIG", str(config_path))
+
+    result = desktop_api.run_action(
+        "platform_set_enabled", {"name": "cursor", "enabled": False}
+    )
+    updated = load_raw_config(config_path)
+
+    assert result["ok"] is True
+    assert updated.platforms.get("cursor").enabled is False
+    assert updated.platforms.get("cursor").skills_dir == "D:/custom/cursor/skills"
+    assert updated.platforms.get("private-tool").enabled is True
+    assert updated.github.repo_prefix == "keep-"
+    assert updated.git.executable == "D:/Git/bin/git.exe"
+    assert updated.resources.local_path == "D:/private/resources"
+    assert updated.resources.branch == "release"
+    assert updated.resources.credential_mode == "auto"
+    assert updated.state.retention_days == 17
 
 
 def test_desktop_env_diff_import_serializes_paths_and_choices(tmp_path: Path, monkeypatch) -> None:
@@ -510,6 +627,7 @@ def test_config_branches_falls_back_to_git_credentials_when_token_is_rejected(
             repo_name="LingyeAIResources",
             repo_url="https://github.com/Ling-ye/LingyeAIResources.git",
             branch="main",
+            credential_mode="auto",
         ),
     )
 
@@ -551,6 +669,7 @@ def test_config_branches_uses_git_credentials_without_api_token(monkeypatch) -> 
             repo_name="LingyeAIResources",
             repo_url="https://github.com/Ling-ye/LingyeAIResources.git",
             branch="release",
+            credential_mode="auto",
         )
     )
     monkeypatch.setattr(desktop_api, "load_raw_config", lambda: cfg)

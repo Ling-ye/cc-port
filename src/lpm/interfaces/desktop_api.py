@@ -44,6 +44,7 @@ from ..core.config import (
     default_config_path,
     load_config,
     load_raw_config,
+    new_default_config,
     resource_repo_auth_token,
     write_config,
 )
@@ -53,7 +54,7 @@ from ..core.registry import find_registry_path, load_registry
 from ..core.resource_detection import detect_local_resource_type, detect_remote_resource
 from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubAuthError, GithubClient
-from ..services import publisher
+from ..services import github_oauth, publisher
 from ..services.asset_sync import (
     apply_asset_action_plan,
     build_asset_action_plan,
@@ -93,6 +94,7 @@ from ..services.resource_manager import (
     delete_resource,
     install_resource,
     preview_resource,
+    resource_delete_requires_remote_scope,
     resource_install_plan,
     resource_open_path,
     uninstall_resource,
@@ -128,6 +130,7 @@ from ..services.state_retention import build_state_retention_plan, prune_state
 
 JsonDict = dict[str, Any]
 Handler = Callable[[JsonDict], Any]
+DESKTOP_PAYLOAD_ENV_VAR = "LPM_DESKTOP_API_PAYLOAD"
 ITEM_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
 DEPRECATED_ACTIONS = {
     "resource_commit_plan",
@@ -443,12 +446,16 @@ def _resource_open_path(payload: JsonDict) -> JsonDict:
 
 def _resource_delete(payload: JsonDict) -> Any:
     cfg = load_config()
+    name = _required_str(payload, "name")
+    kind = _optional_str(payload.get("kind"))
+    if resource_delete_requires_remote_scope(name, kind=kind):
+        github_oauth.require_authorization("remote_delete")
     deleted = delete_resource(
-        _required_str(payload, "name"),
+        name,
         config=cfg,
         confirm_name=_optional_str(payload.get("confirm_name")),
         reason=_optional_str(payload.get("reason")) or "",
-        kind=_optional_str(payload.get("kind")),
+        kind=kind,
     )
     return {
         **asdict(deleted),
@@ -840,6 +847,54 @@ def _config_bind_repo(payload: JsonDict) -> JsonDict:
     }
 
 
+def _github_auth_status(_: JsonDict) -> JsonDict:
+    return github_oauth.auth_status()
+
+
+def _github_auth_start(payload: JsonDict) -> JsonDict:
+    return github_oauth.start_authorization(_required_str(payload, "purpose"))
+
+
+def _github_auth_poll(payload: JsonDict) -> JsonDict:
+    return github_oauth.poll_authorization(_required_str(payload, "session_id"))
+
+
+def _github_auth_cancel(payload: JsonDict) -> JsonDict:
+    return github_oauth.cancel_authorization(_required_str(payload, "session_id"))
+
+
+def _github_token_reveal(_: JsonDict) -> JsonDict:
+    return github_oauth.reveal_config_token()
+
+
+def _github_token_clear(_: JsonDict) -> JsonDict:
+    return github_oauth.clear_config_token()
+
+
+def _github_owner_set(payload: JsonDict) -> JsonDict:
+    owner = github_oauth.set_github_owner(_required_str(payload, "owner"))
+    return {**owner, "settings": _config_get({})}
+
+
+def _platform_set_enabled(payload: JsonDict) -> JsonDict:
+    name = _required_str(payload, "name")
+    if name not in PLATFORM_PRESETS:
+        raise ValueError(f"Unsupported platform preset: {name}")
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be a boolean.")
+
+    cfg = load_raw_config()
+    profiles = _platforms_with_presets(cfg.platforms.profiles)
+    for profile in profiles:
+        if profile.name == name:
+            profile.enabled = enabled
+            break
+    cfg.platforms = PlatformsConfig(profiles=profiles)
+    write_config(cfg, cfg.source_path or default_config_path())
+    return _config_get({})
+
+
 def _config_save(payload: JsonDict) -> JsonDict:
     raw_cfg = load_raw_config()
     cfg = _config_from_draft(payload, raw_cfg)
@@ -867,7 +922,7 @@ def _write_default_config(payload: JsonDict) -> JsonDict:
     path = default_config_path()
     if path.exists() and not force:
         return {"written": False, "path": path, "reason": "exists"}
-    cfg = Config()
+    cfg = new_default_config()
     written = write_config(cfg)
     return {"written": True, "path": written}
 
@@ -1556,6 +1611,14 @@ ACTIONS: dict[str, Handler] = {
     "config_branches": _config_branches,
     "config_bind_repo": _config_bind_repo,
     "config_save": _config_save,
+    "github_auth_status": _github_auth_status,
+    "github_auth_start": _github_auth_start,
+    "github_auth_poll": _github_auth_poll,
+    "github_auth_cancel": _github_auth_cancel,
+    "github_token_reveal": _github_token_reveal,
+    "github_token_clear": _github_token_clear,
+    "github_owner_set": _github_owner_set,
+    "platform_set_enabled": _platform_set_enabled,
     "write_default_config": _write_default_config,
 }
 
@@ -1563,11 +1626,21 @@ ACTIONS: dict[str, Handler] = {
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lpm-desktop-api")
     parser.add_argument("action", choices=sorted(ACTIONS))
-    parser.add_argument("payload", nargs="?", default="{}")
+    parser.add_argument("payload", nargs="?")
     args = parser.parse_args(argv)
 
     try:
-        payload = json.loads(args.payload)
+        env_payload = os.environ.pop(DESKTOP_PAYLOAD_ENV_VAR, "")
+        if args.payload is not None:
+            raw_payload = args.payload
+        elif env_payload:
+            raw_payload = env_payload
+        elif sys.stdin is not None and not sys.stdin.isatty():
+            raw_payload = sys.stdin.read() or "{}"
+        else:
+            raw_payload = "{}"
+        raw_payload = raw_payload.lstrip("\ufeff")
+        payload = json.loads(raw_payload)
     except json.JSONDecodeError as exc:
         result = _error("invalid_json", str(exc))
     else:

@@ -342,6 +342,47 @@ export interface ConfigBranchOptions {
   warning: string;
 }
 
+export interface GithubAuthStatus {
+  state: "connected" | "missing" | "invalid";
+  source: TokenSource;
+  login: string;
+  scopes: string[];
+  token_preview: string;
+  config_token_preview: string;
+  can_reveal: boolean;
+  can_clear: boolean;
+  env_override: boolean;
+  oauth_configured: boolean;
+  error: string;
+}
+
+export type GithubAuthPurpose = "standard" | "organization_owner" | "remote_delete";
+
+export interface GithubAuthSession {
+  session_id: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+  purpose: GithubAuthPurpose;
+  scopes: string[];
+}
+
+export interface GithubAuthPollResult {
+  state: "pending" | "slow_down" | "authorized" | "denied" | "expired";
+  retry_after?: number;
+  login?: string;
+  scopes?: string[];
+  token_preview?: string;
+}
+
+export interface GithubOwnerSetResult {
+  owner: string;
+  owner_type: "user" | "organization";
+  authorized_login: string;
+  settings: ConfigSettings;
+}
+
 export interface ResourceRepoBinding {
   owner: string;
   repo_name: string;
@@ -798,5 +839,4 @@ export interface LpmResponse<T> {
     code: string;
     message: string;
   };
-  raw: string;
 }

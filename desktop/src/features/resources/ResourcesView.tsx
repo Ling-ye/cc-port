@@ -10,8 +10,8 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { lpmAction, openPath } from "@/api/client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { copyText, lpmAction, openExternalUrl, openPath } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
@@ -25,6 +25,9 @@ import type {
   AssetInventory,
   AssetPlatformRow,
   AssetStatus,
+  GithubAuthPollResult,
+  GithubAuthSession,
+  GithubAuthStatus,
   ResourceKind,
 } from "@/types/lpm";
 
@@ -88,6 +91,9 @@ export function ResourcesView({
   const [busyAction, setBusyAction] = useState("");
   const [dialog, setDialog] = useState<ActionDialogState | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
+  const [deleteAuthSession, setDeleteAuthSession] = useState<GithubAuthSession | null>(null);
+  const [deleteAuthMessage, setDeleteAuthMessage] = useState("");
+  const deleteAuthSessionRef = useRef<GithubAuthSession | null>(null);
 
   const visibleRows = useMemo(
     () => (inventory?.rows || []).filter((row) => (
@@ -96,6 +102,58 @@ export function ResourcesView({
     )),
     [inventory, kindFilter, statusFilter],
   );
+
+  useEffect(() => {
+    deleteAuthSessionRef.current = deleteAuthSession;
+  }, [deleteAuthSession]);
+
+  useEffect(() => () => {
+    const sessionId = deleteAuthSessionRef.current?.session_id;
+    if (sessionId) {
+      void lpmAction("github_auth_cancel", { session_id: sessionId }).catch(() => undefined);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!deleteAuthSession) return;
+    let stopped = false;
+    let timer = 0;
+
+    const poll = (delaySeconds: number) => {
+      timer = window.setTimeout(async () => {
+        try {
+          const result = await lpmAction<GithubAuthPollResult>("github_auth_poll", {
+            session_id: deleteAuthSession.session_id,
+          });
+          if (stopped) return;
+          if (result.state === "pending" || result.state === "slow_down") {
+            poll(result.retry_after || deleteAuthSession.interval);
+            return;
+          }
+          setDeleteAuthSession(null);
+          if (result.state === "authorized") {
+            setDeleteAuthMessage(t("assets.deleteScopeGranted"));
+            return;
+          }
+          setDeleteDialog((current) => current ? {
+            ...current,
+            error: result.state === "denied" ? t("settings.authDenied") : t("settings.authExpired"),
+          } : current);
+        } catch (error) {
+          if (!stopped) {
+            setDeleteAuthSession(null);
+            setDeleteDialog((current) => current ? { ...current, error: errorMessage(error) } : current);
+          }
+        }
+      }, Math.max(1, delaySeconds) * 1000);
+    };
+
+    poll(deleteAuthSession.interval);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [deleteAuthSession, t]);
 
   async function scanLocal() {
     setBusyAction("scan");
@@ -166,6 +224,21 @@ export function ResourcesView({
     }
     setBusyAction("delete");
     try {
+      if (deletesOwnedRepository(deleteDialog.row)) {
+        const status = await lpmAction<GithubAuthStatus>("github_auth_status");
+        if (status.state !== "connected") {
+          throw new Error(status.error || t("assets.connectBeforeRemoteDelete"));
+        }
+        if (!status.scopes.includes("delete_repo")) {
+          const session = await lpmAction<GithubAuthSession>("github_auth_start", {
+            purpose: "remote_delete",
+          });
+          setDeleteAuthSession(session);
+          setDeleteAuthMessage("");
+          await openExternalUrl(session.verification_uri);
+          return;
+        }
+      }
       await runTask({
         kind: "resource-delete",
         title: t("assets.deleteResource"),
@@ -180,10 +253,24 @@ export function ResourcesView({
       });
       setDeleteDialog(null);
       await onChanged();
-    } catch {
-      await Promise.resolve(onChanged());
+    } catch (error) {
+      setDeleteDialog((current) => current ? { ...current, error: errorMessage(error) } : current);
     } finally {
       setBusyAction("");
+    }
+  }
+
+  async function closeDeleteDialog() {
+    const sessionId = deleteAuthSession?.session_id;
+    setDeleteAuthSession(null);
+    setDeleteAuthMessage("");
+    setDeleteDialog(null);
+    if (sessionId) {
+      try {
+        await lpmAction("github_auth_cancel", { session_id: sessionId });
+      } catch {
+        // Session expiry/cancellation is already safe and local.
+      }
     }
   }
 
@@ -307,7 +394,7 @@ export function ResourcesView({
             <div className="modal-head danger-head">
               <Trash2 size={20} />
               <h2>{t("assets.deleteResource")}</h2>
-              <button className="icon-button" type="button" onClick={() => setDeleteDialog(null)}>
+              <button className="icon-button" type="button" onClick={() => void closeDeleteDialog()}>
                 <X size={17} />
               </button>
             </div>
@@ -322,19 +409,34 @@ export function ResourcesView({
                   ))}
                 />
               </label>
+              {deleteAuthSession ? (
+                <div className="oauth-device-panel" role="status">
+                  <p>{t("assets.authorizeRemoteDelete")}</p>
+                  <strong>{deleteAuthSession.user_code}</strong>
+                  <div>
+                    <button className="secondary" type="button" onClick={() => void copyText(deleteAuthSession.user_code)}>
+                      <Copy size={16} />{t("settings.copyCode")}
+                    </button>
+                    <button className="secondary" type="button" onClick={() => void closeDeleteDialog()}>
+                      {t("common.cancel")}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {deleteAuthMessage ? <p className="delete-auth-success">{deleteAuthMessage}</p> : null}
               {deleteDialog.error ? <p className="delete-modal-error">{deleteDialog.error}</p> : null}
             </div>
             <div className="modal-actions">
-              <button className="secondary" type="button" onClick={() => setDeleteDialog(null)}>
+              <button className="secondary" type="button" onClick={() => void closeDeleteDialog()}>
                 {t("common.cancel")}
               </button>
               <button
                 className="danger"
                 type="button"
                 onClick={() => void removeResource()}
-                disabled={busyAction === "delete"}
+                disabled={busyAction === "delete" || Boolean(deleteAuthSession)}
               >
-                {busyAction === "delete" ? t("common.working") : t("common.confirm")}
+                {busyAction === "delete" || deleteAuthSession ? t("common.working") : t("common.confirm")}
               </button>
             </div>
           </div>
@@ -342,6 +444,14 @@ export function ResourcesView({
       ) : null}
     </section>
   );
+}
+
+function deletesOwnedRepository(row: AssetPlatformRow): boolean {
+  return row.entry?.source === "owned" && Boolean(row.entry.repo);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function AssetActionPanel({

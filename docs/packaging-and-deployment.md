@@ -35,6 +35,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -NonInte
 2. 检测 Python 3.10–3.12、Node.js 20.19+/22.12+、npm、Git、Rustup/Cargo/rustc、Visual Studio Build Tools 与 C++ workload。
 3. 使用精确 WinGet 包 ID 安装缺失的 Python 3.12、Node.js LTS、Git、Rustup 和 Visual Studio 2022 Build Tools。
 4. 刷新当前进程 PATH，并通过 `vswhere.exe` 与 `VsDevCmd.bat` 导入 MSVC/Windows SDK 环境。
+   如果 Build Tools 错选旧版 `winv6.3` 占位环境，脚本会从已安装的 Windows 10/11 SDK 中选择包含 `kernel32.lib` 与 UCRT 的最新 x64 版本，只修复当前构建进程。
 5. 选择 `stable-x86_64-pc-windows-msvc` Rust toolchain。
 6. 创建仓库 `.venv`；不兼容的旧环境会先重命名为 `.venv.backup-<timestamp>`。
 7. 执行 `.venv\Scripts\python.exe -m pip install -e ".[dev,desktop]"`。
@@ -43,6 +44,10 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -NonInte
 [KNOWN] 如果 WinGet 不存在，脚本会在系统安装前停止；先按微软文档安装或修复 App Installer，再重新执行同一命令：<https://learn.microsoft.com/windows/package-manager/winget/>。置信度：HIGH。
 
 ## 一键打包
+
+[KNOWN] 正式发布前必须在 `src/lpm/services/github_oauth.py` 的 `BUILTIN_GITHUB_OAUTH_CLIENT_ID` 写入项目已注册且启用 Device Flow 的 GitHub OAuth App `client_id`。空值构建可以完成，但成品中的 GitHub 连接入口会明确禁用；不得用占位值冒充正式 ID。置信度：HIGH。
+
+[KNOWN] 开发调试可设置 `LPM_GITHUB_OAUTH_CLIENT_ID` 覆盖内置值；OAuth App 不需要也不得把 `client_secret` 打入桌面包。置信度：HIGH。
 
 [KNOWN] 更新代码后只执行：置信度：HIGH。
 
@@ -143,6 +148,8 @@ Pop-Location
 
 ## 发布检查清单
 
+- [ ] 已注册项目官方 GitHub OAuth App、启用 Device Flow，并写入正式 `client_id`。
+- [ ] 已验证首次授权只申请 `repo`，组织 Owner 与远端删除分别按需升级 `read:org`、`delete_repo`。
 - [ ] PowerShell 自测、pytest、Ruff、Vitest、npm audit 和 Vite build 全部通过。
 - [ ] sidecar 使用当前源码和仓库 `.venv` 重建。
 - [ ] MSI 与 NSIS 同时存在。

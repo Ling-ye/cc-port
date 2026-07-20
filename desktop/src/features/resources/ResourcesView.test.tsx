@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lpmAction } from "@/api/client";
+import { lpmAction, openExternalUrl } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
 import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { ResourcesView } from "@/features/resources/ResourcesView";
@@ -13,7 +13,9 @@ import type {
 } from "@/types/lpm";
 
 vi.mock("@/api/client", () => ({
+  copyText: vi.fn(),
   lpmAction: vi.fn(),
+  openExternalUrl: vi.fn(),
   openPath: vi.fn(),
 }));
 
@@ -243,5 +245,55 @@ describe("ResourcesView asset synchronization", () => {
 
     expect(screen.getByText(/safe lowercase path segment/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Create safety plan" })).toBeDisabled();
+  });
+
+  it("requests delete_repo only when deleting an owned remote repository", async () => {
+    const user = userEvent.setup();
+    vi.mocked(lpmAction).mockImplementation(async (action) => {
+      if (action === "github_auth_status") {
+        return {
+          state: "connected",
+          source: "config",
+          login: "Lingye",
+          scopes: ["repo"],
+          token_preview: "masked",
+          config_token_preview: "masked",
+          can_reveal: true,
+          can_clear: true,
+          env_override: false,
+          oauth_configured: true,
+          error: "",
+        };
+      }
+      if (action === "github_auth_start") {
+        return {
+          session_id: "delete_session_1234",
+          user_code: "DELETE-ME",
+          verification_uri: "https://github.com/login/device",
+          expires_in: 900,
+          interval: 5,
+          purpose: "remote_delete",
+          scopes: ["repo", "delete_repo"],
+        };
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    const owned = row({
+      entry: {
+        ...row().entry!,
+        source: "owned",
+        repo: "Lingye/demo",
+      },
+    });
+    renderView([owned]);
+
+    await user.click(screen.getByRole("button", { name: "Delete resource" }));
+    await user.type(screen.getByLabelText("Type demo to confirm."), "demo");
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(await screen.findByText("DELETE-ME")).toBeVisible();
+    expect(lpmAction).toHaveBeenCalledWith("github_auth_start", { purpose: "remote_delete" });
+    expect(openExternalUrl).toHaveBeenCalledWith("https://github.com/login/device");
+    expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action === "resource_delete")).toBe(false);
   });
 });

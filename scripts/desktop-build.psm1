@@ -434,6 +434,44 @@ function Enable-LpmVisualStudioEnvironment {
         }
         [Environment]::SetEnvironmentVariable($name, $Matches[2], "Process")
     }
+
+    # Some Build Tools installations select the legacy winv6.3 placeholder
+    # even though a Windows 10/11 SDK is installed. Repair the process-only
+    # SDK paths so release linking cannot pass setup and then miss kernel32.lib.
+    $hasKernel32 = @($env:LIB -split ";") | Where-Object {
+        $_ -and (Test-Path -LiteralPath (Join-Path $_ "kernel32.lib") -PathType Leaf)
+    }
+    if (-not $hasKernel32) {
+        $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+        $kitRoot = Join-Path $programFilesX86 "Windows Kits\10"
+        $libRoot = Join-Path $kitRoot "Lib"
+        $sdk = @(Get-ChildItem -LiteralPath $libRoot -Directory -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -match '^\d+\.\d+\.\d+\.\d+$' -and
+            (Test-Path -LiteralPath (Join-Path $_.FullName "um\x64\kernel32.lib") -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $_.FullName "ucrt\x64\ucrt.lib") -PathType Leaf)
+        } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1)
+        if ($sdk.Count -eq 0) {
+            throw "A Windows 10/11 x64 SDK with kernel32.lib and ucrt.lib is required."
+        }
+
+        $sdkVersion = $sdk[0].Name
+        $sdkLibs = @(
+            (Join-Path $sdk[0].FullName "um\x64"),
+            (Join-Path $sdk[0].FullName "ucrt\x64")
+        )
+        $includeRoot = Join-Path (Join-Path $kitRoot "Include") $sdkVersion
+        $sdkIncludes = @("ucrt", "shared", "um", "winrt", "cppwinrt") | ForEach-Object {
+            Join-Path $includeRoot $_
+        } | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+        $env:LIB = (@($env:LIB) + $sdkLibs | Where-Object { $_ }) -join ";"
+        $env:INCLUDE = (@($env:INCLUDE) + $sdkIncludes | Where-Object { $_ }) -join ";"
+        $env:WindowsSdkDir = $kitRoot + "\"
+        $env:WindowsSDKVersion = $sdkVersion + "\"
+        $env:UniversalCRTSdkDir = $kitRoot + "\"
+        Add-LpmPathDirectories -Directories @(
+            (Join-Path (Join-Path (Join-Path $kitRoot "bin") $sdkVersion) "x64")
+        )
+    }
 }
 
 function Install-LpmWingetPackage {

@@ -1,5 +1,9 @@
+import { ExternalLink } from "lucide-react";
+import { openExternalUrl } from "@/api/client";
 import type { I18nKey, TFunction } from "@/app/i18n";
 import { DescriptionList } from "@/components/DescriptionList";
+
+const PROJECT_URL = "https://github.com/Ling-ye/LingyePluginMarketplace";
 
 const resourceRows = [
   ["guide.resourceSkill", "guide.resourceSkillDescription"],
@@ -38,6 +42,29 @@ export function GuideView({ t }: { t: TFunction }) {
           <div className="settings-section">
             <h3>{t("guide.desktopTitle")}</h3>
             <DescriptionList rows={featureRows.map(([label, value]) => [t(label), t(value)])} />
+          </div>
+
+          <div className="settings-section">
+            <h3>{t("guide.projectInfo")}</h3>
+            <DescriptionList
+              rows={[
+                [t("guide.projectName"), "LingyePluginMarketplace / LPM"],
+                [t("guide.positioning"), t("guide.positioningValue")],
+                [t("guide.developer"), t("guide.developerDescription")],
+                [
+                  t("guide.gitAddress"),
+                  <button
+                    className="external-text-link"
+                    type="button"
+                    onClick={() => void openExternalUrl(PROJECT_URL)}
+                  >
+                    {PROJECT_URL}
+                    <ExternalLink size={14} />
+                  </button>,
+                ],
+                [t("guide.openSourceStatus"), t("guide.openSourceStatusValue")],
+              ]}
+            />
           </div>
         </div>
       </div>

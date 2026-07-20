@@ -23,6 +23,7 @@ HTTPS 绑定允许 Git Credential Manager 在这次用户触发的操作中打�
 ## 配置语义
 
 - 一键绑定设置 `resources.credential_mode = "native"`，资源仓库的 Git 传输使用 GCM/系统凭据或 SSH Key，不注入全局 GitHub API Token。
+- 简化设置页不再暴露 `credential_mode`、`branch` 或 `local_path`；这些字段仍可通过 `config.toml` 与 CLI 管理。
 - 旧配置缺少该字段时视为 `auto`，继续使用 Token 优先的兼容行为；`token` 强制要求有效 Token。
 - 成功绑定更新 `repo_name`、`repo_url` 和默认 `branch`。
 - 同一仓库与协议的重新验证保留自定义 `local_path`；切换仓库或协议时清空路径配置，旧目录不移动、不删除。
@@ -40,3 +41,4 @@ HTTPS 绑定允许 Git Credential Manager 在这次用户触发的操作中打�
 - 过期的全局 Token 不影响 `native` 资源仓库。
 - 重新绑定保留旧目录内容，并把新仓库的本地创建延迟到首次拉取。
 - 错误、任务记录、配置和远端 URL 不包含凭据。
+- 设置页重新绑定只调用窄接口，不得通过完整配置保存覆盖隐藏字段。

@@ -1,4 +1,6 @@
-export function DescriptionList({ rows }: { rows: Array<[string, string]> }) {
+import type { ReactNode } from "react";
+
+export function DescriptionList({ rows }: { rows: Array<[string, ReactNode]> }) {
   return (
     <dl className="description-list">
       {rows.map(([label, value]) => (

@@ -152,11 +152,10 @@ sync/<operation-id>/           # 弃用兼容：旧 Git 同步计划与临时 wo
 
 安装后：
 
-1. 安装 Git；通常无需手工配置 PATH，非标准位置可在设置页填写 Git 可执行文件。
-2. 创建或编辑配置文件：`~/.config/lpm/config.toml`。
-3. 可参考仓库中的 `config/config.example.toml`。
-4. 启动桌面应用。
-5. 在桌面 GUI 中运行健康检查，确认配置、Git、资源仓库和平台目录正常。
+1. 安装 Git；通常无需手工配置 PATH，非标准位置通过 `config.toml` 的 `[git].executable` 或 `LPM_GIT_EXECUTABLE` 指定。
+2. 启动桌面应用，在设置页连接 GitHub、手工填写仓库 Owner，并绑定资源仓库。
+3. 高级值需要时直接编辑 `~/.config/lpm/config.toml`；可参考 `config/config.example.toml`。
+4. 在桌面 GUI 中运行健康检查，确认配置、Git、资源仓库和平台目录正常。
 
 ### 从源码构建最终工具
 
@@ -287,10 +286,25 @@ Windows 下等价路径通常是：
 - 绑定成功后，本地目录会在首次显式拉取时创建；重新绑定不会移动或删除旧目录。
 - `[resources].credential_mode` 可选 `native`、`auto` 或 `token`；一键绑定使用 `native`，旧配置默认按 `auto` 兼容。
 
+设置页只编辑资源仓库绑定、GitHub 授权、仓库 Owner 和五个目标工具开关；分支、本地路径、凭据模式、Git 可执行文件、仓库前缀与状态保留策略继续由 `config.toml` 和 CLI 管理。旧配置中的这些字段不会因设置页保存而被重置。
+
+桌面侧栏将资源类型、桌面功能和项目信息统一放在单一“说明”页，不再提供独立“关于”页。
+
+GitHub 访问使用 OAuth 设备流：
+
+- 普通连接只申请 `repo`；验证组织 Owner 时按需追加 `read:org`；删除 `source=owned` 的远端仓库时才追加 `delete_repo`。
+- Owner 必须手工填写。个人 Owner 必须与授权账号一致；组织 Owner 会验证组织存在和当前账号的有效成员关系。组织策略是否允许建仓只能由首次建仓请求最终确认。
+- OAuth Token 明文保存在本机 `config.toml`，普通界面只显示首尾各四位掩码；显式查看 30 秒后自动隐藏。
+- “移除本机 Token”只清空 `config.toml`，不会撤销 GitHub 上对 OAuth App 的授权。
+- `LPM_GITHUB_TOKEN` 始终优先于配置 Token；环境变量 Token 不能在 GUI 中查看、替换或清除。
+
+全新配置默认创建私有仓库，使用 `lpm-` 前缀、`main` 分支、本机 Git/GCM 或 SSH 凭据，并启用 Codex、Claude Code、Cursor、Windsurf、opencode 五个完整平台预设。现有配置继续保留原 Owner、平台开关、目录和高级值。Cline 与 Gemini CLI 目前不提供完整可写平台预设。
+
 常用环境变量：
 
 - `LPM_CONFIG`：指定配置文件路径。
 - `LPM_GITHUB_TOKEN`：覆盖配置文件中的 GitHub token。
+- `LPM_GITHUB_OAUTH_CLIENT_ID`：仅用于开发环境覆盖桌面包内置的 OAuth App `client_id`。
 - `LPM_GIT_EXECUTABLE`：覆盖 `[git].executable`，指定 Git 可执行文件。
 - 后台分支刷新优先复用已绑定协议的非交互凭据；HTTPS 失败后可兼容回退到本机 GitHub SSH Key。只有用户显式点击绑定时允许浏览器登录。
 - `LPM_RESOURCE_HOME`：覆盖私有资源仓库本地路径。
@@ -311,6 +325,8 @@ Windows 下等价路径通常是：
 ```bash
 lpm init
 ```
+
+`lpm init` 对全新配置启用五个完整平台预设；旧配置缺少 `[platforms]` 时仍按历史语义只启用 Cursor。
 
 初始化或绑定私有资源仓库：
 
@@ -565,6 +581,7 @@ Tauri 再把该 sidecar 打进最终安装包，使普通用户可以直接使�
 - 不要提交真实 `registry.yaml`。
 - 不要提交私有资源目录。
 - 私有资源仓库可能包含个人资源、内部路径、MCP 配置或敏感 metadata，默认应保持私有。
+- 除显式 Token 查看接口外，OAuth Token 不应进入 Tauri 普通响应、进程参数、任务中心、错误或日志。
 
 ## License
 

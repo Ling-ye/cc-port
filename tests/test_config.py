@@ -70,3 +70,31 @@ def test_legacy_resource_credential_mode_defaults_to_auto(tmp_path: Path) -> Non
 
     assert loaded.resources.credential_mode == "auto"
     assert resource_repo_auth_token(loaded) == "legacy-token"
+    assert loaded.github.repo_prefix == "cursor-skill-"
+    assert loaded.github.default_private is False
+    assert [(profile.name, profile.enabled) for profile in loaded.platforms.profiles] == [
+        ("cursor", True)
+    ]
+
+
+def test_new_config_uses_private_lpm_defaults_and_enables_complete_presets(
+    tmp_path: Path,
+) -> None:
+    loaded = load_config(tmp_path / "missing.toml")
+
+    assert loaded.github.owner == ""
+    assert loaded.github.repo_prefix == "lpm-"
+    assert loaded.github.default_private is True
+    assert loaded.resources.branch == "main"
+    assert loaded.resources.credential_mode == "native"
+    assert {profile.name for profile in loaded.platforms.enabled()} == {
+        "codex",
+        "claude-code",
+        "cursor",
+        "windsurf",
+        "opencode",
+    }
+    assert all(
+        profile.skills_dir or profile.mcp_json or profile.rules_dir or profile.plugins_dir
+        for profile in loaded.platforms.enabled()
+    )

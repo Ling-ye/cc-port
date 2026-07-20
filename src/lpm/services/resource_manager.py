@@ -301,6 +301,20 @@ def delete_resource(
     )
 
 
+def resource_delete_requires_remote_scope(
+    name: str,
+    *,
+    kind: ItemKind | None = None,
+    registry_path: Path | None = None,
+) -> bool:
+    """Return whether deleting the resource deletes an owned GitHub repository."""
+    reg_path = registry_path or find_registry_path()
+    entry = load_registry(reg_path).get(name, kind)
+    if entry is None:
+        raise ValueError(f"No item named {name!r} in registry.")
+    return entry.source == "owned" and bool(entry.repo)
+
+
 def resource_open_path(
     name: str,
     *,

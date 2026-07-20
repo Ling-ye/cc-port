@@ -16,7 +16,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - py310 fallback
     import tomli as tomllib
 
-from .platforms import PlatformsConfig, load_platforms_from_dict
+from .platforms import PlatformsConfig, default_platform_profiles, load_platforms_from_dict
 
 CONFIG_ENV_VAR = "LPM_GITHUB_TOKEN"
 CONFIG_PATH_ENV_VAR = "LPM_CONFIG"
@@ -25,10 +25,14 @@ STATE_HOME_ENV_VAR = "LPM_STATE_HOME"
 GIT_EXECUTABLE_ENV_VAR = "LPM_GIT_EXECUTABLE"
 DEFAULT_CONFIG_RELATIVE = Path(".config/lpm/config.toml")
 DEFAULT_INSTALL_TARGET = "~/.cursor/skills"
-DEFAULT_REPO_PREFIX = "cursor-skill-"
+DEFAULT_REPO_PREFIX = "lpm-"
+LEGACY_REPO_PREFIX = "cursor-skill-"
+DEFAULT_GITHUB_PRIVATE = True
+LEGACY_GITHUB_PRIVATE = False
 DEFAULT_RESOURCE_REPO_NAME = "LingyeAIResources"
 DEFAULT_RESOURCE_BRANCH = "main"
-DEFAULT_RESOURCE_CREDENTIAL_MODE = "auto"
+DEFAULT_RESOURCE_CREDENTIAL_MODE = "native"
+LEGACY_RESOURCE_CREDENTIAL_MODE = "auto"
 RESOURCE_CREDENTIAL_MODES = {"auto", "native", "token"}
 DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0
 DEFAULT_RETENTION_DAYS = 90
@@ -41,7 +45,7 @@ class GithubConfig:
     token: str = ""
     owner: str = ""
     repo_prefix: str = DEFAULT_REPO_PREFIX
-    default_private: bool = False
+    default_private: bool = DEFAULT_GITHUB_PRIVATE
 
 
 @dataclass
@@ -121,8 +125,9 @@ def default_state_dir() -> Path:
 
 def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
     cfg_path = path or default_config_path()
+    existing_config = cfg_path.is_file()
     data: dict = {}
-    if cfg_path.is_file():
+    if existing_config:
         with cfg_path.open("rb") as f:
             data = tomllib.load(f)
 
@@ -132,14 +137,19 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
     resources_data = data.get("resources", {}) or {}
     state_data = data.get("state", {}) or {}
 
-    plat_cfg = load_platforms_from_dict(data)
+    plat_cfg = load_platforms_from_dict(data, new_config=not existing_config)
+    repo_prefix_default = LEGACY_REPO_PREFIX if existing_config else DEFAULT_REPO_PREFIX
+    private_default = LEGACY_GITHUB_PRIVATE if existing_config else DEFAULT_GITHUB_PRIVATE
+    credential_default = (
+        LEGACY_RESOURCE_CREDENTIAL_MODE if existing_config else DEFAULT_RESOURCE_CREDENTIAL_MODE
+    )
 
     cfg = Config(
         github=GithubConfig(
             token=str(gh_data.get("token", "") or ""),
             owner=str(gh_data.get("owner", "") or ""),
-            repo_prefix=str(gh_data.get("repo_prefix", DEFAULT_REPO_PREFIX) or ""),
-            default_private=bool(gh_data.get("default_private", False)),
+            repo_prefix=str(gh_data.get("repo_prefix", repo_prefix_default) or ""),
+            default_private=bool(gh_data.get("default_private", private_default)),
         ),
         git=GitConfig(
             executable=str(git_data.get("executable", "") or ""),
@@ -156,7 +166,7 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
             local_path=str(resources_data.get("local_path", "") or ""),
             branch=str(resources_data.get("branch", DEFAULT_RESOURCE_BRANCH) or DEFAULT_RESOURCE_BRANCH),
             credential_mode=_resource_credential_mode(
-                resources_data.get("credential_mode", DEFAULT_RESOURCE_CREDENTIAL_MODE)
+                resources_data.get("credential_mode", credential_default)
             ),
         ),
         state=StateConfig(
@@ -181,7 +191,7 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
             ),
         ),
         platforms=plat_cfg,
-        source_path=cfg_path if cfg_path.is_file() else None,
+        source_path=cfg_path if existing_config else None,
     )
 
     if apply_env:
@@ -217,11 +227,11 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         "# LPM (LingyePluginMarketplace) config -- edit this file, then run `lpm doctor` to verify.",
         "",
         "[github]",
-        "# GitHub Personal Access Token (repo scope). You can also set the",
+        "# GitHub OAuth or personal access token (repo scope). You can also set the",
         f"# {CONFIG_ENV_VAR} environment variable instead (takes precedence).",
         f'token = "{_escape(cfg.github.token)}"',
         "",
-        "# GitHub user or org to create repos under. Leave empty to auto-detect from token.",
+        "# Required GitHub user or organization to create repositories under.",
         f'owner = "{_escape(cfg.github.owner)}"',
         "",
         f'repo_prefix = "{_escape(cfg.github.repo_prefix)}"',
@@ -302,6 +312,11 @@ def _resource_credential_mode(value: object) -> str:
         choices = ", ".join(sorted(RESOURCE_CREDENTIAL_MODES))
         raise ValueError(f"resources.credential_mode must be one of: {choices}.")
     return mode
+
+
+def new_default_config() -> Config:
+    """Return the product defaults used when creating a new configuration."""
+    return Config(platforms=PlatformsConfig(profiles=default_platform_profiles()))
 
 
 def resource_repo_auth_token(cfg: Config) -> str | None:

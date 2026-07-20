@@ -3,20 +3,21 @@
 # On Windows it lives at %USERPROFILE%\.config\lpm\config.toml.
 
 [github]
-# Personal Access Token with `repo` scope. You can also set the
-# LPM_GITHUB_TOKEN environment variable instead, which takes precedence.
-token = "ghp_replace_me"
+# The desktop OAuth device flow stores its token here in plaintext after
+# authorization. LPM_GITHUB_TOKEN may be used instead and takes precedence.
+token = ""
 
-# Owner (user or org) under which new repositories will be created.
-# If empty, LPM uses the account that owns the token.
+# Required user or organization under which new repositories are created.
+# Personal owners must match the authorized account. The desktop app never
+# fills this value automatically.
 owner = ""
 
 # Optional prefix prepended to every newly created repo, e.g.
-# "cursor-skill-" produces github.com/<owner>/cursor-skill-<name>.
-repo_prefix = "cursor-skill-"
+# "lpm-" produces github.com/<owner>/lpm-<name>.
+repo_prefix = "lpm-"
 
 # Default visibility for newly created repositories.
-default_private = false
+default_private = true
 
 [git]
 # Optional absolute path or command name. Leave empty to search PATH and
@@ -34,9 +35,9 @@ repo_name = "LingyeAIResources"
 repo_url = ""
 local_path = ""
 branch = "main"
-# auto keeps legacy token-first behavior; native uses GCM/SSH; token requires
-# the configured GitHub token.
-credential_mode = "auto"
+# native uses GCM/SSH and never injects the GitHub API token into Git.
+# Existing configs may retain auto (legacy token-first) or token.
+credential_mode = "native"
 
 [state]
 # Wait time when another LPM process is writing the same target.
@@ -48,8 +49,22 @@ keep_latest_operations = 20
 max_backup_mb = 2048
 
 # ---- Platform configuration ----
-# Enable one or more AI coding platforms. LPM installs skills, MCP
-# server configs, and rules into each enabled platform's directories.
+# New configurations enable every complete writable preset. LPM may create
+# these directories during sync even when the corresponding tool is absent.
+
+[platforms.codex]
+enabled = true
+skills_dir = "~/.codex/skills"
+mcp_json = ""
+rules_dir = ""
+plugins_dir = "~/.codex/plugins"
+
+[platforms.claude-code]
+enabled = true
+skills_dir = "~/.claude/skills"
+mcp_json = "~/.claude.json"
+rules_dir = ""
+plugins_dir = "~/.claude/plugins"
 
 [platforms.cursor]
 enabled = true
@@ -58,9 +73,16 @@ mcp_json = "~/.cursor/mcp.json"
 rules_dir = ""
 plugins_dir = ""
 
-[platforms.claude-code]
-enabled = false
-skills_dir = "~/.claude/skills"
-mcp_json = "~/.claude.json"
+[platforms.windsurf]
+enabled = true
+skills_dir = "~/.windsurf/skills"
+mcp_json = "~/.windsurf/mcp.json"
 rules_dir = ""
-plugins_dir = "~/.claude/plugins"
+plugins_dir = ""
+
+[platforms.opencode]
+enabled = true
+skills_dir = "~/.config/opencode/skills"
+mcp_json = "~/.config/opencode/opencode.json"
+rules_dir = "~/.config/opencode/rules"
+plugins_dir = "~/.config/opencode/plugins"

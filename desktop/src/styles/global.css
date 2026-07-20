@@ -1533,7 +1533,7 @@ button {
 
 .repo-binding-status {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -1581,69 +1581,170 @@ button {
   font-size: 12px;
 }
 
-.settings-advanced {
-  margin-top: 16px;
-  border: 1px solid #dce4e9;
+.settings-simple-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.settings-simple-grid .settings-section,
+.platform-toggle-section {
+  border: 1px solid #e0e7ec;
   border-radius: 10px;
-  overflow: hidden;
+  padding: 16px;
 }
 
-.settings-advanced > summary {
-  padding: 14px 16px;
-  background: #f8fafb;
-  cursor: pointer;
-  list-style: none;
-}
-
-.settings-advanced > summary::-webkit-details-marker {
-  display: none;
-}
-
-.settings-advanced > summary > span {
+.simple-section-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.simple-section-head > div {
+  min-width: 0;
+}
+
+.simple-section-head h3,
+.simple-section-head p {
+  margin: 0;
+}
+
+.simple-section-head p {
+  margin-top: 4px;
+  color: #697781;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.compact-status-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.compact-status-list > div {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
   gap: 10px;
 }
 
-.settings-advanced > summary svg {
-  transition: transform 160ms ease;
-}
-
-.settings-advanced[open] > summary svg {
-  transform: rotate(180deg);
-}
-
-.settings-advanced > summary span span {
-  display: grid;
-  gap: 2px;
-}
-
-.settings-advanced > summary small {
+.compact-status-list dt {
   color: #697781;
   font-size: 12px;
 }
 
-.advanced-settings-body {
-  border-top: 1px solid #e3e9ed;
-  padding: 16px;
+.compact-status-list dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
-.advanced-settings-actions {
-  display: flex;
-  justify-content: flex-end;
+.token-field,
+.owner-control {
+  display: grid;
+  gap: 6px;
 }
 
-.advanced-settings-actions button {
+.token-field > span,
+.owner-control label > span {
+  color: #46525c;
+  font-size: 13px;
+}
+
+.token-field > div,
+.owner-control {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.token-field > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 7px;
+}
+
+.token-field input,
+.owner-control input {
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #bfcdd4;
+  border-radius: 8px;
+  padding: 9px 11px;
+  background: #ffffff;
+  color: #202a32;
+}
+
+.owner-control label {
+  display: grid;
+  gap: 6px;
+}
+
+.owner-control button,
+.simple-actions button,
+.oauth-device-panel button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 7px;
+}
+
+.simple-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.danger-ghost {
+  border: 1px solid #d9a6a6;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: #fff8f8;
+  color: #9c2525;
+  cursor: pointer;
+}
+
+.danger-ghost:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.oauth-device-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  border: 1px solid #b8d9d3;
+  border-radius: 9px;
+  padding: 12px;
+  background: #f2fbf8;
+}
+
+.oauth-device-panel p {
+  margin: 0;
+  color: #375950;
+  font-size: 13px;
+}
+
+.oauth-device-panel strong {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 20px;
+  letter-spacing: 0.12em;
+}
+
+.oauth-device-panel > div {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.settings-grid-pair {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+.delete-auth-success {
+  color: #176c55 !important;
+  font-weight: 600;
 }
 
 .rebind-modal > p {
@@ -1681,7 +1782,7 @@ button {
 
 @media (max-width: 1120px) {
   .repo-binding-status,
-  .settings-grid-pair {
+  .settings-simple-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1741,56 +1842,68 @@ button {
   font-size: 15px;
 }
 
-.platform-editor-list {
-  display: grid;
-  gap: 12px;
+.external-text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #167f72;
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
 }
 
-.platform-editor {
+.external-text-link:hover {
+  text-decoration: underline;
+}
+
+.platform-toggle-section {
+  margin-top: 18px;
+}
+
+.platform-toggle-list {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.platform-toggle {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   border: 1px solid #e0e7ec;
   border-radius: 8px;
-  padding: 12px;
+  padding: 11px;
+  background: #f8fafb;
+  cursor: pointer;
 }
 
-.platform-editor-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
+.platform-toggle input {
+  accent-color: #2f8f83;
 }
 
-.platform-editor-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.platform-toggle span {
   min-width: 0;
-}
-
-.platform-editor-title strong {
   overflow-wrap: anywhere;
 }
 
-.platform-status {
-  flex: 0 0 auto;
-  border: 1px solid #ccd6dc;
-  border-radius: 999px;
-  padding: 3px 7px;
-  color: #52606b;
-  font-size: 12px;
-  line-height: 1.2;
+@media (max-width: 1120px) {
+  .platform-toggle-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
-.platform-status.enabled {
-  background: #e9f8f2;
-  border-color: #b7e5d2;
-  color: #176c55;
-}
-
-.platform-status.disabled {
-  background: #f4f6f8;
-  border-color: #d5dde2;
-  color: #6c7882;
+@media (max-width: 640px) {
+  .platform-toggle-list,
+  .owner-control,
+  .token-field > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .modal-backdrop {
@@ -2013,7 +2126,9 @@ button {
   .mode-tabs button,
   .stack-form input,
   .stack-form select,
-  .platform-editor,
+  .platform-toggle,
+  .settings-simple-grid .settings-section,
+  .platform-toggle-section,
   .resource-filter-stack,
   .modal {
     background: #172228;
@@ -2072,7 +2187,8 @@ button {
   .repo-binding-head p,
   .repo-binding-status span,
   .repo-binding-status small,
-  .settings-advanced > summary small,
+  .simple-section-head p,
+  .compact-status-list dt,
   .rebind-modal > p,
   .rebind-comparison dt {
     color: #9cafb8;
@@ -2085,8 +2201,9 @@ button {
 
   .connection-pill,
   .repo-bind-control input,
+  .token-field input,
+  .owner-control input,
   .repo-binding-status > div,
-  .settings-advanced > summary,
   .rebind-comparison > div {
     background: #172228;
     border-color: #2b3d46;
@@ -2106,8 +2223,8 @@ button {
   }
 
   .repo-bind-success,
-  .advanced-settings-body,
-  .settings-advanced {
+  .settings-simple-grid .settings-section,
+  .platform-toggle-section {
     border-color: #2b3d46;
   }
 
@@ -2148,16 +2265,19 @@ button {
     color: #e2bd72;
   }
 
-  .platform-status.enabled {
+  .oauth-device-panel {
     background: #17362e;
     border-color: #276754;
+  }
+
+  .oauth-device-panel p {
     color: #b7e5d2;
   }
 
-  .platform-status.disabled {
-    background: #111b21;
-    border-color: #2b3d46;
-    color: #9cafb8;
+  .danger-ghost {
+    background: #2b1f1f;
+    border-color: #6a3e3a;
+    color: #efb2ad;
   }
 
   .discovery-row,

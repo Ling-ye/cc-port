@@ -1,31 +1,32 @@
 import {
   AlertTriangle,
   BadgeCheck,
-  ChevronDown,
-  GitBranch,
+  Copy,
+  Eye,
+  EyeOff,
+  Github,
   Link2,
   RefreshCcw,
   Save,
   ShieldCheck,
+  Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { lpmAction } from "@/api/client";
+import { copyText, LpmApiError, lpmAction, openExternalUrl } from "@/api/client";
 import type { TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
   ConfigBindRepoResult,
-  ConfigBranchOptions,
   ConfigSettings,
-  EditableConfig,
-  PlatformProfile,
-  ResourceRepoBinding,
+  GithubAuthPollResult,
+  GithubAuthPurpose,
+  GithubAuthSession,
+  GithubAuthStatus,
+  GithubOwnerSetResult,
 } from "@/types/lpm";
 
-type SavePayload = {
-  draft: EditableConfig;
-  token_action: "preserve" | "replace" | "clear";
-  new_token?: string;
-};
+const TOKEN_REVEAL_MS = 30_000;
+const SIMPLE_PLATFORM_NAMES = new Set(["codex", "claude-code", "cursor", "windsurf", "opencode"]);
 
 export function SettingsView({
   t,
@@ -38,53 +39,73 @@ export function SettingsView({
 }) {
   const { runTask } = useTaskCenter();
   const [settings, setSettings] = useState<ConfigSettings | null>(null);
-  const [draft, setDraft] = useState<EditableConfig | null>(null);
+  const [auth, setAuth] = useState<GithubAuthStatus | null>(null);
   const [bindUrl, setBindUrl] = useState("");
-  const [lastBinding, setLastBinding] = useState<ResourceRepoBinding | null>(null);
+  const [owner, setOwner] = useState("");
+  const [lastBinding, setLastBinding] = useState<ConfigBindRepoResult["binding"] | null>(null);
   const [bindError, setBindError] = useState("");
   const [pendingRebindUrl, setPendingRebindUrl] = useState("");
-  const [newToken, setNewToken] = useState("");
-  const [clearToken, setClearToken] = useState(false);
+  const [pendingOwner, setPendingOwner] = useState("");
+  const [authSession, setAuthSession] = useState<GithubAuthSession | null>(null);
+  const [revealedToken, setRevealedToken] = useState("");
+  const [copyNotice, setCopyNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [binding, setBinding] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [branchOptions, setBranchOptions] = useState<ConfigBranchOptions>(() => fallbackBranchOptions("main"));
-  const [loadingBranches, setLoadingBranches] = useState(false);
-  const draftRef = useRef<EditableConfig | null>(null);
-  const newTokenRef = useRef("");
-  const clearTokenRef = useRef(false);
-  const branchRequestRef = useRef(0);
+  const [authStarting, setAuthStarting] = useState(false);
+  const [ownerSaving, setOwnerSaving] = useState(false);
+  const [platformSaving, setPlatformSaving] = useState("");
+  const revealTimerRef = useRef<number | null>(null);
+  const authSessionRef = useRef<GithubAuthSession | null>(null);
 
-  const actionBusy = binding || saving;
+  const actionBusy = binding || authStarting || ownerSaving || Boolean(platformSaving);
   const anyBusy = loading || actionBusy;
 
-  useEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
+  function hideToken() {
+    setRevealedToken("");
+    if (revealTimerRef.current !== null) {
+      window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+  }
 
   useEffect(() => {
-    newTokenRef.current = newToken;
-  }, [newToken]);
+    const onBlur = () => hideToken();
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      hideToken();
+    };
+  }, []);
 
   useEffect(() => {
-    clearTokenRef.current = clearToken;
-  }, [clearToken]);
+    authSessionRef.current = authSession;
+  }, [authSession]);
 
-  function applySettings(data: ConfigSettings, resetBindInput = true) {
+  useEffect(() => () => {
+    const sessionId = authSessionRef.current?.session_id;
+    if (sessionId) {
+      void lpmAction("github_auth_cancel", { session_id: sessionId }).catch(() => undefined);
+    }
+  }, []);
+
+  function applySettings(data: ConfigSettings, resetInputs = true) {
     setSettings(data);
-    setDraft(data.config);
-    if (resetBindInput) setBindUrl(data.config.resources.repo_url);
-    setBranchOptions(fallbackBranchOptions(data.config.resources.branch));
-    setNewToken("");
-    setClearToken(false);
+    if (resetInputs) {
+      setBindUrl(data.config.resources.repo_url);
+      setOwner(data.config.github.owner);
+    }
   }
 
   async function loadSettings(track = false) {
     setLoading(true);
     try {
       const request = async () => {
-        const data = await lpmAction<ConfigSettings>("config_get");
+        const [data, status] = await Promise.all([
+          lpmAction<ConfigSettings>("config_get"),
+          lpmAction<GithubAuthStatus>("github_auth_status"),
+        ]);
         applySettings(data);
+        setAuth(status);
         setLastBinding(null);
         setBindError("");
         return data;
@@ -110,72 +131,52 @@ export function SettingsView({
     void loadSettings();
   }, []);
 
-  function updateGithub(key: keyof EditableConfig["github"], value: string | boolean) {
-    setDraft((current) => current && { ...current, github: { ...current.github, [key]: value } });
-  }
+  useEffect(() => {
+    if (!authSession) return;
+    let stopped = false;
+    let timer = 0;
 
-  function updateInstall(key: keyof EditableConfig["install"], value: string) {
-    setDraft((current) => current && { ...current, install: { ...current.install, [key]: value } });
-  }
-
-  function updateGit(key: keyof EditableConfig["git"], value: string) {
-    setDraft((current) => current && { ...current, git: { ...current.git, [key]: value } });
-  }
-
-  function updateResources(key: keyof EditableConfig["resources"], value: string) {
-    setDraft((current) => current && { ...current, resources: { ...current.resources, [key]: value } });
-  }
-
-  function updateState(key: keyof EditableConfig["state"], value: number) {
-    setDraft((current) => current && {
-      ...current,
-      state: { ...current.state, [key]: value },
-    });
-  }
-
-  function updatePlatform(index: number, patch: Partial<PlatformProfile>) {
-    setDraft((current) => current && {
-      ...current,
-      platforms: current.platforms.map((platform, itemIndex) => (
-        itemIndex === index ? { ...platform, ...patch } : platform
-      )),
-    });
-  }
-
-  function buildPayloadFromDraft(nextDraft: EditableConfig): SavePayload {
-    const trimmedToken = newToken.trim();
-    return {
-      draft: nextDraft,
-      token_action: clearToken ? "clear" : trimmedToken ? "replace" : "preserve",
-      new_token: trimmedToken || undefined,
+    const poll = (delaySeconds: number) => {
+      timer = window.setTimeout(async () => {
+        try {
+          const result = await lpmAction<GithubAuthPollResult>("github_auth_poll", {
+            session_id: authSession.session_id,
+          });
+          if (stopped) return;
+          if (result.state === "pending" || result.state === "slow_down") {
+            poll(result.retry_after || authSession.interval);
+            return;
+          }
+          if (result.state === "authorized") {
+            setAuthSession(null);
+            hideToken();
+            const status = await lpmAction<GithubAuthStatus>("github_auth_status");
+            if (!stopped) setAuth(status);
+            if (pendingOwner) {
+              const nextOwner = pendingOwner;
+              setPendingOwner("");
+              await persistOwner(nextOwner, false);
+            }
+            void onChanged();
+            return;
+          }
+          setAuthSession(null);
+          onError(result.state === "denied" ? t("settings.authDenied") : t("settings.authExpired"));
+        } catch (err) {
+          if (!stopped) {
+            setAuthSession(null);
+            onError(errorMessage(err));
+          }
+        }
+      }, Math.max(1, delaySeconds) * 1000);
     };
-  }
 
-  async function loadBranchOptions(nextDraft = draft) {
-    if (!nextDraft) return;
-    const requestId = branchRequestRef.current + 1;
-    branchRequestRef.current = requestId;
-    setLoadingBranches(true);
-    try {
-      const options = await lpmAction<ConfigBranchOptions>(
-        "config_branches",
-        buildPayloadFromDraft(nextDraft),
-      );
-      if (branchRequestRef.current !== requestId) return;
-      setBranchOptions({
-        ...options,
-        branches: branchChoices(options, nextDraft.resources.branch),
-      });
-    } catch (err) {
-      if (branchRequestRef.current !== requestId) return;
-      setBranchOptions({
-        ...fallbackBranchOptions(nextDraft.resources.branch),
-        warning: errorMessage(err),
-      });
-    } finally {
-      if (branchRequestRef.current === requestId) setLoadingBranches(false);
-    }
-  }
+    poll(authSession.interval);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [authSession, pendingOwner]);
 
   function requestBind() {
     if (!settings) return;
@@ -212,17 +213,6 @@ export function SettingsView({
       });
       applySettings(result.settings);
       setLastBinding(result.binding);
-      setBranchOptions({
-        branches: branchChoices({
-          branches: result.binding.branches,
-          default_branch: result.binding.branch,
-          selected_branch: result.binding.branch,
-          warning: "",
-        }, result.binding.branch),
-        default_branch: result.binding.branch,
-        selected_branch: result.binding.branch,
-        warning: "",
-      });
       void onChanged();
     } catch (err) {
       setBindError(errorMessage(err));
@@ -231,39 +221,107 @@ export function SettingsView({
     }
   }
 
-  async function saveSettings() {
-    if (!draft) return;
-    const payload = buildPayloadFromDraft(draft);
-    const savedToken = payload.new_token || "";
-    const savedClearToken = payload.token_action === "clear";
-    setSaving(true);
+  async function startAuth(purpose: GithubAuthPurpose = "standard") {
+    setAuthStarting(true);
+    hideToken();
     try {
-      const saved = await runTask({
-        kind: "settings-save",
-        title: t("settings.savingShort"),
-        action: () => lpmAction<ConfigSettings>("config_save", payload),
-        successMessage: t("settings.saved"),
-        retryPolicy: "none",
-      });
-      setSettings(saved);
-      setDraft((current) => (current === payload.draft ? saved.config : current));
-      if (
-        draftRef.current === payload.draft
-        && newTokenRef.current.trim() === savedToken
-        && clearTokenRef.current === savedClearToken
-      ) {
-        setNewToken("");
-        setClearToken(false);
+      const session = await lpmAction<GithubAuthSession>("github_auth_start", { purpose });
+      setAuthSession(session);
+      try {
+        await openExternalUrl(session.verification_uri);
+      } catch (err) {
+        onError(errorMessage(err));
       }
-      void onChanged();
-    } catch {
-      // TaskCenter owns feedback for tracked operations.
+    } catch (err) {
+      onError(errorMessage(err));
     } finally {
-      setSaving(false);
+      setAuthStarting(false);
     }
   }
 
-  if (!draft || !settings) {
+  async function cancelAuth() {
+    if (!authSession) return;
+    const sessionId = authSession.session_id;
+    setAuthSession(null);
+    try {
+      await lpmAction("github_auth_cancel", { session_id: sessionId });
+    } catch (err) {
+      onError(errorMessage(err));
+    }
+  }
+
+  async function showToken() {
+    try {
+      const result = await lpmAction<{ token: string }>("github_token_reveal");
+      setRevealedToken(result.token);
+      if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = window.setTimeout(hideToken, TOKEN_REVEAL_MS);
+    } catch (err) {
+      onError(errorMessage(err));
+    }
+  }
+
+  async function copyToken() {
+    try {
+      const result = await lpmAction<{ token: string }>("github_token_reveal");
+      await copyText(result.token);
+      setCopyNotice(t("settings.tokenCopied"));
+      window.setTimeout(() => setCopyNotice(""), 3000);
+    } catch (err) {
+      onError(errorMessage(err));
+    }
+  }
+
+  async function clearToken() {
+    if (!window.confirm(t("settings.clearTokenConfirm"))) return;
+    try {
+      const status = await lpmAction<GithubAuthStatus>("github_token_clear");
+      hideToken();
+      setAuth(status);
+      void onChanged();
+    } catch (err) {
+      onError(errorMessage(err));
+    }
+  }
+
+  async function persistOwner(value: string, allowUpgrade = true) {
+    const nextOwner = value.trim();
+    if (!nextOwner) {
+      onError(t("settings.ownerRequired"));
+      return;
+    }
+    setOwnerSaving(true);
+    try {
+      const result = await lpmAction<GithubOwnerSetResult>("github_owner_set", { owner: nextOwner });
+      setOwner(result.owner);
+      applySettings(result.settings, false);
+      void onChanged();
+    } catch (err) {
+      if (allowUpgrade && err instanceof LpmApiError && err.code === "GithubOwnerScopeRequired") {
+        setPendingOwner(nextOwner);
+        await startAuth("organization_owner");
+      } else {
+        onError(errorMessage(err));
+      }
+    } finally {
+      setOwnerSaving(false);
+    }
+  }
+
+  async function setPlatformEnabled(name: string, enabled: boolean) {
+    setPlatformSaving(name);
+    try {
+      const next = await lpmAction<ConfigSettings>("platform_set_enabled", { name, enabled });
+      applySettings(next, false);
+      void onChanged();
+    } catch (err) {
+      onError(errorMessage(err));
+    } finally {
+      setPlatformSaving("");
+    }
+  }
+
+  if (!settings || !auth) {
     return (
       <section className="panel">
         <div className="panel-head">
@@ -285,6 +343,10 @@ export function SettingsView({
       : currentUrl
         ? t("settings.rebind")
         : t("settings.bind");
+  const tokenDisplay = revealedToken
+    || auth.config_token_preview
+    || auth.token_preview
+    || t("settings.notConfigured");
 
   return (
     <section className="settings-view">
@@ -292,7 +354,7 @@ export function SettingsView({
         <div className="panel-head">
           <div>
             <h2>{t("settings.title")}</h2>
-            <p>{settings.path}</p>
+            <p>{t("settings.simpleDescription")}</p>
           </div>
           <button className="secondary" type="button" onClick={() => void loadSettings(true)} disabled={anyBusy}>
             <RefreshCcw size={17} />{t("common.reload")}
@@ -339,7 +401,6 @@ export function SettingsView({
           </div>
 
           {bindError ? <div className="repo-bind-error" role="alert">{bindError}</div> : null}
-
           {currentUrl ? (
             <div className="repo-binding-status" aria-live="polite">
               <div>
@@ -347,19 +408,8 @@ export function SettingsView({
                 <strong>{settings.config.resources.repo_name}</strong>
                 <small>{currentUrl}</small>
               </div>
-              <div>
-                <span>{t("settings.branch")}</span>
-                <strong><GitBranch size={15} />{settings.config.resources.branch}</strong>
-                <small>{credentialLabel(t, settings.config.resources.credential_mode, currentUrl)}</small>
-              </div>
-              <div>
-                <span>{t("settings.localPath")}</span>
-                <strong>{settings.config.resources.local_path || t("settings.createOnFirstPull")}</strong>
-                <small>{t("settings.noTransferOnBind")}</small>
-              </div>
             </div>
           ) : null}
-
           {lastBinding ? (
             <div className="repo-bind-success" role="status">
               <ShieldCheck size={18} />
@@ -371,281 +421,131 @@ export function SettingsView({
           ) : null}
         </section>
 
-        <details className="settings-advanced">
-          <summary>
-            <span>
-              <ChevronDown size={18} />
-              <span>
-                <strong>{t("settings.advanced")}</strong>
-                <small>{t("settings.advancedDescription")}</small>
+        <div className="settings-simple-grid">
+          <section className="settings-section github-access-card" aria-labelledby="github-access-title">
+            <div className="simple-section-head">
+              <div>
+                <h3 id="github-access-title"><Github size={18} />{t("settings.githubAccess")}</h3>
+                <p>{t("settings.githubAccessDescription")}</p>
+              </div>
+              <span className={auth.state === "connected" ? "connection-pill connected" : "connection-pill"}>
+                {auth.state === "connected" ? <BadgeCheck size={15} /> : null}
+                {t(`settings.authState.${auth.state}`)}
               </span>
-            </span>
-          </summary>
+            </div>
 
-          <div className="advanced-settings-body">
-            <div className="advanced-settings-actions">
-              <button className="primary" type="button" onClick={saveSettings} disabled={anyBusy}>
-                <Save size={17} />{saving ? t("settings.savingShort") : t("settings.saveAdvanced")}
+            {!auth.oauth_configured ? (
+              <div className="inline-warning"><AlertTriangle size={17} /><span>{t("settings.oauthNotConfigured")}</span></div>
+            ) : null}
+            {auth.env_override ? (
+              <div className="inline-warning"><AlertTriangle size={17} /><span>{t("settings.envTokenOverride")}</span></div>
+            ) : null}
+            {auth.error ? <div className="repo-bind-error" role="alert">{auth.error}</div> : null}
+
+            <dl className="compact-status-list">
+              <div><dt>{t("settings.authorizedAccount")}</dt><dd>{auth.login || t("settings.notConfigured")}</dd></div>
+              <div><dt>{t("settings.tokenSource")}</dt><dd>{t(`settings.tokenSource.${auth.source}`)}</dd></div>
+              <div><dt>{t("settings.authorizedScopes")}</dt><dd>{auth.scopes.join(", ") || "-"}</dd></div>
+            </dl>
+
+            <label className="token-field">
+              <span>{t("settings.savedToken")}</span>
+              <div>
+                <input value={tokenDisplay} readOnly aria-label={t("settings.savedToken")} />
+                {auth.can_reveal ? (
+                  <button className="icon-button" type="button" onClick={revealedToken ? hideToken : () => void showToken()} title={revealedToken ? t("settings.hideToken") : t("settings.revealToken")}>
+                    {revealedToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                ) : null}
+                {auth.can_reveal ? (
+                  <button className="icon-button" type="button" onClick={() => void copyToken()} title={t("common.copy")}>
+                    <Copy size={16} />
+                  </button>
+                ) : null}
+              </div>
+            </label>
+            {copyNotice ? <small className="field-note" role="status">{copyNotice}</small> : null}
+
+            {authSession ? (
+              <div className="oauth-device-panel" role="status">
+                <span>{t("settings.deviceCode")}</span>
+                <strong>{authSession.user_code}</strong>
+                <small>{authSession.verification_uri}</small>
+                <div>
+                  <button className="secondary" type="button" onClick={() => void copyText(authSession.user_code)}><Copy size={16} />{t("settings.copyCode")}</button>
+                  <button className="secondary" type="button" onClick={() => void cancelAuth()}>{t("common.cancel")}</button>
+                </div>
+              </div>
+            ) : (
+              <div className="simple-actions">
+                <button className="primary" type="button" onClick={() => void startAuth()} disabled={anyBusy || !auth.oauth_configured || auth.env_override}>
+                  {authStarting ? <RefreshCcw className="spin" size={17} /> : <Github size={17} />}
+                  {auth.state === "connected" ? t("settings.reauthorizeGithub") : t("settings.connectGithub")}
+                </button>
+                {auth.can_clear ? (
+                  <button className="danger-ghost" type="button" onClick={() => void clearToken()} disabled={anyBusy}>
+                    <Trash2 size={16} />{t("settings.removeLocalToken")}
+                  </button>
+                ) : null}
+              </div>
+            )}
+            <small className="field-note">{t("settings.localTokenOnlyNote")}</small>
+          </section>
+
+          <section className="settings-section owner-card" aria-labelledby="owner-title">
+            <div className="simple-section-head">
+              <div>
+                <h3 id="owner-title">{t("settings.repositoryOwner")}</h3>
+                <p>{t("settings.repositoryOwnerDescription")}</p>
+              </div>
+            </div>
+            <div className="owner-control">
+              <label>
+                <span>{t("settings.owner")}</span>
+                <input value={owner} onChange={(event) => setOwner(event.target.value)} autoComplete="off" />
+              </label>
+              <button className="primary" type="button" onClick={() => void persistOwner(owner)} disabled={anyBusy || auth.state !== "connected" || !owner.trim()}>
+                {ownerSaving ? <RefreshCcw className="spin" size={17} /> : <Save size={17} />}
+                {t("common.save")}
               </button>
             </div>
+            <small className="field-note">{t("settings.ownerPermissionNote")}</small>
+          </section>
+        </div>
 
-            <div className="settings-sections">
-              <div className="settings-section">
-                <h3>{t("settings.resourceRepository")}</h3>
-                <div className="stack-form two-column">
-                  <label>
-                    <span>{t("settings.repoName")}</span>
-                    <input value={draft.resources.repo_name} readOnly />
-                  </label>
-                  <label>
-                    <span className="field-heading">
-                      <span>{t("settings.branch")}</span>
-                      <button
-                        className="field-action"
-                        type="button"
-                        onClick={() => void loadBranchOptions()}
-                        disabled={loadingBranches || actionBusy || !draft.resources.repo_url}
-                        title={t("settings.branchRefresh")}
-                      >
-                        <RefreshCcw size={14} />
-                        {loadingBranches ? t("settings.branchLoading") : t("settings.branchRefresh")}
-                      </button>
-                    </span>
-                    <select
-                      value={draft.resources.branch || branchOptions.selected_branch || "main"}
-                      onChange={(event) => updateResources("branch", event.target.value)}
-                      disabled={loadingBranches}
-                    >
-                      {branchChoices(branchOptions, draft.resources.branch).map((branch) => (
-                        <option key={branch} value={branch}>{branch}</option>
-                      ))}
-                    </select>
-                    {branchOptions.warning ? (
-                      <small className="field-note">
-                        {t("settings.branchLoadWarning", { message: branchOptions.warning })}
-                      </small>
-                    ) : null}
-                  </label>
-                  <label>
-                    <span>{t("settings.credentialMode")}</span>
-                    <select
-                      value={draft.resources.credential_mode}
-                      onChange={(event) => updateResources("credential_mode", event.target.value)}
-                    >
-                      <option value="native">{t("settings.credentialNative")}</option>
-                      <option value="auto">{t("settings.credentialAuto")}</option>
-                      <option value="token">{t("settings.credentialToken")}</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t("settings.localPath")}</span>
-                    <input
-                      value={draft.resources.local_path}
-                      placeholder={t("settings.createOnFirstPull")}
-                      onChange={(event) => updateResources("local_path", event.target.value)}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <div className="settings-section">
-                <h3>{t("settings.github")}</h3>
-                {settings.env_token_active ? (
-                  <div className="inline-warning">
-                    <AlertTriangle size={17} />
-                    <span>{t("settings.envTokenWarning")}</span>
-                  </div>
-                ) : null}
-                <div className="stack-form two-column">
-                  <label>
-                    <span>{t("settings.tokenPreview")}</span>
-                    <input value={settings.token_preview || t("settings.notConfigured")} readOnly />
-                  </label>
-                  <label>
-                    <span>{t("settings.newToken")}</span>
-                    <input
-                      type="password"
-                      value={newToken}
-                      onChange={(event) => {
-                        setNewToken(event.target.value);
-                        if (event.target.value) setClearToken(false);
-                      }}
-                      disabled={clearToken}
-                      autoComplete="off"
-                    />
-                  </label>
-                  <label className="checkline">
-                    <input
-                      type="checkbox"
-                      checked={clearToken}
-                      onChange={(event) => {
-                        setClearToken(event.target.checked);
-                        if (event.target.checked) setNewToken("");
-                      }}
-                    />
-                    <span>{t("settings.clearStoredToken")}</span>
-                  </label>
-                  <label className="checkline">
-                    <input
-                      type="checkbox"
-                      checked={draft.github.default_private}
-                      onChange={(event) => updateGithub("default_private", event.target.checked)}
-                    />
-                    <span>{t("settings.defaultPrivate")}</span>
-                  </label>
-                  <label>
-                    <span>{t("settings.owner")}</span>
-                    <input value={draft.github.owner} onChange={(event) => updateGithub("owner", event.target.value)} />
-                  </label>
-                  <label>
-                    <span>{t("settings.repoPrefix")}</span>
-                    <input
-                      value={draft.github.repo_prefix}
-                      onChange={(event) => updateGithub("repo_prefix", event.target.value)}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <div className="settings-section">
-                <h3>{t("settings.platforms")}</h3>
-                <div className="platform-editor-list">
-                  {draft.platforms.map((platform, index) => (
-                    <div className="platform-editor" key={platform.name}>
-                      <div className="platform-editor-head">
-                        <div className="platform-editor-title">
-                          <strong>{platform.name}</strong>
-                          <span className={platform.enabled ? "platform-status enabled" : "platform-status disabled"}>
-                            {platform.enabled ? t("settings.enabled") : t("settings.disabled")}
-                          </span>
-                        </div>
-                        <label className="checkline">
-                          <input
-                            type="checkbox"
-                            checked={platform.enabled}
-                            onChange={(event) => updatePlatform(index, { enabled: event.target.checked })}
-                          />
-                          <span>{t("settings.enabled")}</span>
-                        </label>
-                      </div>
-                      <div className="stack-form four-column">
-                        <label>
-                          <span>{t("settings.skills")}</span>
-                          <input
-                            value={platform.skills_dir}
-                            placeholder={t("settings.notConfigured")}
-                            onChange={(event) => updatePlatform(index, { skills_dir: event.target.value })}
-                          />
-                        </label>
-                        <label>
-                          <span>{t("settings.mcpJson")}</span>
-                          <input
-                            value={platform.mcp_json}
-                            placeholder={t("settings.notConfigured")}
-                            onChange={(event) => updatePlatform(index, { mcp_json: event.target.value })}
-                          />
-                        </label>
-                        <label>
-                          <span>{t("settings.rules")}</span>
-                          <input
-                            value={platform.rules_dir}
-                            placeholder={t("settings.notConfigured")}
-                            onChange={(event) => updatePlatform(index, { rules_dir: event.target.value })}
-                          />
-                        </label>
-                        <label>
-                          <span>{t("settings.plugins")}</span>
-                          <input
-                            value={platform.plugins_dir}
-                            placeholder={t("settings.notConfigured")}
-                            onChange={(event) => updatePlatform(index, { plugins_dir: event.target.value })}
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="settings-section settings-grid-pair">
-                <div>
-                  <h3>{t("settings.install")}</h3>
-                  <div className="stack-form">
-                    <label>
-                      <span>{t("settings.fallbackTarget")}</span>
-                      <input value={draft.install.target} onChange={(event) => updateInstall("target", event.target.value)} />
-                    </label>
-                  </div>
-                </div>
-                <div>
-                  <h3>{t("settings.gitRuntime")}</h3>
-                  <div className="stack-form">
-                    <label>
-                      <span>{t("settings.gitExecutable")}</span>
-                      <input
-                        value={draft.git.executable}
-                        placeholder={t("settings.gitExecutablePlaceholder")}
-                        onChange={(event) => updateGit("executable", event.target.value)}
-                      />
-                      <small className="field-note">{t("settings.gitExecutableNote")}</small>
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              <div className="settings-section">
-                <h3>{t("settings.localState")}</h3>
-                <div className="stack-form four-column">
-                  <label>
-                    <span>{t("settings.lockTimeout")}</span>
-                    <input
-                      type="number"
-                      min="0.1"
-                      step="0.1"
-                      value={draft.state.lock_timeout_seconds}
-                      onChange={(event) => updateState("lock_timeout_seconds", Math.max(0.1, Number(event.target.value) || 0.1))}
-                    />
-                  </label>
-                  <label>
-                    <span>{t("settings.retentionDays")}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={draft.state.retention_days}
-                      onChange={(event) => updateState("retention_days", Math.max(0, Number.parseInt(event.target.value, 10) || 0))}
-                    />
-                  </label>
-                  <label>
-                    <span>{t("settings.keepLatest")}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={draft.state.keep_latest_operations}
-                      onChange={(event) => updateState("keep_latest_operations", Math.max(0, Number.parseInt(event.target.value, 10) || 0))}
-                    />
-                  </label>
-                  <label>
-                    <span>{t("settings.maxBackupMb")}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={draft.state.max_backup_mb}
-                      onChange={(event) => updateState("max_backup_mb", Math.max(0, Number.parseInt(event.target.value, 10) || 0))}
-                    />
-                  </label>
-                </div>
-                <small className="field-note">{t("settings.stateNote")}</small>
-              </div>
+        <section className="settings-section platform-toggle-section" aria-labelledby="platform-title">
+          <div className="simple-section-head">
+            <div>
+              <h3 id="platform-title">{t("settings.targetTools")}</h3>
+              <p>{t("settings.targetToolsDescription")}</p>
             </div>
           </div>
-        </details>
+          <div className="platform-toggle-list">
+            {settings.config.platforms.filter((platform) => SIMPLE_PLATFORM_NAMES.has(platform.name)).map((platform) => (
+              <label className="platform-toggle" key={platform.name}>
+                <span>
+                  <strong>{platformDisplayName(platform.name)}</strong>
+                  <small>{t("settings.automaticPaths")}</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={platform.enabled}
+                  disabled={anyBusy}
+                  onChange={(event) => void setPlatformEnabled(platform.name, event.target.checked)}
+                  aria-label={platformDisplayName(platform.name)}
+                />
+                {platformSaving === platform.name ? <RefreshCcw className="spin" size={15} /> : null}
+              </label>
+            ))}
+          </div>
+          <small className="field-note">{t("settings.toolDirectoryWarning")}</small>
+        </section>
       </div>
 
       {pendingRebindUrl ? (
         <RebindModal
           currentUrl={currentUrl}
           nextUrl={pendingRebindUrl}
-          currentLocalPath={settings.config.resources.local_path}
           busy={binding}
           t={t}
           onCancel={() => setPendingRebindUrl("")}
@@ -659,7 +559,6 @@ export function SettingsView({
 function RebindModal({
   currentUrl,
   nextUrl,
-  currentLocalPath,
   busy,
   t,
   onCancel,
@@ -667,7 +566,6 @@ function RebindModal({
 }: {
   currentUrl: string;
   nextUrl: string;
-  currentLocalPath: string;
   busy: boolean;
   t: TFunction;
   onCancel: () => void;
@@ -684,7 +582,6 @@ function RebindModal({
         <dl className="rebind-comparison">
           <div><dt>{t("settings.currentRepository")}</dt><dd>{currentUrl}</dd></div>
           <div><dt>{t("settings.newRepository")}</dt><dd>{nextUrl}</dd></div>
-          <div><dt>{t("settings.existingLocalPath")}</dt><dd>{currentLocalPath || t("settings.notCreated")}</dd></div>
         </dl>
         <div className="modal-actions">
           <button className="secondary" type="button" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
@@ -697,35 +594,14 @@ function RebindModal({
   );
 }
 
-function fallbackBranchOptions(selectedBranch: string): ConfigBranchOptions {
-  const selected = selectedBranch.trim() || "main";
+function platformDisplayName(name: string): string {
   return {
-    branches: branchChoices({ branches: ["main"], default_branch: "main", selected_branch: selected, warning: "" }, selected),
-    default_branch: "main",
-    selected_branch: selected,
-    warning: "",
-  };
-}
-
-function branchChoices(options: ConfigBranchOptions, currentBranch: string): string[] {
-  const out: string[] = [];
-  for (const branch of ["main", options.default_branch, options.selected_branch, currentBranch, ...options.branches]) {
-    const value = branch.trim();
-    if (value && !out.includes(value)) out.push(value);
-  }
-  return out;
-}
-
-function credentialLabel(
-  t: TFunction,
-  mode: EditableConfig["resources"]["credential_mode"],
-  repoUrl: string,
-): string {
-  if (mode === "native") {
-    return repoUrl.startsWith("git@") ? t("settings.credentialSsh") : t("settings.credentialGcm");
-  }
-  if (mode === "token") return t("settings.credentialToken");
-  return t("settings.credentialAuto");
+    codex: "Codex",
+    "claude-code": "Claude Code",
+    cursor: "Cursor",
+    windsurf: "Windsurf",
+    opencode: "opencode",
+  }[name] || name;
 }
 
 function errorMessage(error: unknown): string {

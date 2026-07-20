@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Minimum desktop permissions for LPM OAuth and copy actions.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/login/device" },
+        { "url": "https://github.com/Ling-ye/LingyePluginMarketplace" }
+      ]
+    },
+    "clipboard-manager:allow-write-text"
+  ]
+}

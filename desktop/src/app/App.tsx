@@ -13,7 +13,6 @@ import { navItems, type View } from "@/app/navigation";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import { TaskCenterPanel, ToastViewport } from "@/components/TaskFeedback";
-import { AboutView } from "@/features/about/AboutView";
 import { AddResourceView } from "@/features/add/AddResourceView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
 import { EnvironmentView } from "@/features/environment/EnvironmentView";
@@ -180,7 +179,6 @@ export default function App() {
           />
         ) : null}
         {view === "guide" ? <GuideView t={t} /> : null}
-        {view === "about" ? <AboutView t={t} /> : null}
       </main>
       <TaskCenterPanel open={taskPanelOpen} t={t} onClose={() => setTaskPanelOpen(false)} />
       <ToastViewport t={t} />

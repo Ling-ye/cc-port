@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -20,7 +21,6 @@ struct LpmActionResponse {
     ok: bool,
     data: Option<Value>,
     error: Option<Value>,
-    raw: String,
 }
 
 #[tauri::command]
@@ -32,15 +32,13 @@ async fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, Stri
         .map_err(|err| format!("lpm-desktop-api task failed: {err}"))??;
     let raw = String::from_utf8_lossy(&output).trim().to_string();
 
-    let parsed: Value = serde_json::from_str(&raw).map_err(|err| {
-        format!("lpm-desktop-api returned invalid JSON: {err}. Raw output: {raw}")
-    })?;
+    let parsed: Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("lpm-desktop-api returned invalid JSON: {err}"))?;
 
     Ok(LpmActionResponse {
         ok: parsed.get("ok").and_then(Value::as_bool).unwrap_or(false),
         data: parsed.get("data").cloned(),
         error: parsed.get("error").cloned(),
-        raw,
     })
 }
 
@@ -76,9 +74,9 @@ impl Candidate {
     }
 }
 
-fn build_candidates(action: &str, payload: &str) -> Vec<Candidate> {
+fn build_candidates(action: &str) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
-    let api_args = vec![action.to_string(), payload.to_string()];
+    let api_args = vec![action.to_string()];
 
     if let Ok(bin) = std::env::var("LPM_DESKTOP_API_BIN") {
         if !bin.trim().is_empty() {
@@ -130,11 +128,11 @@ fn build_candidates(action: &str, payload: &str) -> Vec<Candidate> {
 }
 
 fn run_lpm_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
-    let candidates = build_candidates(action, payload);
+    let candidates = build_candidates(action);
     let mut errors: Vec<String> = Vec::new();
 
     for candidate in &candidates {
-        match candidate.to_command().output() {
+        match run_candidate(candidate, payload) {
             Ok(output) if output.status.success() => return Ok(output.stdout),
             Ok(output) => {
                 let mut msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -162,6 +160,20 @@ fn run_lpm_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
         candidates.len(),
         detail
     ))
+}
+
+fn run_candidate(candidate: &Candidate, payload: &str) -> std::io::Result<Output> {
+    let mut command = candidate.to_command();
+    command
+        .env("LPM_DESKTOP_API_PAYLOAD", payload)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(payload.as_bytes())?;
+    }
+    child.wait_with_output()
 }
 
 fn open_path_with_system(path: &str) -> Result<(), String> {
@@ -211,6 +223,8 @@ fn open_path_with_system(path: &str) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![lpm_action, open_path])
         .run(tauri::generate_context!())
         .expect("error while running LPM Desktop");

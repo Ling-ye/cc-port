@@ -109,6 +109,11 @@ def build_platform(name: str, overrides: dict[str, Any] | None = None) -> Platfo
     return base
 
 
+def default_platform_profiles() -> list[PlatformProfile]:
+    """Return every complete, user-configurable preset enabled for new users."""
+    return [build_platform(name, {"enabled": True}) for name in PLATFORM_PRESETS]
+
+
 @dataclass
 class PlatformsConfig:
     """Collection of all configured platforms."""
@@ -134,11 +139,15 @@ class PlatformsConfig:
         return None
 
 
-def load_platforms_from_dict(data: dict[str, Any]) -> PlatformsConfig:
+def load_platforms_from_dict(
+    data: dict[str, Any],
+    *,
+    new_config: bool = False,
+) -> PlatformsConfig:
     """Parse the ``[platforms]`` section of config.toml.
 
-    If no ``[platforms]`` section exists, returns a default config with
-    Cursor enabled.
+    New files enable all complete presets. Existing files without a platform
+    section retain the historical Cursor-only fallback.
     """
     platforms_data = data.get("platforms") or {}
     profiles: list[PlatformProfile] = []
@@ -150,8 +159,13 @@ def load_platforms_from_dict(data: dict[str, Any]) -> PlatformsConfig:
         profiles.append(build_platform(name, section))
         seen.add(name)
 
-    # If user configured nothing, default to cursor-only
+    # Existing files retain the historical Cursor-only fallback. A genuinely
+    # new configuration enables every preset that exposes complete paths.
     if not profiles:
-        profiles.append(build_platform("cursor", {"enabled": True}))
+        profiles.extend(
+            default_platform_profiles()
+            if new_config
+            else [build_platform("cursor", {"enabled": True})]
+        )
 
     return PlatformsConfig(profiles=profiles)

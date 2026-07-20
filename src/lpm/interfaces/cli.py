@@ -22,7 +22,7 @@ from ..core.config import (
     load_config,
     write_config,
 )
-from ..core.platforms import PlatformProfile, PlatformsConfig, build_platform
+from ..core.platforms import PLATFORM_PRESETS, PlatformProfile, PlatformsConfig, build_platform
 from ..core.registry import find_registry_path, load_registry
 from ..core.resource_detection import (
     ResourceDetectionError,
@@ -140,13 +140,16 @@ def _print_sync_deprecation() -> None:
 @app.command("init")
 def cmd_init(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config."),
-    claude_code: bool = typer.Option(False, "--claude-code", help="Also enable Claude Code platform."),
+    claude_code: bool = typer.Option(
+        False,
+        "--claude-code",
+        help="Deprecated compatibility flag; all complete platform presets are enabled.",
+    ),
 ) -> None:
     """Generate the LPM config file with sensible defaults.
 
     Usage:
-        lpm init                # generate config (Cursor only)
-        lpm init --claude-code  # generate config (Cursor + Claude Code)
+        lpm init                # generate config (all complete platform presets)
 
     Then edit ~/.config/lpm/config.toml to fill in your token and owner.
     Or set the LPM_GITHUB_TOKEN environment variable instead.
@@ -157,9 +160,9 @@ def cmd_init(
         console.print(f"  Use [bold]--force[/bold] to overwrite, or edit it directly: {path}")
         raise typer.Exit(0)
 
-    profiles: list[PlatformProfile] = [build_platform("cursor", {"enabled": True})]
-    if claude_code:
-        profiles.append(build_platform("claude-code", {"enabled": True}))
+    profiles: list[PlatformProfile] = [
+        build_platform(name, {"enabled": True}) for name in PLATFORM_PRESETS
+    ]
 
     cfg = Config(
         github=GithubConfig(),

@@ -1,5 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { LpmResponse } from "@/types/lpm";
+
+export class LpmApiError extends Error {
+  code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "LpmApiError";
+    this.code = code;
+  }
+}
 
 export async function lpmAction<T>(
   action: string,
@@ -11,7 +23,7 @@ export async function lpmAction<T>(
 
   if (!response.ok) {
     const message = response.error?.message || "LPM action failed";
-    throw new Error(message);
+    throw new LpmApiError(response.error?.code || "lpm_error", message);
   }
 
   return response.data as T;
@@ -19,4 +31,12 @@ export async function lpmAction<T>(
 
 export async function openPath(path: string): Promise<void> {
   await invoke("open_path", { path });
+}
+
+export async function openExternalUrl(url: string): Promise<void> {
+  await openUrl(url);
+}
+
+export async function copyText(value: string): Promise<void> {
+  await writeText(value);
 }
