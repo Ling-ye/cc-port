@@ -49,7 +49,7 @@ def test_registry_v4_migrates_items_to_active_lifecycle(tmp_path: Path) -> None:
 
     registry = load_registry(registry_path)
 
-    assert registry.version == 6
+    assert registry.version == 7
     assert registry.get("demo").lifecycle == "active"
 
 

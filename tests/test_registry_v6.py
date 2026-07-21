@@ -6,6 +6,9 @@ import pytest
 
 from lpm.core.models import (
     AmbiguousResourceNameError,
+    PluginInstallation,
+    PluginOrigin,
+    PluginSpec,
     Registry,
     RegistryItem,
     ResourceKey,
@@ -33,7 +36,7 @@ def test_v5_migrates_without_losing_items_or_install_dir(tmp_path: Path) -> None
 
     registry = load_registry(path)
 
-    assert registry.version == 6
+    assert registry.version == 7
     item = registry.get("demo", "skill")
     assert item is not None
     assert item.install_dir == "shared-demo"
@@ -112,3 +115,52 @@ def test_managed_marker_prefers_composite_resource_key(tmp_path: Path) -> None:
 
     assert is_lpm_managed(target, resource_key="skill:demo")
     assert not is_lpm_managed(target, resource_key="prompt:demo")
+
+
+def test_v7_plugin_reference_can_omit_github_repo_and_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "registry.yaml"
+    entry = RegistryItem(
+        name="codex-openai-bundled-chrome",
+        kind="plugin",
+        source="external",
+        plugin=PluginSpec(
+            track="reference",
+            platform="codex",
+            plugin_id="chrome",
+            origin=PluginOrigin(
+                type="marketplace",
+                marketplace="openai-bundled",
+                source="openai-bundled",
+            ),
+            observed_version="26.707.72221",
+            installations=[PluginInstallation(scope="user", enabled=True)],
+        ),
+    )
+
+    save_registry(Registry(items=[entry]), path)
+    loaded = load_registry(path)
+
+    assert loaded.version == 7
+    plugin = loaded.get("codex-openai-bundled-chrome", "plugin")
+    assert plugin is not None and plugin.plugin is not None
+    assert plugin.plugin.track == "reference"
+    assert plugin.plugin.observed_version == "26.707.72221"
+    assert "path:" not in path.read_text(encoding="utf-8")
+
+
+def test_v6_plugin_remains_legacy_without_guessed_plugin_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "registry.yaml"
+    path.write_text(
+        "version: 6\n"
+        "items:\n"
+        "  - name: legacy\n"
+        "    kind: plugin\n"
+        "    source: local\n"
+        "    path: plugins/legacy\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_registry(path)
+
+    assert loaded.version == 7
+    assert loaded.get("legacy", "plugin").plugin is None

@@ -6,6 +6,7 @@ from lpm.core.config import (
     Config,
     GitConfig,
     GithubConfig,
+    PluginProjectConfig,
     ResourcesConfig,
     StateConfig,
     load_config,
@@ -36,6 +37,34 @@ def test_state_policy_round_trips_through_config(tmp_path: Path) -> None:
     assert loaded.state.retention_days == 14
     assert loaded.state.keep_latest_operations == 7
     assert loaded.state.max_backup_mb == 512
+
+
+def test_plugin_projects_round_trip_without_entering_registry(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    write_config(
+        Config(
+            plugin_projects=[
+                PluginProjectConfig(
+                    id="project-123",
+                    path="D:/Code/demo",
+                    repo="https://github.com/example/demo.git",
+                    subdir="apps/web",
+                )
+            ]
+        ),
+        path,
+    )
+
+    loaded = load_config(path)
+
+    assert loaded.plugin_projects == [
+        PluginProjectConfig(
+            id="project-123",
+            path="D:/Code/demo",
+            repo="https://github.com/example/demo.git",
+            subdir="apps/web",
+        )
+    ]
 
 
 def test_resource_credential_mode_round_trips_and_native_ignores_global_token(

@@ -57,11 +57,14 @@ from ..infrastructure.github_client import GithubAuthError, GithubClient
 from ..services import github_oauth, publisher
 from ..services.asset_sync import (
     AssetBatchChoice,
+    add_plugin_reference,
     apply_asset_action_plan,
     apply_asset_batch_plan,
+    apply_plugin_delete_plan,
     build_asset_action_plan,
     build_asset_batch_plan,
     build_asset_inventory,
+    build_plugin_delete_plan,
 )
 from ..services.doctor import build_doctor_checks
 from ..services.installer import check_all, preview_sync_all, status_all, sync_all, uninstall_one
@@ -71,6 +74,11 @@ from ..services.operation_history import (
     operation_history,
     operation_history_page,
     restore_operation,
+)
+from ..services.plugin_management import (
+    add_plugin_project,
+    list_plugin_projects,
+    remove_plugin_project,
 )
 from ..services.resource_binding import bind_resource_repo
 from ..services.resource_commit import build_resource_commit_plan
@@ -369,10 +377,62 @@ def _asset_inventory(payload: JsonDict) -> Any:
         config=load_config(),
         scan_local=bool(payload.get("scan_local", False)),
         refresh_remote=bool(payload.get("refresh_remote", True)),
+        scan_global=bool(payload.get("scan_global", True)),
+        project_ids=_str_list(payload.get("project_ids")) if "project_ids" in payload else None,
     )
     response = asdict(inventory)
     response.pop("rows", None)
     return response
+
+
+def _plugin_projects_list(_: JsonDict) -> Any:
+    return {"projects": list_plugin_projects(load_raw_config())}
+
+
+def _plugin_projects_add(payload: JsonDict) -> Any:
+    return add_plugin_project(_required_str(payload, "path"))
+
+
+def _plugin_projects_remove(payload: JsonDict) -> Any:
+    return remove_plugin_project(_required_str(payload, "project_id"))
+
+
+def _plugin_reference_add(payload: JsonDict) -> Any:
+    return add_plugin_reference(
+        platform=_required_str(payload, "platform"),
+        plugin_id=_required_str(payload, "plugin_id"),
+        origin_type=_required_str(payload, "origin_type"),
+        scope=_optional_str(payload.get("scope")) or "user",
+        enabled=bool(payload.get("enabled", True)),
+        marketplace=_optional_str(payload.get("marketplace")) or "",
+        source=_optional_str(payload.get("source")) or "",
+        package=_optional_str(payload.get("package")) or "",
+        repo=_optional_str(payload.get("repo")) or "",
+        selector=_optional_str(payload.get("selector")) or "",
+        observed_version=_optional_str(payload.get("observed_version")) or "",
+        project_id=_optional_str(payload.get("project_id")) or "",
+        name=_optional_str(payload.get("name")) or "",
+        description=_optional_str(payload.get("description")) or "",
+        push=bool(payload.get("push", True)),
+        config=load_config(),
+    )
+
+
+def _plugin_delete_plan(payload: JsonDict) -> Any:
+    return build_plugin_delete_plan(
+        _required_str(payload, "resource_key"),
+        selected_instance_ids=_str_list(payload.get("instance_ids")) or None,
+        config=load_config(),
+    )
+
+
+def _plugin_delete_apply(payload: JsonDict) -> Any:
+    return apply_plugin_delete_plan(
+        _required_str(payload, "resource_key"),
+        selected_instance_ids=_str_list(payload.get("instance_ids")),
+        expected_plan_hash=_required_str(payload, "plan_hash"),
+        config=load_config(),
+    )
 
 
 def _asset_action_plan(payload: JsonDict) -> Any:
@@ -1506,6 +1566,20 @@ def _asset_batch_choices(value: Any) -> list[AssetBatchChoice]:
                 resolution=str(item.get("resolution") or "overwrite").strip(),
                 new_name=str(item.get("new_name") or "").strip(),
                 overwrite_unmanaged=bool(item.get("overwrite_unmanaged", False)),
+                plugin_track=str(item.get("plugin_track") or "").strip(),
+                ownership_confirmed=bool(item.get("ownership_confirmed", False)),
+                reference_origin={
+                    str(key): str(value)
+                    for key, value in (item.get("reference_origin") or {}).items()
+                }
+                if isinstance(item.get("reference_origin"), dict)
+                else {},
+                plugin_dependencies={
+                    str(key): str(value)
+                    for key, value in (item.get("plugin_dependencies") or {}).items()
+                }
+                if isinstance(item.get("plugin_dependencies"), dict)
+                else {},
             )
         )
     return choices
@@ -1545,6 +1619,12 @@ ACTIONS: dict[str, Handler] = {
     "asset_action_apply": _asset_action_apply,
     "asset_batch_plan": _asset_batch_plan,
     "asset_batch_apply": _asset_batch_apply,
+    "plugin_projects_list": _plugin_projects_list,
+    "plugin_projects_add": _plugin_projects_add,
+    "plugin_projects_remove": _plugin_projects_remove,
+    "plugin_reference_add": _plugin_reference_add,
+    "plugin_delete_plan": _plugin_delete_plan,
+    "plugin_delete_apply": _plugin_delete_apply,
     "resource_install": _resource_install,
     "resource_install_plan": _resource_install_plan,
     "resource_uninstall": _resource_uninstall,

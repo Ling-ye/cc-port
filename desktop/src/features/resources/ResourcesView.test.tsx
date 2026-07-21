@@ -15,6 +15,7 @@ import type {
 vi.mock("@/api/client", () => ({
   lpmAction: vi.fn(),
   openPath: vi.fn(),
+  selectDirectory: vi.fn(),
 }));
 
 const t = createTranslator("en");
@@ -77,13 +78,14 @@ function renderView(resources = [resource()]) {
   const data = inventory(resources);
   const onChanged = vi.fn(async () => undefined);
   const onOpenSettings = vi.fn();
+  const onSelect = vi.fn();
   render(
     <TaskCenterProvider>
       <ResourcesView
         inventory={data}
         selectedKey={data.resources[0]?.resource_key}
         t={t}
-        onSelect={vi.fn()}
+        onSelect={onSelect}
         onInventory={vi.fn()}
         onChanged={onChanged}
         onError={vi.fn()}
@@ -91,7 +93,7 @@ function renderView(resources = [resource()]) {
       />
     </TaskCenterProvider>,
   );
-  return { onChanged, onOpenSettings };
+  return { onChanged, onOpenSettings, onSelect };
 }
 
 function batchPlan(direction: "upload" | "download", disposition: "create" | "update" | "blocked" = "update"): AssetBatchPlan {
@@ -279,5 +281,28 @@ describe("ResourcesView unified inventory", () => {
         ]),
       }),
     ));
+  });
+
+  it("adds a GitHub resource, clears filters and batch selection, and targets the new row", async () => {
+    const user = userEvent.setup();
+    vi.mocked(lpmAction).mockResolvedValue({ entry: { kind: "skill", name: "new-resource" } });
+    const { onChanged, onSelect } = renderView();
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.selectOptions(screen.getByLabelText("Resource type"), "prompt");
+    await user.click(screen.getByRole("button", { name: "Add resource" }));
+    await user.type(screen.getByLabelText("GitHub URL"), "https://github.com/example/new-resource");
+    const submitButtons = screen.getAllByRole("button", { name: "Collect from GitHub" });
+    await user.click(submitButtons[submitButtons.length - 1]);
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(onSelect).toHaveBeenCalledWith("skill:new-resource");
+    expect(screen.queryByRole("dialog", { name: "Add resource" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Resource type")).toHaveValue("all");
+    expect(screen.getByText("0 selected")).toBeVisible();
+    expect(lpmAction).toHaveBeenCalledWith("collect", expect.objectContaining({
+      github_url: "https://github.com/example/new-resource",
+      push: true,
+    }));
   });
 });

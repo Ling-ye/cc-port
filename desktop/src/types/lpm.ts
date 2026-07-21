@@ -18,6 +18,7 @@ export interface RegistryItem {
   author?: string;
   license?: string;
   mcp_config?: Record<string, unknown> | null;
+  plugin?: PluginSpec | null;
   tags: string[];
   category: string;
   platforms?: string[];
@@ -71,6 +72,88 @@ export interface SyncResultItem {
   operation_status?: string;
   backup_root?: string | null;
   rolled_back?: boolean;
+}
+
+export type PluginPlatform = "codex" | "claude-code" | "opencode";
+export type PluginTrack = "content" | "reference";
+export type PluginScope = "user" | "project" | "local" | "managed";
+export type PluginOriginType = "marketplace" | "npm" | "git" | "local";
+
+export interface PluginSpec {
+  track: PluginTrack;
+  platform: PluginPlatform;
+  plugin_id: string;
+  origin: {
+    type: PluginOriginType;
+    marketplace: string;
+    source: string;
+    package: string;
+    repo: string;
+    selector: string;
+  };
+  observed_version: string;
+  installations: Array<{
+    scope: PluginScope;
+    enabled: boolean;
+    project?: { repo: string; subdir: string } | null;
+  }>;
+  dependencies: Record<string, string>;
+}
+
+export interface PluginProject {
+  id: string;
+  path: string;
+  repo: string;
+  subdir: string;
+  portable: boolean;
+  exists: boolean;
+}
+
+export interface PluginReferenceResult {
+  status: string;
+  resource_key: string;
+  entry: RegistryItem;
+  remote_commit: string;
+  pushed: boolean;
+}
+
+export interface PluginDeleteInstancePlan {
+  id: string;
+  platform: PluginPlatform;
+  scope: PluginScope;
+  project_id: string;
+  enabled?: boolean | null;
+  writable: boolean;
+  selectable: boolean;
+  method: string;
+  detail: string;
+  local_path?: string | null;
+  state_path?: string | null;
+}
+
+export interface PluginDeletePlan {
+  resource_key: string;
+  remote_commit: string;
+  selected_instance_ids: string[];
+  instances: PluginDeleteInstancePlan[];
+  plan_hash: string;
+  blocked: boolean;
+  blockers: string[];
+}
+
+export interface PluginDeleteResult {
+  status: string;
+  resource_key: string;
+  plan_hash: string;
+  results: AssetActionResult[];
+  remote_deleted: boolean;
+  remote_commit: string;
+  stale_plan?: PluginDeletePlan | null;
+}
+
+export interface AddResourceResult {
+  entry: RegistryItem;
+  push?: unknown;
 }
 
 export interface ResourceRepoInfo {
@@ -211,7 +294,9 @@ export type AssetAction =
   | "upload"
   | "copy-to-local"
   | "copy-to-remote"
-  | "set-platform-install-name";
+  | "set-platform-install-name"
+  | "align-plugin-state"
+  | "plugin-delete";
 
 export interface AssetPlatformRow {
   resource_key: string;
@@ -273,6 +358,15 @@ export interface AssetLocalInstance {
   status: AssetStatus;
   warnings: string[];
   blockers: string[];
+  track?: PluginTrack | "";
+  scope?: PluginScope | "";
+  project_id?: string;
+  source_kind?: PluginOriginType | "";
+  source_id?: string;
+  selector?: string;
+  observed_version?: string;
+  enabled?: boolean | null;
+  writable?: boolean;
 }
 
 export interface AssetRemoteState {
@@ -301,6 +395,13 @@ export interface AssetResourceRow {
   warnings: string[];
   blockers: string[];
   available_actions: AssetAction[];
+  plugin_track?: PluginTrack | "";
+  plugin_platform?: PluginPlatform | "";
+  plugin_id?: string;
+  plugin_source_kind?: PluginOriginType | "";
+  plugin_source_id?: string;
+  plugin_selector?: string;
+  plugin_observed_version?: string;
 }
 
 export interface AssetBatchChoice {
@@ -310,6 +411,10 @@ export interface AssetBatchChoice {
   resolution?: "overwrite" | "rename";
   new_name?: string;
   overwrite_unmanaged?: boolean;
+  plugin_track?: PluginTrack | "skip" | "";
+  ownership_confirmed?: boolean;
+  reference_origin?: Record<string, string>;
+  plugin_dependencies?: Record<string, string>;
 }
 
 export interface AssetBatchPlanItem {
@@ -318,7 +423,7 @@ export interface AssetBatchPlanItem {
   platform: string;
   local_instance_id: string;
   action: string;
-  disposition: "create" | "update" | "rename" | "unchanged" | "skip" | "blocked";
+  disposition: "create" | "update" | "rename" | "unchanged" | "skip" | "manual" | "blocked";
   target_resource_key: string;
   reason: string;
   warnings: string[];

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { LpmResponse } from "@/types/lpm";
 
@@ -39,4 +40,8 @@ export async function openExternalUrl(url: string): Promise<void> {
 
 export async function copyText(value: string): Promise<void> {
   await writeText(value);
+}
+
+export async function selectDirectory(): Promise<string | null> {
+  return open({ directory: true, multiple: false });
 }

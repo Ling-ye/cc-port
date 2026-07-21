@@ -15,6 +15,135 @@ SKILL_NAME_RE = ITEM_NAME_RE
 ItemKind = Literal["skill", "mcp", "rule", "prompt", "plugin"]
 ItemLifecycle = Literal["active", "removed"]
 RemovedEffect = Literal["", "index_only", "local_files_deleted", "remote_repo_deleted"]
+PluginTrack = Literal["content", "reference"]
+PluginPlatform = Literal["codex", "claude-code", "opencode"]
+PluginOriginType = Literal["marketplace", "npm", "git", "local"]
+PluginScope = Literal["user", "project", "local", "managed"]
+
+
+class PluginProjectIdentity(BaseModel):
+    """Portable identity for a project-scoped plugin installation."""
+
+    repo: str
+    subdir: str = ""
+
+    @field_validator("repo")
+    @classmethod
+    def _validate_repo(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("plugin project repo is required.")
+        if "://" in normalized and "@" in normalized.partition("://")[2].partition("/")[0]:
+            raise ValueError("plugin project repo must not contain credentials.")
+        return normalized
+
+    @field_validator("subdir")
+    @classmethod
+    def _validate_subdir(cls, value: str) -> str:
+        normalized = (value or "").strip().replace("\\", "/").strip("/")
+        if ".." in normalized.split("/"):
+            raise ValueError("plugin project subdir must not contain '..'.")
+        return normalized
+
+
+class PluginOrigin(BaseModel):
+    """Installable source for one plugin distribution."""
+
+    type: PluginOriginType
+    marketplace: str = ""
+    source: str = ""
+    package: str = ""
+    repo: str = ""
+    selector: str = ""
+
+    @model_validator(mode="after")
+    def _validate_locator(self) -> PluginOrigin:
+        if self.type == "marketplace" and not self.marketplace.strip():
+            raise ValueError("marketplace plugin origins require marketplace.")
+        if self.type == "npm" and not self.package.strip():
+            raise ValueError("npm plugin origins require package.")
+        if self.type == "git" and not self.repo.strip():
+            raise ValueError("git plugin origins require repo.")
+        if self.type != "marketplace":
+            self.marketplace = ""
+        if self.type != "npm":
+            self.package = ""
+        if self.type != "git":
+            self.repo = ""
+        if self.type not in {"marketplace", "local"}:
+            self.source = ""
+        return self
+
+
+class PluginInstallation(BaseModel):
+    """Desired installation state for one plugin scope."""
+
+    scope: PluginScope = "user"
+    enabled: bool = True
+    project: PluginProjectIdentity | None = None
+
+    @model_validator(mode="after")
+    def _validate_project_scope(self) -> PluginInstallation:
+        if self.scope in {"project", "local"} and self.project is None:
+            raise ValueError(f"plugin scope {self.scope!r} requires a project identity.")
+        if self.scope in {"user", "managed"} and self.project is not None:
+            raise ValueError(f"plugin scope {self.scope!r} must not include a project identity.")
+        return self
+
+
+class PluginSpec(BaseModel):
+    """Registry v7 dual-track plugin contract."""
+
+    track: PluginTrack
+    platform: PluginPlatform
+    plugin_id: str
+    origin: PluginOrigin
+    observed_version: str = ""
+    installations: list[PluginInstallation] = Field(default_factory=list)
+    dependencies: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("plugin_id")
+    @classmethod
+    def _validate_plugin_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("plugin_id is required.")
+        return normalized
+
+    @field_validator("dependencies")
+    @classmethod
+    def _normalize_dependencies(cls, values: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for name, selector in values.items():
+            package = str(name).strip()
+            version = str(selector).strip()
+            if not package or not version:
+                raise ValueError("plugin dependencies require non-empty package and selector.")
+            normalized[package] = version
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_track(self) -> PluginSpec:
+        if self.track == "reference" and self.origin.type == "local":
+            raise ValueError("reference plugins require a portable marketplace, npm, or git origin.")
+        if self.track == "content" and self.origin.type not in {"local", "git"}:
+            raise ValueError("content plugins require a local or git source origin.")
+        if self.dependencies and not (
+            self.track == "content" and self.platform == "opencode"
+        ):
+            raise ValueError("plugin dependencies are only supported for OpenCode content plugins.")
+        identities: set[tuple[str, str, str]] = set()
+        for installation in self.installations:
+            project = installation.project
+            identity = (
+                installation.scope,
+                project.repo if project else "",
+                project.subdir if project else "",
+            )
+            if identity in identities:
+                raise ValueError("plugin installations must be unique by scope and project.")
+            identities.add(identity)
+        return self
 
 
 class ResourceKey(BaseModel):
@@ -93,6 +222,10 @@ class RegistryItem(BaseModel):
     mcp_config: dict[str, Any] | None = Field(
         default=None,
         description="MCP server configuration (command/args/env). Only used when kind=mcp.",
+    )
+    plugin: PluginSpec | None = Field(
+        default=None,
+        description="Registry v7 dual-track plugin metadata. Omitted for legacy plugin entries.",
     )
 
     # --- Rich metadata (v3) ---
@@ -212,7 +345,10 @@ class RegistryItem(BaseModel):
 
     @model_validator(mode="after")
     def _validate_mcp_config(self) -> RegistryItem:
-        if self.source == "external" and not self.repo:
+        is_plugin_reference = bool(
+            self.kind == "plugin" and self.plugin and self.plugin.track == "reference"
+        )
+        if self.source == "external" and not self.repo and not is_plugin_reference:
             raise ValueError("external items require a repo URL.")
         if self.source in {"local", "owned"} and not self.repo and not self.path:
             raise ValueError("local/owned items require either path or repo.")
@@ -221,6 +357,13 @@ class RegistryItem(BaseModel):
             has_url = bool(self.mcp_config.get("url"))
             if not has_command and not has_url:
                 raise ValueError("mcp_config must contain either 'command' or 'url'.")
+        if self.plugin is not None and self.kind != "plugin":
+            raise ValueError("plugin metadata is only valid when kind='plugin'.")
+        if self.plugin is not None:
+            if self.plugin.track == "reference" and self.source != "external":
+                raise ValueError("reference plugins must use source='external'.")
+            if self.plugin.track == "content" and self.source == "external":
+                raise ValueError("content plugins must use source='local' or source='owned'.")
         return self
 
     @property
@@ -247,9 +390,9 @@ SkillEntry = RegistryItem
 
 
 class Registry(BaseModel):
-    """Top-level registry document (supports v1 through v6 formats)."""
+    """Top-level registry document (supports v1 through v7 formats)."""
 
-    version: int = 6
+    version: int = 7
     items: list[RegistryItem] = Field(default_factory=list)
 
     def __init__(self, **data: Any) -> None:
@@ -257,6 +400,31 @@ class Registry(BaseModel):
         if "skills" in data and "items" not in data:
             data["items"] = data.pop("skills")
         super().__init__(**data)
+
+    @model_validator(mode="after")
+    def _validate_plugin_distribution_identity(self) -> Registry:
+        identities: dict[tuple[str, str, str, str], str] = {}
+        for item in self.items:
+            spec = item.plugin
+            if item.kind != "plugin" or spec is None or item.lifecycle != "active":
+                continue
+            source_id = (
+                spec.origin.marketplace
+                if spec.origin.type == "marketplace"
+                else spec.origin.package
+                if spec.origin.type == "npm"
+                else spec.origin.repo
+                if spec.origin.type == "git"
+                else spec.origin.source
+            )
+            identity = (spec.platform, spec.plugin_id, spec.origin.type, source_id)
+            existing = identities.get(identity)
+            if existing is not None and existing != item.resource_key:
+                raise ValueError(
+                    "active v7 plugins with the same platform and source must share one resource key."
+                )
+            identities[identity] = item.resource_key
+        return self
 
     @property
     def skills(self) -> list[RegistryItem]:

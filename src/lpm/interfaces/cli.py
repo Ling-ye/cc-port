@@ -33,11 +33,14 @@ from ..infrastructure import git_ops
 from ..services import publisher
 from ..services.asset_sync import (
     AssetBatchChoice,
+    add_plugin_reference,
     apply_asset_action_plan,
     apply_asset_batch_plan,
+    apply_plugin_delete_plan,
     build_asset_action_plan,
     build_asset_batch_plan,
     build_asset_inventory,
+    build_plugin_delete_plan,
 )
 from ..services.doctor import build_doctor_checks, has_doctor_errors
 from ..services.installer import (
@@ -53,6 +56,11 @@ from ..services.operation_history import (
     operation_detail,
     operation_history_page,
     restore_operation,
+)
+from ..services.plugin_management import (
+    add_plugin_project,
+    list_plugin_projects,
+    remove_plugin_project,
 )
 from ..services.resource_commit import build_resource_commit_plan
 from ..services.resource_manager import resource_install_plan
@@ -97,9 +105,15 @@ asset_app = typer.Typer(
     help="Inspect and synchronize logical resources across local AI tools and the private repository."
 )
 operations_app = typer.Typer(help="Inspect and restore persisted local write operations.")
+plugin_app = typer.Typer(help="Manage dual-track plugin references and project scan roots.")
+plugin_project_app = typer.Typer(help="Manage explicit project roots used by plugin scans.")
+plugin_reference_app = typer.Typer(help="Manage plugin references without uploading cache content.")
 app.add_typer(resource_app, name="resource")
 app.add_typer(asset_app, name="asset")
 app.add_typer(operations_app, name="operations")
+app.add_typer(plugin_app, name="plugin")
+plugin_app.add_typer(plugin_project_app, name="project")
+plugin_app.add_typer(plugin_reference_app, name="reference")
 console = Console()
 VALID_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
 DEPRECATED_SYNC_MESSAGE = (
@@ -406,6 +420,165 @@ def cmd_resource_sync_cleanup(
 # ---- asset-level sync ---- #
 
 
+@plugin_project_app.command("list")
+def cmd_plugin_project_list(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """List the explicit project roots available to plugin scans."""
+    projects = list_plugin_projects(_load())
+    if json_output:
+        _print_machine_json([asdict(item) for item in projects])
+        return
+    table = Table(title="LPM plugin projects")
+    table.add_column("ID", style="bold")
+    table.add_column("Path")
+    table.add_column("Git identity")
+    table.add_column("Mode")
+    for item in projects:
+        table.add_row(
+            item.id,
+            str(item.path),
+            f"{item.repo}{('/' + item.subdir) if item.subdir else ''}" or "-",
+            "portable" if item.portable else "observe-only",
+        )
+    console.print(table)
+
+
+@plugin_project_app.command("add")
+def cmd_plugin_project_add(
+    path: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Add one explicit project root; no home-directory recursion is performed."""
+    project = add_plugin_project(path)
+    if json_output:
+        _print_machine_json(asdict(project))
+    else:
+        console.print(
+            f"[bold]{project.id}[/bold] {project.path} "
+            f"({'portable' if project.portable else 'observe-only: no Git remote'})"
+        )
+
+
+@plugin_project_app.command("remove")
+def cmd_plugin_project_remove(
+    project_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Remove a project scan mapping without touching the project directory."""
+    project = remove_plugin_project(project_id)
+    if json_output:
+        _print_machine_json(asdict(project))
+    else:
+        console.print(f"Removed project mapping [bold]{project.id}[/bold]; files were not changed.")
+
+
+@plugin_reference_app.command("add")
+def cmd_plugin_reference_add(
+    platform: str = typer.Option(..., "--platform", help="codex | claude-code | opencode"),
+    plugin_id: str = typer.Option(..., "--plugin-id"),
+    origin_type: str = typer.Option(..., "--origin", help="marketplace | npm | git"),
+    scope: str = typer.Option("user", "--scope", help="user | project | local | managed"),
+    marketplace: str = typer.Option("", "--marketplace"),
+    source: str = typer.Option("", "--source"),
+    package: str = typer.Option("", "--package"),
+    repo: str = typer.Option("", "--repo"),
+    selector: str = typer.Option("", "--selector"),
+    observed_version: str = typer.Option("", "--observed-version"),
+    project_id: str = typer.Option("", "--project"),
+    enabled: bool = typer.Option(True, "--enabled/--disabled"),
+    name: str = typer.Option("", "--name"),
+    description: str = typer.Option("", "--description"),
+    push: bool = typer.Option(True, "--push/--no-push"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Store desired plugin source/state without uploading installed cache content."""
+    try:
+        result = add_plugin_reference(
+            platform=platform,
+            plugin_id=plugin_id,
+            origin_type=origin_type,
+            scope=scope,
+            enabled=enabled,
+            marketplace=marketplace,
+            source=source,
+            package=package,
+            repo=repo,
+            selector=selector,
+            observed_version=observed_version,
+            project_id=project_id,
+            name=name,
+            description=description,
+            push=push,
+            config=_load(),
+        )
+    except Exception as exc:
+        console.print(f"[red]Plugin reference add failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if json_output:
+        _print_machine_json(asdict(result))
+    else:
+        console.print(f"[bold]{result.status}[/bold] {result.resource_key}")
+
+
+@plugin_app.command("delete")
+def cmd_plugin_delete(
+    resource_key: str = typer.Argument(..., help="Composite plugin resource key."),
+    instance: list[str] = typer.Option([], "--instance", help="Instance id; repeatable."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the uninstall plan only."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Confirm selected instance removal."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Uninstall selected instances before marking their remote desired state removed."""
+    try:
+        plan = build_plugin_delete_plan(
+            resource_key,
+            selected_instance_ids=instance or None,
+            config=_load(),
+        )
+    except Exception as exc:
+        console.print(f"[red]Plugin delete planning failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if json_output and dry_run:
+        _print_machine_json(asdict(plan))
+        return
+    if not json_output:
+        table = Table(title=f"Plugin delete {resource_key}")
+        table.add_column("Instance", style="bold")
+        table.add_column("Scope")
+        table.add_column("Method")
+        table.add_column("Selectable")
+        table.add_column("Detail")
+        for item in plan.instances:
+            table.add_row(item.id, item.scope, item.method, str(item.selectable).lower(), item.detail)
+        console.print(table)
+    if dry_run:
+        return
+    if plan.blocked:
+        console.print("[red]" + "; ".join(plan.blockers) + "[/red]")
+        raise typer.Exit(1)
+    if not yes and not typer.confirm(
+        f"Uninstall {len(plan.selected_instance_ids)} plugin instance(s)?",
+        default=False,
+    ):
+        console.print("[yellow]Plugin delete cancelled.[/yellow]")
+        return
+    result = apply_plugin_delete_plan(
+        resource_key,
+        selected_instance_ids=plan.selected_instance_ids,
+        expected_plan_hash=plan.plan_hash,
+        config=_load(),
+    )
+    if json_output:
+        _print_machine_json(asdict(result))
+    else:
+        console.print(f"[bold]{result.status}[/bold] {resource_key}")
+        for item in result.results:
+            console.print(f"{item.status}: {item.message}")
+    if result.status != "succeeded":
+        raise typer.Exit(1)
+
+
 @asset_app.command("list")
 def cmd_asset_list(
     scan_local: bool = typer.Option(
@@ -418,6 +591,16 @@ def cmd_asset_list(
         "--refresh-remote/--cached-remote",
         help="Fetch the configured branch before building the inventory.",
     ),
+    scan_global: bool = typer.Option(
+        True,
+        "--global/--no-global",
+        help="Include or exclude global plugin locations when --scan-local is used.",
+    ),
+    project: list[str] = typer.Option(
+        [],
+        "--project",
+        help="Saved plugin project id. Repeatable; an empty list scans every saved project.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """List one logical resource row with nested local tool instances."""
@@ -426,6 +609,8 @@ def cmd_asset_list(
             config=_load(),
             scan_local=scan_local,
             refresh_remote=refresh_remote,
+            scan_global=scan_global,
+            project_ids=project or None,
         )
     except Exception as exc:
         console.print(f"[red]Asset inventory failed:[/red] {exc}")
@@ -660,13 +845,14 @@ def _run_asset_batch_command(
         _print_asset_batch_plan(plan)
     if dry_run:
         return
-    if plan.executable_count == 0:
+    has_manual = any(item.disposition == "manual" for item in plan.items)
+    if plan.executable_count == 0 and not has_manual:
         console.print("[red]The plan has no executable items.[/red]")
         raise typer.Exit(1)
     if plan.blocked_count:
         console.print("[red]Resolve or remove blocked items before applying.[/red]")
         raise typer.Exit(1)
-    if not yes and not typer.confirm(
+    if plan.executable_count and not yes and not typer.confirm(
         f"Apply {plan.executable_count} {direction} action(s)?",
         default=False,
     ):
@@ -719,6 +905,20 @@ def _load_asset_batch_choices(path: Path | None) -> list[AssetBatchChoice]:
                 resolution=str(item.get("resolution") or "overwrite").strip(),
                 new_name=str(item.get("new_name") or "").strip(),
                 overwrite_unmanaged=bool(item.get("overwrite_unmanaged", False)),
+                plugin_track=str(item.get("plugin_track") or "").strip(),
+                ownership_confirmed=bool(item.get("ownership_confirmed", False)),
+                reference_origin={
+                    str(key): str(value)
+                    for key, value in (item.get("reference_origin") or {}).items()
+                }
+                if isinstance(item.get("reference_origin"), dict)
+                else {},
+                plugin_dependencies={
+                    str(key): str(value)
+                    for key, value in (item.get("plugin_dependencies") or {}).items()
+                }
+                if isinstance(item.get("plugin_dependencies"), dict)
+                else {},
             )
         )
     return choices
@@ -744,6 +944,7 @@ def _print_asset_batch_plan(plan: object) -> None:
         f"Executable: {getattr(plan, 'executable_count', 0)}; "
         f"blocked: {getattr(plan, 'blocked_count', 0)}; "
         f"skipped: {getattr(plan, 'skipped_count', 0)}"
+        f"; manual: {sum(item.disposition == 'manual' for item in getattr(plan, 'items', []))}"
     )
 
 

@@ -160,5 +160,8 @@ def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None 
     elif kind == "prompt":
         validate_prompt_path(path)
     elif kind == "plugin":
-        if not path.expanduser().resolve().is_dir():
-            raise SkillValidationError(f"{path} is not a directory.")
+        resolved = path.expanduser().resolve()
+        if resolved.is_file() and resolved.suffix.lower() in {".js", ".ts"}:
+            return
+        if not resolved.is_dir():
+            raise SkillValidationError(f"{path} is not a plugin directory or .js/.ts plugin file.")

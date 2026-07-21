@@ -213,6 +213,7 @@ plugins/
 # - `release/` contains collected desktop release executables and installers.
 desktop/node_modules/
 desktop/dist/
+desktop/*.tsbuildinfo
 desktop/src-tauri/target/
 desktop/src-tauri/binaries/
 desktop/src-tauri/gen/

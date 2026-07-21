@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 from lpm.core.config import Config, GitConfig, InstallConfig, ResourcesConfig
-from lpm.core.models import Registry, RegistryItem
+from lpm.core.models import (
+    PluginInstallation,
+    PluginOrigin,
+    PluginSpec,
+    Registry,
+    RegistryItem,
+    ResourceKey,
+)
 from lpm.core.ownership import managed_resource_key
 from lpm.core.platforms import PlatformProfile, PlatformsConfig
 from lpm.core.registry import load_registry, save_registry
@@ -16,6 +23,7 @@ from lpm.infrastructure import git_ops
 from lpm.services import asset_sync
 from lpm.services.asset_sync import RemoteSnapshot
 from lpm.services.env_manager import DiscoveredTool, EnvDiscoveryResult
+from lpm.services.plugin_management import DiscoveredPlugin
 from lpm.services.resource_commit import ResourceCommitBlocked
 from lpm.services.resource_discovery import DiscoveredResource
 
@@ -1146,3 +1154,669 @@ def test_asset_plan_json_does_not_trust_tampered_resource_fields(
 
     with pytest.raises(asset_sync.AssetPlanInvalid):
         asset_sync.load_asset_action_plan(plan.operation_id)
+
+
+def _reference_spec(*, enabled: bool = True) -> PluginSpec:
+    return PluginSpec(
+        track="reference",
+        platform="opencode",
+        plugin_id="@acme/tool",
+        origin=PluginOrigin(
+            type="npm",
+            package="@acme/tool",
+            selector="^2.0.0",
+        ),
+        observed_version="2.4.1",
+        installations=[PluginInstallation(scope="user", enabled=enabled)],
+    )
+
+
+def test_plugin_reference_mutation_writes_registry_only_and_preserves_selector(tmp_path: Path) -> None:
+    registry_path = tmp_path / "registry.yaml"
+    registry = Registry()
+    key = ResourceKey(kind="plugin", name="opencode-npm-acme-tool")
+
+    changed = asset_sync._mutate_plugin_reference(
+        registry,
+        registry_path,
+        key,
+        None,
+        _reference_spec(),
+        description="External tool",
+    )
+
+    entry = load_registry(registry_path).get(key.name, "plugin")
+    assert changed is True
+    assert entry is not None and entry.plugin is not None
+    assert entry.path == ""
+    assert entry.plugin.origin.selector == "^2.0.0"
+    assert entry.plugin.observed_version == "2.4.1"
+    assert not (tmp_path / "plugins").exists()
+
+
+def test_unobserved_selector_does_not_replace_existing_reference_policy(tmp_path: Path) -> None:
+    registry_path = tmp_path / "registry.yaml"
+    existing = RegistryItem(
+        name="codex-marketplace-chrome-openai",
+        kind="plugin",
+        source="external",
+        plugin=PluginSpec(
+            track="reference",
+            platform="codex",
+            plugin_id="chrome",
+            origin=PluginOrigin(
+                type="marketplace",
+                marketplace="openai",
+                selector="release-2026",
+            ),
+            installations=[PluginInstallation(scope="user", enabled=True)],
+        ),
+    )
+    incoming = existing.plugin.model_copy(deep=True)
+    incoming.origin.selector = ""
+    incoming.observed_version = "26.7.0"
+    registry = Registry(items=[existing])
+
+    asset_sync._mutate_plugin_reference(
+        registry,
+        registry_path,
+        existing.key(),
+        existing,
+        incoming,
+        description="",
+        preserve_selector=True,
+    )
+
+    stored = load_registry(registry_path).get(existing.name, "plugin")
+    assert stored is not None and stored.plugin is not None
+    assert stored.plugin.origin.selector == "release-2026"
+    assert stored.plugin.observed_version == "26.7.0"
+
+
+def test_managed_reference_can_sync_policy_metadata_but_never_cache_content(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / ".codex" / "plugins" / "cache" / "org" / "chrome" / "1.0.0"
+    cache.mkdir(parents=True)
+    (cache / "credential.txt").write_text("must-not-upload", encoding="utf-8")
+    candidate = DiscoveredPlugin(
+        id="managed-chrome",
+        platform="codex",
+        plugin_id="chrome",
+        track="reference",
+        origin_type="marketplace",
+        scope="managed",
+        enabled=True,
+        writable=False,
+        path=cache,
+        marketplace="org",
+        observed_version="1.0.0",
+    )
+    remote = tmp_path / "remote"
+    snapshot = _snapshot(remote, Registry())
+    row = asset_sync._plugin_candidate_row(
+        candidate,
+        ResourceKey(kind="plugin", name=candidate.resource_name),
+        None,
+        snapshot,
+        asset_sync._detected_context("codex", "plugin"),
+    )
+    inventory = asset_sync.AssetInventory(
+        branch="main",
+        remote_commit=snapshot.commit,
+        repo_url=snapshot.repo_url,
+        remote_available=True,
+        remote_warning="",
+        scanned_local=True,
+        generated_at="",
+        legacy_write_blocker="",
+        rows=[row],
+    )
+    item = asset_sync._build_batch_upload_item(
+        row.resource_key,
+        [row],
+        None,
+        cfg=_config(tmp_path),
+        snapshot=snapshot,
+        inventory=inventory,
+    )
+
+    assert item.disposition == "create" and item.plan is not None
+    assert asset_sync._mutate_remote_asset(remote, snapshot.registry, item.plan, row) is True
+    stored = load_registry(remote / "registry.yaml").get(row.name, "plugin")
+    assert stored is not None and stored.plugin is not None
+    assert stored.plugin.installations[0].scope == "managed"
+    assert not (remote / "plugins").exists()
+    assert "must-not-upload" not in (remote / "registry.yaml").read_text(encoding="utf-8")
+
+
+def test_same_reference_source_aggregates_multiple_scopes_in_one_upload_plan(
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot(tmp_path / "remote", Registry())
+    candidates = [
+        DiscoveredPlugin(
+            id="chrome-user",
+            platform="codex",
+            plugin_id="chrome",
+            track="reference",
+            origin_type="marketplace",
+            scope="user",
+            enabled=True,
+            writable=True,
+            marketplace="openai-bundled",
+        ),
+        DiscoveredPlugin(
+            id="chrome-managed",
+            platform="codex",
+            plugin_id="chrome",
+            track="reference",
+            origin_type="marketplace",
+            scope="managed",
+            enabled=True,
+            writable=False,
+            marketplace="openai-bundled",
+        ),
+    ]
+    key = ResourceKey(kind="plugin", name=candidates[0].resource_name)
+    rows = [
+        asset_sync._plugin_candidate_row(
+            candidate,
+            key,
+            None,
+            snapshot,
+            asset_sync._detected_context("codex", "plugin"),
+        )
+        for candidate in candidates
+    ]
+    inventory = asset_sync.AssetInventory(
+        branch="main",
+        remote_commit=snapshot.commit,
+        repo_url=snapshot.repo_url,
+        remote_available=True,
+        remote_warning="",
+        scanned_local=True,
+        generated_at="",
+        legacy_write_blocker="",
+        rows=rows,
+    )
+
+    item = asset_sync._build_batch_upload_item(
+        str(key),
+        rows,
+        None,
+        cfg=_config(tmp_path),
+        snapshot=snapshot,
+        inventory=inventory,
+    )
+
+    assert item.disposition == "create" and item.plan is not None
+    installations = item.plan.plugin_data["plugin"]["installations"]
+    assert {installation["scope"] for installation in installations} == {"user", "managed"}
+
+
+def test_plugin_candidate_matches_custom_remote_name_by_distribution_identity() -> None:
+    entry = RegistryItem(
+        name="my-browser-tool",
+        kind="plugin",
+        source="external",
+        plugin=PluginSpec(
+            track="reference",
+            platform="codex",
+            plugin_id="chrome",
+            origin=PluginOrigin(type="marketplace", marketplace="openai-bundled"),
+            installations=[PluginInstallation(scope="user", enabled=True)],
+        ),
+    )
+    candidate = DiscoveredPlugin(
+        id="chrome-user",
+        platform="codex",
+        plugin_id="chrome",
+        track="reference",
+        origin_type="marketplace",
+        scope="user",
+        enabled=True,
+        writable=True,
+        marketplace="openai-bundled",
+    )
+
+    matched = asset_sync._registry_plugin_entry_for_candidate(Registry(items=[entry]), candidate)
+
+    assert matched is entry
+
+
+def test_first_content_plugin_upload_requires_explicit_ownership(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / ".config" / "opencode" / "plugins" / "owned.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("export default {}\n", encoding="utf-8")
+    candidate = DiscoveredPlugin(
+        id="owned-instance",
+        platform="opencode",
+        plugin_id="owned",
+        track="content",
+        origin_type="local",
+        scope="user",
+        enabled=True,
+        writable=True,
+        path=source,
+        origin_source="owned.ts",
+    )
+    snapshot = _snapshot(tmp_path / "remote", Registry())
+    cfg = _config(tmp_path)
+    context = asset_sync._detected_context("opencode", "plugin")
+    row = asset_sync._plugin_candidate_row(
+        candidate,
+        ResourceKey(kind="plugin", name=candidate.resource_name),
+        None,
+        snapshot,
+        context,
+    )
+    inventory = asset_sync.AssetInventory(
+        branch="main",
+        remote_commit=snapshot.commit,
+        repo_url=snapshot.repo_url,
+        remote_available=True,
+        remote_warning="",
+        scanned_local=True,
+        generated_at="",
+        legacy_write_blocker="",
+        rows=[row],
+    )
+
+    blocked = asset_sync._build_batch_upload_item(
+        row.resource_key,
+        [row],
+        None,
+        cfg=cfg,
+        snapshot=snapshot,
+        inventory=inventory,
+    )
+    confirmed = asset_sync._build_batch_upload_item(
+        row.resource_key,
+        [row],
+        asset_sync.AssetBatchChoice(
+            resource_key=row.resource_key,
+            plugin_track="content",
+            ownership_confirmed=True,
+            plugin_dependencies={"left-pad": "^1.3.0"},
+        ),
+        cfg=cfg,
+        snapshot=snapshot,
+        inventory=inventory,
+    )
+
+    assert blocked.disposition == "blocked"
+    assert "Confirm" in blocked.reason
+    assert confirmed.disposition == "create"
+    assert confirmed.plan is not None
+    assert confirmed.plan.plugin_data["plugin"]["dependencies"] == {"left-pad": "^1.3.0"}
+
+
+def test_content_plugin_upload_commits_planned_spec_and_source(tmp_path: Path) -> None:
+    source = tmp_path / ".config" / "opencode" / "plugins" / "owned.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("export default {}\n", encoding="utf-8")
+    candidate = DiscoveredPlugin(
+        id="owned-instance",
+        platform="opencode",
+        plugin_id="owned",
+        track="content",
+        origin_type="local",
+        scope="user",
+        enabled=True,
+        writable=True,
+        path=source,
+        origin_source="owned.ts",
+    )
+    remote = tmp_path / "remote"
+    snapshot = _snapshot(remote, Registry())
+    cfg = _config(tmp_path)
+    row = asset_sync._plugin_candidate_row(
+        candidate,
+        ResourceKey(kind="plugin", name=candidate.resource_name),
+        None,
+        snapshot,
+        asset_sync._detected_context("opencode", "plugin"),
+    )
+    inventory = asset_sync.AssetInventory(
+        branch="main",
+        remote_commit=snapshot.commit,
+        repo_url=snapshot.repo_url,
+        remote_available=True,
+        remote_warning="",
+        scanned_local=True,
+        generated_at="",
+        legacy_write_blocker="",
+        rows=[row],
+    )
+    item = asset_sync._build_batch_upload_item(
+        row.resource_key,
+        [row],
+        asset_sync.AssetBatchChoice(
+            resource_key=row.resource_key,
+            plugin_track="content",
+            ownership_confirmed=True,
+            plugin_dependencies={"left-pad": "^1.3.0"},
+        ),
+        cfg=cfg,
+        snapshot=snapshot,
+        inventory=inventory,
+    )
+
+    assert item.plan is not None
+    assert asset_sync._mutate_remote_asset(remote, snapshot.registry, item.plan, row) is True
+    stored = load_registry(remote / "registry.yaml").get(row.name, "plugin")
+    assert stored is not None and stored.plugin is not None
+    assert stored.plugin.track == "content"
+    assert stored.plugin.dependencies == {"left-pad": "^1.3.0"}
+    assert (remote / stored.path / "owned.ts").read_text(encoding="utf-8") == "export default {}\n"
+
+
+def test_opencode_content_download_restores_file_and_only_declared_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    entry = RegistryItem(
+        name="opencode-local-owned",
+        kind="plugin",
+        source="local",
+        path="plugins/opencode-local-owned",
+        plugin=PluginSpec(
+            track="content",
+            platform="opencode",
+            plugin_id="owned",
+            origin=PluginOrigin(type="local", source="owned.ts"),
+            installations=[PluginInstallation(scope="user", enabled=True)],
+            dependencies={"left-pad": "^1.3.0"},
+        ),
+    )
+    content = remote / entry.path / "owned.ts"
+    content.parent.mkdir(parents=True)
+    content.write_text("export default {}\n", encoding="utf-8")
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    plugins_dir = tmp_path / "opencode" / "plugins"
+    package_json = tmp_path / "opencode" / "package.json"
+    package_json.parent.mkdir(parents=True)
+    package_json.write_text(
+        json.dumps({"dependencies": {"keep-me": "1.0.0"}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    cfg = _config(tmp_path)
+    cfg.platforms.profiles.append(
+        PlatformProfile(name="opencode", enabled=True, plugins_dir=str(plugins_dir))
+    )
+    rows = asset_sync._expected_plugin_rows(
+        entry,
+        snapshot,
+        cfg,
+        asset_sync._platform_contexts(cfg, None),
+    )
+    inventory = asset_sync.AssetInventory(
+        branch="main",
+        remote_commit=snapshot.commit,
+        repo_url=snapshot.repo_url,
+        remote_available=True,
+        remote_warning="",
+        scanned_local=True,
+        generated_at="",
+        legacy_write_blocker="",
+        rows=rows,
+    )
+    item = asset_sync._build_batch_download_item(
+        entry.resource_key,
+        "opencode",
+        rows,
+        None,
+        cfg=cfg,
+        snapshot=snapshot,
+        inventory=inventory,
+    )
+    assert item.plan is not None and item.disposition == "create"
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+
+    result = asset_sync._apply_local_asset_action(item.plan, cfg)
+
+    assert result.status == "succeeded"
+    assert (plugins_dir / "owned.ts").read_text(encoding="utf-8") == "export default {}\n"
+    dependencies = json.loads(package_json.read_text(encoding="utf-8"))["dependencies"]
+    assert dependencies == {"keep-me": "1.0.0", "left-pad": "^1.3.0"}
+
+
+def test_missing_reference_download_is_manual_not_silently_skipped(tmp_path: Path) -> None:
+    entry = RegistryItem(
+        name="opencode-npm-acme-tool",
+        kind="plugin",
+        source="external",
+        plugin=_reference_spec(),
+    )
+    snapshot = _snapshot(tmp_path / "remote", Registry(items=[entry]))
+    rows = asset_sync._expected_plugin_rows(
+        entry,
+        snapshot,
+        _config(tmp_path),
+        {},
+    )
+
+    item = asset_sync._build_batch_download_item(
+        entry.resource_key,
+        "opencode",
+        rows,
+        None,
+        cfg=_config(tmp_path),
+        snapshot=snapshot,
+        inventory=asset_sync.AssetInventory(
+            branch="main",
+            remote_commit=snapshot.commit,
+            repo_url=snapshot.repo_url,
+            remote_available=True,
+            remote_warning="",
+            scanned_local=True,
+            generated_at="",
+            legacy_write_blocker="",
+            rows=rows,
+        ),
+    )
+    result = asset_sync._batch_passive_result(item)
+
+    assert item.disposition == "manual"
+    assert result.status == "needs-action"
+    assert "opencode" in item.reason
+
+
+def test_installed_opencode_reference_aligns_enabled_state_transactionally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"plugin": ["@acme/tool@^2.0.0"], "theme": "keep"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    entry = RegistryItem(
+        name="opencode-npm-acme-tool",
+        kind="plugin",
+        source="external",
+        plugin=_reference_spec(enabled=False),
+    )
+    snapshot = _snapshot(tmp_path / "remote", Registry(items=[entry]))
+    candidate = DiscoveredPlugin(
+        id="opencode-installed",
+        platform="opencode",
+        plugin_id="@acme/tool",
+        track="reference",
+        origin_type="npm",
+        scope="user",
+        enabled=True,
+        writable=True,
+        path=config_path,
+        state_path=config_path,
+        package="@acme/tool",
+        selector="^2.0.0",
+    )
+    local_row = asset_sync._plugin_candidate_row(
+        candidate,
+        entry.key(),
+        entry,
+        snapshot,
+        asset_sync._detected_context("opencode", "plugin"),
+    )
+    rows = [*asset_sync._expected_plugin_rows(entry, snapshot, _config(tmp_path), {}), local_row]
+    item = asset_sync._build_plugin_reference_download_item(
+        entry.resource_key,
+        "opencode",
+        rows,
+        entry,
+    )
+    assert item.disposition == "update"
+    assert item.plan is not None and item.plan.action == "align-plugin-state"
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+
+    result = asset_sync._apply_local_asset_action(item.plan, _config(tmp_path))
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert result.status == "succeeded"
+    assert payload == {"plugin": [], "theme": "keep"}
+
+
+def test_codex_reference_state_edit_preserves_unrelated_toml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'model = "gpt-test"\n\n'
+        '[plugins."chrome@openai-bundled"]\n'
+        'enabled = true # keep this comment\n\n'
+        '[features]\n'
+        'js_repl = false\n',
+        encoding="utf-8",
+    )
+    spec = PluginSpec(
+        track="reference",
+        platform="codex",
+        plugin_id="chrome",
+        origin=PluginOrigin(type="marketplace", marketplace="openai-bundled"),
+        installations=[PluginInstallation(scope="user", enabled=False)],
+    )
+
+    asset_sync._write_codex_plugin_state(config_path, spec, False)
+
+    text = config_path.read_text(encoding="utf-8")
+    assert "enabled = false # keep this comment" in text
+    assert 'model = "gpt-test"' in text
+    assert "js_repl = false" in text
+    assert asset_sync._configured_plugin_state_matches(config_path, spec, False) is True
+
+
+def test_managed_plugin_delete_instance_is_never_selectable() -> None:
+    spec = PluginSpec(
+        track="reference",
+        platform="codex",
+        plugin_id="chrome",
+        origin=PluginOrigin(type="marketplace", marketplace="openai"),
+        installations=[PluginInstallation(scope="managed", enabled=True)],
+    )
+
+    item = asset_sync._plugin_delete_instance(spec, spec.installations[0], None)
+
+    assert item.method == "managed-policy"
+    assert item.selectable is False
+
+
+def test_content_plugin_delete_plan_targets_the_actual_source_file(tmp_path: Path) -> None:
+    source = tmp_path / "opencode" / "plugins" / "owned.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("export default {}\n", encoding="utf-8")
+    spec = PluginSpec(
+        track="content",
+        platform="opencode",
+        plugin_id="owned",
+        origin=PluginOrigin(type="local", source="owned.ts"),
+        installations=[PluginInstallation(scope="user", enabled=True)],
+    )
+    row = asset_sync.AssetPlatformRow(
+        resource_key="plugin:opencode-local-owned",
+        kind="plugin",
+        name="opencode-local-owned",
+        platform="opencode",
+        local_instance_id="expected-owned",
+        local_locator="plugin-expected",
+        install_name="owned",
+        configured=True,
+        enabled=True,
+        detected=True,
+        supported=True,
+        remote_exists=True,
+        local_exists=True,
+        remote_writable=True,
+        read_only_reference=False,
+        remote_path=None,
+        local_path=source,
+        target_path=source,
+        ownership="unmanaged",
+        status="same",
+        remote_commit="abc123",
+        plugin_track="content",
+        plugin_scope="user",
+        plugin_writable=True,
+        plugin_data={"plugin": spec.model_dump(mode="json")},
+    )
+
+    item = asset_sync._plugin_delete_instance(spec, spec.installations[0], row)
+    result = asset_sync._apply_plugin_delete_instance(
+        "plugin:opencode-local-owned",
+        item,
+        _config(tmp_path),
+    )
+
+    assert item.method == "delete-content"
+    assert result.status == "succeeded"
+    assert not source.exists()
+
+
+def test_manual_plugin_delete_keeps_remote_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instance = asset_sync.PluginDeleteInstancePlan(
+        id="codex-user",
+        platform="codex",
+        scope="user",
+        project_id="",
+        enabled=True,
+        writable=True,
+        selectable=True,
+        method="manual",
+        detail="Uninstall manually and rescan.",
+        installation={"scope": "user", "enabled": True, "project": None},
+        plugin_id="chrome",
+        source_id="chrome@openai",
+    )
+    plan = asset_sync.PluginDeletePlan(
+        resource_key="plugin:codex-marketplace-chrome-openai",
+        remote_commit="abc123",
+        selected_instance_ids=[instance.id],
+        instances=[instance],
+        plan_hash="plan-hash",
+    )
+    monkeypatch.setattr(asset_sync, "build_plugin_delete_plan", lambda *_args, **_kwargs: plan)
+    called = False
+
+    def fail_remote(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("remote deletion must not run")
+
+    monkeypatch.setattr(asset_sync, "_remove_plugin_remote_installations", fail_remote)
+
+    result = asset_sync.apply_plugin_delete_plan(
+        plan.resource_key,
+        selected_instance_ids=[instance.id],
+        expected_plan_hash=plan.plan_hash,
+        config=_config(tmp_path),
+    )
+
+    assert result.status == "needs-action"
+    assert result.remote_deleted is False
+    assert called is False

@@ -12,6 +12,7 @@
         { "url": "https://github.com/Ling-ye/LingyePluginMarketplace" }
       ]
     },
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "dialog:allow-open"
   ]
 }

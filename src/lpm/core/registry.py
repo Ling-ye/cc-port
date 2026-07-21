@@ -38,7 +38,7 @@ def find_registry_path(start: Path | None = None) -> Path:
     return cur / DEFAULT_REGISTRY_FILENAME
 
 
-CURRENT_REGISTRY_VERSION = 6
+CURRENT_REGISTRY_VERSION = 7
 
 
 def _migrate_v1_to_v2(data: dict) -> dict:
@@ -90,6 +90,13 @@ def _migrate_v5_to_v6(data: dict) -> dict:
     return data
 
 
+def _migrate_v6_to_v7(data: dict) -> dict:
+    """v6 -> v7: dual-track plugin metadata is opt-in for new entries."""
+    data = dict(data)
+    data["version"] = 7
+    return data
+
+
 def load_registry(path: Path | None = None) -> Registry:
     p = path or find_registry_path()
     if not p.is_file():
@@ -110,6 +117,8 @@ def load_registry(path: Path | None = None) -> Registry:
         data = _migrate_v4_to_v5(data)
     if version < 6:
         data = _migrate_v5_to_v6(data)
+    if version < 7:
+        data = _migrate_v6_to_v7(data)
 
     if "skills" in data and "items" not in data:
         data["items"] = data.pop("skills")
@@ -121,7 +130,7 @@ def load_registry(path: Path | None = None) -> Registry:
 _OMIT_WHEN_EMPTY: set[str] = {
     "mcp_config", "last_checked", "reachable", "private",
     "version", "author", "tags", "category", "license", "path", "platforms",
-    "removed_at", "removed_reason", "removed_effect", "platform_install_dirs",
+    "removed_at", "removed_reason", "removed_effect", "platform_install_dirs", "plugin",
 }
 
 
@@ -141,6 +150,22 @@ def save_registry(registry: Registry, path: Path | None = None) -> Path:
             val = item.get(key)
             if val is None or val == "" or val == []:
                 item.pop(key, None)
+        plugin = item.get("plugin")
+        if isinstance(plugin, dict):
+            origin = plugin.get("origin")
+            if isinstance(origin, dict):
+                for key in list(origin):
+                    if key != "type" and origin.get(key) in {None, ""}:
+                        origin.pop(key, None)
+            if not plugin.get("dependencies"):
+                plugin.pop("dependencies", None)
+            if not plugin.get("observed_version"):
+                plugin.pop("observed_version", None)
+            installations = plugin.get("installations", [])
+            if isinstance(installations, list):
+                for installation in installations:
+                    if isinstance(installation, dict) and installation.get("project") is None:
+                        installation.pop("project", None)
 
     text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
 

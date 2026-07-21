@@ -225,6 +225,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![lpm_action, open_path])
         .run(tauri::generate_context!())
         .expect("error while running LPM Desktop");

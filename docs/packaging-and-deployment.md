@@ -74,6 +74,8 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 7. 使用隔离 `LPM_STATE_HOME` 运行打包后的 sidecar，并验证 JSON `ok` 响应。
 8. 全部成功后替换上一次正式发布目录，并输出绝对路径、大小和 SHA-256。
 
+- [KNOWN] 每个 Tauri 插件的 npm 包与 Rust crate 必须锁在相同 major/minor；例如 `@tauri-apps/plugin-dialog` 与 `tauri-plugin-dialog` 应一起升级并更新两套锁文件。置信度：HIGH。
+
 - [KNOWN] 任一门禁失败都不会覆盖上一次已验证的正式产物。置信度：HIGH。
 - [KNOWN] 正式发布目录不会混入上一次构建遗留的安装包。置信度：HIGH。
 - [KNOWN] 发布命令不自动安装生成的安装包、不上传 Release、不执行代码签名。置信度：HIGH。

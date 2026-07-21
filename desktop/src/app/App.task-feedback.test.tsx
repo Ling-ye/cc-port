@@ -31,6 +31,7 @@ vi.mock("@/api/client", () => ({
     throw new Error(`Unexpected action: ${action}`);
   }),
   openPath: vi.fn(),
+  selectDirectory: vi.fn(),
 }));
 
 afterEach(() => {
@@ -47,7 +48,7 @@ describe("App task feedback", () => {
       </TaskCenterProvider>,
     );
 
-    await screen.findByText("资源类型");
+    await screen.findByRole("heading", { name: "资产清单" });
     await user.click(screen.getByTitle("刷新"));
 
     expect(await screen.findByRole("status")).toHaveTextContent("刷新");

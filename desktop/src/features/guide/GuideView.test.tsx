@@ -30,6 +30,9 @@ describe("GuideView merged project information", () => {
     expect(screen.getByText("Desktop app functions")).toBeVisible();
     expect(screen.getByText("Project information")).toBeVisible();
     expect(screen.queryByText("Health")).not.toBeInTheDocument();
+    expect(screen.queryByText("Overview")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add Resource")).not.toBeInTheDocument();
+    expect(screen.getByText(/Collects GitHub references, imports local folders/)).toBeVisible();
     expect(screen.getByText("Open source under the MIT License.")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: /github.com\/Ling-ye\/LingyePluginMarketplace/ }));

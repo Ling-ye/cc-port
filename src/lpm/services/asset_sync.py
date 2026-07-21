@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -15,8 +18,23 @@ from typing import Any, Literal
 
 import frontmatter
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - py310 fallback
+    import tomli as tomllib
+
 from ..core.config import Config, default_state_dir, load_config, resource_repo_auth_token
-from ..core.models import ITEM_NAME_RE, ItemKind, Registry, RegistryItem, ResourceKey
+from ..core.models import (
+    ITEM_NAME_RE,
+    ItemKind,
+    PluginInstallation,
+    PluginOrigin,
+    PluginProjectIdentity,
+    PluginSpec,
+    Registry,
+    RegistryItem,
+    ResourceKey,
+)
 from ..core.ownership import (
     is_lpm_managed,
     is_lpm_managed_mcp,
@@ -42,6 +60,7 @@ from .local_transaction import (
     resource_hash_path,
 )
 from .mcp_installer import inject_mcp_server, list_mcp_servers
+from .plugin_management import plugin_resource_name
 from .resource_commit import commit_resource_changes_unlocked
 from .resource_repo import ensure_structure, resource_root
 from .resource_repo_lock import resource_repo_write_lock
@@ -63,6 +82,8 @@ AssetAction = Literal[
     "copy-to-local",
     "copy-to-remote",
     "set-platform-install-name",
+    "align-plugin-state",
+    "plugin-delete",
 ]
 
 ASSET_STATE_DIR = "assets"
@@ -71,7 +92,7 @@ ASSET_PLAN_SCHEMA_VERSION = 1
 REMOTE_CACHE_DIR = "remotes"
 REMOTE_SNAPSHOT_DIR = "snapshots"
 REMOTE_WRITE_ACTIONS = {"upload", "copy-to-remote", "set-platform-install-name"}
-LOCAL_WRITE_ACTIONS = {"download", "copy-to-local"}
+LOCAL_WRITE_ACTIONS = {"download", "copy-to-local", "align-plugin-state"}
 RESOURCE_PARENT_BY_KIND: dict[ItemKind, str] = {
     "skill": "skills",
     "mcp": "mcp",
@@ -126,6 +147,17 @@ class AssetPlatformRow:
     warnings: list[str] = field(default_factory=list)
     available_actions: list[str] = field(default_factory=list)
     entry: RegistryItem | None = None
+    plugin_track: str = ""
+    plugin_id: str = ""
+    plugin_scope: str = ""
+    plugin_project_id: str = ""
+    plugin_source_kind: str = ""
+    plugin_source_id: str = ""
+    plugin_selector: str = ""
+    plugin_observed_version: str = ""
+    plugin_enabled: bool | None = None
+    plugin_writable: bool = True
+    plugin_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -154,6 +186,15 @@ class AssetLocalInstance:
     status: AssetStatus
     warnings: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
+    track: str = ""
+    scope: str = ""
+    project_id: str = ""
+    source_kind: str = ""
+    source_id: str = ""
+    selector: str = ""
+    observed_version: str = ""
+    enabled: bool | None = None
+    writable: bool = True
 
 
 @dataclass
@@ -184,6 +225,13 @@ class AssetResourceRow:
     warnings: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
     available_actions: list[str] = field(default_factory=list)
+    plugin_track: str = ""
+    plugin_platform: str = ""
+    plugin_id: str = ""
+    plugin_source_kind: str = ""
+    plugin_source_id: str = ""
+    plugin_selector: str = ""
+    plugin_observed_version: str = ""
 
 
 @dataclass
@@ -212,6 +260,7 @@ class AssetActionPlan:
     blockers: list[str] = field(default_factory=list)
     blocked: bool = False
     created_at: str = ""
+    plugin_data: dict[str, Any] = field(default_factory=dict)
     schema_version: int = ASSET_PLAN_SCHEMA_VERSION
 
 
@@ -240,6 +289,10 @@ class AssetBatchChoice:
     resolution: str = "overwrite"
     new_name: str = ""
     overwrite_unmanaged: bool = False
+    plugin_track: str = ""
+    ownership_confirmed: bool = False
+    reference_origin: dict[str, str] = field(default_factory=dict)
+    plugin_dependencies: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -280,6 +333,55 @@ class AssetBatchResult:
 
 
 @dataclass
+class PluginReferenceResult:
+    status: str
+    resource_key: str
+    entry: RegistryItem
+    remote_commit: str = ""
+    pushed: bool = False
+
+
+@dataclass
+class PluginDeleteInstancePlan:
+    id: str
+    platform: str
+    scope: str
+    project_id: str
+    enabled: bool | None
+    writable: bool
+    selectable: bool
+    method: str
+    detail: str
+    local_path: Path | None = None
+    state_path: Path | None = None
+    installation: dict[str, Any] = field(default_factory=dict)
+    plugin_id: str = ""
+    source_id: str = ""
+
+
+@dataclass
+class PluginDeletePlan:
+    resource_key: str
+    remote_commit: str
+    selected_instance_ids: list[str]
+    instances: list[PluginDeleteInstancePlan]
+    plan_hash: str
+    blocked: bool = False
+    blockers: list[str] = field(default_factory=list)
+
+
+@dataclass
+class PluginDeleteResult:
+    status: str
+    resource_key: str
+    plan_hash: str
+    results: list[AssetActionResult]
+    remote_deleted: bool = False
+    remote_commit: str = ""
+    stale_plan: PluginDeletePlan | None = None
+
+
+@dataclass
 class _PlatformContext:
     profile: PlatformProfile
     configured: bool
@@ -307,19 +409,46 @@ def build_asset_inventory(
     scan_local: bool = False,
     refresh_remote: bool = True,
     remote_snapshot: RemoteSnapshot | None = None,
+    scan_global: bool = True,
+    project_ids: list[str] | None = None,
 ) -> AssetInventory:
     """Build logical resources plus internal platform comparison rows without writes."""
     cfg = config or load_config()
     git_ops.configure_git_executable(cfg.git.executable)
     _cleanup_expired_asset_plans(cfg)
     snapshot = remote_snapshot or _refresh_remote_snapshot(cfg, refresh=refresh_remote)
-    discovery = discover_environment() if scan_local else None
+    discovery = None
+    if scan_local:
+        if cfg.plugin_projects or not scan_global or project_ids is not None:
+            discovery = discover_environment(
+                config=cfg,
+                scan_global=scan_global,
+                project_ids=project_ids,
+            )
+        else:
+            # Preserve the public zero-argument discovery seam used by existing
+            # integrations while v7 scan filters remain opt-in.
+            discovery = discover_environment()
     contexts = _platform_contexts(cfg, discovery)
     reference_commits: dict[tuple[str, str], str] = {}
     rows: list[AssetPlatformRow] = []
     seen_local_paths: set[tuple[str, str, str, str]] = set()
 
     for entry in snapshot.registry.items:
+        if entry.kind == "plugin" and entry.plugin is not None:
+            plugin_rows = _expected_plugin_rows(entry, snapshot, cfg, contexts)
+            rows.extend(plugin_rows)
+            for plugin_row in plugin_rows:
+                if plugin_row.local_exists and plugin_row.local_path is not None:
+                    seen_local_paths.add(
+                        _local_identity(
+                            plugin_row.platform,
+                            "plugin",
+                            plugin_row.local_path,
+                            "",
+                        )
+                    )
+            continue
         for platform_name, context in contexts.items():
             row = _expected_row(
                 entry,
@@ -456,6 +585,13 @@ def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow
                 available_actions=_unique_strings(
                     [item for row in rows for item in row.available_actions]
                 ),
+                plugin_track=(entry.plugin.track if entry and entry.plugin else exemplar.plugin_track),
+                plugin_platform=(entry.plugin.platform if entry and entry.plugin else exemplar.platform if exemplar.kind == "plugin" else ""),
+                plugin_id=(entry.plugin.plugin_id if entry and entry.plugin else exemplar.plugin_id),
+                plugin_source_kind=(entry.plugin.origin.type if entry and entry.plugin else exemplar.plugin_source_kind),
+                plugin_source_id=(_plugin_origin_source_id(entry.plugin.origin) if entry and entry.plugin else exemplar.plugin_source_id),
+                plugin_selector=(entry.plugin.origin.selector if entry and entry.plugin else exemplar.plugin_selector),
+                plugin_observed_version=(entry.plugin.observed_version if entry and entry.plugin else exemplar.plugin_observed_version),
             )
         )
     resources.sort(key=lambda item: (item.kind, item.name))
@@ -464,7 +600,9 @@ def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow
 
 def _local_instance_summary(row: AssetPlatformRow) -> AssetLocalInstance:
     description = ""
-    if row.local_path is not None:
+    if row.plugin_data:
+        description = str(row.plugin_data.get("description") or "")
+    elif row.local_path is not None:
         metadata = _derive_metadata(
             row.kind,
             row.local_path,
@@ -484,6 +622,15 @@ def _local_instance_summary(row: AssetPlatformRow) -> AssetLocalInstance:
         status=row.status,
         warnings=list(row.warnings),
         blockers=list(row.blockers),
+        track=row.plugin_track,
+        scope=row.plugin_scope,
+        project_id=row.plugin_project_id,
+        source_kind=row.plugin_source_kind,
+        source_id=row.plugin_source_id,
+        selector=row.plugin_selector,
+        observed_version=row.plugin_observed_version,
+        enabled=row.plugin_enabled,
+        writable=row.plugin_writable,
     )
 
 
@@ -492,6 +639,8 @@ def _aggregate_local_status(rows: list[AssetPlatformRow], *, scanned: bool) -> s
         return "unknown"
     if not rows:
         return "missing"
+    if all(row.plugin_track == "reference" for row in rows):
+        return "single" if len(rows) == 1 else "identical-copies"
     fingerprints = {row.local_fingerprint for row in rows if row.local_fingerprint}
     if len(rows) == 1:
         return "single"
@@ -592,7 +741,7 @@ def build_asset_action_plan(
     if local_instance_id:
         candidates = [row for row in candidates if row.local_instance_id == local_instance_id]
     row = _select_plan_row(candidates, action=action, local_instance_id=local_instance_id)
-    blockers: list[str] = []
+    blockers: list[str] = list(row.blockers)
     warnings = list(row.warnings)
     target_key = row.resource_key
     target_path = row.target_path
@@ -703,6 +852,7 @@ def build_asset_action_plan(
         blockers=_unique_strings(blockers),
         blocked=bool(blockers),
         created_at=_utc_now(),
+        plugin_data=dict(row.plugin_data),
     )
     if _persist:
         _save_asset_plan(plan)
@@ -825,17 +975,48 @@ def build_asset_batch_plan(
             )
             continue
         for platform in platforms:
-            items.append(
-                _build_batch_download_item(
-                    resource_key,
-                    platform,
-                    rows,
-                    choice_map.get((resource_key, platform)) or choice_map.get((resource_key, "")),
-                    cfg=cfg,
-                    snapshot=snapshot,
-                    inventory=inventory,
-                )
+            download_choice = choice_map.get((resource_key, platform)) or choice_map.get(
+                (resource_key, "")
             )
+            content_instances = [
+                row
+                for row in rows
+                if row.platform == platform
+                and row.local_locator == "plugin-expected"
+                and row.entry is not None
+                and row.entry.plugin is not None
+                and row.entry.plugin.track == "content"
+            ]
+            selected_instances = content_instances if len(content_instances) > 1 else [None]
+            for instance in selected_instances:
+                scoped_choice = download_choice
+                if instance is not None:
+                    scoped_choice = (
+                        download_choice
+                        if download_choice is not None
+                        and download_choice.local_instance_id == instance.local_instance_id
+                        else AssetBatchChoice(
+                            resource_key=resource_key,
+                            platform=platform,
+                            local_instance_id=instance.local_instance_id,
+                            resolution=download_choice.resolution if download_choice else "overwrite",
+                            new_name=download_choice.new_name if download_choice else "",
+                            overwrite_unmanaged=(
+                                download_choice.overwrite_unmanaged if download_choice else False
+                            ),
+                        )
+                    )
+                items.append(
+                    _build_batch_download_item(
+                        resource_key,
+                        platform,
+                        rows,
+                        scoped_choice,
+                        cfg=cfg,
+                        snapshot=snapshot,
+                        inventory=inventory,
+                    )
+                )
     _block_duplicate_batch_targets(items, direction=normalized_direction)
     plan = AssetBatchPlan(
         direction=normalized_direction,
@@ -910,8 +1091,535 @@ def apply_asset_batch_plan(
         item for item in results if item.status not in {"succeeded", "unchanged", "skipped"}
     ]
     successes = [item for item in results if item.status in {"succeeded", "unchanged"}]
-    status = "partial" if failures and successes else "failed" if failures else "succeeded"
+    needs_action = [item for item in results if item.status == "needs-action"]
+    hard_failures = [item for item in failures if item.status != "needs-action"]
+    partial_results = [item for item in results if item.status == "partial"]
+    status = (
+        "partial"
+        if partial_results or successes and failures
+        else "failed"
+        if hard_failures
+        else "needs-action"
+        if needs_action
+        else "succeeded"
+    )
     return AssetBatchResult(status=status, plan_hash=current.plan_hash, results=results)
+
+
+def add_plugin_reference(
+    *,
+    platform: str,
+    plugin_id: str,
+    origin_type: str,
+    scope: str = "user",
+    enabled: bool = True,
+    marketplace: str = "",
+    source: str = "",
+    package: str = "",
+    repo: str = "",
+    selector: str = "",
+    observed_version: str = "",
+    project_id: str = "",
+    name: str = "",
+    description: str = "",
+    push: bool = True,
+    config: Config | None = None,
+) -> PluginReferenceResult:
+    """Add or merge one v7 reference plugin without copying local plugin files."""
+    cfg = config or load_config()
+    project_identity: PluginProjectIdentity | None = None
+    if scope in {"project", "local"}:
+        project = next((item for item in cfg.plugin_projects if item.id == project_id), None)
+        if project is None:
+            raise ValueError("Project/local plugin references require a saved project mapping.")
+        if not project.repo:
+            raise ValueError("Projects without a Git remote are observation-only.")
+        project_identity = PluginProjectIdentity(repo=project.repo, subdir=project.subdir)
+    elif project_id:
+        raise ValueError("User/managed plugin references must not include a project id.")
+    origin = PluginOrigin(
+        type=origin_type,
+        marketplace=marketplace,
+        source=source,
+        package=package,
+        repo=repo,
+        selector=selector,
+    )
+    installation = PluginInstallation(
+        scope=scope,
+        enabled=enabled,
+        project=project_identity,
+    )
+    spec = PluginSpec(
+        track="reference",
+        platform=platform,
+        plugin_id=plugin_id,
+        origin=origin,
+        observed_version=observed_version,
+        installations=[installation],
+    )
+    preferred_name = name.strip()
+    if not push:
+        root = resource_root(cfg)
+        ensure_structure(root)
+        registry_path = root / DEFAULT_REGISTRY_FILENAME
+        with resource_repo_write_lock(root, timeout_seconds=cfg.state.lock_timeout_seconds):
+            registry = load_registry(registry_path)
+            key = _plugin_resource_key_for_spec(registry, spec, preferred_name=preferred_name)
+            existing = registry.get(key.name, "plugin")
+            _mutate_plugin_reference(
+                registry,
+                registry_path,
+                key,
+                existing,
+                spec,
+                description=description,
+            )
+            entry = registry.get(key.name, "plugin")
+        if entry is None:  # pragma: no cover - guarded by mutation
+            raise AssetSyncError("Plugin reference was not recorded.")
+        return PluginReferenceResult("saved", str(key), entry, pushed=False)
+
+    blocker = _legacy_write_blocker(cfg, fetch=True)
+    if blocker:
+        raise AssetSyncError(blocker)
+    repo_url = _configured_remote_url(cfg)
+    if not repo_url:
+        raise AssetSyncError("No remote resource repository URL is configured.")
+    last_error: Exception | None = None
+    for attempt in range(2):
+        with tempfile.TemporaryDirectory(prefix="lpm-plugin-reference-", ignore_cleanup_errors=True) as temporary:
+            worktree = Path(temporary) / "repo"
+            _clone_remote_for_write(repo_url, worktree, cfg)
+            registry_path = worktree / DEFAULT_REGISTRY_FILENAME
+            if not registry_path.is_file():
+                ensure_structure(worktree)
+            registry = load_registry(registry_path)
+            key = _plugin_resource_key_for_spec(registry, spec, preferred_name=preferred_name)
+            existing = registry.get(key.name, "plugin")
+            changed = _mutate_plugin_reference(
+                registry,
+                registry_path,
+                key,
+                existing,
+                spec,
+                description=description,
+            )
+            entry = registry.get(key.name, "plugin")
+            if entry is None:  # pragma: no cover - guarded by mutation
+                raise AssetSyncError("Plugin reference was not recorded.")
+            if not changed:
+                return PluginReferenceResult(
+                    "unchanged",
+                    str(key),
+                    entry,
+                    remote_commit=git_ops.head_commit(worktree) or "",
+                    pushed=False,
+                )
+            commit_resource_changes_unlocked(
+                worktree,
+                message=f"lpm: save plugin reference {key.name}",
+            )
+            committed = git_ops.head_commit(worktree) or ""
+            try:
+                git_ops.push(
+                    worktree,
+                    branch=cfg.resources.branch or "main",
+                    token=resource_repo_auth_token(cfg),
+                )
+            except git_ops.GitError as exc:
+                last_error = exc
+                if attempt == 0:
+                    continue
+                raise
+            return PluginReferenceResult(
+                "succeeded",
+                str(key),
+                entry,
+                remote_commit=committed,
+                pushed=True,
+            )
+    raise AssetSyncError(str(last_error or "Plugin reference push failed."))
+
+
+def _plugin_resource_key_for_spec(
+    registry: Registry,
+    spec: PluginSpec,
+    *,
+    preferred_name: str = "",
+) -> ResourceKey:
+    existing = next(
+        (
+            item
+            for item in registry.items
+            if item.kind == "plugin"
+            and item.plugin is not None
+            and item.lifecycle == "active"
+            and item.plugin.platform == spec.platform
+            and item.plugin.plugin_id == spec.plugin_id
+            and item.plugin.origin.type == spec.origin.type
+            and _plugin_origin_source_id(item.plugin.origin)
+            == _plugin_origin_source_id(spec.origin)
+        ),
+        None,
+    )
+    if existing is not None:
+        return existing.key()
+    source_id = (
+        f"{spec.plugin_id}@{spec.origin.marketplace}"
+        if spec.origin.type == "marketplace"
+        else _plugin_origin_source_id(spec.origin)
+    )
+    base = preferred_name or plugin_resource_name(spec.platform, spec.origin.type, source_id)
+    key = ResourceKey(kind="plugin", name=base)
+    occupied = registry.get(key.name, "plugin")
+    if occupied is None or preferred_name:
+        return key
+    identity = f"{spec.platform}\0{spec.plugin_id}\0{spec.origin.type}\0{source_id}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+    return ResourceKey(kind="plugin", name=f"{base[:55].rstrip('-')}-{digest}")
+
+
+def build_plugin_delete_plan(
+    resource_key: str,
+    *,
+    selected_instance_ids: list[str] | None = None,
+    config: Config | None = None,
+) -> PluginDeletePlan:
+    """Build an instance-level plugin uninstall plan without changing local or remote state."""
+    cfg = config or load_config()
+    key = ResourceKey.parse(resource_key)
+    if key.kind != "plugin":
+        raise ValueError("Plugin deletion only accepts plugin resource keys.")
+    snapshot = _refresh_remote_snapshot(cfg, refresh=True)
+    entry = snapshot.registry.get(key.name, "plugin")
+    if entry is None or entry.plugin is None:
+        raise ValueError("Plugin deletion requires an active Registry v7 plugin entry.")
+    inventory = build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        refresh_remote=False,
+        remote_snapshot=snapshot,
+    )
+    rows = [row for row in inventory.rows if row.resource_key == resource_key]
+    local_rows = [
+        row
+        for row in rows
+        if row.local_exists and row.local_locator in {"plugin-adapter", "plugin-expected"}
+    ]
+    instances: list[PluginDeleteInstancePlan] = []
+    for installation in entry.plugin.installations:
+        project = installation.project.model_dump(mode="json") if installation.project else None
+        local = next(
+            (
+                row
+                for row in local_rows
+                if row.plugin_scope == installation.scope
+                and row.plugin_data.get("plugin", {}).get("installations", [{}])[0].get("project") == project
+            ),
+            None,
+        )
+        instances.append(_plugin_delete_instance(entry.plugin, installation, local))
+    requested = list(dict.fromkeys(selected_instance_ids or []))
+    if not requested:
+        requested = [item.id for item in instances if item.selectable]
+    known_ids = {item.id for item in instances}
+    blockers: list[str] = []
+    if not requested:
+        blockers.append("Select at least one writable plugin instance.")
+    unknown = [item for item in requested if item not in known_ids]
+    if unknown:
+        blockers.append("Unknown plugin instance selection: " + ", ".join(unknown))
+    unselectable = [item.id for item in instances if item.id in requested and not item.selectable]
+    if unselectable:
+        blockers.append("Managed plugin instances cannot be selected: " + ", ".join(unselectable))
+    payload = {
+        "resource_key": resource_key,
+        "remote_commit": snapshot.commit,
+        "selected_instance_ids": requested,
+        "instances": [_jsonable(asdict(item)) for item in instances],
+    }
+    plan_hash = _json_fingerprint(payload)
+    return PluginDeletePlan(
+        resource_key=resource_key,
+        remote_commit=snapshot.commit,
+        selected_instance_ids=requested,
+        instances=instances,
+        plan_hash=plan_hash,
+        blocked=bool(blockers),
+        blockers=blockers,
+    )
+
+
+def apply_plugin_delete_plan(
+    resource_key: str,
+    *,
+    selected_instance_ids: list[str],
+    expected_plan_hash: str,
+    config: Config | None = None,
+) -> PluginDeleteResult:
+    """Apply selected uninstalls and only then remove their desired remote state."""
+    cfg = config or load_config()
+    current = build_plugin_delete_plan(
+        resource_key,
+        selected_instance_ids=selected_instance_ids,
+        config=cfg,
+    )
+    if not expected_plan_hash or current.plan_hash != expected_plan_hash:
+        return PluginDeleteResult(
+            status="stale-plan",
+            resource_key=resource_key,
+            plan_hash=current.plan_hash,
+            results=[],
+            stale_plan=current,
+        )
+    if current.blocked:
+        return PluginDeleteResult(
+            status="failed",
+            resource_key=resource_key,
+            plan_hash=current.plan_hash,
+            results=[
+                _plugin_delete_action_result(resource_key, "blocked", "; ".join(current.blockers))
+            ],
+        )
+    selected = [item for item in current.instances if item.id in set(selected_instance_ids)]
+    results = [_apply_plugin_delete_instance(resource_key, item, cfg) for item in selected]
+    pending = [item for item in results if item.status not in {"succeeded", "unchanged"}]
+    if pending:
+        successes = [item for item in results if item.status in {"succeeded", "unchanged"}]
+        return PluginDeleteResult(
+            status="partial" if successes else "needs-action" if all(item.status == "needs-action" for item in pending) else "failed",
+            resource_key=resource_key,
+            plan_hash=current.plan_hash,
+            results=results,
+        )
+    verification = build_plugin_delete_plan(resource_key, selected_instance_ids=[], config=cfg)
+    still_present = {
+        item.id
+        for item in verification.instances
+        if item.id in {selected_item.id for selected_item in selected}
+        and item.method != "verified-absent"
+    }
+    if still_present:
+        results.append(
+            _plugin_delete_action_result(
+                resource_key,
+                "verification-failed",
+                "Instances remain after uninstall: " + ", ".join(sorted(still_present)),
+            )
+        )
+        return PluginDeleteResult(
+            status="failed",
+            resource_key=resource_key,
+            plan_hash=current.plan_hash,
+            results=results,
+        )
+    remote_commit, remote_deleted = _remove_plugin_remote_installations(
+        current,
+        selected,
+        cfg,
+    )
+    return PluginDeleteResult(
+        status="succeeded",
+        resource_key=resource_key,
+        plan_hash=current.plan_hash,
+        results=results,
+        remote_deleted=remote_deleted,
+        remote_commit=remote_commit,
+    )
+
+
+def _plugin_delete_instance(
+    spec: PluginSpec,
+    installation: PluginInstallation,
+    row: AssetPlatformRow | None,
+) -> PluginDeleteInstancePlan:
+    installation_data = installation.model_dump(mode="json")
+    instance_id = row.local_instance_id if row is not None else _json_fingerprint(
+        {"platform": spec.platform, "installation": installation_data}
+    )[:24]
+    if installation.scope == "managed":
+        method = "managed-policy"
+        detail = "Organization policy controls this instance; LPM cannot uninstall it."
+        selectable = False
+    elif row is None:
+        method = "verified-absent"
+        detail = "No matching local installation was found; only desired remote state will be removed."
+        selectable = True
+    elif spec.platform == "claude-code" and shutil.which("claude"):
+        method = "claude-cli"
+        detail = f"Run the scope-aware Claude plugin uninstall for {spec.plugin_id}."
+        selectable = True
+    elif spec.platform == "opencode" and spec.origin.type == "npm" and row.plugin_data.get("state_path"):
+        method = "opencode-config"
+        detail = "Remove only this npm declaration from opencode.json."
+        selectable = True
+    elif spec.track == "content" and row.local_path is not None:
+        method = "delete-content"
+        detail = "Transactionally delete this selected local plugin content path."
+        selectable = True
+    else:
+        method = "manual"
+        detail = "No stable automatic uninstall entry is available; uninstall manually and rescan."
+        selectable = True
+    return PluginDeleteInstancePlan(
+        id=instance_id,
+        platform=spec.platform,
+        scope=installation.scope,
+        project_id=row.plugin_project_id if row else "",
+        enabled=installation.enabled,
+        writable=bool(row.plugin_writable) if row else True,
+        selectable=selectable,
+        method=method,
+        detail=detail,
+        local_path=row.local_path if row else None,
+        state_path=Path(str(row.plugin_data.get("state_path"))) if row and row.plugin_data.get("state_path") else None,
+        installation=installation_data,
+        plugin_id=spec.plugin_id,
+        source_id=(
+            f"{spec.plugin_id}@{spec.origin.marketplace}"
+            if spec.origin.type == "marketplace"
+            else spec.origin.package
+            if spec.origin.type == "npm"
+            else spec.origin.repo
+        ),
+    )
+
+
+def _apply_plugin_delete_instance(
+    resource_key: str,
+    instance: PluginDeleteInstancePlan,
+    cfg: Config,
+) -> AssetActionResult:
+    if instance.method == "managed-policy":
+        return _plugin_delete_action_result(resource_key, "blocked", instance.detail, instance)
+    if instance.method == "manual":
+        return _plugin_delete_action_result(resource_key, "needs-action", instance.detail, instance)
+    if instance.method == "verified-absent":
+        return _plugin_delete_action_result(resource_key, "unchanged", instance.detail, instance)
+    if instance.method == "claude-cli":
+        result = subprocess.run(
+            ["claude", "plugin", "uninstall", instance.source_id or instance.plugin_id, "--scope", instance.scope],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            return _plugin_delete_action_result(
+                resource_key,
+                "failed",
+                (result.stderr or result.stdout or "Claude plugin uninstall failed.").strip(),
+                instance,
+            )
+        return _plugin_delete_action_result(resource_key, "succeeded", "Claude CLI uninstall completed.", instance)
+    target = instance.state_path if instance.method == "opencode-config" else instance.local_path
+    if target is None:
+        return _plugin_delete_action_result(resource_key, "failed", "The planned local target is unavailable.", instance)
+    transaction = LocalChangeTransaction.begin(
+        "plugin-delete",
+        [ChangeTarget(path=target, change_action="plugin-delete", resource=resource_key, platform=instance.platform)],
+        metadata={"resource_key": resource_key, "instance_id": instance.id},
+        lock_timeout_seconds=cfg.state.lock_timeout_seconds,
+    )
+    transaction.mark_attempted([target])
+    try:
+        if instance.method == "opencode-config":
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            declared = payload.get("plugin", [])
+            if not isinstance(declared, list):
+                raise AssetSyncError("OpenCode plugin declarations are not a list.")
+            payload["plugin"] = [
+                value
+                for value in declared
+                if _split_plugin_package(str(value))[0] != instance.source_id
+            ]
+            target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        else:
+            _remove_asset_path(target)
+        record = transaction.complete(message=f"Removed plugin instance {instance.id}.")
+    except Exception as exc:
+        transaction.rollback(str(exc))
+        return _plugin_delete_action_result(resource_key, "failed", str(exc), instance)
+    return _plugin_delete_action_result(
+        resource_key,
+        "succeeded",
+        f"Local plugin instance removed ({record.status}).",
+        instance,
+    )
+
+
+def _plugin_delete_action_result(
+    resource_key: str,
+    status: str,
+    message: str,
+    instance: PluginDeleteInstancePlan | None = None,
+) -> AssetActionResult:
+    return AssetActionResult(
+        operation_id="",
+        action="plugin-delete",
+        status=status,
+        resource_key=resource_key,
+        target_resource_key=resource_key,
+        platform=instance.platform if instance else "",
+        message=message,
+        local_path=instance.local_path if instance else None,
+    )
+
+
+def _split_plugin_package(value: str) -> tuple[str, str]:
+    if value.startswith("@"):
+        slash = value.find("/")
+        marker = value.find("@", slash + 1) if slash >= 0 else -1
+    else:
+        marker = value.rfind("@")
+    return (value[:marker], value[marker + 1 :]) if marker > 0 else (value, "")
+
+
+def _remove_plugin_remote_installations(
+    plan: PluginDeletePlan,
+    selected: list[PluginDeleteInstancePlan],
+    cfg: Config,
+) -> tuple[str, bool]:
+    repo_url = _configured_remote_url(cfg)
+    if not repo_url:
+        raise AssetSyncError("No remote resource repository URL is configured.")
+    selected_identities = {
+        json.dumps(item.installation, sort_keys=True, separators=(",", ":")) for item in selected
+    }
+    with tempfile.TemporaryDirectory(prefix="lpm-plugin-delete-", ignore_cleanup_errors=True) as temporary:
+        worktree = Path(temporary) / "repo"
+        _clone_remote_for_write(repo_url, worktree, cfg)
+        if (git_ops.head_commit(worktree) or "") != plan.remote_commit:
+            raise _StaleAssetTarget("stale-target", "The remote registry changed after deletion planning.")
+        registry_path = worktree / DEFAULT_REGISTRY_FILENAME
+        registry = load_registry(registry_path)
+        key = ResourceKey.parse(plan.resource_key)
+        entry = registry.get(key.name, "plugin")
+        if entry is None or entry.plugin is None:
+            raise _StaleAssetTarget("stale-target", "The plugin record no longer exists.")
+        updated = entry.model_copy(deep=True)
+        updated.plugin.installations = [
+            item
+            for item in updated.plugin.installations
+            if json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) not in selected_identities
+        ]
+        deleted = not updated.plugin.installations
+        if deleted:
+            updated.lifecycle = "removed"
+            updated.removed_at = _utc_now()
+            updated.removed_reason = "All selected plugin instances were uninstalled and verified."
+            updated.removed_effect = "index_only"
+        registry.upsert(updated)
+        save_registry(registry, registry_path)
+        commit_resource_changes_unlocked(worktree, message=f"lpm: delete plugin instances {key.name}")
+        committed = git_ops.head_commit(worktree) or ""
+        git_ops.push(
+            worktree,
+            branch=cfg.resources.branch or "main",
+            token=resource_repo_auth_token(cfg),
+        )
+        return committed, deleted
 
 
 def _build_batch_upload_item(
@@ -932,7 +1640,29 @@ def _build_batch_upload_item(
             reason="No scanned local source exists.",
         )
     selected: AssetPlatformRow | None = None
-    if choice and choice.local_instance_id:
+    reference_rows = [
+        row
+        for row in local_rows
+        if row.kind == "plugin" and row.plugin_track == "reference"
+    ]
+    if reference_rows and len(reference_rows) == len(local_rows):
+        selected = sorted(
+            reference_rows,
+            key=lambda row: (row.platform, row.plugin_scope, row.local_instance_id),
+        )[0]
+        merged_spec: PluginSpec | None = None
+        selector_known = False
+        for reference_row in reference_rows:
+            incoming = PluginSpec.model_validate(reference_row.plugin_data.get("plugin"))
+            incoming_selector_known = bool(reference_row.plugin_data.get("selector_known", True))
+            if merged_spec is not None and not incoming_selector_known:
+                incoming.origin.selector = merged_spec.origin.selector
+            merged_spec = _merge_plugin_installations(merged_spec, incoming)
+            selector_known = selector_known or incoming_selector_known
+        selected.plugin_data = json.loads(json.dumps(selected.plugin_data))
+        selected.plugin_data["plugin"] = merged_spec.model_dump(mode="json") if merged_spec else {}
+        selected.plugin_data["selector_known"] = selector_known
+    elif choice and choice.local_instance_id:
         selected = next(
             (row for row in local_rows if row.local_instance_id == choice.local_instance_id),
             None,
@@ -954,6 +1684,58 @@ def _build_batch_upload_item(
                 reason="Multiple different local versions exist; select a source instance.",
             )
         selected = sorted(local_rows, key=lambda row: (row.platform, row.local_instance_id))[0]
+    if selected.kind == "plugin":
+        if choice and choice.plugin_track == "skip":
+            return _batch_non_action_item(
+                resource_key,
+                action="upload",
+                disposition="skip",
+                platform=selected.platform,
+                local_instance_id=selected.local_instance_id,
+                reason="Plugin candidate was explicitly skipped.",
+            )
+        if selected.plugin_track == "content" and (
+            not selected.plugin_writable or selected.plugin_scope == "managed"
+        ):
+            return _batch_non_action_item(
+                resource_key,
+                action="upload",
+                disposition="blocked",
+                platform=selected.platform,
+                local_instance_id=selected.local_instance_id,
+                reason="Managed or read-only plugin content cannot be uploaded.",
+            )
+        existing_spec = selected.entry.plugin if selected.entry is not None else None
+        if selected.plugin_track == "content" and existing_spec is None:
+            requested_track = (choice.plugin_track if choice else "").strip()
+            if requested_track == "reference":
+                converted, conversion_error = _content_plugin_reference_data(selected, choice)
+                if conversion_error:
+                    return _batch_non_action_item(
+                        resource_key,
+                        action="upload",
+                        disposition="blocked",
+                        platform=selected.platform,
+                        local_instance_id=selected.local_instance_id,
+                        reason=conversion_error,
+                    )
+                selected.plugin_data = converted
+            elif not (choice and choice.ownership_confirmed):
+                return _batch_non_action_item(
+                    resource_key,
+                    action="upload",
+                    disposition="blocked",
+                    platform=selected.platform,
+                    local_instance_id=selected.local_instance_id,
+                    reason=(
+                        "Confirm that this is owned source content, choose reference with a portable origin, "
+                        "or skip it."
+                    ),
+                )
+            elif selected.platform == "opencode":
+                selected.plugin_data["plugin"]["dependencies"] = dict(
+                    choice.plugin_dependencies if choice else {}
+                )
     resolution = choice.resolution if choice else "overwrite"
     new_name = choice.new_name.strip() if choice else ""
     action = "copy-to-remote" if resolution == "rename" else "upload"
@@ -1001,7 +1783,12 @@ def _build_batch_upload_item(
         action=action,
         disposition=disposition,
         target_resource_key=plan.target_resource_key,
-        reason="; ".join(plan.blockers),
+        reason=(
+            "; ".join(plan.blockers)
+            or ("Save plugin reference without content." if selected.plugin_data.get("plugin", {}).get("track") == "reference" else "Upload plugin content.")
+            if selected.kind == "plugin"
+            else ""
+        ),
         warnings=list(plan.warnings),
         blockers=list(plan.blockers),
         plan=plan,
@@ -1027,6 +1814,13 @@ def _build_batch_download_item(
             platform=platform,
             reason="No remote asset exists.",
         )
+    if (
+        remote_row.entry is not None
+        and remote_row.entry.kind == "plugin"
+        and remote_row.entry.plugin is not None
+        and remote_row.entry.plugin.track == "reference"
+    ):
+        return _build_plugin_reference_download_item(resource_key, platform, rows, remote_row.entry)
     if remote_row.read_only_reference:
         return _batch_non_action_item(
             resource_key,
@@ -1045,7 +1839,17 @@ def _build_batch_download_item(
             reason="The resource has no compatible target on this platform.",
         )
     expected = next(
-        (row for row in platform_rows if row.local_locator == "expected"), platform_rows[0]
+        (
+            row
+            for row in platform_rows
+            if choice
+            and choice.local_instance_id
+            and row.local_instance_id == choice.local_instance_id
+        ),
+        None,
+    ) or next(
+        (row for row in platform_rows if row.local_locator in {"expected", "plugin-expected"}),
+        platform_rows[0],
     )
     if not expected.configured or not expected.enabled:
         return _batch_non_action_item(
@@ -1086,6 +1890,9 @@ def _build_batch_download_item(
         kind=remote_row.kind,
         name=remote_row.name,
         platform=platform,
+        local_instance_id=(
+            expected.local_instance_id if expected.local_locator == "plugin-expected" else ""
+        ),
         new_name=new_name,
         overwrite_unmanaged=bool(choice and choice.overwrite_unmanaged),
         config=cfg,
@@ -1103,7 +1910,7 @@ def _build_batch_download_item(
         else "create"
     )
     return AssetBatchPlanItem(
-        id=f"download:{resource_key}:{platform}",
+        id=f"download:{resource_key}:{platform}:{plan.local_instance_id}",
         resource_key=resource_key,
         platform=platform,
         local_instance_id=plan.local_instance_id,
@@ -1115,6 +1922,171 @@ def _build_batch_download_item(
         blockers=list(plan.blockers),
         plan=plan,
     )
+
+
+def _build_plugin_reference_download_item(
+    resource_key: str,
+    platform: str,
+    rows: list[AssetPlatformRow],
+    entry: RegistryItem,
+) -> AssetBatchPlanItem:
+    spec = entry.plugin
+    if spec is None or platform != spec.platform:
+        return _batch_non_action_item(
+            resource_key,
+            action="download",
+            disposition="skip",
+            platform=platform,
+            reason="This plugin reference belongs to a different platform.",
+        )
+    local_rows = [
+        row
+        for row in rows
+        if row.local_exists and row.local_locator == "plugin-adapter" and row.platform == platform
+    ]
+    pending: list[str] = []
+    alignments: list[dict[str, Any]] = []
+    unchanged = 0
+    for installation in spec.installations:
+        project = installation.project.model_dump(mode="json") if installation.project else None
+        match = next(
+            (
+                row
+                for row in local_rows
+                if row.plugin_scope == installation.scope
+                and (row.plugin_data.get("plugin", {}).get("installations", [{}])[0].get("project") == project)
+            ),
+            None,
+        )
+        if installation.scope == "managed":
+            pending.append("managed: organization policy requires this state; no local write is allowed")
+        elif match is None:
+            pending.append(_plugin_install_instruction(spec, installation))
+        elif match.plugin_enabled != installation.enabled:
+            state_path = str(match.plugin_data.get("state_path") or "")
+            method = _plugin_alignment_method(spec, match, state_path)
+            if method:
+                alignments.append(
+                    {
+                        "method": method,
+                        "scope": installation.scope,
+                        "project": project,
+                        "enabled": installation.enabled,
+                        "local_instance_id": match.local_instance_id,
+                        "state_path": state_path,
+                        "state_fingerprint": (
+                            resource_hash_path(Path(state_path)) if state_path else ""
+                        ),
+                    }
+                )
+            else:
+                pending.append(
+                    f"{installation.scope}: set enabled={str(installation.enabled).lower()} using the platform configuration or CLI"
+                )
+        else:
+            unchanged += 1
+    if alignments:
+        first_path = Path(alignments[0]["state_path"])
+        plugin_data = {
+            "plugin": spec.model_dump(mode="json"),
+            "alignments": alignments,
+            "manual": pending,
+        }
+        plan = AssetActionPlan(
+            operation_id=uuid.uuid4().hex,
+            action="align-plugin-state",
+            resource_key=resource_key,
+            target_resource_key=resource_key,
+            kind="plugin",
+            name=entry.name,
+            platform=platform,
+            local_instance_id=str(alignments[0]["local_instance_id"]),
+            local_locator="plugin-adapter",
+            remote_commit=rows[0].remote_commit if rows else "",
+            remote_target_exists=True,
+            remote_target_fingerprint=(
+                next((row.remote_asset_fingerprint for row in rows if row.entry is not None), "")
+            ),
+            local_source_fingerprint="",
+            target_path=first_path,
+            target_exists=first_path.exists(),
+            target_fingerprint=resource_hash_path(first_path),
+            target_managed=False,
+            warnings=list(pending),
+            plugin_data=plugin_data,
+            created_at=_utc_now(),
+        )
+        return AssetBatchPlanItem(
+            id=f"download:{resource_key}:{platform}:state",
+            resource_key=resource_key,
+            platform=platform,
+            local_instance_id=plan.local_instance_id,
+            action="align-plugin-state",
+            disposition="update",
+            target_resource_key=resource_key,
+            reason=(
+                f"Align {len(alignments)} installed plugin state(s)."
+                + (" Remaining manual actions: " + "; ".join(pending) if pending else "")
+            ),
+            warnings=list(pending),
+            plan=plan,
+        )
+    if not pending:
+        return _batch_non_action_item(
+            resource_key,
+            action="download",
+            disposition="unchanged",
+            platform=platform,
+            reason=f"{unchanged} plugin installation state(s) already match.",
+        )
+    return _batch_non_action_item(
+        resource_key,
+        action="download",
+        disposition="manual",
+        platform=platform,
+        reason="; ".join(pending),
+    )
+
+
+def _plugin_alignment_method(
+    spec: PluginSpec,
+    row: AssetPlatformRow,
+    state_path: str,
+) -> str:
+    if not row.plugin_writable or row.plugin_scope == "managed" or not state_path:
+        return ""
+    path = Path(state_path)
+    if not path.is_file() or path.is_symlink():
+        return ""
+    if spec.platform == "claude-code":
+        return "claude-cli" if shutil.which("claude") else "claude-config"
+    if spec.platform == "opencode":
+        return "opencode-config"
+    if spec.platform == "codex":
+        qualified = _plugin_reference_source_label(spec)
+        header = f"[plugins.{json.dumps(qualified, ensure_ascii=False)}]"
+        try:
+            editable = any(
+                line.strip() == header or line.strip().startswith(header + " #")
+                for line in path.read_text(encoding="utf-8").splitlines()
+            )
+        except OSError:
+            editable = False
+        return "codex-config" if editable else ""
+    return ""
+
+
+def _plugin_install_instruction(spec: PluginSpec, installation: PluginInstallation) -> str:
+    scope = installation.scope
+    selector = spec.origin.selector
+    if spec.platform == "codex" and spec.origin.type == "marketplace":
+        return f"{scope}: install {spec.plugin_id}@{spec.origin.marketplace} from its marketplace, preserving selector {selector or 'floating'}"
+    if spec.platform == "claude-code" and spec.origin.type == "marketplace":
+        return f"{scope}: run the Claude plugin install flow for {spec.plugin_id}@{spec.origin.marketplace} with scope {scope}"
+    if spec.platform == "opencode" and spec.origin.type == "npm":
+        declaration = spec.origin.package + (f"@{selector}" if selector else "")
+        return f"{scope}: add {declaration} to the opencode plugin configuration"
+    return f"{scope}: install {spec.plugin_id} from {spec.origin.type} source without copying cache content"
 
 
 def _batch_non_action_item(
@@ -1208,6 +2180,7 @@ def _batch_plan_assertions(plan: AssetActionPlan | None) -> dict[str, Any]:
         "overwrite_unmanaged": plan.overwrite_unmanaged,
         "new_name": plan.new_name,
         "new_install_name": plan.new_install_name,
+        "plugin_data": plan.plugin_data,
     }
 
 
@@ -1215,6 +2188,8 @@ def _batch_passive_result(item: AssetBatchPlanItem) -> AssetActionResult:
     status = (
         "blocked"
         if item.disposition == "blocked"
+        else "needs-action"
+        if item.disposition == "manual"
         else "unchanged"
         if item.disposition == "unchanged"
         else "skipped"
@@ -1264,6 +2239,7 @@ def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
         "copy-to-local",
         "copy-to-remote",
         "set-platform-install-name",
+        "align-plugin-state",
     }:
         raise AssetPlanInvalid(f"Unsupported persisted asset action: {action}")
     key = ResourceKey.parse(str(data.get("resource_key") or ""))
@@ -1296,6 +2272,7 @@ def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
         blockers=[str(item) for item in data.get("blockers", [])],
         blocked=bool(data.get("blocked", False)),
         created_at=str(data.get("created_at") or ""),
+        plugin_data=dict(data.get("plugin_data") or {}),
         schema_version=ASSET_PLAN_SCHEMA_VERSION,
     )
 
@@ -1569,6 +2546,93 @@ def _expected_row(
     )
 
 
+def _expected_plugin_rows(
+    entry: RegistryItem,
+    snapshot: RemoteSnapshot,
+    cfg: Config,
+    contexts: dict[str, _PlatformContext],
+) -> list[AssetPlatformRow]:
+    spec = entry.plugin
+    if spec is None:
+        return []
+    context = contexts.get(spec.platform) or _detected_context(spec.platform, "plugin")
+    installations = spec.installations or [PluginInstallation(scope="user", enabled=True)]
+    rows: list[AssetPlatformRow] = []
+    for installation in installations:
+        installation_spec = spec.model_copy(deep=True)
+        installation_spec.installations = [installation]
+        project_id = _configured_plugin_project_id(cfg, installation.project)
+        remote_path = _remote_content_path(snapshot.root, entry)
+        target = _plugin_content_target(entry, installation, cfg, context) if spec.track == "content" else None
+        local_exists = bool(target and target.exists() and not target.is_symlink())
+        remote_source = _plugin_remote_content_source(remote_path, spec)
+        remote_content = _plugin_installation_fingerprint(spec, installation) if spec.track == "reference" else resource_hash_path(remote_source) if remote_source and remote_source.exists() else ""
+        local_fingerprint = resource_hash_path(target) if local_exists and target is not None else ""
+        status = _asset_status(
+            remote_exists=True,
+            local_exists=local_exists,
+            remote_fingerprint=remote_content,
+            local_fingerprint=local_fingerprint,
+            metadata_differences=[],
+            read_only=False,
+        )
+        blockers: list[str] = []
+        if spec.track == "content" and target is None:
+            blockers.append("No portable local target is configured for this plugin installation.")
+        if installation.scope == "managed":
+            blockers.append("Managed plugin installations are read-only.")
+        local_id = _instance_id(
+            "plugin-expected",
+            entry.resource_key,
+            spec.platform,
+            Path(project_id or installation.scope),
+            installation.scope,
+        )
+        rows.append(
+            AssetPlatformRow(
+                resource_key=entry.resource_key,
+                kind="plugin",
+                name=entry.name,
+                platform=spec.platform,
+                local_instance_id=local_id,
+                local_locator="plugin-expected",
+                install_name=spec.plugin_id,
+                configured=context.configured or (spec.track == "content" and target is not None),
+                enabled=context.profile.enabled if context.configured else target is not None,
+                detected=context.detected,
+                supported=True,
+                remote_exists=True,
+                local_exists=local_exists,
+                remote_writable=True,
+                read_only_reference=False,
+                remote_path=remote_path,
+                local_path=target if local_exists else None,
+                target_path=target,
+                ownership=("managed" if local_exists and target is not None and target.is_dir() and is_lpm_managed(target, resource_key=entry.resource_key) else "unmanaged" if local_exists else "missing"),
+                status=status,
+                remote_commit=snapshot.commit,
+                remote_content_fingerprint=remote_content,
+                remote_asset_fingerprint=_remote_asset_fingerprint(snapshot.root, entry),
+                local_fingerprint=local_fingerprint,
+                diff_summary=_diff_summary(status, []),
+                blockers=blockers,
+                entry=entry,
+                plugin_track=spec.track,
+                plugin_id=spec.plugin_id,
+                plugin_scope=installation.scope,
+                plugin_project_id=project_id,
+                plugin_source_kind=spec.origin.type,
+                plugin_source_id=_plugin_origin_source_id(spec.origin),
+                plugin_selector=spec.origin.selector,
+                plugin_observed_version=spec.observed_version,
+                plugin_enabled=installation.enabled,
+                plugin_writable=installation.scope != "managed",
+                plugin_data={"plugin": installation_spec.model_dump(mode="json")},
+            )
+        )
+    return rows
+
+
 def _discovered_rows(
     discovery: EnvDiscoveryResult,
     snapshot: RemoteSnapshot,
@@ -1631,7 +2695,310 @@ def _discovered_rows(
         )
         rows.append(row)
         seen_local_paths.add(identity)
+    for candidate in discovery.plugins:
+        if candidate.path is not None:
+            identity = _local_identity(candidate.platform, "plugin", candidate.path, "")
+            if identity in seen_local_paths:
+                continue
+        entry = _registry_plugin_entry_for_candidate(snapshot.registry, candidate)
+        key = (
+            entry.key()
+            if entry is not None
+            else _plugin_candidate_resource_key(snapshot.registry, candidate)
+        )
+        context = contexts.get(candidate.platform) or _detected_context(candidate.platform, "plugin")
+        rows.append(_plugin_candidate_row(candidate, key, entry, snapshot, context))
     return rows
+
+
+def _registry_plugin_entry_for_candidate(
+    registry: Registry,
+    candidate: Any,
+) -> RegistryItem | None:
+    for entry in registry.items:
+        spec = entry.plugin
+        if entry.kind != "plugin" or spec is None or entry.lifecycle != "active":
+            continue
+        if (
+            spec.platform == candidate.platform
+            and spec.plugin_id == candidate.plugin_id
+            and spec.origin.type == candidate.origin_type
+            and _plugin_origin_source_id(spec.origin) == _candidate_plugin_source_id(candidate)
+        ):
+            return entry
+    return None
+
+
+def _candidate_plugin_source_id(candidate: Any) -> str:
+    if candidate.origin_type == "marketplace":
+        return str(candidate.marketplace or "")
+    if candidate.origin_type == "npm":
+        return str(candidate.package or "")
+    if candidate.origin_type == "git":
+        return str(candidate.repo or "")
+    return str(candidate.origin_source or "")
+
+
+def _plugin_candidate_resource_key(registry: Registry, candidate: Any) -> ResourceKey:
+    base = candidate.resource_name
+    key = ResourceKey(kind="plugin", name=base)
+    if registry.get(base, "plugin") is None:
+        return key
+    identity = (
+        f"{candidate.platform}\0{candidate.plugin_id}\0{candidate.origin_type}"
+        f"\0{_candidate_plugin_source_id(candidate)}"
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+    return ResourceKey(kind="plugin", name=f"{base[:55].rstrip('-')}-{digest}")
+
+
+def _plugin_candidate_row(
+    candidate: Any,
+    key: ResourceKey,
+    entry: RegistryItem | None,
+    snapshot: RemoteSnapshot,
+    context: _PlatformContext,
+) -> AssetPlatformRow:
+    plugin_data = _plugin_data_from_candidate(candidate)
+    local_fingerprint = (
+        resource_hash_path(candidate.path)
+        if candidate.track == "content" and candidate.path is not None and candidate.path.exists()
+        else _json_fingerprint(_plugin_reference_fingerprint_payload(plugin_data["plugin"]))
+    )
+    remote_content = ""
+    if entry is not None and entry.plugin is not None:
+        if candidate.track == "content" and entry.plugin.track == "content":
+            remote_content = _entry_content_fingerprint(
+                entry,
+                _remote_content_path(snapshot.root, entry),
+            )
+        elif candidate.track == "reference" and entry.plugin.track == "reference":
+            matched = _matching_plugin_installation(entry.plugin, plugin_data["plugin"])
+            remote_content = (
+                _plugin_installation_fingerprint(entry.plugin, matched)
+                if matched is not None
+                else "missing-installation"
+            )
+    remote_exists = entry is not None
+    status = _asset_status(
+        remote_exists=remote_exists,
+        local_exists=True,
+        remote_fingerprint=remote_content,
+        local_fingerprint=local_fingerprint,
+        metadata_differences=[],
+        read_only=False,
+    )
+    blockers: list[str] = []
+    if not candidate.complete:
+        blockers.append("Plugin discovery is incomplete; missing fields must not be inferred.")
+    if candidate.scope in {"project", "local"} and not candidate.project_repo:
+        blockers.append("Projects without a Git remote are observation-only and cannot be uploaded.")
+    return AssetPlatformRow(
+        resource_key=str(key),
+        kind="plugin",
+        name=key.name,
+        platform=candidate.platform,
+        local_instance_id=candidate.id,
+        local_locator="plugin-adapter",
+        install_name=candidate.plugin_id,
+        configured=context.configured,
+        enabled=context.profile.enabled if context.configured else False,
+        detected=True,
+        supported=True,
+        remote_exists=remote_exists,
+        local_exists=True,
+        remote_writable=bool(entry is None or entry.plugin is not None),
+        read_only_reference=False,
+        remote_path=_remote_content_path(snapshot.root, entry),
+        local_path=candidate.path if candidate.track == "content" else None,
+        target_path=None,
+        ownership="managed" if candidate.scope == "managed" else "unmanaged",
+        status=status,
+        remote_commit=snapshot.commit,
+        remote_content_fingerprint=remote_content,
+        remote_asset_fingerprint=_remote_asset_fingerprint(snapshot.root, entry) if entry else "",
+        local_fingerprint=local_fingerprint,
+        diff_summary=_diff_summary(status, []),
+        blockers=_unique_strings(blockers),
+        warnings=list(candidate.warnings),
+        entry=entry,
+        plugin_track=candidate.track,
+        plugin_id=candidate.plugin_id,
+        plugin_scope=candidate.scope,
+        plugin_project_id=candidate.project_id,
+        plugin_source_kind=candidate.origin_type,
+        plugin_source_id=candidate.source_id,
+        plugin_selector=candidate.selector,
+        plugin_observed_version=candidate.observed_version,
+        plugin_enabled=candidate.enabled,
+        plugin_writable=candidate.writable,
+        plugin_data=plugin_data,
+    )
+
+
+def _plugin_data_from_candidate(candidate: Any) -> dict[str, Any]:
+    project = None
+    if candidate.scope in {"project", "local"} and candidate.project_repo:
+        project = {"repo": candidate.project_repo, "subdir": candidate.project_subdir}
+    origin = {
+        "type": candidate.origin_type,
+        "marketplace": candidate.marketplace,
+        "source": candidate.origin_source,
+        "package": candidate.package,
+        "repo": candidate.repo,
+        "selector": candidate.selector,
+    }
+    installation = {
+        "scope": candidate.scope,
+        "enabled": True if candidate.enabled is None else candidate.enabled,
+        "project": project,
+    }
+    return {
+        "plugin": {
+            "track": candidate.track,
+            "platform": candidate.platform,
+            "plugin_id": candidate.plugin_id,
+            "origin": origin,
+            "observed_version": candidate.observed_version,
+            "installations": [installation],
+            "dependencies": dict(candidate.dependencies),
+        },
+        "description": candidate.description,
+        "complete": candidate.complete,
+        "selector_known": bool(getattr(candidate, "selector_known", True)),
+        "state_path": str(candidate.state_path) if candidate.state_path is not None else "",
+    }
+
+
+def _content_plugin_reference_data(
+    row: AssetPlatformRow,
+    choice: AssetBatchChoice | None,
+) -> tuple[dict[str, Any], str]:
+    origin = dict(choice.reference_origin if choice else {})
+    origin_type = str(origin.get("type") or "").strip()
+    if origin_type not in {"marketplace", "npm", "git"}:
+        return {}, "Reference conversion requires marketplace, npm, or git origin fields."
+    base = json.loads(json.dumps(row.plugin_data))
+    plugin = base.get("plugin", {})
+    plugin["track"] = "reference"
+    plugin["origin"] = {
+        "type": origin_type,
+        "marketplace": str(origin.get("marketplace") or ""),
+        "source": str(origin.get("source") or ""),
+        "package": str(origin.get("package") or ""),
+        "repo": str(origin.get("repo") or ""),
+        "selector": str(origin.get("selector") or ""),
+    }
+    plugin["observed_version"] = row.plugin_observed_version
+    plugin["dependencies"] = {}
+    try:
+        PluginSpec.model_validate(plugin)
+    except Exception as exc:  # noqa: BLE001 - return a stable batch blocker
+        return {}, f"Invalid plugin reference origin: {exc}"
+    return base, ""
+
+
+def _plugin_origin_source_id(origin: PluginOrigin) -> str:
+    if origin.type == "marketplace":
+        return origin.marketplace
+    if origin.type == "npm":
+        return origin.package
+    if origin.type == "git":
+        return origin.repo
+    return origin.source
+
+
+def _plugin_reference_fingerprint_payload(plugin: dict[str, Any]) -> dict[str, Any]:
+    data = json.loads(json.dumps(plugin))
+    data.pop("observed_version", None)
+    return data
+
+
+def _plugin_installation_fingerprint(
+    spec: PluginSpec,
+    installation: PluginInstallation,
+) -> str:
+    payload = spec.model_dump(mode="json")
+    payload["installations"] = [installation.model_dump(mode="json")]
+    return _json_fingerprint(_plugin_reference_fingerprint_payload(payload))
+
+
+def _matching_plugin_installation(
+    spec: PluginSpec,
+    candidate: dict[str, Any],
+) -> PluginInstallation | None:
+    raw_installations = candidate.get("installations", [])
+    if not raw_installations:
+        return None
+    wanted = raw_installations[0]
+    for installation in spec.installations:
+        current = installation.model_dump(mode="json")
+        if current.get("scope") == wanted.get("scope") and current.get("project") == wanted.get("project"):
+            return installation
+    return None
+
+
+def _configured_plugin_project_id(
+    cfg: Config,
+    project: PluginProjectIdentity | None,
+) -> str:
+    if project is None:
+        return ""
+    for item in cfg.plugin_projects:
+        if item.repo == project.repo and item.subdir == project.subdir:
+            return item.id
+    return ""
+
+
+def _plugin_content_target(
+    entry: RegistryItem,
+    installation: PluginInstallation,
+    cfg: Config,
+    context: _PlatformContext,
+) -> Path | None:
+    spec = entry.plugin
+    if spec is None or spec.track != "content" or installation.scope == "managed":
+        return None
+    base: Path | None = None
+    if installation.scope in {"project", "local"}:
+        project = installation.project
+        mapping = next(
+            (
+                item
+                for item in cfg.plugin_projects
+                if project is not None and item.repo == project.repo and item.subdir == project.subdir
+            ),
+            None,
+        )
+        if mapping is None or not mapping.path_value.is_dir():
+            return None
+        if spec.platform == "opencode":
+            base = mapping.path_value / ".opencode" / "plugins"
+        elif spec.platform == "codex":
+            base = mapping.path_value / ".agents" / "plugins"
+        elif spec.platform == "claude-code":
+            base = mapping.path_value / ".claude" / "plugins"
+    else:
+        base = context.profile.plugins_path()
+    if base is None:
+        return None
+    source_name = Path(spec.origin.source).name if spec.origin.source else ""
+    if source_name and source_name != spec.origin.source.replace("\\", "/"):
+        return None
+    if spec.platform == "opencode" and Path(source_name).suffix.lower() in {".js", ".ts"}:
+        return (base / source_name).expanduser().absolute()
+    return (base / entry.install_target_name(spec.platform)).expanduser().absolute()
+
+
+def _plugin_remote_content_source(remote_path: Path | None, spec: PluginSpec) -> Path | None:
+    if remote_path is None:
+        return None
+    source_name = Path(spec.origin.source).name if spec.origin.source else ""
+    if source_name and source_name == spec.origin.source.replace("\\", "/"):
+        candidate = remote_path / source_name
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    return remote_path
 
 
 def _detected_context(platform: str, kind: ItemKind) -> _PlatformContext:
@@ -1855,7 +3222,11 @@ def _diff_summary(status: AssetStatus, metadata: list[str]) -> list[str]:
 def _mark_target_collisions(rows: list[AssetPlatformRow]) -> None:
     groups: dict[tuple[str, str, str], list[AssetPlatformRow]] = {}
     for row in rows:
-        if row.local_locator != "expected" or row.target_path is None or not row.remote_exists:
+        if (
+            row.local_locator not in {"expected", "plugin-expected"}
+            or row.target_path is None
+            or not row.remote_exists
+        ):
             continue
         target_key = os.path.normcase(str(row.target_path.absolute()))
         logical_name = row.install_name if row.kind == "mcp" else ""
@@ -1912,6 +3283,15 @@ def _finalize_row_actions(row: AssetPlatformRow, snapshot: RemoteSnapshot) -> No
     actions: list[str] = []
     active = row.entry is None or row.entry.lifecycle == "active"
     target_clear = row.status != "target-conflict"
+    if row.plugin_track == "reference":
+        if active and row.remote_exists and snapshot.available:
+            actions.append("download")
+        if active and row.local_exists and not row.blockers:
+            actions.append("upload")
+        row.available_actions = actions
+        row.blockers = _unique_strings(row.blockers)
+        row.warnings = _unique_strings(row.warnings)
+        return
     if (
         active
         and row.remote_exists
@@ -2138,6 +3518,11 @@ def _apply_local_asset_action(
             "remote-unavailable",
             snapshot.warning or "The configured remote branch is unavailable.",
         )
+    if entry.kind == "plugin" and entry.plugin is not None:
+        if entry.plugin.track == "content":
+            return _apply_plugin_content_download(plan, cfg, snapshot, entry)
+        if plan.action == "align-plugin-state":
+            return _apply_plugin_reference_state(plan, cfg, snapshot, entry)
 
     profile = cfg.platforms.get(plan.platform)
     if profile is None or not profile.enabled:
@@ -2263,6 +3648,447 @@ def _apply_local_asset_action(
         warnings=plan.warnings,
         operation_status=record.status,
     )
+
+
+def _apply_plugin_content_download(
+    plan: AssetActionPlan,
+    cfg: Config,
+    snapshot: RemoteSnapshot,
+    entry: RegistryItem,
+) -> AssetActionResult:
+    spec = entry.plugin
+    target = plan.target_path
+    if spec is None or target is None:
+        raise _StaleAssetTarget("stale-platform", "The plugin content target is unavailable.")
+    source = _plugin_remote_content_source(_remote_content_path(snapshot.root, entry), spec)
+    if source is None or not source.exists() or source.is_symlink():
+        raise AssetSyncError("The remote plugin content is unavailable or unsafe.")
+    current_exists = target.exists() and not target.is_symlink()
+    current_fingerprint = resource_hash_path(target) if current_exists else ""
+    current_managed = bool(
+        current_exists
+        and target.is_dir()
+        and is_lpm_managed(target, resource_key=plan.target_resource_key)
+    )
+    if (
+        current_exists != plan.target_exists
+        or current_fingerprint != plan.target_fingerprint
+        or current_managed != plan.target_managed
+    ):
+        raise _StaleAssetTarget(
+            "stale-local-target",
+            "The local plugin target changed after planning.",
+        )
+    if current_exists and not current_managed and not plan.overwrite_unmanaged:
+        raise _StaleAssetTarget(
+            "unmanaged-target",
+            "The plugin target is unmanaged and overwrite was not confirmed.",
+        )
+    package_json = _opencode_dependency_target(target, spec)
+    targets = [
+        ChangeTarget(
+            path=target,
+            change_action=plan.action,
+            resource=plan.target_resource_key,
+            platform=plan.platform,
+        )
+    ]
+    if package_json is not None and spec.dependencies:
+        targets.append(
+            ChangeTarget(
+                path=package_json,
+                change_action="merge-plugin-dependencies",
+                resource=plan.target_resource_key,
+                platform=plan.platform,
+            )
+        )
+    transaction = LocalChangeTransaction.begin(
+        "asset-download-plugin-content",
+        targets,
+        metadata={
+            "asset_plan": plan.operation_id,
+            "resource_key": plan.resource_key,
+            "platform": plan.platform,
+        },
+        lock_timeout_seconds=cfg.state.lock_timeout_seconds,
+    )
+    transaction.mark_attempted(item.path for item in targets)
+    try:
+        if target.suffix.lower() in {".js", ".ts"} and source.is_file():
+            if target.exists():
+                _remove_asset_path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            copy_resource_tree(source, target)
+        else:
+            _copy_asset_content(source, target, "plugin")
+            if target.is_dir():
+                write_managed_marker(target, entry, platform=plan.platform)
+        if package_json is not None and spec.dependencies:
+            _merge_package_dependencies(package_json, spec.dependencies)
+        if resource_hash_path(source) != resource_hash_path(target):
+            raise AssetSyncError("Downloaded plugin content verification failed.")
+        record = transaction.complete(
+            message=f"Downloaded plugin content for {plan.target_resource_key}."
+        )
+    except Exception as exc:
+        transaction.rollback(str(exc))
+        raise
+    return AssetActionResult(
+        operation_id=plan.operation_id,
+        action=plan.action,
+        status="succeeded",
+        resource_key=plan.resource_key,
+        target_resource_key=plan.target_resource_key,
+        platform=plan.platform,
+        message=f"Downloaded plugin content for {plan.target_resource_key}.",
+        remote_commit=snapshot.commit,
+        local_path=target,
+        replayed_on_latest=snapshot.commit != plan.remote_commit,
+        warnings=plan.warnings,
+        operation_status=record.status,
+    )
+
+
+def _apply_plugin_reference_state(
+    plan: AssetActionPlan,
+    cfg: Config,
+    snapshot: RemoteSnapshot,
+    entry: RegistryItem,
+) -> AssetActionResult:
+    spec = entry.plugin
+    raw_alignments = plan.plugin_data.get("alignments", [])
+    if spec is None or spec.track != "reference" or not isinstance(raw_alignments, list):
+        raise _StaleAssetTarget("stale-target", "The plugin reference alignment is unavailable.")
+    alignments = [item for item in raw_alignments if isinstance(item, dict)]
+    if not alignments:
+        raise _StaleAssetTarget("stale-target", "The plugin reference alignment is empty.")
+    targets: list[ChangeTarget] = []
+    for alignment in alignments:
+        scope = str(alignment.get("scope") or "")
+        project = alignment.get("project")
+        enabled = bool(alignment.get("enabled"))
+        desired = next(
+            (
+                item
+                for item in spec.installations
+                if item.scope == scope
+                and (item.project.model_dump(mode="json") if item.project else None) == project
+            ),
+            None,
+        )
+        if desired is None or desired.enabled != enabled:
+            raise _StaleAssetTarget(
+                "stale-target",
+                "The desired plugin installation state changed after planning.",
+            )
+        state_path = Path(str(alignment.get("state_path") or ""))
+        if not state_path.is_file() or state_path.is_symlink():
+            raise _StaleAssetTarget("stale-local-target", "The plugin state file is unavailable.")
+        if resource_hash_path(state_path) != str(alignment.get("state_fingerprint") or ""):
+            raise _StaleAssetTarget(
+                "stale-local-target",
+                "The plugin state file changed after planning.",
+            )
+        targets.append(
+            ChangeTarget(
+                path=state_path,
+                change_action="align-plugin-state",
+                resource=entry.resource_key,
+                platform=spec.platform,
+            )
+        )
+    transaction = LocalChangeTransaction.begin(
+        "plugin-state-align",
+        targets,
+        metadata={
+            "asset_plan": plan.operation_id,
+            "resource_key": entry.resource_key,
+            "platform": spec.platform,
+        },
+        lock_timeout_seconds=cfg.state.lock_timeout_seconds,
+    )
+    transaction.mark_attempted(item.path for item in targets)
+    try:
+        for alignment in alignments:
+            method = str(alignment.get("method") or "")
+            state_path = Path(str(alignment.get("state_path") or ""))
+            enabled = bool(alignment.get("enabled"))
+            scope = str(alignment.get("scope") or "user")
+            if method == "claude-cli":
+                _run_claude_plugin_state(spec, scope, enabled, state_path)
+            elif method == "claude-config":
+                _write_claude_plugin_state(state_path, spec, enabled)
+            elif method == "opencode-config":
+                _write_opencode_plugin_state(state_path, spec, enabled)
+            elif method == "codex-config":
+                _write_codex_plugin_state(state_path, spec, enabled)
+            else:
+                raise AssetSyncError(f"Unsupported plugin state alignment method: {method}")
+        for alignment in alignments:
+            method = str(alignment.get("method") or "")
+            state_path = Path(str(alignment.get("state_path") or ""))
+            enabled = bool(alignment.get("enabled"))
+            scope = str(alignment.get("scope") or "user")
+            verified = (
+                _claude_plugin_state_matches(spec, scope, enabled, state_path)
+                if method == "claude-cli"
+                else _configured_plugin_state_matches(state_path, spec, enabled)
+            )
+            if not verified:
+                raise AssetSyncError(
+                    f"Plugin state verification failed for {spec.platform} {scope}."
+                )
+        record = transaction.complete(
+            message=f"Aligned {len(alignments)} plugin installation state(s)."
+        )
+    except Exception as exc:
+        transaction.rollback(str(exc))
+        raise
+    manual = [str(item) for item in plan.plugin_data.get("manual", []) if str(item)]
+    message = f"Aligned {len(alignments)} plugin installation state(s)."
+    if manual:
+        message += " Manual actions remain: " + "; ".join(manual)
+    return AssetActionResult(
+        operation_id=plan.operation_id,
+        action=plan.action,
+        status="partial" if manual else "succeeded",
+        resource_key=plan.resource_key,
+        target_resource_key=plan.target_resource_key,
+        platform=plan.platform,
+        message=message,
+        remote_commit=snapshot.commit,
+        local_path=targets[0].path if targets else None,
+        replayed_on_latest=snapshot.commit != plan.remote_commit,
+        warnings=[*plan.warnings, *manual],
+        operation_status=record.status,
+    )
+
+
+def _plugin_reference_source_label(spec: PluginSpec) -> str:
+    if spec.origin.type == "marketplace":
+        return f"{spec.plugin_id}@{spec.origin.marketplace}"
+    if spec.origin.type == "npm":
+        return spec.origin.package
+    return spec.plugin_id
+
+
+def _run_claude_plugin_state(
+    spec: PluginSpec,
+    scope: str,
+    enabled: bool,
+    state_path: Path,
+) -> None:
+    executable = shutil.which("claude")
+    if not executable:
+        raise AssetSyncError("Claude CLI is no longer available.")
+    cwd = state_path.parent.parent if scope in {"project", "local"} else None
+    result = subprocess.run(
+        [
+            executable,
+            "plugin",
+            "enable" if enabled else "disable",
+            _plugin_reference_source_label(spec),
+            "--scope",
+            scope,
+        ],
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssetSyncError(
+            (result.stderr or result.stdout or "Claude plugin state update failed.").strip()
+        )
+
+
+def _write_claude_plugin_state(path: Path, spec: PluginSpec, enabled: bool) -> None:
+    payload = _read_json_object(path, label="Claude settings")
+    current = payload.get("enabledPlugins", {})
+    if current is None:
+        current = {}
+    if not isinstance(current, dict):
+        raise AssetSyncError("Claude enabledPlugins is not an object.")
+    current[_plugin_reference_source_label(spec)] = enabled
+    payload["enabledPlugins"] = current
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _write_opencode_plugin_state(path: Path, spec: PluginSpec, enabled: bool) -> None:
+    payload = _read_json_object(path, label="OpenCode configuration")
+    declared = payload.get("plugin", [])
+    if not isinstance(declared, list):
+        raise AssetSyncError("OpenCode plugin declarations are not a list.")
+    package = spec.origin.package
+    remaining = [value for value in declared if _split_plugin_package(str(value))[0] != package]
+    if enabled:
+        remaining.append(f"{package}@{spec.origin.selector}" if spec.origin.selector else package)
+    payload["plugin"] = remaining
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _write_codex_plugin_state(path: Path, spec: PluginSpec, enabled: bool) -> None:
+    try:
+        with path.open("rb") as handle:
+            before = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise AssetSyncError("Codex config.toml cannot be parsed safely.") from exc
+    qualified = _plugin_reference_source_label(spec)
+    plugins = before.get("plugins", {}) if isinstance(before, dict) else {}
+    if not isinstance(plugins, dict) or qualified not in plugins:
+        raise AssetSyncError("The Codex plugin section is missing from config.toml.")
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    header = f"[plugins.{json.dumps(qualified, ensure_ascii=False)}]"
+    section_start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == header
+            or line.strip().startswith(header + " #")
+        ),
+        None,
+    )
+    if section_start is None:
+        raise AssetSyncError("The Codex plugin section cannot be edited without rewriting TOML.")
+    section_end = next(
+        (
+            index
+            for index in range(section_start + 1, len(lines))
+            if lines[index].lstrip().startswith("[")
+        ),
+        len(lines),
+    )
+    enabled_line = next(
+        (
+            index
+            for index in range(section_start + 1, section_end)
+            if re.match(r"^\s*enabled\s*=", lines[index])
+        ),
+        None,
+    )
+    newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
+    replacement = f"enabled = {'true' if enabled else 'false'}{newline}"
+    if enabled_line is None:
+        lines.insert(section_start + 1, replacement)
+    else:
+        indent = lines[enabled_line][: len(lines[enabled_line]) - len(lines[enabled_line].lstrip())]
+        comment = ""
+        if "#" in lines[enabled_line]:
+            comment = " #" + lines[enabled_line].split("#", 1)[1].rstrip("\r\n")
+        lines[enabled_line] = f"{indent}enabled = {'true' if enabled else 'false'}{comment}{newline}"
+    updated = "".join(lines)
+    try:
+        parsed = tomllib.loads(updated)
+    except tomllib.TOMLDecodeError as exc:
+        raise AssetSyncError("The Codex plugin state edit would produce invalid TOML.") from exc
+    updated_plugins = parsed.get("plugins", {}) if isinstance(parsed, dict) else {}
+    state = updated_plugins.get(qualified, {}) if isinstance(updated_plugins, dict) else {}
+    if not isinstance(state, dict) or bool(state.get("enabled", True)) is not enabled:
+        raise AssetSyncError("The Codex plugin state edit could not be verified.")
+    path.write_text(updated, encoding="utf-8", newline="")
+
+
+def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AssetSyncError(f"{label} cannot be parsed safely.") from exc
+    if not isinstance(payload, dict):
+        raise AssetSyncError(f"{label} is not an object.")
+    return payload
+
+
+def _configured_plugin_state_matches(
+    path: Path,
+    spec: PluginSpec,
+    enabled: bool,
+) -> bool:
+    if spec.platform == "codex":
+        try:
+            with path.open("rb") as handle:
+                toml_payload = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            return False
+        plugins = toml_payload.get("plugins", {}) if isinstance(toml_payload, dict) else {}
+        state = plugins.get(_plugin_reference_source_label(spec), {}) if isinstance(plugins, dict) else {}
+        return isinstance(state, dict) and bool(state.get("enabled", True)) is enabled
+    try:
+        payload = _read_json_object(path, label="Plugin configuration")
+    except AssetSyncError:
+        return False
+    if spec.platform == "claude-code":
+        current = payload.get("enabledPlugins", {})
+        return isinstance(current, dict) and current.get(_plugin_reference_source_label(spec)) is enabled
+    if spec.platform == "opencode":
+        declared = payload.get("plugin", [])
+        if not isinstance(declared, list):
+            return False
+        present = any(
+            _split_plugin_package(str(value))[0] == spec.origin.package for value in declared
+        )
+        return present is enabled
+    return False
+
+
+def _claude_plugin_state_matches(
+    spec: PluginSpec,
+    scope: str,
+    enabled: bool,
+    state_path: Path,
+) -> bool:
+    executable = shutil.which("claude")
+    if not executable:
+        return False
+    cwd = state_path.parent.parent if scope in {"project", "local"} else None
+    try:
+        result = subprocess.run(
+            [executable, "plugin", "list", "--json"],
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        payload = json.loads(result.stdout) if result.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return False
+    values = payload if isinstance(payload, list) else payload.get("plugins", payload.get("installed", [])) if isinstance(payload, dict) else []
+    if not isinstance(values, list):
+        return False
+    source_label = _plugin_reference_source_label(spec)
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        identity = str(item.get("id") or item.get("name") or "")
+        item_scope = str(item.get("scope") or "user")
+        if identity in {source_label, spec.plugin_id} and item_scope == scope:
+            return bool(item.get("enabled", True)) is enabled
+    return False
+
+
+def _opencode_dependency_target(target: Path, spec: PluginSpec) -> Path | None:
+    if spec.platform != "opencode" or not spec.dependencies:
+        return None
+    plugins_dir = target.parent if target.is_file() or target.suffix.lower() in {".js", ".ts"} else target.parent
+    return plugins_dir.parent / "package.json"
+
+
+def _merge_package_dependencies(path: Path, dependencies: dict[str, str]) -> None:
+    payload: dict[str, Any] = {}
+    if path.is_file():
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise AssetSyncError("Target package.json is not an object.")
+        payload = value
+    current = payload.get("dependencies", {})
+    if current is None:
+        current = {}
+    if not isinstance(current, dict):
+        raise AssetSyncError("Target package.json dependencies are not an object.")
+    payload["dependencies"] = {**current, **dependencies}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def _apply_remote_asset_action(
@@ -2477,6 +4303,8 @@ def _apply_remote_asset_batch(
                             "stale-local-source",
                             "The local source changed after planning.",
                         )
+                    if plan.plugin_data:
+                        source_row.plugin_data = json.loads(json.dumps(plan.plugin_data))
                     _validate_remote_batch_source(source_row, target_key.kind)
                     prepared.append((plan, source_row))
                 except _StaleAssetTarget as exc:
@@ -2615,6 +4443,14 @@ def _find_planned_local_row(
 
 
 def _validate_remote_batch_source(row: AssetPlatformRow, kind: ItemKind) -> None:
+    if kind == "plugin" and row.plugin_data:
+        spec = PluginSpec.model_validate(row.plugin_data.get("plugin"))
+        if spec.track == "reference":
+            return
+        if row.local_path is not None and "cache" in {
+            part.lower() for part in row.local_path.parts
+        }:
+            raise AssetSyncError("Plugin cache content is never an uploadable source.")
     source = row.local_path
     if source is None:
         raise AssetSyncError("The local source is unavailable.")
@@ -2679,6 +4515,37 @@ def _mutate_remote_asset(
         save_registry(registry, registry_path)
         return True
 
+    plugin_spec: PluginSpec | None = None
+    plugin_selector_known = True
+    if target_key.kind == "plugin":
+        planned_plugin = plan.plugin_data.get("plugin") if plan.plugin_data else None
+        scanned_plugin = (
+            source_row.plugin_data.get("plugin")
+            if source_row is not None and source_row.plugin_data
+            else None
+        )
+        plugin_payload = planned_plugin or scanned_plugin
+        if plugin_payload is not None:
+            plugin_spec = PluginSpec.model_validate(plugin_payload)
+            plugin_selector_known = bool(
+                plan.plugin_data.get("selector_known", True)
+                if plan.plugin_data
+                else source_row.plugin_data.get("selector_known", True)
+                if source_row is not None
+                else True
+            )
+    if plugin_spec is not None:
+        if plugin_spec.track == "reference":
+            return _mutate_plugin_reference(
+                registry,
+                registry_path,
+                target_key,
+                existing,
+                plugin_spec,
+                description=str(source_row.plugin_data.get("description") or ""),
+                preserve_selector=not plugin_selector_known,
+            )
+
     if source_row is None or source_row.local_path is None:
         raise _StaleAssetTarget("stale-local-source", "The local source is unavailable.")
     local_path = source_row.local_path
@@ -2740,6 +4607,8 @@ def _mutate_remote_asset(
     if existing is None:
         updated.source = "local"
     updated.path = relative_path
+    if target_key.kind == "plugin" and plugin_spec is not None:
+        updated.plugin = _merge_plugin_installations(existing.plugin if existing else None, plugin_spec)
     for field_name in DERIVED_METADATA_FIELDS:
         value = derived.get(field_name)
         if value not in (None, ""):
@@ -2749,6 +4618,122 @@ def _mutate_remote_asset(
     registry.upsert(updated)
     save_registry(registry, registry_path)
     return True
+
+
+def _mutate_plugin_reference(
+    registry: Registry,
+    registry_path: Path,
+    target_key: ResourceKey,
+    existing: RegistryItem | None,
+    plugin_spec: PluginSpec,
+    *,
+    description: str,
+    preserve_selector: bool = False,
+) -> bool:
+    duplicate = next(
+        (
+            item
+            for item in registry.items
+            if item.kind == "plugin"
+            and item.plugin is not None
+            and item.lifecycle == "active"
+            and item.resource_key != str(target_key)
+            and item.plugin.platform == plugin_spec.platform
+            and item.plugin.plugin_id == plugin_spec.plugin_id
+            and item.plugin.origin.type == plugin_spec.origin.type
+            and _plugin_origin_source_id(item.plugin.origin)
+            == _plugin_origin_source_id(plugin_spec.origin)
+        ),
+        None,
+    )
+    if duplicate is not None:
+        raise _StaleAssetTarget(
+            "stale-target",
+            f"This plugin distribution already uses resource key {duplicate.resource_key}.",
+        )
+    if existing is not None and existing.plugin is None:
+        raise _StaleAssetTarget(
+            "stale-target",
+            "A legacy or non-dual-track plugin already uses this resource key.",
+        )
+    if existing is not None and existing.plugin is not None:
+        current = existing.plugin
+        if (
+            current.platform != plugin_spec.platform
+            or current.plugin_id != plugin_spec.plugin_id
+            or current.origin.type != plugin_spec.origin.type
+            or _plugin_origin_source_id(current.origin) != _plugin_origin_source_id(plugin_spec.origin)
+        ):
+            raise _StaleAssetTarget(
+                "stale-target",
+                "The resource key now belongs to a different plugin source.",
+            )
+    merged = _merge_plugin_installations(
+        existing.plugin if existing else None,
+        plugin_spec,
+        preserve_selector=preserve_selector,
+    )
+    updated = (
+        existing.model_copy(deep=True)
+        if existing is not None
+        else RegistryItem(
+            name=target_key.name,
+            kind="plugin",
+            source="external",
+            path="",
+            repo="",
+            ref="",
+            plugin=plugin_spec,
+        )
+    )
+    updated.name = target_key.name
+    updated.kind = "plugin"
+    updated.source = "external"
+    updated.path = ""
+    updated.repo = plugin_spec.origin.repo if plugin_spec.origin.type == "git" else ""
+    updated.ref = plugin_spec.origin.selector
+    updated.plugin = merged
+    if description:
+        updated.description = description
+    if existing is not None and updated.model_dump(mode="json") == existing.model_dump(mode="json"):
+        return False
+    registry.upsert(updated)
+    save_registry(registry, registry_path)
+    return True
+
+
+def _merge_plugin_installations(
+    existing: PluginSpec | None,
+    incoming: PluginSpec,
+    *,
+    preserve_selector: bool = False,
+) -> PluginSpec:
+    if existing is None or (
+        existing.platform != incoming.platform
+        or existing.plugin_id != incoming.plugin_id
+        or existing.origin.type != incoming.origin.type
+        or _plugin_origin_source_id(existing.origin) != _plugin_origin_source_id(incoming.origin)
+    ):
+        return incoming
+    merged = existing.model_copy(deep=True)
+    merged.track = incoming.track
+    incoming_origin = incoming.origin.model_copy(deep=True)
+    if preserve_selector:
+        incoming_origin.selector = existing.origin.selector
+    merged.origin = incoming_origin
+    merged.observed_version = incoming.observed_version
+    merged.dependencies = dict(incoming.dependencies)
+    by_identity: dict[tuple[str, str, str], PluginInstallation] = {}
+    for installation in [*existing.installations, *incoming.installations]:
+        project = installation.project
+        key = (
+            installation.scope,
+            project.repo if project else "",
+            project.subdir if project else "",
+        )
+        by_identity[key] = installation
+    merged.installations = list(by_identity.values())
+    return PluginSpec.model_validate(merged.model_dump(mode="json"))
 
 
 def _asset_commit_message(plan: AssetActionPlan) -> str:
@@ -2784,7 +4769,7 @@ def _current_target_assertion(
 
 
 def _copy_asset_content(source: Path, destination: Path, kind: ItemKind) -> None:
-    if source.is_file() and kind in {"rule", "prompt"}:
+    if source.is_file() and kind in {"rule", "prompt", "plugin"}:
         if destination.exists():
             _remove_asset_path(destination)
         destination.mkdir(parents=True, exist_ok=True)
@@ -3009,6 +4994,7 @@ def _load_asset_result(operation_id: str) -> AssetActionResult | None:
         "copy-to-local",
         "copy-to-remote",
         "set-platform-install-name",
+        "align-plugin-state",
     }:
         return None
     local_path = str(data.get("local_path") or "")

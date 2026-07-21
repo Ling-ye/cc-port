@@ -342,15 +342,21 @@ lpm doctor
 
 真实 `registry.yaml` 属于用户的私有资源仓库，不属于这个工具仓库。公开仓库默认忽略真实 `registry.yaml`、`skills/`、`rules/`、`prompts/`、`mcp/`、`plugins/` 和 `.claude-plugin/`。
 
-当前 registry 版本为 v6。资源唯一键为 `kind:name`；平台安装名称优先读取 `platform_install_dirs[platform]`，再回退到旧 `install_dir` 和资源名称。v5 文件在读取时无损迁移，旧名称查询只在同名资源唯一时兼容。
+当前 registry 版本为 v7。资源唯一键仍为 `kind:name`；插件新增 content/reference 双轨规格。v6 插件条目不会被猜测或重分类，仍按旧内容语义兼容读取。
 
 
 ## 统一资源清单与批量同步
 
-桌面端 **资源** 页面是本地发现、双端比较与同步的唯一入口：
+桌面端默认打开 **资源** 页面。侧栏不再提供独立“概览”和“添加资源”页；资源页是收集、
+导入、本地发现、双端比较与同步的唯一入口：
 
+- “添加资源”弹窗支持登记 GitHub 引用、导入任意本地目录或手工添加插件引用；本地目录既可手工粘贴，也可通过系统目录选择器填写。
+- 收集和导入默认推送私有资源仓库，用户可在提交前关闭“完成后推送”；成功后清单刷新并定位新增资源。
 - 每一行表示一个 `kind:name` 逻辑资源，清单是本地资产和远端私有仓库资源的并集。
-- “扫描本地”显式扫描已配置和已检测 AI 工具；扫描前本地状态显示“尚未扫描”，不会误报为不存在。
+- “扫描本地”弹窗显式选择全局环境和已保存项目；项目目录由用户添加，无 Git remote 的项目只观察、不上传。
+- 插件采用双轨管理：用户确认拥有的源码上传内容；Codex/Claude marketplace、opencode npm 和 managed 插件只保存引用、版本策略、作用域与启用状态。
+- Codex 的 `openai-bundled/chrome` 等 marketplace 插件从配置与版本清单识别为外部引用；扫描到的 cache 路径只用于观测，绝不展示或上传为源码。
+- Codex 和 Claude 的版本化 cache 永不作为上传源；第三方引用在目标机器缺失时给出安全安装指引，不复制缓存。
 - 远端描述优先显示；详情栏同时列出远端提交、路径和每个本地实例的工具、安装名、路径、所有权、内容状态与阻断原因。
 - 同一资源的相同本地副本折叠为一个逻辑资源；内容不同的多个实例保留，并在上传计划中要求选择来源。
 - 勾选一个或多个逻辑资源后，统一使用“上传所选”或“下载所选”；下载先选择一个或多个已启用 AI 工具。
@@ -376,6 +382,10 @@ lpm asset upload --all --dry-run
 lpm asset upload --resource skill:demo --yes
 lpm asset download --all --platform cursor --platform codex --dry-run
 lpm asset download --resource skill:demo --platform cursor --yes
+lpm plugin project add D:\Code\demo
+lpm plugin project list
+lpm plugin reference add --platform codex --origin marketplace --marketplace openai-bundled --plugin-id chrome
+lpm plugin delete plugin:codex-marketplace-chrome-openai-bundled --dry-run
 ```
 
 批量 choices 文件格式：
@@ -484,7 +494,7 @@ lpm-desktop-api summary {}
 lpm-desktop-api asset_inventory "{\"scan_local\":true,\"refresh_remote\":true}"
 ```
 
-接口迁移、动作参数和兼容期说明见 [资产同步 API / CLI 迁移指南](docs/asset-api-cli-migration.md)。核心状态、比较与并发语义见 [资产级双向同步规格](docs/specs/asset-sync.md)，registry 结构见 [Registry v6 规格](docs/specs/registry-v6.md)。
+接口迁移、动作参数和兼容期说明见 [资产同步 API / CLI 迁移指南](docs/asset-api-cli-migration.md)。核心状态、比较与并发语义见 [资产级双向同步规格](docs/specs/asset-sync.md)，registry 结构见 [Registry v7 规格](docs/specs/registry-v7.md)。
 
 MCP Server：
 

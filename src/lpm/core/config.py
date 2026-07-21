@@ -86,12 +86,25 @@ class StateConfig:
 
 
 @dataclass
+class PluginProjectConfig:
+    id: str
+    path: str
+    repo: str = ""
+    subdir: str = ""
+
+    @property
+    def path_value(self) -> Path:
+        return Path(self.path).expanduser()
+
+
+@dataclass
 class Config:
     github: GithubConfig = field(default_factory=GithubConfig)
     git: GitConfig = field(default_factory=GitConfig)
     install: InstallConfig = field(default_factory=InstallConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     state: StateConfig = field(default_factory=StateConfig)
+    plugin_projects: list[PluginProjectConfig] = field(default_factory=list)
     platforms: PlatformsConfig = field(default_factory=PlatformsConfig)
     source_path: Path | None = None
 
@@ -136,6 +149,7 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
     install_data = data.get("install", {}) or {}
     resources_data = data.get("resources", {}) or {}
     state_data = data.get("state", {}) or {}
+    plugin_projects_data = data.get("plugin_projects", []) or []
 
     plat_cfg = load_platforms_from_dict(data, new_config=not existing_config)
     repo_prefix_default = LEGACY_REPO_PREFIX if existing_config else DEFAULT_REPO_PREFIX
@@ -190,6 +204,18 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
                 "state.max_backup_mb",
             ),
         ),
+        plugin_projects=[
+            PluginProjectConfig(
+                id=str(item.get("id", "") or "").strip(),
+                path=str(item.get("path", "") or "").strip(),
+                repo=str(item.get("repo", "") or "").strip(),
+                subdir=str(item.get("subdir", "") or "").strip(),
+            )
+            for item in plugin_projects_data
+            if isinstance(item, dict)
+            and str(item.get("id", "") or "").strip()
+            and str(item.get("path", "") or "").strip()
+        ],
         platforms=plat_cfg,
         source_path=cfg_path if existing_config else None,
     )
@@ -272,6 +298,14 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         lines.append(f'rules_dir = "{_escape(profile.rules_dir)}"')
         if profile.plugins_dir:
             lines.append(f'plugins_dir = "{_escape(profile.plugins_dir)}"')
+        lines.append("")
+
+    for project in cfg.plugin_projects:
+        lines.append("[[plugin_projects]]")
+        lines.append(f'id = "{_escape(project.id)}"')
+        lines.append(f'path = "{_escape(project.path)}"')
+        lines.append(f'repo = "{_escape(project.repo)}"')
+        lines.append(f'subdir = "{_escape(project.subdir)}"')
         lines.append("")
 
     out.write_text("\n".join(lines), encoding="utf-8")

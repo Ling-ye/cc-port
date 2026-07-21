@@ -13,20 +13,17 @@ import { navItems, type View } from "@/app/navigation";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import { TaskCenterPanel, ToastViewport } from "@/components/TaskFeedback";
-import { AddResourceView } from "@/features/add/AddResourceView";
-import { DashboardView } from "@/features/dashboard/DashboardView";
 import { GuideView } from "@/features/guide/GuideView";
 import { OperationsView } from "@/features/operations/OperationsView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
 import { SettingsView } from "@/features/settings/SettingsView";
-import type { AssetInventory, RegistryItem, Summary } from "@/types/lpm";
+import type { AssetInventory, Summary } from "@/types/lpm";
 
 export default function App() {
   const { runTask, runningCount } = useTaskCenter();
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>("resources");
   const [language, setLanguage] = useState<Language>(() => readStoredLanguage());
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [items, setItems] = useState<Array<Pick<RegistryItem, "name" | "kind">>>([]);
   const [assetInventory, setAssetInventory] = useState<AssetInventory | null>(null);
   const [selectedResourceKey, setSelectedResourceKey] = useState<string>("");
   const [busy, setBusy] = useState(false);
@@ -44,10 +41,6 @@ export default function App() {
     ]);
     setSummary(nextSummary);
     setAssetInventory(inventory);
-    setItems(inventory.resources.map((resource) => ({
-      name: resource.name,
-      kind: resource.kind,
-    })));
     setSelectedResourceKey((current) => (
       inventory.resources.some((resource) => resource.resource_key === current)
         ? current
@@ -136,9 +129,6 @@ export default function App() {
         />
         {error ? <Banner tone="danger" text={error} /> : null}
 
-        {view === "dashboard" ? (
-          <DashboardView summary={summary} items={items} t={t} />
-        ) : null}
         {view === "resources" ? (
           <ResourcesView
             inventory={assetInventory}
@@ -149,13 +139,6 @@ export default function App() {
             onChanged={() => refresh(false, Boolean(assetInventory?.scanned_local))}
             onError={setError}
             onOpenSettings={() => setView("settings")}
-          />
-        ) : null}
-        {view === "add" ? (
-          <AddResourceView
-            t={t}
-            onChanged={() => refresh(false)}
-            onError={setError}
           />
         ) : null}
         {view === "operations" ? <OperationsView t={t} /> : null}

@@ -2,8 +2,10 @@ import {
   Download,
   ExternalLink,
   FolderOpen,
+  PackagePlus,
   RefreshCcw,
   Upload,
+  Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -13,6 +15,9 @@ import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
+import { AddResourceDialog } from "@/features/resources/AddResourceDialog";
+import { ScanLocalDialog } from "@/features/resources/ScanLocalDialog";
+import { PluginDeleteDialog } from "@/features/resources/PluginDeleteDialog";
 import type {
   AssetBatchChoice,
   AssetBatchPlan,
@@ -53,6 +58,7 @@ const remoteStatuses: Array<"all" | AssetRemoteStatus> = [
   "read-only",
   "unavailable",
 ];
+const emptyResources: AssetResourceRow[] = [];
 
 export function ResourcesView({
   inventory,
@@ -82,8 +88,10 @@ export function ResourcesView({
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [batchDirection, setBatchDirection] = useState<"upload" | "download" | null>(null);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [scanDialogOpen, setScanDialogOpen] = useState(false);
 
-  const resources = inventory?.resources ?? [];
+  const resources = inventory?.resources ?? emptyResources;
   const tools = useMemo(
     () => Array.from(new Set(resources.flatMap((item) => item.local_instances.map((instance) => instance.platform)))).sort(),
     [resources],
@@ -104,29 +112,11 @@ export function ResourcesView({
 
   useEffect(() => {
     const valid = new Set(resources.map((item) => item.resource_key));
-    setSelectedKeys((current) => current.filter((key) => valid.has(key)));
+    setSelectedKeys((current) => {
+      const next = current.filter((key) => valid.has(key));
+      return next.length === current.length ? current : next;
+    });
   }, [resources]);
-
-  async function scanLocal() {
-    setBusy(true);
-    try {
-      const next = await runTask({
-        kind: "asset-scan-local",
-        title: t("assets.scanLocal"),
-        action: () => lpmAction<AssetInventory>("asset_inventory", {
-          scan_local: true,
-          refresh_remote: true,
-        }),
-        successMessage: t("assets.scanComplete"),
-        retryPolicy: "safe-read",
-      });
-      onInventory(next);
-    } catch {
-      // Task center owns tracked feedback.
-    } finally {
-      setBusy(false);
-    }
-  }
 
   function toggleSelected(resourceKey: string) {
     setSelectedKeys((current) => current.includes(resourceKey)
@@ -150,6 +140,18 @@ export function ResourcesView({
     setBatchDirection(direction);
   }
 
+  async function handleResourceAdded(resourceKey: string) {
+    setAddDialogOpen(false);
+    setKindFilter("all");
+    setStatusFilter("all");
+    setLocalFilter("all");
+    setRemoteFilter("all");
+    setToolFilter("all");
+    setSelectedKeys([]);
+    onSelect(resourceKey);
+    await Promise.resolve(onChanged());
+  }
+
   return (
     <section className="asset-unified-view">
       <div className="panel asset-inventory-panel">
@@ -159,8 +161,11 @@ export function ResourcesView({
             <small>{inventory?.branch || "-"} / {shortCommit(inventory?.remote_commit)}</small>
           </div>
           <div className="asset-toolbar">
-            <button className="secondary" onClick={() => void scanLocal()} disabled={busy}>
-              <RefreshCcw size={16} />{busy ? t("common.working") : t("assets.scanLocal")}
+            <button className="secondary" onClick={() => setAddDialogOpen(true)} disabled={busy}>
+              <PackagePlus size={16} />{t("add.title")}
+            </button>
+            <button className="secondary" onClick={() => setScanDialogOpen(true)} disabled={busy}>
+              <RefreshCcw size={16} />{t("assets.scanLocal")}
             </button>
             <button className="secondary" onClick={() => openBatch("upload")} disabled={busy || !selectedKeys.length}>
               <Upload size={16} />{t("assets.uploadSelected")}
@@ -245,7 +250,7 @@ export function ResourcesView({
         </div>
       </div>
 
-      <ResourceDetail resource={selectedResource} t={t} onError={onError} />
+      <ResourceDetail resource={selectedResource} t={t} onError={onError} onChanged={onChanged} />
 
       {batchDirection ? (
         <BatchDialog
@@ -258,6 +263,25 @@ export function ResourcesView({
           onDone={async () => {
             setBatchDirection(null);
             await Promise.resolve(onChanged());
+          }}
+        />
+      ) : null}
+
+      {addDialogOpen ? (
+        <AddResourceDialog
+          t={t}
+          onClose={() => setAddDialogOpen(false)}
+          onAdded={handleResourceAdded}
+        />
+      ) : null}
+
+      {scanDialogOpen ? (
+        <ScanLocalDialog
+          t={t}
+          onClose={() => setScanDialogOpen(false)}
+          onScanned={(next) => {
+            onInventory(next);
+            setScanDialogOpen(false);
           }}
         />
       ) : null}
@@ -285,11 +309,14 @@ function ResourceDetail({
   resource,
   t,
   onError,
+  onChanged,
 }: {
   resource?: AssetResourceRow;
   t: TFunction;
   onError: (message: string) => void;
+  onChanged: () => Promise<void> | void;
 }) {
+  const [deleteOpen, setDeleteOpen] = useState(false);
   if (!resource) {
     return <aside className="panel asset-unified-detail"><EmptyState text={t("assets.noSelection")} /></aside>;
   }
@@ -310,6 +337,23 @@ function ResourceDetail({
         <div><dt>{t("assets.remoteColumn")}</dt><dd>{remoteStatusLabel(resource.remote_status, t)}</dd></div>
         <div><dt>{t("assets.localColumn")}</dt><dd>{localStatusLabel(resource.local_status, t)}</dd></div>
       </dl>
+      {resource.kind === "plugin" ? (
+        <>
+          <dl className="description-list asset-description-list plugin-description-list">
+            <div><dt>{t("plugin.track")}</dt><dd>{resource.plugin_track === "content" ? t("plugin.trackContent") : t("plugin.trackReference")}</dd></div>
+            <div><dt>{t("plugin.platform")}</dt><dd>{resource.plugin_platform || "-"}</dd></div>
+            <div><dt>{t("plugin.originType")}</dt><dd>{resource.plugin_source_kind || "-"}</dd></div>
+            <div><dt>{t("plugin.source")}</dt><dd>{resource.plugin_source_id || "-"}</dd></div>
+            <div><dt>{t("plugin.selector")}</dt><dd>{resource.plugin_selector || t("plugin.floating")}</dd></div>
+            <div><dt>{t("plugin.observedVersion")}</dt><dd>{resource.plugin_observed_version || "-"}</dd></div>
+          </dl>
+          {resource.remote.exists ? (
+            <button className="danger" type="button" onClick={() => setDeleteOpen(true)}>
+              <Trash2 size={15} />{t("plugin.delete")}
+            </button>
+          ) : null}
+        </>
+      ) : null}
       {resource.metadata_differences.includes("description") ? (
         <div className="asset-description-compare">
           <div><strong>{t("assets.remoteDescription")}</strong><p>{resource.remote.description || "-"}</p></div>
@@ -333,6 +377,13 @@ function ResourceDetail({
             <small>{instance.install_name}</small>
             <small>{instance.path || "-"}</small>
             <small>{instance.ownership}</small>
+            {resource.kind === "plugin" ? (
+              <>
+                <small>{instance.track === "content" ? t("plugin.trackContent") : t("plugin.trackReference")} / {instance.scope || "-"}</small>
+                <small>{instance.source_kind || "-"}: {instance.source_id || "-"}</small>
+                <small>{instance.selector || t("plugin.floating")} · {instance.observed_version || "-"}</small>
+              </>
+            ) : null}
             {[...instance.warnings, ...instance.blockers].map((message) => (
               <small className="asset-instance-warning" key={message}>{message}</small>
             ))}
@@ -346,6 +397,17 @@ function ResourceDetail({
         {!resource.local_instances.length ? <EmptyState text={localStatusLabel(resource.local_status, t)} /> : null}
       </div>
       {[...resource.warnings, ...resource.blockers].map((message) => <Banner key={message} tone="danger" text={message} />)}
+      {deleteOpen ? (
+        <PluginDeleteDialog
+          resourceKey={resource.resource_key}
+          t={t}
+          onClose={() => setDeleteOpen(false)}
+          onDone={async () => {
+            setDeleteOpen(false);
+            await Promise.resolve(onChanged());
+          }}
+        />
+      ) : null}
     </aside>
   );
 }
@@ -461,7 +523,8 @@ function BatchDialog({
   }
 
   async function applyPlan() {
-    if (!plan || !plan.executable_count || plan.blocked_count) return;
+    const hasManual = Boolean(plan?.items.some((item) => item.disposition === "manual"));
+    if (!plan || (!plan.executable_count && !hasManual) || plan.blocked_count) return;
     setBusy(true);
     setError("");
     try {
@@ -483,6 +546,10 @@ function BatchDialog({
         setError(t("assets.stalePlan"));
         return;
       }
+      if (result.status === "needs-action" || result.status === "partial") {
+        setError(result.results.filter((item) => item.status === "needs-action").map((item) => item.message).join("; "));
+        return;
+      }
       await onDone();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -495,7 +562,7 @@ function BatchDialog({
     .map((key) => inventory?.resources.find((item) => item.resource_key === key))
     .filter((item): item is AssetResourceRow => Boolean(item));
   const planGroups = plan
-    ? (["create", "update", "rename", "unchanged", "skip", "blocked"] as const)
+    ? (["create", "update", "rename", "unchanged", "skip", "manual", "blocked"] as const)
         .map((disposition) => ({
           disposition,
           items: plan.items.filter((item) => item.disposition === disposition),
@@ -601,7 +668,7 @@ function BatchDialog({
           <button
             className="primary"
             onClick={() => void applyPlan()}
-            disabled={busy || !plan || !plan.executable_count || Boolean(plan.blocked_count)}
+            disabled={busy || !plan || (!plan.executable_count && !plan.items.some((item) => item.disposition === "manual")) || Boolean(plan.blocked_count)}
           >
             {t("assets.applyBatch")}
           </button>
@@ -692,6 +759,55 @@ function BatchChoiceEditor({
                 </select>
               </label>
             ) : null}
+            {direction === "upload" && resource.kind === "plugin" && !resource.remote.exists && resource.plugin_track === "content" ? (
+              <div className="plugin-ownership-choice">
+                <label>
+                  <span>{t("plugin.firstUploadChoice")}</span>
+                  <select
+                    value={choice.plugin_track || ""}
+                    onChange={(event) => onChange(resource.resource_key, platform, {
+                      plugin_track: event.target.value as AssetBatchChoice["plugin_track"],
+                      ownership_confirmed: false,
+                    })}
+                  >
+                    <option value="">-</option>
+                    <option value="content">{t("plugin.confirmOwnedSource")}</option>
+                    <option value="reference">{t("plugin.saveAsReference")}</option>
+                    <option value="skip">{t("plugin.skip")}</option>
+                  </select>
+                </label>
+                {choice.plugin_track === "content" ? (
+                  <>
+                    <label className="checkline">
+                      <input type="checkbox" checked={Boolean(choice.ownership_confirmed)} onChange={(event) => onChange(resource.resource_key, platform, { ownership_confirmed: event.target.checked })} />
+                      <span>{t("plugin.ownershipConfirmation")}</span>
+                    </label>
+                    {resource.plugin_platform === "opencode" ? (
+                      <label>
+                        <span>{t("plugin.dependencies")}</span>
+                        <textarea
+                          value={dependencyText(choice.plugin_dependencies)}
+                          placeholder="package=^1.0.0"
+                          onChange={(event) => onChange(resource.resource_key, platform, { plugin_dependencies: parseDependencies(event.target.value) })}
+                        />
+                      </label>
+                    ) : null}
+                  </>
+                ) : null}
+                {choice.plugin_track === "reference" ? (
+                  <div className="plugin-reference-origin-inline">
+                    <label>
+                      <span>{t("plugin.originType")}</span>
+                      <select value={choice.reference_origin?.type || "marketplace"} onChange={(event) => onChange(resource.resource_key, platform, { reference_origin: { ...choice.reference_origin, type: event.target.value } })}>
+                        <option value="marketplace">marketplace</option><option value="npm">npm</option><option value="git">Git</option>
+                      </select>
+                    </label>
+                    <label><span>{t("plugin.source")}</span><input value={referenceOriginValue(choice)} onChange={(event) => onChange(resource.resource_key, platform, { reference_origin: updateReferenceOrigin(choice.reference_origin, event.target.value) })} /></label>
+                    <label><span>{t("plugin.selector")}</span><input value={choice.reference_origin?.selector || ""} onChange={(event) => onChange(resource.resource_key, platform, { reference_origin: { ...choice.reference_origin, selector: event.target.value } })} /></label>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <label>
               <span>{t("assets.resolution")}</span>
               <select
@@ -717,6 +833,35 @@ function BatchChoiceEditor({
 
 function StatusPill({ value, label }: { value: string; label: string }) {
   return <span className={`asset-status status-${value}`}>{label}</span>;
+}
+
+function referenceOriginValue(choice: AssetBatchChoice): string {
+  const origin = choice.reference_origin ?? {};
+  if (origin.type === "npm") return origin.package ?? "";
+  if (origin.type === "git") return origin.repo ?? "";
+  return origin.marketplace ?? "";
+}
+
+function updateReferenceOrigin(
+  current: Record<string, string> | undefined,
+  value: string,
+): Record<string, string> {
+  const origin: Record<string, string> = { ...current, type: current?.type || "marketplace" };
+  if (origin.type === "npm") origin.package = value;
+  else if (origin.type === "git") origin.repo = value;
+  else origin.marketplace = value;
+  return origin;
+}
+
+function dependencyText(dependencies?: Record<string, string>): string {
+  return Object.entries(dependencies ?? {}).map(([name, selector]) => `${name}=${selector}`).join("\n");
+}
+
+function parseDependencies(value: string): Record<string, string> {
+  return Object.fromEntries(value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const marker = line.indexOf("=");
+    return marker > 0 ? [line.slice(0, marker).trim(), line.slice(marker + 1).trim()] : [line, ""];
+  }).filter(([, selector]) => Boolean(selector)));
 }
 
 function batchChoiceId(resourceKey: string, platform = "", slot = ""): string {
@@ -750,6 +895,7 @@ function batchDispositionLabel(value: AssetBatchPlan["items"][number]["dispositi
     rename: "assets.batchRename",
     unchanged: "assets.batchUnchanged",
     skip: "assets.batchSkip",
+    manual: "assets.batchManual",
     blocked: "assets.batchBlocked",
   }[value];
   return t(key as Parameters<TFunction>[0]);

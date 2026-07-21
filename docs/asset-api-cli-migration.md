@@ -16,6 +16,12 @@ asset_batch_plan
 asset_batch_apply
 asset_action_plan
 asset_action_apply
+plugin_projects_list
+plugin_projects_add
+plugin_projects_remove
+plugin_reference_add
+plugin_delete_plan
+plugin_delete_apply
 ```
 
 CLI：
@@ -29,6 +35,10 @@ lpm asset download --resource skill:demo --platform cursor --dry-run
 lpm asset download --all --platform cursor --platform codex --yes
 lpm asset plan download --kind skill --name demo --platform cursor
 lpm asset apply <operation-id>
+lpm plugin project list
+lpm plugin project add <path>
+lpm plugin reference add --platform codex --origin marketplace --marketplace openai-bundled --plugin-id chrome
+lpm plugin delete plugin:codex-marketplace-chrome-openai-bundled --dry-run
 ```
 
 机器调用可使用 `--json`；批量命令支持重复 `--resource`、`--all`、`--dry-run`、`--yes` 和 YAML `--choices`，下载额外支持重复 `--platform`。旧 `lpm env` 命令已删除。
@@ -42,6 +52,8 @@ lpm asset apply <operation-id>
 ```json
 {
   "scan_local": true,
+  "scan_global": true,
+  "project_ids": ["project-id"],
   "refresh_remote": true
 }
 ```
@@ -87,7 +99,9 @@ lpm asset apply <operation-id>
 }
 ```
 
-`asset_batch_apply` 使用相同字段，并增加计划阶段返回的 `plan_hash`。批次不接受前端路径、指纹或可写性断言。
+`asset_batch_apply` 使用相同字段，并增加计划阶段返回的 `plan_hash`。批次不接受前端路径、指纹或可写性断言。插件内容候选的 choice 可携带 `plugin_track=content|reference`、`ownership_confirmed`、`reference_origin` 与 OpenCode content 专用的 `plugin_dependencies`；reference 来源仍由服务端按扫描结果重验。
+
+插件引用缺失时计划返回 `manual` disposition 和平台安装指引。仅含手工项的结果为 `needs-action`，与已执行项并存时为 `partial`。
 
 旧单项接口继续接受 `kind`、`name` 和 `platform`，内部复用相同安全语义。新批量接口只接受逻辑资源键；出现多个不同本地版本时，通过 choices 中的 `local_instance_id` 选择来源。
 
@@ -100,6 +114,7 @@ lpm asset apply <operation-id>
 | `copy-to-local` | 远端版本以用户输入的新名称安装为本地副本 |
 | `copy-to-remote` | 本地版本以用户输入的新名称创建远端副本 |
 | `set-platform-install-name` | 单独提交平台安装别名，不组合本地写入 |
+| `align-plugin-state` | 对齐已安装可写插件引用的启用状态或声明；缺失与 managed 实例不会进入此动作 |
 
 缺失状态不映射为删除。卸载和删除继续使用独立入口。
 
@@ -130,7 +145,7 @@ lpm resource sync-*
 
 旧工作区存在 dirty、ahead、diverged、wrong-branch 或未处理旧同步计划时，新资产模型仍允许读取和扫描，但阻断远端写入。先使用兼容命令提交、取消或清理旧状态。
 
-## Registry v6 兼容
+## Registry v7 兼容
 
 资源身份从名称升级为 `kind:name`。旧名称查询只在同名资源唯一时继续工作；如果 `skill:demo` 和 `prompt:demo` 同时存在，调用方必须传入 `kind`。
 
@@ -141,3 +156,5 @@ lpm resource sync-*
 3. 资源 `name`
 
 迁移不会自动删除旧同步计划、临时 worktree 或本地资源仓库内容。
+
+v6 插件条目不会被猜测为 content 或 reference；它们继续使用旧内容语义。新插件条目使用 `plugin` 规格记录轨道、平台、来源、版本策略和多作用域安装意图。扫描器不知道 selector 时保留已有策略；marketplace 来源只保存可移植身份。完整字段见 [Registry v7 规格](specs/registry-v7.md)。

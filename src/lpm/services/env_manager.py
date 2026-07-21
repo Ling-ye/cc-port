@@ -9,9 +9,11 @@ from typing import Any
 
 import yaml
 
+from ..core.config import Config
 from ..core.models import ItemKind
 from ..core.tool_adapters import TOOL_ADAPTERS
 from .mcp_installer import list_mcp_servers
+from .plugin_management import DiscoveredPlugin, discover_plugins
 from .publisher import _slug
 from .resource_discovery import DiscoveredResource, discover_resources
 
@@ -54,6 +56,7 @@ class EnvDiscoveryResult:
     tools: list[DiscoveredTool]
     resources: list[DiscoveredResource]
     mcp_servers: list[DiscoveredMcpServer]
+    plugins: list[DiscoveredPlugin] = field(default_factory=list)
 
 
 TOOL_SPECS: tuple[ToolScanSpec, ...] = tuple(
@@ -79,16 +82,37 @@ def discover_environment(
     *,
     home: Path | None = None,
     registry_path_override: Path | None = None,
+    config: Config | None = None,
+    scan_global: bool = True,
+    project_ids: list[str] | None = None,
 ) -> EnvDiscoveryResult:
     """Discover local tools, logical resource candidates, and MCP entries without writing."""
     effective_home = home or Path.home()
     tools = [_discover_tool(spec, home=effective_home) for spec in TOOL_SPECS]
-    resources = _discover_tool_resources(
-        tools,
-        registry_path_override=registry_path_override,
+    resources = (
+        _discover_tool_resources(
+            tools,
+            registry_path_override=registry_path_override,
+        )
+        if scan_global
+        else []
     )
-    mcp_servers = _discover_mcp_servers(tools)
-    return EnvDiscoveryResult(tools=tools, resources=resources, mcp_servers=mcp_servers)
+    # Plugin candidates are owned by platform adapters so cache installations can
+    # never be mistaken for uploadable source content by the generic scanner.
+    resources = [resource for resource in resources if resource.kind != "plugin"]
+    mcp_servers = _discover_mcp_servers(tools) if scan_global else []
+    plugins = discover_plugins(
+        config or Config(),
+        home=effective_home,
+        scan_global=scan_global,
+        project_ids=project_ids,
+    )
+    return EnvDiscoveryResult(
+        tools=tools,
+        resources=resources,
+        mcp_servers=mcp_servers,
+        plugins=plugins,
+    )
 
 
 def _discover_tool(spec: ToolScanSpec, *, home: Path) -> DiscoveredTool:

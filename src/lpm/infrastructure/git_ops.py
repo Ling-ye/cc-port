@@ -408,6 +408,14 @@ def current_remote_url(path: Path, remote: str = "origin") -> str | None:
     return strip_url_credentials(value) if value else None
 
 
+def repository_root(path: Path) -> Path | None:
+    """Return the worktree root containing *path*, if any."""
+    res = _run(["rev-parse", "--show-toplevel"], cwd=path, check=False)
+    if res.returncode != 0 or not res.stdout.strip():
+        return None
+    return Path(res.stdout.strip()).resolve()
+
+
 def common_dir(path: Path) -> Path | None:
     """Return the canonical Git common directory for repository identity checks."""
     res = _run(["rev-parse", "--git-common-dir"], cwd=path, check=False)
