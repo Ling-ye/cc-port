@@ -329,7 +329,10 @@ def test_logical_inventory_folds_identical_instances_and_preserves_variants(
     cfg = Config(
         git=GitConfig(executable=str(GIT)),
         install=InstallConfig(target=str(tmp_path / "install-cache")),
-        resources=ResourcesConfig(branch="main"),
+        resources=ResourcesConfig(
+            branch="main",
+            local_path=str(tmp_path / "legacy-workspace"),
+        ),
         platforms=PlatformsConfig(
             profiles=[
                 PlatformProfile(name="cursor", enabled=True, skills_dir=str(cursor.parent)),
