@@ -429,6 +429,68 @@ function Get-LpmMinimalWindowsPath {
     ) -join ";"
 }
 
+function Get-LpmVisualStudioTransientVariableNames {
+    # Variables that make a second VsDevCmd.bat entry expand past cmd.exe's
+    # 8191-character limit when INCLUDE/EXTERNAL_INCLUDE/LIB* are re-prepended,
+    # or that pin an old fat PATH via __VSCMD_PREINIT_PATH.
+    $names = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($entry in @(Get-ChildItem Env: -ErrorAction SilentlyContinue)) {
+        $name = [string]$entry.Name
+        if ($name -like "__VSCMD_*" -or $name -like "VSCMD_*") {
+            $key = $name.ToLowerInvariant()
+            if (-not $seen.ContainsKey($key)) {
+                $names.Add($name)
+                $seen[$key] = $true
+            }
+        }
+    }
+    foreach ($name in @(
+            "INCLUDE",
+            "LIB",
+            "LIBPATH",
+            "EXTERNAL_INCLUDE",
+            "VSINSTALLDIR",
+            "VCINSTALLDIR",
+            "VS170COMNTOOLS",
+            "DevEnvDir",
+            "WindowsSdkDir",
+            "WindowsSDKVersion",
+            "WindowsSdkBinPath",
+            "WindowsSdkVerBinPath",
+            "WindowsSDK_ExecutablePath_x86",
+            "WindowsSDK_ExecutablePath_x64",
+            "UniversalCRTSdkDir",
+            "WindowsLibPath",
+            "UCRTVersion",
+            "NETFXSDKDir",
+            "VCToolsInstallDir",
+            "VCToolsRedistDir",
+            "VCToolsVersion",
+            "VisualStudioVersion",
+            "FSHARPINSTALLDIR",
+            "FrameworkDir",
+            "FrameworkDir64",
+            "FrameworkVersion",
+            "FrameworkVersion64",
+            "Framework40Version",
+            "IFCPATH",
+            "ExtensionSdkDir",
+            "HTMLHelpDir",
+            "VCIDEInstallDir"
+        )) {
+        $key = $name.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) {
+            continue
+        }
+        if ($null -ne [Environment]::GetEnvironmentVariable($name, "Process")) {
+            $names.Add($name)
+            $seen[$key] = $true
+        }
+    }
+    return @($names)
+}
+
 function Enable-LpmVisualStudioEnvironment {
     param([Parameter(Mandatory = $true)][string]$InstallationPath)
 
@@ -439,11 +501,17 @@ function Enable-LpmVisualStudioEnvironment {
     $commandProcessor = if ($env:ComSpec) { $env:ComSpec } else { Join-Path $env:SystemRoot "System32\cmd.exe" }
     $command = '"' + $vsDevCmd + '" -no_logo -arch=x64 -host_arch=x64 >nul && set'
 
-    # VsDevCmd.bat expands PATH inside cmd.exe. A Conda/tool-bloated process PATH
-    # easily crosses the 8191-character command-line limit ("输入行太长"). Run the
-    # bat with a minimal Windows PATH, then merge MSVC directories back onto the
-    # caller's PATH so node/cargo/python entries are preserved.
+    # VsDevCmd.bat expands PATH/INCLUDE/EXTERNAL_INCLUDE inside cmd.exe. A Conda
+    # bloated PATH, or leftover VS vars from a previous import in the same shell
+    # (especially __VSCMD_PREINIT_PATH / EXTERNAL_INCLUDE), crosses the 8191
+    # character limit ("输入行太长"). Scrub those vars, run with a minimal PATH,
+    # then merge MSVC directories back onto the caller's PATH.
     $savedPath = $env:PATH
+    $savedTransient = @{}
+    foreach ($name in Get-LpmVisualStudioTransientVariableNames) {
+        $savedTransient[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+        [Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
     $env:PATH = Get-LpmMinimalWindowsPath
     try {
         $result = Invoke-LpmNative -FilePath $commandProcessor -ArgumentList @("/d", "/s", "/c", $command) -Capture -Description "Visual Studio developer environment"
@@ -455,6 +523,11 @@ function Enable-LpmVisualStudioEnvironment {
             $name = $Matches[1]
             $value = $Matches[2]
             if ($name.StartsWith("=")) {
+                continue
+            }
+            # Never persist VsDevCmd internal bookmarks into the parent process;
+            # they poison the next import by restoring an old fat PATH/INCLUDE.
+            if ($name -like "__VSCMD_*" -or $name -like "VSCMD_*") {
                 continue
             }
             if ($name -ieq "Path") {
@@ -469,6 +542,9 @@ function Enable-LpmVisualStudioEnvironment {
         }
     } catch {
         $env:PATH = $savedPath
+        foreach ($name in $savedTransient.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $savedTransient[$name], "Process")
+        }
         throw
     }
 
@@ -632,6 +708,7 @@ Export-ModuleMember -Function @(
     "Get-LpmRustTools",
     "Get-LpmVisualStudioPath",
     "Get-LpmMinimalWindowsPath",
+    "Get-LpmVisualStudioTransientVariableNames",
     "Get-LpmWinget",
     "Get-LpmWingetHelpUrl",
     "Get-LpmWindowsPackageArtifacts",

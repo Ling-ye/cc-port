@@ -132,7 +132,8 @@ Pop-Location
 
 ### `Visual Studio developer environment failed` / `输入行太长`
 
-- [KNOWN] 根因是当前进程 PATH（常见于 Conda `base` + 多层工具链）过长，`VsDevCmd.bat` 在 cmd.exe 内展开 PATH 时超过 8191 字符限制。脚本会用最小 Windows PATH 调用 `VsDevCmd.bat`，再把 MSVC 目录合并回原 PATH。置信度：HIGH。
+- [KNOWN] 根因是 cmd.exe 8191 字符限制。常见触发：Conda `base` 等把 PATH 撑得很长；或同一 PowerShell 会话里上次导入留下的 `__VSCMD_PREINIT_PATH` / `EXTERNAL_INCLUDE` / `LIBPATH` 在再次调用 `VsDevCmd.bat` 时被再次拼接。脚本会在最小 Windows PATH 下清除这些瞬时变量后调用 `VsDevCmd.bat`，合并 MSVC 目录回原 PATH，且不把 `__VSCMD_*` 写回父进程。置信度：HIGH。
+- [KNOWN] 若仍失败，新开一个未加载过 VS 环境的 PowerShell 窗口后重试同一命令。置信度：HIGH。
 
 ### Python 或 npm 首次安装很慢
 

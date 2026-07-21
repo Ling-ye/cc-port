@@ -206,8 +206,10 @@ try {
     if ($visualStudioForPathTest) {
         Invoke-Test "VsDevCmd import tolerates oversized PATH" {
             $savedPath = $env:PATH
-            $savedInclude = $env:INCLUDE
-            $savedLib = $env:LIB
+            $savedTransient = @{}
+            foreach ($name in Get-LpmVisualStudioTransientVariableNames) {
+                $savedTransient[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+            }
             try {
                 $pad = (1..80 | ForEach-Object {
                     "C:\LpmPathPad\very\long\directory\name\segment$_\Scripts"
@@ -218,14 +220,55 @@ try {
                 $link = Resolve-LpmExecutable -Names @("link.exe")
                 Assert-True -Condition ($null -ne $link) -Message "link.exe must resolve after fat-PATH VsDevCmd import"
                 Assert-True -Condition ($env:PATH -like "*LpmPathPad*") -Message "Caller PATH entries must be preserved"
+                Assert-True -Condition ([string]::IsNullOrEmpty($env:__VSCMD_PREINIT_PATH)) -Message "__VSCMD_PREINIT_PATH must not pollute the parent process"
             } finally {
                 $env:PATH = $savedPath
-                if ($null -eq $savedInclude) { Remove-Item Env:INCLUDE -ErrorAction SilentlyContinue } else { $env:INCLUDE = $savedInclude }
-                if ($null -eq $savedLib) { Remove-Item Env:LIB -ErrorAction SilentlyContinue } else { $env:LIB = $savedLib }
+                foreach ($name in @(Get-LpmVisualStudioTransientVariableNames) + @($savedTransient.Keys)) {
+                    if ($savedTransient.ContainsKey($name)) {
+                        [Environment]::SetEnvironmentVariable($name, $savedTransient[$name], "Process")
+                    } else {
+                        [Environment]::SetEnvironmentVariable($name, $null, "Process")
+                    }
+                }
+            }
+        }
+
+        Invoke-Test "VsDevCmd re-entry survives leftover EXTERNAL_INCLUDE" {
+            $savedPath = $env:PATH
+            $savedTransient = @{}
+            foreach ($name in Get-LpmVisualStudioTransientVariableNames) {
+                $savedTransient[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+            }
+            try {
+                Enable-LpmVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
+                # Poison the process the way a previous broken import did: keep a
+                # huge EXTERNAL_INCLUDE and __VSCMD_PREINIT_PATH, then re-enter.
+                $env:EXTERNAL_INCLUDE = ((1..120 | ForEach-Object {
+                    "C:\LpmExtInclude\very\long\include\path\segment$_"
+                }) -join ";")
+                $env:__VSCMD_PREINIT_PATH = $env:PATH
+                $env:LIBPATH = ((1..80 | ForEach-Object {
+                    "C:\LpmLibPath\very\long\lib\path\segment$_"
+                }) -join ";")
+                Assert-True -Condition ($env:EXTERNAL_INCLUDE.Length -gt 4000) -Message "EXTERNAL_INCLUDE poison must be large"
+                Enable-LpmVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
+                $link = Resolve-LpmExecutable -Names @("link.exe")
+                Assert-True -Condition ($null -ne $link) -Message "link.exe must resolve after poisoned re-entry"
+                Assert-True -Condition ([string]::IsNullOrEmpty($env:__VSCMD_PREINIT_PATH)) -Message "re-entry must not leave __VSCMD_PREINIT_PATH"
+            } finally {
+                $env:PATH = $savedPath
+                foreach ($name in @(Get-LpmVisualStudioTransientVariableNames) + @($savedTransient.Keys) + @("EXTERNAL_INCLUDE", "__VSCMD_PREINIT_PATH", "LIBPATH")) {
+                    if ($savedTransient.ContainsKey($name)) {
+                        [Environment]::SetEnvironmentVariable($name, $savedTransient[$name], "Process")
+                    } else {
+                        [Environment]::SetEnvironmentVariable($name, $null, "Process")
+                    }
+                }
             }
         }
     } else {
         Write-Host "  SKIP VsDevCmd import tolerates oversized PATH (Visual Studio not installed)"
+        Write-Host "  SKIP VsDevCmd re-entry survives leftover EXTERNAL_INCLUDE (Visual Studio not installed)"
     }
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
