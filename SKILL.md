@@ -1,6 +1,6 @@
 ---
 name: lpm
-description: Publish, register, install, sync and discover AI agent resources (skills, MCP servers, rules) across Cursor, Claude Code and other AI coding platforms through the LPM MCP server. Use when the user wants to publish a local skill or MCP config to GitHub, register a third-party resource, install or update all resources on a new machine, check for updates, migrate their agent environment, link skills to a project for auto-discovery, or search for available skills. Triggers include phrases like "publish/upload/share this skill", "add/track/collect this skill repo", "install my skills on this machine", "sync skills", "migrate skills", "add MCP server", "register MCP", "link skills", "search skills", "lpm", "发布 skill", "上传 skill", "登记 skill", "迁移技能", "同步技能", "搜索技能", "链接技能", "添加 MCP 服务器".
+description: Publish, register, scan, compare, upload and download AI agent resources (skills, MCP servers, rules) across Cursor, Claude Code and other AI coding platforms through LPM. Use when the user wants to publish a local resource, register a third-party resource, scan local AI tools, compare local and remote states, batch upload resources, download resources to selected tools, check for updates, link skills to a project, or search available skills. Triggers include phrases like "publish/upload/share this skill", "scan local resources", "download my skills to Cursor", "sync skills", "add MCP server", "register MCP", "link skills", "search skills", "lpm", "发布 skill", "扫描本地资源", "下载到 Cursor", "同步技能", "搜索技能", "链接技能", "添加 MCP 服务器".
 ---
 
 # LPM (LingyePluginMarketplace)
@@ -37,7 +37,7 @@ LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、�
 | "把仓库改成公开/私有" | `set_skill_visibility` |
 | "登记 / 收藏这个 skill 仓库" | `add_external_skill` (kind="skill") |
 | "添加一个 MCP 服务器" | `add_mcp_server` 或 `add_external_skill` (kind="mcp") |
-| "把所有资源装到本机 / 新电脑迁移" | `sync_skills` |
+| "把远端资源下载到本机工具" | CLI `lpm asset download --all --platform <tool>` |
 | "看哪些有更新" | `skill_status` |
 | "更新某个资源" | `update_skill` |
 | "删除 / 取消注册某个资源" | `remove_skill` |
@@ -101,11 +101,13 @@ add_mcp_server(name="github", github_url="https://github.com/...",
                env={"GITHUB_TOKEN": "${GITHUB_TOKEN}"})
 ```
 
-### 新电脑迁移
+### 在新电脑下载全部远端资源
 
 1. clone LPM 仓库并 `pip install -e .`
 2. `lpm init` 生成配置，填好 token 和 owner
-3. `lpm sync` 自动安装所有资源到启用的平台
+3. `lpm asset list --scan-local` 查看远端与本地并集
+4. `lpm asset download --all --platform cursor --dry-run` 预览计划
+5. 确认后去掉 `--dry-run` 并加 `--yes` 执行；需要多个工具时重复 `--platform`
 
 ### 项目中使用已收集的 skill
 

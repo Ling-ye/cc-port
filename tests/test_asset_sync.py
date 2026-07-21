@@ -17,6 +17,7 @@ from lpm.services import asset_sync
 from lpm.services.asset_sync import RemoteSnapshot
 from lpm.services.env_manager import DiscoveredTool, EnvDiscoveryResult
 from lpm.services.resource_commit import ResourceCommitBlocked
+from lpm.services.resource_discovery import DiscoveredResource
 
 _GIT_RUNTIME = git_ops.discover_git_executable(configured="")
 if _GIT_RUNTIME.path is None:
@@ -177,8 +178,7 @@ def _push_concurrent_change(
     else:
         skill = clone / "skills" / "demo" / "SKILL.md"
         skill.write_text(
-            "---\nname: demo\ndescription: Remote changed\n---\n"
-            f"{asset_body}\n",
+            f"---\nname: demo\ndescription: Remote changed\n---\n{asset_body}\n",
             encoding="utf-8",
         )
         changed = "skills/demo/SKILL.md"
@@ -222,6 +222,204 @@ def test_inventory_uses_platform_rows_and_blocks_rule_prompt_target_collision(
     assert {row.resource_key for row in inventory.rows} == {"rule:demo", "prompt:demo"}
     assert {row.status for row in inventory.rows} == {"target-conflict"}
     assert all(row.available_actions == ["set-platform-install-name"] for row in inventory.rows)
+
+
+def test_logical_inventory_preserves_unknown_local_and_unavailable_remote_snapshot(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "remote"
+    _skill(remote / "skills" / "demo", name="demo", description="Remote", body="remote")
+    snapshot = _snapshot(
+        remote,
+        Registry(
+            items=[
+                RegistryItem(
+                    name="demo",
+                    kind="skill",
+                    source="local",
+                    path="skills/demo",
+                    description="Repository description",
+                )
+            ]
+        ),
+    )
+    snapshot.available = False
+    snapshot.warning = "Using cached remote snapshot."
+
+    inventory = asset_sync.build_asset_inventory(
+        config=_config(tmp_path),
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+
+    logical = inventory.resources[0]
+    assert logical.description == "Repository description"
+    assert logical.description_source == "remote"
+    assert logical.local_status == "unknown"
+    assert logical.remote_status == "unavailable"
+    assert logical.remote.exists is True
+    assert logical.status == "uncomparable"
+    assert logical.diff_summary == ["Local assets have not been scanned yet."]
+    assert inventory.remote_warning == "Using cached remote snapshot."
+
+
+def test_logical_inventory_merges_remote_and_discovered_local_union(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    _skill(remote / "skills" / "remote", name="remote", description="Remote", body="remote")
+    local = tmp_path / "cursor" / "skills" / "local"
+    _skill(local, name="local", description="Local description", body="local")
+    snapshot = _snapshot(
+        remote,
+        Registry(
+            items=[
+                RegistryItem(
+                    name="remote",
+                    kind="skill",
+                    source="local",
+                    path="skills/remote",
+                    description="Remote description",
+                )
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        asset_sync,
+        "discover_environment",
+        lambda: EnvDiscoveryResult(
+            tools=[],
+            resources=[
+                DiscoveredResource(
+                    id="cursor:skill:local",
+                    tool="cursor",
+                    source="configured",
+                    kind="skill",
+                    name_hint="local",
+                    path=local,
+                )
+            ],
+            mcp_servers=[],
+        ),
+    )
+
+    inventory = asset_sync.build_asset_inventory(
+        config=_config(tmp_path),
+        scan_local=True,
+        remote_snapshot=snapshot,
+    )
+
+    logical = {item.resource_key: item for item in inventory.resources}
+    assert set(logical) == {"skill:local", "skill:remote"}
+    assert logical["skill:local"].status == "local-only"
+    assert logical["skill:local"].description == "Local description"
+    assert logical["skill:remote"].status == "remote-only"
+    assert logical["skill:remote"].description == "Remote description"
+
+
+def test_logical_inventory_folds_identical_instances_and_preserves_variants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = tmp_path / "cursor" / "skills" / "demo"
+    codex = tmp_path / "codex" / "skills" / "demo"
+    _skill(cursor, name="demo", description="Same", body="same")
+    _skill(codex, name="demo", description="Same", body="same")
+    cfg = Config(
+        git=GitConfig(executable=str(GIT)),
+        install=InstallConfig(target=str(tmp_path / "install-cache")),
+        resources=ResourcesConfig(branch="main"),
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(name="cursor", enabled=True, skills_dir=str(cursor.parent)),
+                PlatformProfile(name="codex", enabled=True, skills_dir=str(codex.parent)),
+            ]
+        ),
+    )
+
+    def discovery() -> EnvDiscoveryResult:
+        return EnvDiscoveryResult(
+            tools=[],
+            resources=[
+                DiscoveredResource(
+                    id="cursor:skill:demo",
+                    tool="cursor",
+                    source="configured",
+                    kind="skill",
+                    name_hint="demo",
+                    path=cursor,
+                ),
+                DiscoveredResource(
+                    id="codex:skill:demo",
+                    tool="codex",
+                    source="configured",
+                    kind="skill",
+                    name_hint="demo",
+                    path=codex,
+                ),
+            ],
+            mcp_servers=[],
+        )
+
+    monkeypatch.setattr(asset_sync, "discover_environment", discovery)
+    snapshot = _snapshot(tmp_path / "remote", Registry())
+
+    first = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        remote_snapshot=snapshot,
+    ).resources[0]
+    assert first.local_status == "identical-copies"
+    assert len(first.local_instances) == 2
+
+    _skill(codex, name="demo", description="Same", body="different")
+    second = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        remote_snapshot=snapshot,
+    ).resources[0]
+    assert second.local_status == "variants"
+    assert second.status == "local-only"
+    monkeypatch.setattr(
+        asset_sync,
+        "_refresh_remote_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    batch = asset_sync.build_asset_batch_plan(
+        "upload",
+        resource_keys=["skill:demo"],
+        config=cfg,
+    )
+    assert batch.blocked_count == 1
+    assert "select a source instance" in batch.items[0].reason
+
+    separate = asset_sync.build_asset_batch_plan(
+        "upload",
+        resource_keys=["skill:demo"],
+        choices=[
+            asset_sync.AssetBatchChoice(
+                resource_key="skill:demo",
+                local_instance_id="cursor:skill:demo",
+                resolution="rename",
+                new_name="demo-cursor",
+            ),
+            asset_sync.AssetBatchChoice(
+                resource_key="skill:demo",
+                local_instance_id="codex:skill:demo",
+                resolution="rename",
+                new_name="demo-codex",
+            ),
+        ],
+        config=cfg,
+    )
+    assert separate.blocked_count == 0
+    assert separate.executable_count == 2
+    assert {item.disposition for item in separate.items} == {"rename"}
+    assert {item.target_resource_key for item in separate.items} == {
+        "skill:demo-cursor",
+        "skill:demo-codex",
+    }
 
 
 def test_platform_install_alias_resolves_collision(tmp_path: Path) -> None:
@@ -452,9 +650,7 @@ def test_upload_replays_unchanged_target_on_latest_remote_commit(
         capture_output=True,
         text=True,
     )
-    assert "local body" in (verify / "skills" / "demo" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    assert "local body" in (verify / "skills" / "demo" / "SKILL.md").read_text(encoding="utf-8")
     stored = load_registry(verify / "registry.yaml").get("demo", "skill")
     assert stored.description == "Local description"
     assert stored.version == "2.0.0"
@@ -588,12 +784,256 @@ def test_copy_to_remote_renames_local_version_and_preserves_original(
     copied = registry.get("demo-copy", "skill")
     assert copied is not None
     assert copied.description == "Copied"
-    assert "local copy" in (
-        verify / "skills" / "demo-copy" / "SKILL.md"
-    ).read_text(encoding="utf-8")
-    assert "remote body" in (
-        verify / "skills" / "demo" / "SKILL.md"
-    ).read_text(encoding="utf-8")
+    assert "local copy" in (verify / "skills" / "demo-copy" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "remote body" in (verify / "skills" / "demo" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_remote_batch_applies_multiple_changes_in_one_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed, bare = _seed_bare_remote(tmp_path)
+    local = tmp_path / "cursor" / "skills" / "demo"
+    _skill(local, name="demo", description="Batch", body="batch body")
+    cfg = _config(tmp_path, repo_url=str(bare))
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+    snapshot = asset_sync._refresh_remote_snapshot(cfg, refresh=True)
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        refresh_remote=False,
+        remote_snapshot=snapshot,
+    )
+    upload = asset_sync.build_asset_action_plan(
+        "upload",
+        kind="skill",
+        name="demo",
+        platform="cursor",
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    renamed = asset_sync.build_asset_action_plan(
+        "copy-to-remote",
+        kind="skill",
+        name="demo",
+        platform="cursor",
+        new_name="demo-copy",
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+
+    results = asset_sync._apply_remote_asset_batch([upload, renamed], cfg)
+
+    assert [item.status for item in results] == ["succeeded", "succeeded"]
+    verify = tmp_path / "verify-batch"
+    subprocess.run(
+        [str(GIT), "clone", "--branch", "main", str(bare), str(verify)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert int(_run_git(verify, "rev-list", "--count", "HEAD")) == 2
+    stored = load_registry(verify / "registry.yaml")
+    assert stored.get("demo", "skill") is not None
+    assert stored.get("demo-copy", "skill") is not None
+
+
+def test_remote_batch_excludes_invalid_source_and_commits_valid_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed, bare = _seed_bare_remote(tmp_path)
+    demo = tmp_path / "cursor" / "skills" / "demo"
+    unsafe = tmp_path / "cursor" / "skills" / "unsafe"
+    _skill(demo, name="demo", description="Safe", body="safe batch body")
+    _skill(
+        unsafe,
+        name="unsafe",
+        description="Unsafe",
+        body="api_key: sk_test_secret_1234567890",
+    )
+    cfg = _config(tmp_path, repo_url=str(bare))
+    discovery = EnvDiscoveryResult(
+        tools=[],
+        resources=[
+            DiscoveredResource(
+                id="cursor:skill:unsafe",
+                tool="cursor",
+                source="configured",
+                kind="skill",
+                name_hint="unsafe",
+                path=unsafe,
+            )
+        ],
+        mcp_servers=[],
+    )
+    monkeypatch.setattr(asset_sync, "discover_environment", lambda: discovery)
+    snapshot = asset_sync._refresh_remote_snapshot(cfg, refresh=True)
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        refresh_remote=False,
+        remote_snapshot=snapshot,
+    )
+    safe_plan = asset_sync.build_asset_action_plan(
+        "upload",
+        kind="skill",
+        name="demo",
+        platform="cursor",
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    unsafe_plan = asset_sync.build_asset_action_plan(
+        "upload",
+        kind="skill",
+        name="unsafe",
+        platform="cursor",
+        local_instance_id="cursor:skill:unsafe",
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+
+    results = asset_sync._apply_remote_asset_batch([safe_plan, unsafe_plan], cfg)
+
+    by_key = {item.resource_key: item for item in results}
+    assert by_key["skill:demo"].status == "succeeded"
+    assert by_key["skill:unsafe"].status == "failed"
+    assert "Secret-like content" in by_key["skill:unsafe"].message
+    verify = tmp_path / "verify-valid-batch"
+    subprocess.run(
+        [str(GIT), "clone", "--branch", "main", str(bare), str(verify)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    stored = load_registry(verify / "registry.yaml")
+    assert "safe batch body" in (verify / "skills" / "demo" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert stored.get("unsafe", "skill") is None
+
+
+def test_batch_apply_rejects_when_local_source_changes_after_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed, bare = _seed_bare_remote(tmp_path)
+    local = tmp_path / "cursor" / "skills" / "demo"
+    _skill(local, name="demo", description="Local", body="first version")
+    cfg = _config(tmp_path, repo_url=str(bare))
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+    plan = asset_sync.build_asset_batch_plan(
+        "upload",
+        resource_keys=["skill:demo"],
+        config=cfg,
+    )
+    assert plan.executable_count == 1
+
+    _skill(local, name="demo", description="Local", body="second version")
+    result = asset_sync.apply_asset_batch_plan(
+        "upload",
+        resource_keys=["skill:demo"],
+        expected_plan_hash=plan.plan_hash,
+        config=cfg,
+    )
+
+    assert result.status == "stale-plan"
+    assert result.stale_plan is not None
+    assert result.stale_plan.plan_hash != plan.plan_hash
+
+
+def test_batch_download_continues_independent_local_transactions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [
+        asset_sync.AssetActionPlan(
+            operation_id=f"plan-{name}",
+            action="download",
+            resource_key=f"skill:{name}",
+            target_resource_key=f"skill:{name}",
+            kind="skill",
+            name=name,
+            platform="cursor",
+            local_instance_id=f"expected-cursor-{name}",
+            local_locator="expected",
+            remote_commit="abc123",
+            remote_target_exists=True,
+            remote_target_fingerprint=f"remote-{name}",
+            local_source_fingerprint="",
+            target_path=None,
+            target_exists=False,
+            target_fingerprint="",
+            target_managed=False,
+        )
+        for name in ("first", "second")
+    ]
+    current = asset_sync.AssetBatchPlan(
+        direction="download",
+        resource_keys=["skill:first", "skill:second"],
+        target_platforms=["cursor"],
+        remote_commit="abc123",
+        plan_hash="download-hash",
+        items=[
+            asset_sync.AssetBatchPlanItem(
+                id=plan.operation_id,
+                resource_key=plan.resource_key,
+                platform="cursor",
+                local_instance_id=plan.local_instance_id,
+                action="download",
+                disposition="create",
+                target_resource_key=plan.target_resource_key,
+                plan=plan,
+            )
+            for plan in plans
+        ],
+        executable_count=2,
+        blocked_count=0,
+        skipped_count=0,
+    )
+    monkeypatch.setattr(
+        asset_sync,
+        "build_asset_batch_plan",
+        lambda *_args, **_kwargs: current,
+    )
+    calls: list[str] = []
+
+    def apply_local(plan: asset_sync.AssetActionPlan, _cfg: Config):
+        calls.append(plan.resource_key)
+        if plan.name == "first":
+            raise RuntimeError("first failed")
+        return asset_sync.AssetActionResult(
+            operation_id=plan.operation_id,
+            action=plan.action,
+            status="succeeded",
+            resource_key=plan.resource_key,
+            target_resource_key=plan.target_resource_key,
+            platform=plan.platform,
+            message="done",
+        )
+
+    monkeypatch.setattr(asset_sync, "_apply_local_asset_action", apply_local)
+
+    result = asset_sync.apply_asset_batch_plan(
+        "download",
+        resource_keys=current.resource_keys,
+        target_platforms=["cursor"],
+        expected_plan_hash="download-hash",
+        config=Config(),
+    )
+
+    assert calls == ["skill:first", "skill:second"]
+    assert result.status == "partial"
+    assert [item.status for item in result.results] == ["failed", "succeeded"]
 
 
 def test_upload_blocks_secret_like_content(

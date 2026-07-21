@@ -1,5 +1,9 @@
 # 资产级双向同步规格
 
+> 当前桌面端与新批量接口以 [统一资源清单与批量双向同步规格](unified-resource-inventory.md)
+> 为准。本文件保留单资产比较、并发和安全规则；平台级清单展示与“一次远端写入只包含一个
+> 资产”的旧限制已被逻辑资源清单和显式批量计划替代。
+
 ## 范围
 
 资产同步比较私有资源仓库配置分支的最新远端提交与各 AI 工具平台上的本地实例。Git 仅用于远端快照、历史、并发检测和普通推送，不向用户暴露分支合并流程。
@@ -20,14 +24,14 @@
 - `copy-to-remote`：保持原远端资源不变，以用户输入的新名称创建私库资产。
 - `set-platform-install-name`：只修改远端元数据；成功推送后用户才能执行下载。
 
-首版所有写操作只作用于一行，不提供批量写入。
+单项接口保留为兼容封装；桌面主流程和 CLI 批量命令使用逻辑资源级计划，不再维护第二套安全语义。
 
 ## API 与 CLI
 
-- Desktop API 固定为 `asset_inventory`、`asset_action_plan`、`asset_action_apply`。
-- CLI 固定为 `lpm asset list`、`lpm asset plan`、`lpm asset apply`，并提供 `--json` 机器输出。
+- Desktop API 主入口为 `asset_inventory`、`asset_batch_plan`、`asset_batch_apply`；`asset_action_plan`、`asset_action_apply` 作为单项兼容封装。
+- CLI 主入口为 `lpm asset list`、`lpm asset upload`、`lpm asset download`；单项 `plan/apply` 暂时保留，并提供 `--json` 机器输出。
 - 所有机器 JSON 输出必须是可直接解析的 UTF-8 JSON，不得包含 ANSI 颜色码、Rich 样式或终端相关转义序列；终端是否支持颜色不得改变输出字节语义。
-- 新写接口必须携带 `kind`、`name`、`platform`；多本地实例时再携带 `local_instance_id`。
+- 批量接口携带逻辑资源键、方向和用户决策；下载携带目标平台，多本地版本上传通过 `local_instance_id` 选择来源。
 - `AssetPlatformRow.available_actions` 由服务端计算，前端不得自行推导可写性。
 - 旧 `resource_sync_*`、`resource_commit_*` Desktop API 和 `lpm resource pull/push/sync-*` 只保留一个发布版本，并返回或输出弃用警告。
 
@@ -47,7 +51,7 @@
 - 若分支提交变化但目标资产断言仍成立，在最新提交上重放操作并普通推送。
 - 若目标资产已新增、删除或改变，返回 `stale-target`。
 - 推送竞态允许重新抓取并重放一次；第二次失败返回用户重试。
-- 每次远端写入只创建一个资产级提交，禁止 force push。
+- 同一批上传的所有有效资源合并为一次提交；最终推送失败时所有已准备项统一失败，禁止 force push。
 
 ## 旧模型阻断
 

@@ -21,9 +21,10 @@ from lpm.interfaces import desktop_api
 from lpm.services.asset_sync import (
     AssetActionPlan,
     AssetActionResult,
+    AssetBatchPlan,
+    AssetBatchResult,
     AssetInventory,
 )
-from lpm.services.env_manager import EnvDiffItem, EnvDiffPlan
 from lpm.services.local_resources import ImportLocalResult
 from lpm.services.resource_commit import (
     ResourceCommitChange,
@@ -37,7 +38,7 @@ from lpm.services.resource_sync import ResourceSyncPlan, SyncConflict
 def test_desktop_main_reads_bom_tolerant_json_from_stdin(monkeypatch) -> None:
     responses: list[dict] = []
     monkeypatch.setitem(desktop_api.ACTIONS, "stdin_test", lambda payload: payload)
-    monkeypatch.setattr(desktop_api.sys, "stdin", io.StringIO("\ufeff{\"value\": 7}"))
+    monkeypatch.setattr(desktop_api.sys, "stdin", io.StringIO('\ufeff{"value": 7}'))
     monkeypatch.setattr(desktop_api, "_write_json_response", responses.append)
 
     exit_code = desktop_api.main(["stdin_test"])
@@ -83,7 +84,9 @@ def test_desktop_upload_pushes_resource_repo_by_default(tmp_path: Path, monkeypa
         return {"local_path": str(tmp_path / "resources")}
 
     monkeypatch.setattr(desktop_api, "load_config", Config)
-    monkeypatch.setattr(desktop_api, "detect_local_resource_type", lambda *_args, **_kwargs: "skill")
+    monkeypatch.setattr(
+        desktop_api, "detect_local_resource_type", lambda *_args, **_kwargs: "skill"
+    )
     monkeypatch.setattr(desktop_api, "import_local_resource", fake_import_local_resource)
     monkeypatch.setattr(desktop_api, "push_resource_repo", fake_push_resource_repo)
 
@@ -109,7 +112,9 @@ def test_desktop_upload_allows_explicit_no_push(tmp_path: Path, monkeypatch) -> 
         )
 
     monkeypatch.setattr(desktop_api, "load_config", Config)
-    monkeypatch.setattr(desktop_api, "detect_local_resource_type", lambda *_args, **_kwargs: "skill")
+    monkeypatch.setattr(
+        desktop_api, "detect_local_resource_type", lambda *_args, **_kwargs: "skill"
+    )
     monkeypatch.setattr(desktop_api, "import_local_resource", fake_import_local_resource)
     monkeypatch.setattr(
         desktop_api,
@@ -154,7 +159,9 @@ def test_desktop_resource_delete_pushes_resource_repo_by_default(
         return {"local_path": str(tmp_path / "resources")}
 
     monkeypatch.setattr(desktop_api, "load_config", Config)
-    monkeypatch.setattr(desktop_api, "resource_delete_requires_remote_scope", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        desktop_api, "resource_delete_requires_remote_scope", lambda *_args, **_kwargs: False
+    )
     monkeypatch.setattr(desktop_api, "delete_resource", fake_delete_resource)
     monkeypatch.setattr(desktop_api, "push_resource_repo", fake_push_resource_repo)
 
@@ -227,9 +234,7 @@ def test_platform_toggle_preserves_hidden_and_custom_configuration(
     write_config(cfg, config_path)
     monkeypatch.setenv("LPM_CONFIG", str(config_path))
 
-    result = desktop_api.run_action(
-        "platform_set_enabled", {"name": "cursor", "enabled": False}
-    )
+    result = desktop_api.run_action("platform_set_enabled", {"name": "cursor", "enabled": False})
     updated = load_raw_config(config_path)
 
     assert result["ok"] is True
@@ -244,41 +249,8 @@ def test_platform_toggle_preserves_hidden_and_custom_configuration(
     assert updated.state.retention_days == 17
 
 
-def test_desktop_env_diff_import_serializes_paths_and_choices(tmp_path: Path, monkeypatch) -> None:
-    def fake_build_env_import_diff(snapshot: str, *, config: Config) -> EnvDiffPlan:
-        assert snapshot == "snapshot.zip"
-        assert isinstance(config, Config)
-        return EnvDiffPlan(
-            operation="import",
-            source="snapshot",
-            local_root=tmp_path / "local",
-            incoming_root=tmp_path / "incoming",
-            items=[
-                EnvDiffItem(
-                    id="resource:demo",
-                    group="resource",
-                    name="demo",
-                    kind="skill",
-                    status="modified",
-                    local_path=tmp_path / "local" / "resources" / "skills" / "demo",
-                    incoming_path=tmp_path / "incoming" / "resources" / "skills" / "demo",
-                    default_choice="incoming",
-                    preview="--- local\n+++ incoming",
-                )
-            ],
-            default_choices={"resource:demo": "incoming"},
-        )
-
-    monkeypatch.setattr(desktop_api, "load_config", Config)
-    monkeypatch.setattr(desktop_api, "build_env_import_diff", fake_build_env_import_diff)
-
-    result = desktop_api.run_action("env_diff_import", {"snapshot": "snapshot.zip"})
-
-    assert result["ok"] is True
-    data = result["data"]
-    assert data["local_root"] == str(tmp_path / "local")
-    assert data["default_choices"] == {"resource:demo": "incoming"}
-    assert Path(data["items"][0]["local_path"]) == tmp_path / "local" / "resources" / "skills" / "demo"
+def test_desktop_environment_actions_are_removed() -> None:
+    assert not any(action.startswith("env_") for action in desktop_api.ACTIONS)
 
 
 def test_desktop_resource_sync_plan_serializes_conflicts(
@@ -396,12 +368,66 @@ def test_desktop_asset_inventory_plan_and_apply(monkeypatch) -> None:
     )
 
     assert inventory["data"]["scanned_local"] is True
+    assert "rows" not in inventory["data"]
+    assert inventory["data"]["resources"] == []
     assert plan["data"]["resource_key"] == "skill:demo"
     assert applied["data"]["status"] == "succeeded"
     assert calls == [
         ("inventory", (True, False)),
         ("plan", ("download", "skill", "demo", "cursor")),
         ("apply", "plan-1"),
+    ]
+
+
+def test_desktop_asset_batch_plan_and_apply(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_batch_plan(direction: str, **kwargs) -> AssetBatchPlan:
+        calls.append(("plan", (direction, kwargs["resource_keys"], kwargs["target_platforms"])))
+        return AssetBatchPlan(
+            direction=direction,
+            resource_keys=kwargs["resource_keys"],
+            target_platforms=kwargs["target_platforms"],
+            remote_commit="abc123",
+            plan_hash="batch-hash",
+            items=[],
+            executable_count=0,
+            blocked_count=0,
+            skipped_count=0,
+        )
+
+    def fake_batch_apply(direction: str, **kwargs) -> AssetBatchResult:
+        calls.append(("apply", (direction, kwargs["expected_plan_hash"])))
+        return AssetBatchResult(status="succeeded", plan_hash="batch-hash", results=[])
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "build_asset_batch_plan", fake_batch_plan)
+    monkeypatch.setattr(desktop_api, "apply_asset_batch_plan", fake_batch_apply)
+
+    planned = desktop_api.run_action(
+        "asset_batch_plan",
+        {
+            "direction": "download",
+            "resource_keys": ["skill:demo"],
+            "target_platforms": ["cursor"],
+            "choices": [{"resource_key": "skill:demo", "platform": "cursor"}],
+        },
+    )
+    applied = desktop_api.run_action(
+        "asset_batch_apply",
+        {
+            "direction": "download",
+            "resource_keys": ["skill:demo"],
+            "target_platforms": ["cursor"],
+            "plan_hash": "batch-hash",
+        },
+    )
+
+    assert planned["data"]["plan_hash"] == "batch-hash"
+    assert applied["data"]["status"] == "succeeded"
+    assert calls == [
+        ("plan", ("download", ["skill:demo"], ["cursor"])),
+        ("apply", ("download", "batch-hash")),
     ]
 
 

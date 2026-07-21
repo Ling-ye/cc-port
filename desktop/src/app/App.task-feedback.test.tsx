@@ -25,7 +25,7 @@ vi.mock("@/api/client", () => ({
         scanned_local: false,
         generated_at: "",
         legacy_write_blocker: "",
-        rows: [],
+        resources: [],
       };
     }
     throw new Error(`Unexpected action: ${action}`);

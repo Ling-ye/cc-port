@@ -345,35 +345,25 @@ lpm doctor
 当前 registry 版本为 v6。资源唯一键为 `kind:name`；平台安装名称优先读取 `platform_install_dirs[platform]`，再回退到旧 `install_dir` 和资源名称。v5 文件在读取时无损迁移，旧名称查询只在同名资源唯一时兼容。
 
 
-## 自动发现与跨电脑部署
+## 统一资源清单与批量同步
 
-LPM 的环境迁移主流程是：`发现 -> 预览 -> 脱敏 -> 保存 -> 同步/导出 -> 另一台电脑恢复`。
+桌面端 **资源** 页面是本地发现、双端比较与同步的唯一入口：
 
-桌面端新增 **环境** 页面，用于执行这些动作：
-
-- 发现本机已安装或已有配置目录的 AI 工具。
-- 采集用户确认保存的 skills、prompts、rules、plugins 和 MCP server 配置。
-- 导出离线 zip 快照。
-- 推送前预览本地和远端差异，并按资源选择 local 或 incoming。
-- 拉取前预览远端和本地差异，并按资源选择 local 或 incoming。
-- 导入 zip 快照前预览快照和本地差异，并按资源选择 local 或 incoming。
-- dry-run 预览部署计划。
-- 部署到当前电脑已启用的平台目录。
-
-桌面端 **资源** 页面同时承担资产级双向同步：
-
-- 每一行表示一个 `kind:name × platform × local instance`，显示本地路径、所有权、内容状态、差异摘要、阻断原因和服务端计算的动作。
-- 普通加载检查已配置平台；“扫描本地”进一步包含已配置和已检测平台，并发现未注册资产和额外本地实例。
-- 下载已有目标、上传已有远端资产、另存副本和平台安装别名都先生成单行安全计划，再由用户显式执行。
+- 每一行表示一个 `kind:name` 逻辑资源，清单是本地资产和远端私有仓库资源的并集。
+- “扫描本地”显式扫描已配置和已检测 AI 工具；扫描前本地状态显示“尚未扫描”，不会误报为不存在。
+- 远端描述优先显示；详情栏同时列出远端提交、路径和每个本地实例的工具、安装名、路径、所有权、内容状态与阻断原因。
+- 同一资源的相同本地副本折叠为一个逻辑资源；内容不同的多个实例保留，并在上传计划中要求选择来源。
+- 勾选一个或多个逻辑资源后，统一使用“上传所选”或“下载所选”；下载先选择一个或多个已启用 AI 工具。
+- 上传和下载都先生成服务端差异计划，按新增、覆盖、重命名、不变、跳过和阻断展示，冲突未解决时不能执行。
 - 下载使用路径锁、备份、验证和失败回滚；未管理目标必须显式确认覆盖。
-- 上传以整个资产为边界更新，只安全改写成功派生出的元数据；不提供文件级 merge。
+- 批量下载以“资源 × 工具”为独立本地事务，单项失败不回滚其他成功项；批量上传把有效项合并为一次远端提交。
 - 远端提交变化但目标资产未变化时，操作会重放到最新提交；目标新增、删除或改变时返回 `stale-target`。
 - external 和无私库 `path` 的 owned 引用在同步页只读；已有平台内容可以显式另存到私库。
 - 一端缺失只表示可上传或下载；卸载和删除始终使用独立入口。
 
 桌面端 **操作历史** 页面用于本机恢复与维护：
 
-- 查看安装、卸载、环境部署和恢复操作的持久化记录。
+- 查看安装、卸载、资源下载和恢复操作的持久化记录。
 - 恢复成功操作影响的目标；默认检测操作完成后的内容漂移。
 - 显式选择“允许覆盖漂移目标”后才可覆盖后续修改。
 - 列出超过 24 小时仍处于 conflict/ready 的 Git 临时工作树，并由用户显式清理。
@@ -381,55 +371,41 @@ LPM 的环境迁移主流程是：`发现 -> 预览 -> 脱敏 -> 保存 -> 同�
 CLI 对应命令：
 
 ```bash
-lpm env discover
-lpm env capture
-lpm env capture --push
-lpm env export --out ~/lpm-env-snapshot.zip
-lpm env push --dry-run
-lpm env push --choices choices.yaml
-lpm env pull --dry-run
-lpm env pull --choices choices.yaml
-lpm env import ~/lpm-env-snapshot.zip --dry-run
-lpm env import ~/lpm-env-snapshot.zip --choices choices.yaml
-lpm env deploy --dry-run
-lpm env deploy
+lpm asset list --scan-local
+lpm asset upload --all --dry-run
+lpm asset upload --resource skill:demo --yes
+lpm asset download --all --platform cursor --platform codex --dry-run
+lpm asset download --resource skill:demo --platform cursor --yes
 ```
 
-choices 文件格式：
+批量 choices 文件格式：
 
 ```yaml
-operation: pull
-source: remote
 items:
-  resource:skill:cursor-skill-demo-skill: incoming
-  meta:profiles/default.yaml: local
+  - resource_key: skill:demo
+    platform: cursor
+    local_instance_id: expected-cursor-demo
+    resolution: rename
+    new_name: demo-cursor
+  - resource_key: skill:demo
+    platform: codex
+    local_instance_id: expected-codex-demo
+    resolution: rename
+    new_name: demo-codex
 ```
 
-采集后的私人环境仓库包含：
-
-```text
-registry.yaml              # 资源索引
-profiles/default.yaml      # 当前采集到的工具、路径和资源统计
-secrets.example.yaml       # 需要用户自行补齐的密钥名和用途
-resources/
-  skills/
-  prompts/
-  rules/
-  plugins/
-  mcp/
-```
+`items` 也可使用以资源键为 key 的映射表示单一决策；需要把同一逻辑资源的不同本地版本分别重命名上传时，必须使用上面的列表形式。
 
 安全边界：
 
-- API key、token、cookie、OAuth session、账号缓存不应进入 `registry.yaml`、`profiles/default.yaml`、`resources/` 或 zip 快照。
+- API key、token、cookie、OAuth session、账号缓存不应进入 `registry.yaml` 或 `resources/`。
 - 上传和复制资源时默认排除 `.env`、`.env.local` 等真实环境文件；`.env.example`、`.env.sample`、`.env.template` 可作为无密钥模板保留。
-- MCP `env` 的非空字面值保存为 `${ENV_NAME}` 占位符，缺失项写入 `secrets.example.yaml`。
-- push、pull、snapshot import 的 apply 前会扫描选定数据源中的疑似 token-like 内容；命中时阻断写入或上传。
-- zip 快照导入拒绝绝对路径、`..`、`.git/` 和 Windows drive-like 路径。
-- 恢复部署先生成 plan；目标已有同名资源且没有 LPM 管理标记时进入 `conflict`，不会静默覆盖。
+- MCP `env` 的非空字面值在比较和上传前转换为 `${ENV_NAME}` 占位符；资源流程不采集或保存真实值，也不生成机器级密钥清单。
+- 批量 apply 前会重新扫描本地、刷新远端并重建计划；`plan_hash` 变化时拒绝写入并返回最新计划。
+- 前端提交的路径、指纹、兼容性和可写性都不可信，必须由服务端重新计算。
+- 下载先生成 plan；目标已有同名资源且没有 LPM 管理标记时进入阻断，不会静默覆盖。
 - 目录资源使用 `.lpm-managed.json`，MCP 使用本机 entry 级所有权记录；未归 LPM 管理的目标不会被普通覆盖或卸载。
-- 部署备份写入本机状态目录的 `backups/<operation-id>/`，不会让私有资源 Git 仓库产生备份脏文件。
-- 任一部署项失败时回滚本次已尝试写入的工具目标、安装缓存与 MCP 所有权状态，并持久化操作结果。
+- 下载备份写入本机状态目录的 `backups/<operation-id>/`，不会让私有资源 Git 仓库产生备份脏文件。
 - 普通资源安装和卸载也使用相同事务边界；批量同步由多个可独立恢复的资源事务组成。
 
 ## CLI
@@ -449,6 +425,10 @@ lpm asset plan copy-to-local --kind skill --name demo --platform cursor --new-na
 lpm asset plan copy-to-remote --kind skill --name demo --platform cursor --new-name demo-copy
 lpm asset plan set-platform-install-name --kind skill --name demo --platform cursor --new-install-name demo-cursor
 lpm asset apply <operation-id>
+lpm asset upload --resource skill:demo --dry-run
+lpm asset upload --all --yes
+lpm asset download --resource skill:demo --platform cursor --dry-run
+lpm asset download --all --platform cursor --platform codex --yes
 lpm resource commit-plan
 lpm resource sync-status --fetch
 lpm resource sync-plan
@@ -470,10 +450,6 @@ lpm operations quarantines
 lpm operations quarantine-delete <quarantine-id>
 lpm operations audits
 lpm operations audit <audit-id>
-lpm env discover
-lpm env capture
-lpm env capture --push
-lpm env deploy --dry-run
 lpm collect <github-url-or-tree-url> [--platform cursor]
 lpm upload <local-path> [--platform cursor]
 lpm import-local <local-path> [--platform cursor]
@@ -483,7 +459,7 @@ lpm sync
 lpm doctor
 ```
 
-`lpm asset list/plan/apply` 支持 `--json`，参数与 Desktop API 一致。新写操作必须传入 `kind`、`name` 和 `platform`；同一平台有多个本地实例时还必须传入 `--local-instance-id`。
+`lpm asset list/plan/apply/upload/download` 支持 `--json`。`upload` 和 `download` 支持重复 `--resource`、`--all`、`--dry-run`、`--yes` 与选择文件；`download` 还支持重复 `--platform`。批量命令在执行前重新生成计划并校验 `plan_hash`，不再提供 `lpm env` 迁移命令。
 
 `lpm resource pull`、`lpm resource push` 和 `lpm resource sync-*` 仅保留一个发布版本处理旧工作区状态，执行时会输出弃用警告。旧工作区处于 dirty、ahead、diverged、wrong-branch 或存在待处理旧计划时，新资产模型允许读取和扫描，但阻断远端写入。
 

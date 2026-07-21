@@ -2,16 +2,18 @@
 
 ## 新入口
 
-桌面端和 CLI 统一使用资产级三段式流程：
+桌面端和 CLI 以逻辑资源清单与批量计划为主流程：
 
-1. 读取 `AssetInventory`，定位 `kind + name + platform` 对应的平台行。
-2. 创建 `AssetActionPlan`，记录远端提交、目标断言、本地源指纹和用户选择。
-3. 使用 `operation_id` 执行计划；执行前重新抓取并重新计算所有路径和指纹。
+1. 读取 `AssetInventory.resources[]`，每个 `kind:name` 只出现一次；平台级比较行仅存在于服务内部，不出现在 Desktop API 或 CLI JSON 中。
+2. 创建 `AssetBatchPlan`，输入资源键、方向、目标平台与冲突决策，得到规范化 `plan_hash`。
+3. 使用同样的选择和 `plan_hash` 执行；服务端重新扫描、刷新远端并重建计划，哈希变化时拒绝写入。
 
 Desktop API：
 
 ```text
 asset_inventory
+asset_batch_plan
+asset_batch_apply
 asset_action_plan
 asset_action_apply
 ```
@@ -21,11 +23,17 @@ CLI：
 ```bash
 lpm asset list
 lpm asset list --scan-local
+lpm asset upload --resource skill:demo --dry-run
+lpm asset upload --all --yes
+lpm asset download --resource skill:demo --platform cursor --dry-run
+lpm asset download --all --platform cursor --platform codex --yes
 lpm asset plan download --kind skill --name demo --platform cursor
 lpm asset apply <operation-id>
 ```
 
-机器调用可在三个 CLI 子命令上使用 `--json`。
+机器调用可使用 `--json`；批量命令支持重复 `--resource`、`--all`、`--dry-run`、`--yes` 和 YAML `--choices`，下载额外支持重复 `--platform`。旧 `lpm env` 命令已删除。
+
+环境采集、ZIP 导出/导入、仓库级环境 push/pull 差异和环境部署服务也已删除，不提供隐藏兼容入口。资产扫描只复用只读工具发现与 MCP 安全占位符处理。
 
 ## Desktop API 参数
 
@@ -61,7 +69,27 @@ lpm asset apply <operation-id>
 }
 ```
 
-新写接口必须同时传入 `kind`、`name` 和 `platform`。出现多个本地实例时还必须传入 `local_instance_id`。
+`asset_batch_plan`：
+
+```json
+{
+  "direction": "download",
+  "resource_keys": ["skill:demo", "mcp:server"],
+  "target_platforms": ["cursor", "codex"],
+  "choices": [
+    {
+      "resource_key": "skill:demo",
+      "platform": "cursor",
+      "resolution": "overwrite",
+      "overwrite_unmanaged": true
+    }
+  ]
+}
+```
+
+`asset_batch_apply` 使用相同字段，并增加计划阶段返回的 `plan_hash`。批次不接受前端路径、指纹或可写性断言。
+
+旧单项接口继续接受 `kind`、`name` 和 `platform`，内部复用相同安全语义。新批量接口只接受逻辑资源键；出现多个不同本地版本时，通过 choices 中的 `local_instance_id` 选择来源。
 
 ## 动作映射
 

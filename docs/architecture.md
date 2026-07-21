@@ -36,14 +36,14 @@ flowchart LR
 | --- | --- | --- |
 | `core.models` / `core.registry` | registry v6 复合键模型、v5 迁移和读写 | 私有仓库配置分支中的资源索引是跨设备事实源 |
 | `core.tool_adapters` | 工具能力、默认路径、发现信号和安装机制 | 当前仅内部使用，不承诺第三方兼容性 |
-| `core.resource_files` | 采集、复制、快照共用的文件策略 | 排除真实 `.env`、构建产物、依赖目录和符号链接 |
-| `core.secret_scan` | 资源和环境文本的凭据模式检查 | 只返回脱敏预览，不在日志中保存真实值 |
+| `core.resource_files` | 资源复制与同步共用的文件策略 | 排除真实 `.env`、构建产物、依赖目录和符号链接 |
+| `core.secret_scan` | 资源文本的凭据模式检查 | 只返回脱敏预览，不在日志中保存真实值 |
 | `core.ownership` | 目录与 MCP entry 的所有权 | 未管理目标不能被普通覆盖或卸载 |
-| `services.asset_sync` | 远端只读快照、每平台清单、资产动作计划、并发重放和单资产提交 | 不信任持久化路径或指纹；不强推；不隐式删除 |
+| `services.asset_sync` | 逻辑资源并集、远端快照、批量计划、哈希重验证、批量上传单提交与逐项下载事务 | 不信任前端路径或指纹；不强推；不隐式删除 |
 | `services.resource_sync` | 弃用兼容：旧 Git 分歧检测、worktree 合并与推送 | 仅保留一个发布版本，用于清理遗留工作区状态 |
 | `services.resource_commit` | 资源级提交预览、管理路径限制和待推送内容扫描 | 不提供通用 Git 暂存区；非管理路径和敏感内容默认阻断 |
 | `services.resource_repo_lock` | 资源仓库进程内/跨进程写锁 | 同仓库写操作串行；嵌套服务调用可重入 |
-| `services.env_manager` | 环境发现、采集、差异和事务部署 | 部署失败时恢复本次已尝试写入的目标 |
+| `services.env_manager` | 资产扫描使用的只读工具、资源与 MCP 配置发现 | 不提供环境采集、仓库级环境差异、快照迁移或部署入口；MCP 占位符化由 `core.secrets` 统一处理 |
 | `services.local_transaction` | 共享快照、哈希、ChangeSet 与回滚执行 | 全部目标加锁后才创建操作记录与快照；所有本地写入使用相同恢复语义 |
 | `services.state_lock` | 跨进程目标路径锁 | 规范化绝对路径作为锁键；多目标固定顺序；锁覆盖快照、写入、验证和回滚 |
 | `services.operation_state` / `operation_history` | 持久化、查询和显式恢复操作 | 状态与私有 Git 仓库分离；恢复默认阻断漂移 |
@@ -57,9 +57,12 @@ flowchart LR
 
 ```text
 registry.yaml
-profiles/default.yaml
-secrets.example.yaml
-resources/
+skills/
+prompts/
+rules/
+plugins/
+mcp/
+resources/  # 兼容旧仓库布局
   skills/
   prompts/
   rules/

@@ -8,7 +8,7 @@ export function DashboardView({
   t,
 }: {
   summary: Summary | null;
-  items: RegistryItem[];
+  items: Array<Pick<RegistryItem, "name" | "kind">>;
   t: TFunction;
 }) {
   return (

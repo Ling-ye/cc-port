@@ -1,162 +1,114 @@
 import {
-  AlertTriangle,
-  Copy,
   Download,
+  ExternalLink,
   FolderOpen,
-  PencilLine,
   RefreshCcw,
-  Trash2,
-  Unplug,
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { copyText, lpmAction, openExternalUrl, openPath } from "@/api/client";
+import { useEffect, useMemo, useState } from "react";
+import { lpmAction, openPath } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
-import { Segmented } from "@/components/Segmented";
 import type {
-  AssetAction,
-  AssetActionPlan,
-  AssetActionResult,
+  AssetBatchChoice,
+  AssetBatchPlan,
+  AssetBatchResult,
   AssetInventory,
-  AssetPlatformRow,
+  AssetLocalStatus,
+  AssetRemoteStatus,
+  AssetResourceRow,
   AssetStatus,
-  GithubAuthPollResult,
-  GithubAuthSession,
-  GithubAuthStatus,
+  ConfigSettings,
+  PlatformProfile,
   ResourceKind,
 } from "@/types/lpm";
 
-const kinds: Array<"all" | ResourceKind> = [
+const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
+const statuses: Array<"all" | AssetStatus> = [
   "all",
-  "skill",
-  "mcp",
-  "rule",
-  "prompt",
-  "plugin",
-];
-const statusFilters: Array<"all" | AssetStatus> = [
-  "all",
-  "remote-only",
   "local-only",
+  "remote-only",
   "same",
   "content-different",
   "metadata-only",
-  "read-only-reference",
   "target-conflict",
   "uncomparable",
 ];
-const safeNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
-type ActionDialogState = {
-  action: AssetAction;
-  row: AssetPlatformRow;
-  newName: string;
-  installName: string;
-  confirmed: boolean;
-  plan: AssetActionPlan | null;
-  error: string;
-};
-
-type DeleteDialogState = {
-  row: AssetPlatformRow;
-  confirmName: string;
-  error: string;
-};
+const localStatuses: Array<"all" | AssetLocalStatus> = [
+  "all",
+  "unknown",
+  "missing",
+  "single",
+  "identical-copies",
+  "variants",
+];
+const remoteStatuses: Array<"all" | AssetRemoteStatus> = [
+  "all",
+  "present",
+  "missing",
+  "read-only",
+  "unavailable",
+];
 
 export function ResourcesView({
   inventory,
-  selected,
+  selectedKey,
   t,
   onSelect,
   onInventory,
   onChanged,
   onError,
+  onOpenSettings,
 }: {
   inventory: AssetInventory | null;
-  selected?: AssetPlatformRow;
+  selectedKey?: string;
   t: TFunction;
   onSelect: (rowId: string) => void;
   onInventory: (inventory: AssetInventory) => void;
   onChanged: () => Promise<void> | void;
   onError: (message: string) => void;
+  onOpenSettings: () => void;
 }) {
   const { runTask } = useTaskCenter();
   const [kindFilter, setKindFilter] = useState<(typeof kinds)[number]>("all");
-  const [statusFilter, setStatusFilter] = useState<(typeof statusFilters)[number]>("all");
-  const [busyAction, setBusyAction] = useState("");
-  const [dialog, setDialog] = useState<ActionDialogState | null>(null);
-  const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
-  const [deleteAuthSession, setDeleteAuthSession] = useState<GithubAuthSession | null>(null);
-  const [deleteAuthMessage, setDeleteAuthMessage] = useState("");
-  const deleteAuthSessionRef = useRef<GithubAuthSession | null>(null);
+  const [statusFilter, setStatusFilter] = useState<(typeof statuses)[number]>("all");
+  const [localFilter, setLocalFilter] = useState<(typeof localStatuses)[number]>("all");
+  const [remoteFilter, setRemoteFilter] = useState<(typeof remoteStatuses)[number]>("all");
+  const [toolFilter, setToolFilter] = useState("all");
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [batchDirection, setBatchDirection] = useState<"upload" | "download" | null>(null);
 
-  const visibleRows = useMemo(
-    () => (inventory?.rows || []).filter((row) => (
-      (kindFilter === "all" || row.kind === kindFilter)
-      && (statusFilter === "all" || row.status === statusFilter)
-    )),
-    [inventory, kindFilter, statusFilter],
+  const resources = inventory?.resources ?? [];
+  const tools = useMemo(
+    () => Array.from(new Set(resources.flatMap((item) => item.local_instances.map((instance) => instance.platform)))).sort(),
+    [resources],
   );
+  const visible = useMemo(
+    () => resources.filter((item) => (
+      (kindFilter === "all" || item.kind === kindFilter)
+      && (statusFilter === "all" || item.status === statusFilter)
+      && (localFilter === "all" || item.local_status === localFilter)
+      && (remoteFilter === "all" || item.remote_status === remoteFilter)
+      && (toolFilter === "all" || item.local_instances.some((instance) => instance.platform === toolFilter))
+    )),
+    [kindFilter, localFilter, remoteFilter, resources, statusFilter, toolFilter],
+  );
+  const selectedSet = useMemo(() => new Set(selectedKeys), [selectedKeys]);
+  const selectedResource = resources.find((item) => item.resource_key === selectedKey)
+    ?? resources[0];
 
   useEffect(() => {
-    deleteAuthSessionRef.current = deleteAuthSession;
-  }, [deleteAuthSession]);
-
-  useEffect(() => () => {
-    const sessionId = deleteAuthSessionRef.current?.session_id;
-    if (sessionId) {
-      void lpmAction("github_auth_cancel", { session_id: sessionId }).catch(() => undefined);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!deleteAuthSession) return;
-    let stopped = false;
-    let timer = 0;
-
-    const poll = (delaySeconds: number) => {
-      timer = window.setTimeout(async () => {
-        try {
-          const result = await lpmAction<GithubAuthPollResult>("github_auth_poll", {
-            session_id: deleteAuthSession.session_id,
-          });
-          if (stopped) return;
-          if (result.state === "pending" || result.state === "slow_down") {
-            poll(result.retry_after || deleteAuthSession.interval);
-            return;
-          }
-          setDeleteAuthSession(null);
-          if (result.state === "authorized") {
-            setDeleteAuthMessage(t("assets.deleteScopeGranted"));
-            return;
-          }
-          setDeleteDialog((current) => current ? {
-            ...current,
-            error: result.state === "denied" ? t("settings.authDenied") : t("settings.authExpired"),
-          } : current);
-        } catch (error) {
-          if (!stopped) {
-            setDeleteAuthSession(null);
-            setDeleteDialog((current) => current ? { ...current, error: errorMessage(error) } : current);
-          }
-        }
-      }, Math.max(1, delaySeconds) * 1000);
-    };
-
-    poll(deleteAuthSession.interval);
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [deleteAuthSession, t]);
+    const valid = new Set(resources.map((item) => item.resource_key));
+    setSelectedKeys((current) => current.filter((key) => valid.has(key)));
+  }, [resources]);
 
   async function scanLocal() {
-    setBusyAction("scan");
+    setBusy(true);
     try {
       const next = await runTask({
         kind: "asset-scan-local",
@@ -169,588 +121,489 @@ export function ResourcesView({
         retryPolicy: "safe-read",
       });
       onInventory(next);
-      if (next.rows.length && !next.rows.some((row) => rowId(row) === rowId(selected))) {
-        onSelect(rowId(next.rows[0]));
-      }
     } catch {
-      // The task center owns error reporting.
+      // Task center owns tracked feedback.
     } finally {
-      setBusyAction("");
+      setBusy(false);
     }
   }
 
-  function openAction(row: AssetPlatformRow, action: AssetAction) {
-    setDialog({
-      action,
-      row,
-      newName: "",
-      installName: row.install_name,
-      confirmed: false,
-      plan: null,
-      error: "",
-    });
+  function toggleSelected(resourceKey: string) {
+    setSelectedKeys((current) => current.includes(resourceKey)
+      ? current.filter((item) => item !== resourceKey)
+      : [...current, resourceKey]);
   }
 
-  async function uninstallLocal(row: AssetPlatformRow) {
-    setBusyAction(`uninstall:${rowId(row)}`);
-    try {
-      await runTask({
-        kind: "resource-uninstall",
-        title: t("assets.uninstall"),
-        context: `${row.resource_key} / ${row.platform}`,
-        action: () => lpmAction("resource_uninstall", {
-          kind: row.kind,
-          name: row.name,
-          platform: row.platform,
-        }),
-        successMessage: t("assets.uninstallComplete"),
-        retryPolicy: "none",
-      });
-      await onChanged();
-    } catch {
-      await Promise.resolve(onChanged());
-    } finally {
-      setBusyAction("");
-    }
+  function selectVisible() {
+    setSelectedKeys((current) => Array.from(new Set([...current, ...visible.map((item) => item.resource_key)])));
   }
 
-  async function removeResource() {
-    if (!deleteDialog) return;
-    if (deleteDialog.confirmName.trim() !== deleteDialog.row.name) {
-      setDeleteDialog((current) => (
-        current ? { ...current, error: t("assets.nameMismatch") } : current
-      ));
+  function selectResource(resource: AssetResourceRow) {
+    onSelect(resource.resource_key);
+  }
+
+  function openBatch(direction: "upload" | "download") {
+    if (!selectedKeys.length) {
+      onError(t("assets.noSelection"));
       return;
     }
-    setBusyAction("delete");
-    try {
-      if (deletesOwnedRepository(deleteDialog.row)) {
-        const status = await lpmAction<GithubAuthStatus>("github_auth_status");
-        if (status.state !== "connected") {
-          throw new Error(status.error || t("assets.connectBeforeRemoteDelete"));
-        }
-        if (!status.scopes.includes("delete_repo")) {
-          const session = await lpmAction<GithubAuthSession>("github_auth_start", {
-            purpose: "remote_delete",
-          });
-          setDeleteAuthSession(session);
-          setDeleteAuthMessage("");
-          await openExternalUrl(session.verification_uri);
-          return;
-        }
-      }
-      await runTask({
-        kind: "resource-delete",
-        title: t("assets.deleteResource"),
-        context: deleteDialog.row.resource_key,
-        action: () => lpmAction("resource_delete", {
-          kind: deleteDialog.row.kind,
-          name: deleteDialog.row.name,
-          confirm_name: deleteDialog.confirmName.trim(),
-        }),
-        successMessage: t("assets.deleteComplete"),
-        retryPolicy: "none",
-      });
-      setDeleteDialog(null);
-      await onChanged();
-    } catch (error) {
-      setDeleteDialog((current) => current ? { ...current, error: errorMessage(error) } : current);
-    } finally {
-      setBusyAction("");
-    }
-  }
-
-  async function closeDeleteDialog() {
-    const sessionId = deleteAuthSession?.session_id;
-    setDeleteAuthSession(null);
-    setDeleteAuthMessage("");
-    setDeleteDialog(null);
-    if (sessionId) {
-      try {
-        await lpmAction("github_auth_cancel", { session_id: sessionId });
-      } catch {
-        // Session expiry/cancellation is already safe and local.
-      }
-    }
+    setBatchDirection(direction);
   }
 
   return (
-    <section className="split-view resources-workspace asset-workspace">
-      <div className="panel list-panel">
-        <div className="asset-inventory-head">
+    <section className="asset-unified-view">
+      <div className="panel asset-inventory-panel">
+        <div className="asset-unified-head">
           <div>
-            <strong>{t("assets.title")}</strong>
-            <small>
-              {inventory?.branch || "-"} / {shortCommit(inventory?.remote_commit)}
-            </small>
+            <h2>{t("assets.title")}</h2>
+            <small>{inventory?.branch || "-"} / {shortCommit(inventory?.remote_commit)}</small>
           </div>
-          <button
-            className="secondary"
-            type="button"
-            onClick={() => void scanLocal()}
-            disabled={Boolean(busyAction)}
-          >
-            <RefreshCcw size={16} />
-            {busyAction === "scan" ? t("common.working") : t("assets.scanLocal")}
-          </button>
-        </div>
-        {inventory?.remote_warning ? <Banner tone="danger" text={inventory.remote_warning} /> : null}
-        {inventory?.legacy_write_blocker ? (
-          <Banner tone="danger" text={inventory.legacy_write_blocker} />
-        ) : null}
-        <div className="resource-filter-stack">
-          <div className="resource-filter-group">
-            <span>{t("resources.filterKind")}</span>
-            <Segmented
-              value={kindFilter}
-              values={kinds}
-              onChange={setKindFilter}
-              getLabel={(value) => resourceKindLabel(value, t)}
-            />
-          </div>
-          <div className="resource-filter-group">
-            <span>{t("resources.filterStatus")}</span>
-            <Segmented
-              value={statusFilter}
-              values={statusFilters}
-              onChange={setStatusFilter}
-              getLabel={(value) => value === "all" ? t("assets.status.all") : assetStatusLabel(value, t)}
-            />
-          </div>
-        </div>
-        <div className="resource-list asset-row-list">
-          {visibleRows.map((row) => (
-            <button
-              key={rowId(row)}
-              className={rowId(selected) === rowId(row) ? "resource-row asset-row active" : "resource-row asset-row"}
-              onClick={() => onSelect(rowId(row))}
-            >
-              <KindBadge kind={row.kind} label={resourceKindLabel(row.kind, t)} />
-              <span>
-                <strong>{row.name}</strong>
-                <small>{row.platform} / {row.install_name}</small>
-              </span>
-              <span className={`asset-status status-${row.status}`}>
-                {assetStatusLabel(row.status, t)}
-              </span>
+          <div className="asset-toolbar">
+            <button className="secondary" onClick={() => void scanLocal()} disabled={busy}>
+              <RefreshCcw size={16} />{busy ? t("common.working") : t("assets.scanLocal")}
             </button>
-          ))}
-          {!visibleRows.length ? <EmptyState text={t("assets.empty")} /> : null}
+            <button className="secondary" onClick={() => openBatch("upload")} disabled={busy || !selectedKeys.length}>
+              <Upload size={16} />{t("assets.uploadSelected")}
+            </button>
+            <button className="primary" onClick={() => openBatch("download")} disabled={busy || !selectedKeys.length}>
+              <Download size={16} />{t("assets.downloadSelected")}
+            </button>
+          </div>
+        </div>
+
+        {inventory?.remote_warning ? <Banner tone="danger" text={inventory.remote_warning} /> : null}
+        {inventory?.legacy_write_blocker ? <Banner tone="danger" text={inventory.legacy_write_blocker} /> : null}
+
+        <div className="asset-filter-grid">
+          <Filter label={t("resources.filterKind")} value={kindFilter} onChange={setKindFilter}>
+            {kinds.map((value) => <option key={value} value={value}>{resourceKindLabel(value, t)}</option>)}
+          </Filter>
+          <Filter label={t("resources.filterStatus")} value={statusFilter} onChange={setStatusFilter}>
+            {statuses.map((value) => <option key={value} value={value}>{value === "all" ? t("assets.allValues") : assetStatusLabel(value, t)}</option>)}
+          </Filter>
+          <Filter label={t("assets.filterLocal")} value={localFilter} onChange={setLocalFilter}>
+            {localStatuses.map((value) => <option key={value} value={value}>{value === "all" ? t("assets.allValues") : localStatusLabel(value, t)}</option>)}
+          </Filter>
+          <Filter label={t("assets.filterRemote")} value={remoteFilter} onChange={setRemoteFilter}>
+            {remoteStatuses.map((value) => <option key={value} value={value}>{value === "all" ? t("assets.allValues") : remoteStatusLabel(value, t)}</option>)}
+          </Filter>
+          <Filter label={t("assets.filterTool")} value={toolFilter} onChange={setToolFilter}>
+            <option value="all">{t("assets.allValues")}</option>
+            {tools.map((value) => <option key={value} value={value}>{value}</option>)}
+          </Filter>
+        </div>
+
+        <div className="asset-selection-bar">
+          <button className="secondary" onClick={selectVisible}>{t("assets.selectVisible")}</button>
+          <button className="secondary" onClick={() => setSelectedKeys([])}>{t("assets.clearSelection")}</button>
+          <span>{t("assets.selectedCount", { count: selectedKeys.length })}</span>
+        </div>
+
+        <div className="asset-table-wrap">
+          <table className="asset-resource-table">
+            <thead>
+              <tr>
+                <th aria-label={t("assets.selectedCount", { count: selectedKeys.length })} />
+                <th>{t("assets.title")}</th>
+                <th>{t("assets.descriptionColumn")}</th>
+                <th>{t("assets.localColumn")}</th>
+                <th>{t("assets.remoteColumn")}</th>
+                <th>{t("assets.overallColumn")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((resource) => (
+                <tr
+                  key={resource.resource_key}
+                  className={selectedResource?.resource_key === resource.resource_key ? "active" : ""}
+                  onClick={() => selectResource(resource)}
+                >
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedSet.has(resource.resource_key)}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={() => toggleSelected(resource.resource_key)}
+                      aria-label={resource.name}
+                    />
+                  </td>
+                  <td>
+                    <div className="asset-resource-name">
+                      <KindBadge kind={resource.kind} label={resourceKindLabel(resource.kind, t)} />
+                      <span><strong>{resource.name}</strong><small>{resource.resource_key}</small></span>
+                    </div>
+                  </td>
+                  <td className="asset-description-cell">{resource.description || "-"}</td>
+                  <td><StatusPill value={resource.local_status} label={localStatusLabel(resource.local_status, t)} /></td>
+                  <td><StatusPill value={resource.remote_status} label={remoteStatusLabel(resource.remote_status, t)} /></td>
+                  <td><StatusPill value={resource.status} label={assetStatusLabel(resource.status, t)} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!visible.length ? <EmptyState text={t("assets.empty")} /> : null}
         </div>
       </div>
 
-      <div className="resource-side-panel">
-        {selected ? (
-          <>
-            <AssetActionPanel
-              row={selected}
-              busy={Boolean(busyAction)}
-              t={t}
-              onAction={openAction}
-              onDelete={() => setDeleteDialog({
-                row: selected,
-                confirmName: "",
-                error: "",
-              })}
-              onOpen={() => {
-                const path = selected.local_path || selected.target_path;
-                if (path) void openPath(path).catch((error) => onError(String(error)));
-              }}
-              onUninstall={() => void uninstallLocal(selected)}
-            />
-            <AssetDetailPanel row={selected} t={t} />
-          </>
-        ) : (
-          <div className="panel detail-panel resource-detail-panel">
-            <EmptyState text={t("resources.noSelected")} />
-          </div>
-        )}
-      </div>
+      <ResourceDetail resource={selectedResource} t={t} onError={onError} />
 
-      {dialog ? (
-        <AssetActionDialog
-          state={dialog}
+      {batchDirection ? (
+        <BatchDialog
+          direction={batchDirection}
+          resourceKeys={selectedKeys}
+          inventory={inventory}
           t={t}
-          onCancel={() => setDialog(null)}
-          onChange={(changes) => setDialog((current) => (
-            current ? { ...current, ...changes, plan: null, error: "" } : current
-          ))}
-          onPlan={(plan) => setDialog((current) => (
-            current ? { ...current, plan, error: "" } : current
-          ))}
-          onError={(error) => setDialog((current) => (
-            current ? { ...current, error } : current
-          ))}
-          onApplied={async () => {
-            setDialog(null);
-            await onChanged();
+          onClose={() => setBatchDirection(null)}
+          onOpenSettings={onOpenSettings}
+          onDone={async () => {
+            setBatchDirection(null);
+            await Promise.resolve(onChanged());
           }}
         />
-      ) : null}
-
-      {deleteDialog ? (
-        <div className="modal-backdrop" role="presentation">
-          <div className="modal resource-delete-modal" role="dialog" aria-modal="true">
-            <div className="modal-head danger-head">
-              <Trash2 size={20} />
-              <h2>{t("assets.deleteResource")}</h2>
-              <button className="icon-button" type="button" onClick={() => void closeDeleteDialog()}>
-                <X size={17} />
-              </button>
-            </div>
-            <div className="delete-modal-body">
-              <p>{t("assets.deleteWarning", { name: deleteDialog.row.name })}</p>
-              <label className="stack-form">
-                <span>{t("assets.typeName", { name: deleteDialog.row.name })}</span>
-                <input
-                  value={deleteDialog.confirmName}
-                  onChange={(event) => setDeleteDialog((current) => (
-                    current ? { ...current, confirmName: event.target.value, error: "" } : current
-                  ))}
-                />
-              </label>
-              {deleteAuthSession ? (
-                <div className="oauth-device-panel" role="status">
-                  <p>{t("assets.authorizeRemoteDelete")}</p>
-                  <strong>{deleteAuthSession.user_code}</strong>
-                  <div>
-                    <button className="secondary" type="button" onClick={() => void copyText(deleteAuthSession.user_code)}>
-                      <Copy size={16} />{t("settings.copyCode")}
-                    </button>
-                    <button className="secondary" type="button" onClick={() => void closeDeleteDialog()}>
-                      {t("common.cancel")}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-              {deleteAuthMessage ? <p className="delete-auth-success">{deleteAuthMessage}</p> : null}
-              {deleteDialog.error ? <p className="delete-modal-error">{deleteDialog.error}</p> : null}
-            </div>
-            <div className="modal-actions">
-              <button className="secondary" type="button" onClick={() => void closeDeleteDialog()}>
-                {t("common.cancel")}
-              </button>
-              <button
-                className="danger"
-                type="button"
-                onClick={() => void removeResource()}
-                disabled={busyAction === "delete" || Boolean(deleteAuthSession)}
-              >
-                {busyAction === "delete" || deleteAuthSession ? t("common.working") : t("common.confirm")}
-              </button>
-            </div>
-          </div>
-        </div>
       ) : null}
     </section>
   );
 }
 
-function deletesOwnedRepository(row: AssetPlatformRow): boolean {
-  return row.entry?.source === "owned" && Boolean(row.entry.repo);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function AssetActionPanel({
-  row,
-  busy,
-  t,
-  onAction,
-  onDelete,
-  onOpen,
-  onUninstall,
+function Filter<T extends string>({
+  label,
+  value,
+  onChange,
+  children,
 }: {
-  row: AssetPlatformRow;
-  busy: boolean;
-  t: TFunction;
-  onAction: (row: AssetPlatformRow, action: AssetAction) => void;
-  onDelete: () => void;
-  onOpen: () => void;
-  onUninstall: () => void;
+  label: string;
+  value: T;
+  onChange: (value: T) => void;
+  children: React.ReactNode;
 }) {
   return (
-    <div className="panel resource-action-panel">
-      <div className="resource-actions asset-actions">
-        {row.available_actions.map((action) => (
-          <button
-            className={action === "download" || action === "upload" ? "primary" : "secondary"}
-            key={action}
-            type="button"
-            onClick={() => onAction(row, action)}
-            disabled={busy}
-          >
-            {assetActionIcon(action)}
-            {assetActionLabel(action, t)}
-          </button>
-        ))}
-        <button
-          className="secondary"
-          type="button"
-          onClick={onOpen}
-          disabled={busy || !(row.local_path || row.target_path)}
-        >
-          <FolderOpen size={16} />
-          {t("assets.open")}
-        </button>
-        <button
-          className="secondary"
-          type="button"
-          onClick={onUninstall}
-          disabled={busy || !row.local_exists || row.ownership !== "managed" || !row.entry}
-        >
-          <Unplug size={16} />
-          {t("assets.uninstall")}
-        </button>
-        <button
-          className="danger"
-          type="button"
-          onClick={onDelete}
-          disabled={busy || !row.remote_exists || !row.entry}
-        >
-          <Trash2 size={16} />
-          {t("assets.deleteResource")}
-        </button>
-      </div>
-    </div>
+    <label><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value as T)}>{children}</select></label>
   );
 }
 
-function AssetDetailPanel({ row, t }: { row: AssetPlatformRow; t: TFunction }) {
+function ResourceDetail({
+  resource,
+  t,
+  onError,
+}: {
+  resource?: AssetResourceRow;
+  t: TFunction;
+  onError: (message: string) => void;
+}) {
+  if (!resource) {
+    return <aside className="panel asset-unified-detail"><EmptyState text={t("assets.noSelection")} /></aside>;
+  }
   return (
-    <div className="panel detail-panel resource-detail-panel">
+    <aside className="panel asset-unified-detail">
       <div className="detail-title">
         <div className="detail-title-main">
-          <KindBadge kind={row.kind} label={resourceKindLabel(row.kind, t)} />
-          <h2>{row.name}</h2>
+          <KindBadge kind={resource.kind} label={resourceKindLabel(resource.kind, t)} />
+          <h2>{resource.name}</h2>
         </div>
-        <span className={`asset-status status-${row.status}`}>
-          {assetStatusLabel(row.status, t)}
-        </span>
+        <StatusPill value={resource.status} label={assetStatusLabel(resource.status, t)} />
       </div>
+      <p className="asset-detail-description">{resource.description || "-"}</p>
       <dl className="description-list asset-description-list">
-        <div><dt>{t("assets.resourceKey")}</dt><dd>{row.resource_key}</dd></div>
-        <div><dt>{t("assets.platform")}</dt><dd>{row.platform}</dd></div>
-        <div><dt>{t("assets.installName")}</dt><dd>{row.install_name}</dd></div>
-        <div><dt>{t("assets.path")}</dt><dd>{row.local_path || row.target_path || "-"}</dd></div>
-        <div><dt>{t("assets.ownership")}</dt><dd>{row.ownership}</dd></div>
-        <div><dt>{t("assets.remoteCommit")}</dt><dd>{shortCommit(row.remote_commit)}</dd></div>
-        {row.reference_commit ? (
-          <div><dt>{t("assets.referenceCommit")}</dt><dd>{shortCommit(row.reference_commit)}</dd></div>
-        ) : null}
-        <div>
-          <dt>{t("assets.platformState")}</dt>
-          <dd>
-            {row.configured ? t("assets.configured") : t("assets.detectedOnly")}
-            {" / "}
-            {row.enabled ? t("assets.enabled") : t("assets.disabled")}
-          </dd>
-        </div>
+        <div><dt>{t("assets.resourceKey")}</dt><dd>{resource.resource_key}</dd></div>
+        <div><dt>{t("assets.remoteCommit")}</dt><dd>{shortCommit(resource.remote.commit)}</dd></div>
+        <div><dt>{t("assets.remotePath")}</dt><dd>{resource.remote.path || "-"}</dd></div>
+        <div><dt>{t("assets.remoteColumn")}</dt><dd>{remoteStatusLabel(resource.remote_status, t)}</dd></div>
+        <div><dt>{t("assets.localColumn")}</dt><dd>{localStatusLabel(resource.local_status, t)}</dd></div>
       </dl>
-      <div className="asset-diff-preview">
+      {resource.metadata_differences.includes("description") ? (
+        <div className="asset-description-compare">
+          <div><strong>{t("assets.remoteDescription")}</strong><p>{resource.remote.description || "-"}</p></div>
+          <div>
+            <strong>{t("assets.localDescriptions")}</strong>
+            {resource.local_instances.map((instance) => (
+              <p key={instance.id}>{instance.platform}: {instance.description || "-"}</p>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <div className="asset-detail-diff">
         <h3>{t("assets.diffPreview")}</h3>
-        {row.diff_summary.length ? (
-          <ul>{row.diff_summary.map((item) => <li key={item}>{item}</li>)}</ul>
-        ) : (
-          <p>{t("assets.noDiff")}</p>
-        )}
-        {row.metadata_differences.length ? (
-          <p>{t("assets.metadataFields")}: {row.metadata_differences.join(", ")}</p>
-        ) : null}
+        <ul>{resource.diff_summary.map((item) => <li key={item}>{item}</li>)}</ul>
+        {resource.metadata_differences.length ? <p>{t("assets.metadataFields")}: {resource.metadata_differences.join(", ")}</p> : null}
       </div>
-      {row.warnings.map((warning) => (
-        <Banner key={warning} tone="danger" text={warning} />
-      ))}
-      {row.blockers.map((blocker) => (
-        <Banner key={blocker} tone="danger" text={blocker} />
-      ))}
-    </div>
+      <div className="asset-instance-list">
+        {resource.local_instances.map((instance) => (
+          <div className="asset-instance-card" key={instance.id}>
+            <div><strong>{instance.platform}</strong><StatusPill value={instance.status} label={assetStatusLabel(instance.status, t)} /></div>
+            <small>{instance.install_name}</small>
+            <small>{instance.path || "-"}</small>
+            <small>{instance.ownership}</small>
+            {[...instance.warnings, ...instance.blockers].map((message) => (
+              <small className="asset-instance-warning" key={message}>{message}</small>
+            ))}
+            {instance.path ? (
+              <button className="secondary" onClick={() => void openPath(instance.path || "").catch((error) => onError(String(error)))}>
+                <FolderOpen size={15} />{t("assets.open")}
+              </button>
+            ) : null}
+          </div>
+        ))}
+        {!resource.local_instances.length ? <EmptyState text={localStatusLabel(resource.local_status, t)} /> : null}
+      </div>
+      {[...resource.warnings, ...resource.blockers].map((message) => <Banner key={message} tone="danger" text={message} />)}
+    </aside>
   );
 }
 
-function AssetActionDialog({
-  state,
+function BatchDialog({
+  direction,
+  resourceKeys,
+  inventory,
   t,
-  onCancel,
-  onChange,
-  onPlan,
-  onError,
-  onApplied,
+  onClose,
+  onOpenSettings,
+  onDone,
 }: {
-  state: ActionDialogState;
+  direction: "upload" | "download";
+  resourceKeys: string[];
+  inventory: AssetInventory | null;
   t: TFunction;
-  onCancel: () => void;
-  onChange: (changes: Partial<ActionDialogState>) => void;
-  onPlan: (plan: AssetActionPlan) => void;
-  onError: (error: string) => void;
-  onApplied: () => Promise<void>;
+  onClose: () => void;
+  onOpenSettings: () => void;
+  onDone: () => Promise<void>;
 }) {
   const { runTask } = useTaskCenter();
+  const [platforms, setPlatforms] = useState<PlatformProfile[]>([]);
+  const [targetPlatforms, setTargetPlatforms] = useState<string[]>([]);
+  const [choices, setChoices] = useState<Record<string, AssetBatchChoice>>({});
+  const [plan, setPlan] = useState<AssetBatchPlan | null>(null);
   const [busy, setBusy] = useState(false);
-  const needsName = state.action === "copy-to-local" || state.action === "copy-to-remote";
-  const needsInstallName = state.action === "set-platform-install-name";
-  const needsConfirmation = (
-    (state.action === "download" && state.row.local_exists)
-    || (state.action === "upload" && state.row.remote_exists)
-  );
-  const liveName = needsInstallName ? state.installName : state.newName;
-  const nameInvalid = (needsName || needsInstallName) && !safeNamePattern.test(liveName.trim());
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (direction === "download") {
+      void lpmAction<ConfigSettings>("config_get")
+        .then((settings) => setPlatforms(settings.config.platforms))
+        .catch((reason) => setError(String(reason)));
+    } else {
+      void createPlan();
+    }
+  }, []);
+
+  function updateChoice(
+    resourceKey: string,
+    platform: string,
+    changes: Partial<AssetBatchChoice>,
+    slot = "",
+  ) {
+    const id = batchChoiceId(resourceKey, platform, slot);
+    setChoices((current) => ({
+      ...current,
+      [id]: {
+        ...current[id],
+        resource_key: resourceKey,
+        platform,
+        resolution: current[id]?.resolution ?? "overwrite",
+        ...changes,
+      },
+    }));
+    setPlan(null);
+  }
+
+  function toggleSeparateVariants(resource: AssetResourceRow, enabled: boolean) {
+    setChoices((current) => {
+      const next = { ...current };
+      Object.keys(next)
+        .filter((key) => key.startsWith(`${resource.resource_key}||`))
+        .forEach((key) => delete next[key]);
+      if (enabled) {
+        resource.local_instances.forEach((instance, index) => {
+          next[batchChoiceId(resource.resource_key, "", instance.id)] = {
+            resource_key: resource.resource_key,
+            platform: "",
+            local_instance_id: instance.id,
+            resolution: "rename",
+            new_name: `${resource.name}-${safeNamePart(instance.platform)}-${index + 1}`,
+          };
+        });
+      }
+      return next;
+    });
+    setPlan(null);
+  }
+
+  function payloadChoices(): AssetBatchChoice[] {
+    return Object.values(choices);
+  }
 
   async function createPlan() {
-    if (nameInvalid) {
-      onError(t("assets.invalidName"));
-      return;
-    }
-    if (needsConfirmation && !state.confirmed) {
-      onError(t("assets.confirmReplacement"));
-      return;
-    }
+    if (direction === "download" && !targetPlatforms.length) return;
     setBusy(true);
+    setError("");
     try {
-      const plan = await runTask({
-        kind: "asset-action-plan",
-        title: t("assets.createPlan"),
-        context: `${state.row.resource_key} / ${state.row.platform}`,
-        action: () => lpmAction<AssetActionPlan>("asset_action_plan", {
-          action: state.action,
-          kind: state.row.kind,
-          name: state.row.name,
-          platform: state.row.platform,
-          local_instance_id: state.row.local_instance_id,
-          new_name: state.newName.trim(),
-          new_install_name: state.installName.trim(),
-          overwrite_unmanaged: (
-            state.action === "download"
-            && state.row.ownership !== "managed"
-            && state.confirmed
-          ),
+      const next = await runTask({
+        kind: `asset-batch-${direction}-plan`,
+        title: t("assets.batchPlan"),
+        action: () => lpmAction<AssetBatchPlan>("asset_batch_plan", {
+          direction,
+          resource_keys: resourceKeys,
+          target_platforms: targetPlatforms,
+          choices: payloadChoices(),
         }),
-        successMessage: t("assets.planReady"),
-        retryPolicy: "none",
+        successMessage: (value) => t("assets.batchPlanReady", {
+          executable: value.executable_count,
+          blocked: value.blocked_count,
+          skipped: value.skipped_count,
+        }),
+        retryPolicy: "safe-read",
       });
-      onPlan(plan);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      setPlan(next);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
     }
   }
 
   async function applyPlan() {
-    if (!state.plan || state.plan.blocked) return;
+    if (!plan || !plan.executable_count || plan.blocked_count) return;
     setBusy(true);
+    setError("");
     try {
-      await runTask({
-        kind: `asset-${state.action}`,
-        title: assetActionLabel(state.action, t),
-        context: `${state.plan.target_resource_key} / ${state.row.platform}`,
-        action: async () => {
-          const result = await lpmAction<AssetActionResult>("asset_action_apply", {
-            operation_id: state.plan?.operation_id,
-          });
-          if (!["succeeded", "unchanged"].includes(result.status)) {
-            throw new Error(result.message || result.status);
-          }
-          return result;
-        },
-        successMessage: (result) => result.message,
+      const result = await runTask({
+        kind: `asset-batch-${direction}`,
+        title: direction === "upload" ? t("assets.uploadSelected") : t("assets.downloadSelected"),
+        action: () => lpmAction<AssetBatchResult>("asset_batch_apply", {
+          direction,
+          resource_keys: resourceKeys,
+          target_platforms: targetPlatforms,
+          choices: payloadChoices(),
+          plan_hash: plan.plan_hash,
+        }),
+        successMessage: (value) => t("assets.batchComplete", { count: value.results.length }),
         retryPolicy: "none",
       });
-      await onApplied();
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      if (result.status === "stale-plan" && result.stale_plan) {
+        setPlan(result.stale_plan);
+        setError(t("assets.stalePlan"));
+        return;
+      }
+      await onDone();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
     }
   }
 
+  const selectedResources = resourceKeys
+    .map((key) => inventory?.resources.find((item) => item.resource_key === key))
+    .filter((item): item is AssetResourceRow => Boolean(item));
+  const planGroups = plan
+    ? (["create", "update", "rename", "unchanged", "skip", "blocked"] as const)
+        .map((disposition) => ({
+          disposition,
+          items: plan.items.filter((item) => item.disposition === disposition),
+        }))
+        .filter((group) => group.items.length)
+    : [];
+
   return (
     <div className="modal-backdrop" role="presentation">
-      <div className="modal asset-action-modal" role="dialog" aria-modal="true">
+      <div className="modal asset-batch-modal" role="dialog" aria-modal="true">
         <div className="modal-head">
-          {assetActionIcon(state.action)}
-          <h2>{assetActionLabel(state.action, t)}</h2>
-          <button className="icon-button" type="button" onClick={onCancel}>
-            <X size={17} />
-          </button>
+          {direction === "upload" ? <Upload size={19} /> : <Download size={19} />}
+          <h2>{direction === "upload" ? t("assets.uploadSelected") : t("assets.downloadSelected")}</h2>
+          <button className="icon-button" onClick={onClose}><X size={17} /></button>
         </div>
-        <p>{state.row.resource_key} / {state.row.platform}</p>
-        {needsName ? (
-          <label className="stack-form">
-            <span>{t("assets.newName")}</span>
-            <input
-              value={state.newName}
-              onChange={(event) => onChange({ newName: event.target.value })}
-              placeholder={t("assets.namePlaceholder")}
-            />
-          </label>
-        ) : null}
-        {needsInstallName ? (
-          <label className="stack-form">
-            <span>{t("assets.installName")}</span>
-            <input
-              value={state.installName}
-              onChange={(event) => onChange({ installName: event.target.value })}
-              placeholder={t("assets.namePlaceholder")}
-            />
-          </label>
-        ) : null}
-        {needsConfirmation ? (
-          <label className="asset-confirm-choice">
-            <input
-              type="checkbox"
-              checked={state.confirmed}
-              onChange={(event) => onChange({ confirmed: event.target.checked })}
-            />
-            <span>
-              {state.action === "download"
-                ? t("assets.confirmLocalReplace")
-                : t("assets.confirmRemoteReplace")}
-            </span>
-          </label>
-        ) : null}
-        {nameInvalid && liveName ? <Banner tone="danger" text={t("assets.invalidName")} /> : null}
-        {state.error ? <Banner tone="danger" text={state.error} /> : null}
-        {state.plan?.warnings.map((warning) => (
-          <div className="asset-plan-message warning" key={warning}>
-            <AlertTriangle size={16} />
-            <span>{warning}</span>
+
+        {direction === "download" ? (
+          <div className="asset-platform-picker">
+            <div><strong>{t("assets.targetTools")}</strong><small>{t("assets.targetToolsHint")}</small></div>
+            {platforms.map((platform) => (
+              <label key={platform.name} className={!platform.enabled ? "disabled" : ""}>
+                <input
+                  type="checkbox"
+                  checked={targetPlatforms.includes(platform.name)}
+                  disabled={!platform.enabled}
+                  onChange={() => {
+                    setTargetPlatforms((current) => current.includes(platform.name)
+                      ? current.filter((item) => item !== platform.name)
+                      : [...current, platform.name]);
+                    setPlan(null);
+                  }}
+                />
+                <span>{platform.name}</span>
+                <small>{platform.enabled ? t("assets.enabled") : t("assets.disabled")}</small>
+              </label>
+            ))}
+            {platforms.some((platform) => !platform.enabled) ? (
+              <button className="secondary" onClick={onOpenSettings}><ExternalLink size={15} />{t("assets.goSettings")}</button>
+            ) : null}
           </div>
-        ))}
-        {state.plan?.blockers.map((blocker) => (
-          <div className="asset-plan-message blocker" key={blocker}>
-            <AlertTriangle size={16} />
-            <span>{blocker}</span>
-          </div>
-        ))}
-        {state.plan ? (
-          <dl className="description-list asset-plan-summary">
-            <div><dt>{t("assets.operationId")}</dt><dd>{state.plan.operation_id}</dd></div>
-            <div><dt>{t("assets.target")}</dt><dd>{state.plan.target_resource_key}</dd></div>
-            <div><dt>{t("assets.remoteCommit")}</dt><dd>{shortCommit(state.plan.remote_commit)}</dd></div>
-          </dl>
         ) : null}
+
+        <div className="asset-batch-choices">
+          {selectedResources.map((resource) => (
+            <BatchChoiceEditor
+              key={resource.resource_key}
+              resource={resource}
+              direction={direction}
+              platforms={targetPlatforms}
+              choices={choices}
+              t={t}
+              onChange={updateChoice}
+              onToggleSeparate={toggleSeparateVariants}
+            />
+          ))}
+        </div>
+
+        {plan ? (
+          <div className="asset-plan-review">
+            <p>{t("assets.batchPlanReady", {
+              executable: plan.executable_count,
+              blocked: plan.blocked_count,
+              skipped: plan.skipped_count,
+            })}</p>
+            <div className="asset-plan-items">
+              {planGroups.map((group) => (
+                <section className="asset-plan-group" key={group.disposition}>
+                  <h3>{batchDispositionLabel(group.disposition, t)} ({group.items.length})</h3>
+                  {group.items.map((item) => (
+                    <div key={item.id} className={`asset-plan-item disposition-${item.disposition}`}>
+                      <strong>{item.resource_key}</strong>
+                      <span>{item.platform || "-"}</span>
+                      <span>{batchDispositionLabel(item.disposition, t)}</span>
+                      <small>{item.reason || item.target_resource_key}</small>
+                      {item.blockers.some((blocker) => blocker.toLowerCase().includes("unmanaged")) ? (
+                        <label className="checkline">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(choices[batchChoiceId(item.resource_key, item.platform)]?.overwrite_unmanaged)}
+                            onChange={(event) => updateChoice(item.resource_key, item.platform, { overwrite_unmanaged: event.target.checked })}
+                          />
+                          <span>{t("assets.confirmLocalReplace")}</span>
+                        </label>
+                      ) : null}
+                    </div>
+                  ))}
+                </section>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {error ? <Banner tone="danger" text={error} /> : null}
         <div className="modal-actions">
-          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>
-            {t("common.cancel")}
-          </button>
+          <button className="secondary" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
             className="secondary"
-            type="button"
             onClick={() => void createPlan()}
-            disabled={busy || nameInvalid}
+            disabled={busy || (direction === "download" && !targetPlatforms.length)}
           >
-            {busy ? t("common.working") : t("assets.createPlan")}
+            {busy ? t("common.working") : plan ? t("assets.refreshPlan") : t("assets.createPlan")}
           </button>
           <button
             className="primary"
-            type="button"
             onClick={() => void applyPlan()}
-            disabled={busy || !state.plan || state.plan.blocked}
+            disabled={busy || !plan || !plan.executable_count || Boolean(plan.blocked_count)}
           >
-            {t("assets.apply")}
+            {t("assets.applyBatch")}
           </button>
         </div>
       </div>
@@ -758,8 +611,120 @@ function AssetActionDialog({
   );
 }
 
-function rowId(row?: AssetPlatformRow): string {
-  return row ? `${row.resource_key}|${row.platform}|${row.local_instance_id}` : "";
+function BatchChoiceEditor({
+  resource,
+  direction,
+  platforms,
+  choices,
+  t,
+  onChange,
+  onToggleSeparate,
+}: {
+  resource: AssetResourceRow;
+  direction: "upload" | "download";
+  platforms: string[];
+  choices: Record<string, AssetBatchChoice>;
+  t: TFunction;
+  onChange: (
+    resourceKey: string,
+    platform: string,
+    changes: Partial<AssetBatchChoice>,
+    slot?: string,
+  ) => void;
+  onToggleSeparate: (resource: AssetResourceRow, enabled: boolean) => void;
+}) {
+  const targetRows = direction === "download" ? (platforms.length ? platforms : [""]) : [""];
+  const canSeparate = direction === "upload" && resource.local_status === "variants";
+  const separate = canSeparate && resource.local_instances.length > 1
+    && resource.local_instances.every((instance) => (
+      choices[batchChoiceId(resource.resource_key, "", instance.id)]?.resolution === "rename"
+    ));
+  return (
+    <div className="asset-batch-choice-card">
+      <div><KindBadge kind={resource.kind} label={resourceKindLabel(resource.kind, t)} /><strong>{resource.name}</strong></div>
+      {canSeparate ? (
+        <label className="checkline">
+          <input
+            type="checkbox"
+            checked={separate}
+            onChange={(event) => onToggleSeparate(resource, event.target.checked)}
+          />
+          <span>{t("assets.separateVariants")}</span>
+        </label>
+      ) : null}
+      {separate ? resource.local_instances.map((instance) => {
+        const id = batchChoiceId(resource.resource_key, "", instance.id);
+        const choice = choices[id];
+        return (
+          <div className="asset-choice-fields" key={id}>
+            <strong>{instance.platform} / {instance.install_name}</strong>
+            <label>
+              <span>{t("assets.newName")}</span>
+              <input
+                value={choice.new_name || ""}
+                onChange={(event) => onChange(
+                  resource.resource_key,
+                  "",
+                  { new_name: event.target.value, local_instance_id: instance.id, resolution: "rename" },
+                  instance.id,
+                )}
+              />
+            </label>
+          </div>
+        );
+      }) : targetRows.map((platform) => {
+        const id = batchChoiceId(resource.resource_key, platform);
+        const choice = choices[id] ?? { resource_key: resource.resource_key, platform, resolution: "overwrite" as const };
+        return (
+          <div className="asset-choice-fields" key={id}>
+            {platform ? <strong>{platform}</strong> : null}
+            {direction === "upload" && resource.local_instances.length > 1 ? (
+              <label>
+                <span>{t("assets.sourceInstance")}</span>
+                <select
+                  value={choice.local_instance_id || ""}
+                  onChange={(event) => onChange(resource.resource_key, platform, { local_instance_id: event.target.value })}
+                >
+                  <option value="">{resource.local_status === "variants" ? "-" : resource.local_instances[0]?.platform || "-"}</option>
+                  {resource.local_instances.map((instance) => (
+                    <option value={instance.id} key={instance.id}>{instance.platform} / {instance.install_name}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <label>
+              <span>{t("assets.resolution")}</span>
+              <select
+                value={choice.resolution || "overwrite"}
+                onChange={(event) => onChange(resource.resource_key, platform, { resolution: event.target.value as "overwrite" | "rename" })}
+              >
+                <option value="overwrite">{t("assets.overwrite")}</option>
+                <option value="rename">{t("assets.rename")}</option>
+              </select>
+            </label>
+            {choice.resolution === "rename" ? (
+              <label>
+                <span>{t("assets.newName")}</span>
+                <input value={choice.new_name || ""} onChange={(event) => onChange(resource.resource_key, platform, { new_name: event.target.value })} />
+              </label>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function StatusPill({ value, label }: { value: string; label: string }) {
+  return <span className={`asset-status status-${value}`}>{label}</span>;
+}
+
+function batchChoiceId(resourceKey: string, platform = "", slot = ""): string {
+  return `${resourceKey}|${platform}|${slot}`;
+}
+
+function safeNamePart(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "local";
 }
 
 function shortCommit(commit?: string | null): string {
@@ -770,13 +735,22 @@ function assetStatusLabel(status: AssetStatus, t: TFunction): string {
   return t(`assets.status.${status}` as Parameters<TFunction>[0]);
 }
 
-function assetActionLabel(action: AssetAction, t: TFunction): string {
-  return t(`assets.action.${action}` as Parameters<TFunction>[0]);
+function localStatusLabel(status: AssetLocalStatus, t: TFunction): string {
+  return t(`assets.localStatus.${status}` as Parameters<TFunction>[0]);
 }
 
-function assetActionIcon(action: AssetAction) {
-  if (action === "download") return <Download size={16} />;
-  if (action === "upload") return <Upload size={16} />;
-  if (action === "set-platform-install-name") return <PencilLine size={16} />;
-  return <Copy size={16} />;
+function remoteStatusLabel(status: AssetRemoteStatus, t: TFunction): string {
+  return t(`assets.remoteStatus.${status}` as Parameters<TFunction>[0]);
+}
+
+function batchDispositionLabel(value: AssetBatchPlan["items"][number]["disposition"], t: TFunction): string {
+  const key = {
+    create: "assets.batchCreate",
+    update: "assets.batchUpdate",
+    rename: "assets.batchRename",
+    unchanged: "assets.batchUnchanged",
+    skip: "assets.batchSkip",
+    blocked: "assets.batchBlocked",
+  }[value];
+  return t(key as Parameters<TFunction>[0]);
 }

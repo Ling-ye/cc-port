@@ -56,24 +56,14 @@ from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubAuthError, GithubClient
 from ..services import github_oauth, publisher
 from ..services.asset_sync import (
+    AssetBatchChoice,
     apply_asset_action_plan,
+    apply_asset_batch_plan,
     build_asset_action_plan,
+    build_asset_batch_plan,
     build_asset_inventory,
 )
 from ..services.doctor import build_doctor_checks
-from ..services.env_manager import (
-    apply_env_import,
-    apply_env_pull,
-    apply_env_push,
-    build_deploy_plan,
-    build_env_import_diff,
-    build_env_pull_diff,
-    build_env_push_diff,
-    capture_environment,
-    deploy_environment,
-    discover_environment,
-    export_environment_snapshot,
-)
 from ..services.installer import check_all, preview_sync_all, status_all, sync_all, uninstall_one
 from ..services.local_resources import import_local_resource
 from ..services.operation_history import (
@@ -258,7 +248,12 @@ def _upload(payload: JsonDict) -> JsonDict:
         overwrite=bool(payload.get("overwrite", False)),
     )
     push_result = _push_after_upload(load_config(), payload)
-    return {"entry": result.entry, "source_path": result.source_path, "stored_path": result.stored_path, "push": push_result}
+    return {
+        "entry": result.entry,
+        "source_path": result.source_path,
+        "stored_path": result.stored_path,
+        "push": push_result,
+    }
 
 
 def _discover_resources(payload: JsonDict) -> JsonDict:
@@ -370,11 +365,14 @@ def _resource_inventory(payload: JsonDict) -> Any:
 
 
 def _asset_inventory(payload: JsonDict) -> Any:
-    return build_asset_inventory(
+    inventory = build_asset_inventory(
         config=load_config(),
         scan_local=bool(payload.get("scan_local", False)),
         refresh_remote=bool(payload.get("refresh_remote", True)),
     )
+    response = asdict(inventory)
+    response.pop("rows", None)
+    return response
 
 
 def _asset_action_plan(payload: JsonDict) -> Any:
@@ -394,6 +392,27 @@ def _asset_action_plan(payload: JsonDict) -> Any:
 def _asset_action_apply(payload: JsonDict) -> Any:
     return apply_asset_action_plan(
         _required_str(payload, "operation_id"),
+        config=load_config(),
+    )
+
+
+def _asset_batch_plan(payload: JsonDict) -> Any:
+    return build_asset_batch_plan(
+        _required_str(payload, "direction"),
+        resource_keys=_str_list(payload.get("resource_keys")),
+        target_platforms=_str_list(payload.get("target_platforms")),
+        choices=_asset_batch_choices(payload.get("choices")),
+        config=load_config(),
+    )
+
+
+def _asset_batch_apply(payload: JsonDict) -> Any:
+    return apply_asset_batch_plan(
+        _required_str(payload, "direction"),
+        resource_keys=_str_list(payload.get("resource_keys")),
+        target_platforms=_str_list(payload.get("target_platforms")),
+        choices=_asset_batch_choices(payload.get("choices")),
+        expected_plan_hash=_required_str(payload, "plan_hash"),
         config=load_config(),
     )
 
@@ -494,70 +513,6 @@ def _remove(payload: JsonDict) -> JsonDict:
     return {"removed": removed.entry, "delete": removed, "uninstalled": uninstalled}
 
 
-
-def _env_discover(_: JsonDict) -> Any:
-    return discover_environment()
-
-
-def _env_capture(payload: JsonDict) -> Any:
-    return capture_environment(
-        config=load_config(),
-        tools=_str_list(payload.get("tools")) or None,
-        kinds=_str_list(payload.get("kinds")) or None,
-    )
-
-
-def _env_export(payload: JsonDict) -> JsonDict:
-    return {"path": export_environment_snapshot(_required_str(payload, "out"), config=load_config())}
-
-
-def _env_diff_push(_: JsonDict) -> Any:
-    return build_env_push_diff(config=load_config())
-
-
-def _env_apply_push(payload: JsonDict) -> Any:
-    return apply_env_push(config=load_config(), choices=_choices_payload(payload))
-
-
-def _env_diff_pull(_: JsonDict) -> Any:
-    return build_env_pull_diff(config=load_config())
-
-
-def _env_apply_pull(payload: JsonDict) -> Any:
-    return apply_env_pull(config=load_config(), choices=_choices_payload(payload))
-
-
-def _env_diff_import(payload: JsonDict) -> Any:
-    return build_env_import_diff(_required_str(payload, "snapshot"), config=load_config())
-
-
-def _env_apply_import(payload: JsonDict) -> Any:
-    return apply_env_import(
-        _required_str(payload, "snapshot"),
-        config=load_config(),
-        choices=_choices_payload(payload),
-    )
-
-
-def _env_pull(_: JsonDict) -> Any:
-    return apply_env_pull(config=load_config())
-
-
-def _env_deploy_plan(payload: JsonDict) -> Any:
-    return build_deploy_plan(
-        config=load_config(),
-        force=bool(payload.get("force", False)),
-        names=_str_list(payload.get("only")) or None,
-    )
-
-
-def _env_deploy(payload: JsonDict) -> Any:
-    return deploy_environment(
-        config=load_config(),
-        force=bool(payload.get("force", False)),
-        names=_str_list(payload.get("only")) or None,
-    )
-
 def _resource_init(payload: JsonDict) -> Any:
     return init_resource_repo(name=_optional_str(payload.get("name")), config=load_config())
 
@@ -653,9 +608,7 @@ def _state_retention_plan(payload: JsonDict) -> Any:
     return build_state_retention_plan(
         config=load_config(),
         retention_days=_optional_non_negative_int(payload.get("retention_days")),
-        keep_latest_operations=_optional_non_negative_int(
-            payload.get("keep_latest_operations")
-        ),
+        keep_latest_operations=_optional_non_negative_int(payload.get("keep_latest_operations")),
         max_backup_mb=_optional_non_negative_int(payload.get("max_backup_mb")),
     )
 
@@ -665,9 +618,7 @@ def _state_prune(payload: JsonDict) -> Any:
         _str_list(payload.get("operation_ids")),
         config=load_config(),
         retention_days=_optional_non_negative_int(payload.get("retention_days")),
-        keep_latest_operations=_optional_non_negative_int(
-            payload.get("keep_latest_operations")
-        ),
+        keep_latest_operations=_optional_non_negative_int(payload.get("keep_latest_operations")),
         max_backup_mb=_optional_non_negative_int(payload.get("max_backup_mb")),
     )
 
@@ -709,9 +660,7 @@ def _maintenance_audits(payload: JsonDict) -> JsonDict:
 
 
 def _maintenance_audit(payload: JsonDict) -> JsonDict:
-    return {
-        "audit": load_maintenance_audit(_required_str(payload, "audit_id"))
-    }
+    return {"audit": load_maintenance_audit(_required_str(payload, "audit_id"))}
 
 
 def _resource_sync_stale(payload: JsonDict) -> JsonDict:
@@ -795,9 +744,7 @@ def _config_branches(payload: JsonDict) -> JsonDict:
         except Exception as exc:  # noqa: BLE001 - branch loading is optional in Settings
             api_warning = f"GitHub API branch lookup failed: {exc}"
     elif not native_credentials:
-        api_warning = (
-            f"No API token is configured in config or {CONFIG_ENV_VAR}."
-        )
+        api_warning = f"No API token is configured in config or {CONFIG_ENV_VAR}."
     else:
         api_warning = ""
 
@@ -949,7 +896,9 @@ def _editable_config(cfg: Config) -> JsonDict:
             "keep_latest_operations": cfg.state.keep_latest_operations,
             "max_backup_mb": cfg.state.max_backup_mb,
         },
-        "platforms": [_platform_to_json(p) for p in _platforms_with_presets(cfg.platforms.profiles)],
+        "platforms": [
+            _platform_to_json(p) for p in _platforms_with_presets(cfg.platforms.profiles)
+        ],
     }
 
 
@@ -1001,11 +950,17 @@ def _config_from_draft(payload: JsonDict, base: Config) -> Config:
         github=GithubConfig(
             token=_token_for_write(base.github.token, payload),
             owner=_field_str(github_data, "owner", base.github.owner),
-            repo_prefix=_field_str(github_data, "repo_prefix", base.github.repo_prefix or DEFAULT_REPO_PREFIX),
-            default_private=_field_bool(github_data, "default_private", base.github.default_private),
+            repo_prefix=_field_str(
+                github_data, "repo_prefix", base.github.repo_prefix or DEFAULT_REPO_PREFIX
+            ),
+            default_private=_field_bool(
+                github_data, "default_private", base.github.default_private
+            ),
         ),
         install=InstallConfig(
-            target=_field_str(install_data, "target", base.install.target or DEFAULT_INSTALL_TARGET),
+            target=_field_str(
+                install_data, "target", base.install.target or DEFAULT_INSTALL_TARGET
+            ),
         ),
         resources=ResourcesConfig(
             repo_name=_field_str(
@@ -1223,7 +1178,9 @@ def _check_resource_target(cfg: Config) -> JsonDict:
         )
 
     remote = _check_remote_repo(cfg, token, missing, warnings)
-    has_blocking_warning = any(item["id"] in {"github_token", "remote_unsupported"} for item in warnings)
+    has_blocking_warning = any(
+        item["id"] in {"github_token", "remote_unsupported"} for item in warnings
+    )
     return {
         "missing": missing,
         "warnings": warnings,
@@ -1294,9 +1251,13 @@ def _check_remote_repo(
 
 def _prepare_resource_target(cfg: Config, token: str) -> JsonDict:
     if not token:
-        raise ValueError(f"Set a GitHub token in config or {CONFIG_ENV_VAR} before creating a resource repository.")
+        raise ValueError(
+            f"Set a GitHub token in config or {CONFIG_ENV_VAR} before creating a resource repository."
+        )
     if cfg.resources.repo_url and _parse_github_repo(cfg.resources.repo_url) is None:
-        raise ValueError("Only github.com resource repositories can be created or connected from Settings.")
+        raise ValueError(
+            "Only github.com resource repositories can be created or connected from Settings."
+        )
 
     client = GithubClient(token)
     owner, name = _target_repo_owner_name(cfg, client)
@@ -1527,6 +1488,29 @@ def _required_kind(payload: JsonDict) -> ItemKind:
     return kind  # type: ignore[return-value]
 
 
+def _asset_batch_choices(value: Any) -> list[AssetBatchChoice]:
+    if not isinstance(value, list):
+        return []
+    choices: list[AssetBatchChoice] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        resource_key = str(item.get("resource_key") or "").strip()
+        if not resource_key:
+            continue
+        choices.append(
+            AssetBatchChoice(
+                resource_key=resource_key,
+                platform=str(item.get("platform") or "").strip(),
+                local_instance_id=str(item.get("local_instance_id") or "").strip(),
+                resolution=str(item.get("resolution") or "overwrite").strip(),
+                new_name=str(item.get("new_name") or "").strip(),
+                overwrite_unmanaged=bool(item.get("overwrite_unmanaged", False)),
+            )
+        )
+    return choices
+
+
 def _discovery_selections(value: Any) -> list[JsonDict]:
     if not isinstance(value, list):
         return []
@@ -1559,6 +1543,8 @@ ACTIONS: dict[str, Handler] = {
     "asset_inventory": _asset_inventory,
     "asset_action_plan": _asset_action_plan,
     "asset_action_apply": _asset_action_apply,
+    "asset_batch_plan": _asset_batch_plan,
+    "asset_batch_apply": _asset_batch_apply,
     "resource_install": _resource_install,
     "resource_install_plan": _resource_install_plan,
     "resource_uninstall": _resource_uninstall,
@@ -1594,18 +1580,6 @@ ACTIONS: dict[str, Handler] = {
     "orphan_quarantine_delete": _orphan_quarantine_delete,
     "maintenance_audits": _maintenance_audits,
     "maintenance_audit": _maintenance_audit,
-    "env_discover": _env_discover,
-    "env_capture": _env_capture,
-    "env_export": _env_export,
-    "env_diff_push": _env_diff_push,
-    "env_apply_push": _env_apply_push,
-    "env_diff_pull": _env_diff_pull,
-    "env_apply_pull": _env_apply_pull,
-    "env_diff_import": _env_diff_import,
-    "env_apply_import": _env_apply_import,
-    "env_pull": _env_pull,
-    "env_deploy_plan": _env_deploy_plan,
-    "env_deploy": _env_deploy,
     "config_get": _config_get,
     "config_check": _config_check,
     "config_branches": _config_branches,

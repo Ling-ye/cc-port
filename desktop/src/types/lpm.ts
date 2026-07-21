@@ -256,7 +256,94 @@ export interface AssetInventory {
   scanned_local: boolean;
   generated_at: string;
   legacy_write_blocker: string;
-  rows: AssetPlatformRow[];
+  resources: AssetResourceRow[];
+}
+
+export type AssetLocalStatus = "unknown" | "missing" | "single" | "identical-copies" | "variants";
+export type AssetRemoteStatus = "present" | "missing" | "read-only" | "unavailable";
+
+export interface AssetLocalInstance {
+  id: string;
+  platform: string;
+  install_name: string;
+  path?: string | null;
+  ownership: string;
+  fingerprint: string;
+  description: string;
+  status: AssetStatus;
+  warnings: string[];
+  blockers: string[];
+}
+
+export interface AssetRemoteState {
+  exists: boolean;
+  status: AssetRemoteStatus;
+  writable: boolean;
+  read_only: boolean;
+  commit: string;
+  path?: string | null;
+  description: string;
+}
+
+export interface AssetResourceRow {
+  resource_key: string;
+  kind: ResourceKind;
+  name: string;
+  description: string;
+  description_source: "remote" | "local" | "none";
+  local_status: AssetLocalStatus;
+  remote_status: AssetRemoteStatus;
+  status: AssetStatus;
+  remote: AssetRemoteState;
+  local_instances: AssetLocalInstance[];
+  metadata_differences: string[];
+  diff_summary: string[];
+  warnings: string[];
+  blockers: string[];
+  available_actions: AssetAction[];
+}
+
+export interface AssetBatchChoice {
+  resource_key: string;
+  platform?: string;
+  local_instance_id?: string;
+  resolution?: "overwrite" | "rename";
+  new_name?: string;
+  overwrite_unmanaged?: boolean;
+}
+
+export interface AssetBatchPlanItem {
+  id: string;
+  resource_key: string;
+  platform: string;
+  local_instance_id: string;
+  action: string;
+  disposition: "create" | "update" | "rename" | "unchanged" | "skip" | "blocked";
+  target_resource_key: string;
+  reason: string;
+  warnings: string[];
+  blockers: string[];
+  plan?: AssetActionPlan | null;
+}
+
+export interface AssetBatchPlan {
+  direction: "upload" | "download";
+  resource_keys: string[];
+  target_platforms: string[];
+  remote_commit: string;
+  plan_hash: string;
+  items: AssetBatchPlanItem[];
+  executable_count: number;
+  blocked_count: number;
+  skipped_count: number;
+  status: string;
+}
+
+export interface AssetBatchResult {
+  status: string;
+  plan_hash: string;
+  results: AssetActionResult[];
+  stale_plan?: AssetBatchPlan | null;
 }
 
 export interface AssetActionPlan {

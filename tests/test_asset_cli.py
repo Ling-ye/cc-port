@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from rich.console import Console
 from typer.testing import CliRunner
 
 from lpm.core.config import Config
 from lpm.interfaces import cli
-from lpm.services.asset_sync import AssetActionPlan, AssetActionResult, AssetInventory
+from lpm.services.asset_sync import (
+    AssetActionPlan,
+    AssetActionResult,
+    AssetBatchPlan,
+    AssetBatchResult,
+    AssetInventory,
+)
 from lpm.services.resource_repo import ResourceRepoInfo
 
 runner = CliRunner()
@@ -94,6 +101,7 @@ def test_asset_cli_list_plan_and_apply(monkeypatch) -> None:
 
     assert listed.exit_code == 0
     assert '"branch": "main"' in listed.stdout
+    assert "rows" not in json.loads(listed.stdout)
     assert planned.exit_code == 0
     assert '"operation_id": "plan-1"' in planned.stdout
     assert applied.exit_code == 0
@@ -131,3 +139,77 @@ def test_legacy_resource_pull_warns_but_keeps_behavior(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Deprecated: use `lpm asset list`" in result.stdout
     assert "resources" in result.stdout
+
+
+def test_asset_batch_cli_and_removed_environment_command(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(cli, "_load", Config)
+
+    def fake_plan(direction: str, **kwargs) -> AssetBatchPlan:
+        calls.append(("plan", (direction, kwargs["resource_keys"], kwargs["target_platforms"])))
+        return AssetBatchPlan(
+            direction=direction,
+            resource_keys=kwargs["resource_keys"],
+            target_platforms=kwargs["target_platforms"],
+            remote_commit="abc123",
+            plan_hash="batch-hash",
+            items=[],
+            executable_count=1,
+            blocked_count=0,
+            skipped_count=0,
+        )
+
+    def fake_apply(direction: str, **kwargs) -> AssetBatchResult:
+        calls.append(("apply", (direction, kwargs["expected_plan_hash"])))
+        return AssetBatchResult(status="succeeded", plan_hash="batch-hash", results=[])
+
+    monkeypatch.setattr(cli, "build_asset_batch_plan", fake_plan)
+    monkeypatch.setattr(cli, "apply_asset_batch_plan", fake_apply)
+
+    downloaded = runner.invoke(
+        cli.app,
+        [
+            "asset",
+            "download",
+            "--resource",
+            "skill:demo",
+            "--platform",
+            "cursor",
+            "--yes",
+            "--json",
+        ],
+    )
+    environment = runner.invoke(cli.app, ["env", "discover"])
+
+    assert downloaded.exit_code == 0
+    assert json.loads(downloaded.stdout)["status"] == "succeeded"
+    assert environment.exit_code != 0
+    assert calls == [
+        ("plan", ("download", ["skill:demo"], ["cursor"])),
+        ("apply", ("download", "batch-hash")),
+    ]
+
+
+def test_asset_batch_choices_allow_multiple_sources_for_one_resource(tmp_path: Path) -> None:
+    choices_path = tmp_path / "choices.yaml"
+    choices_path.write_text(
+        """items:
+  - resource_key: skill:demo
+    local_instance_id: cursor:skill:demo
+    resolution: rename
+    new_name: demo-cursor
+  - resource_key: skill:demo
+    local_instance_id: codex:skill:demo
+    resolution: rename
+    new_name: demo-codex
+""",
+        encoding="utf-8",
+    )
+
+    choices = cli._load_asset_batch_choices(choices_path)
+
+    assert [choice.local_instance_id for choice in choices] == [
+        "cursor:skill:demo",
+        "codex:skill:demo",
+    ]
+    assert [choice.new_name for choice in choices] == ["demo-cursor", "demo-codex"]

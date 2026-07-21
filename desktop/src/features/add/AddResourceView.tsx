@@ -1,85 +1,42 @@
-import { FormEvent, useMemo, useRef, useState } from "react";
-import { Eye, EyeOff, FolderSearch, GitBranch, Search, Upload } from "lucide-react";
+import { type FormEvent, useState } from "react";
+import { GitBranch, Upload } from "lucide-react";
 import { lpmAction } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
-import { KindBadge } from "@/components/KindBadge";
-import type {
-  DiscoveredResource,
-  DiscoveryReadResult,
-  DiscoveryScope,
-  DiscoveryUploadResult,
-  ResourceKind,
-} from "@/types/lpm";
+import type { ResourceKind } from "@/types/lpm";
 
 const kinds: ResourceKind[] = ["skill", "mcp", "rule", "prompt", "plugin"];
-const filterKinds: Array<"all" | ResourceKind> = ["all", "skill", "rule", "prompt"];
-const registryFilters = ["all", "existing", "new"] as const;
 
 export function AddResourceView({
   t,
   onChanged,
-  onError,
 }: {
   t: TFunction;
   onChanged: () => Promise<void> | void;
   onError: (message: string) => void;
 }) {
   const { runTask } = useTaskCenter();
-  const [mode, setMode] = useState<"collect" | "upload" | "discover">("collect");
+  const [mode, setMode] = useState<"collect" | "upload">("collect");
   const [value, setValue] = useState("");
   const [kind, setKind] = useState<"auto" | ResourceKind>("auto");
   const [name, setName] = useState("");
-  const [overwrite, setOverwrite] = useState(false);
-  const [scope, setScope] = useState<DiscoveryScope>("global");
-  const [directory, setDirectory] = useState("");
-  const [candidates, setCandidates] = useState<DiscoveredResource[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [candidateNames, setCandidateNames] = useState<Record<string, string>>({});
-  const [kindFilter, setKindFilter] = useState<"all" | ResourceKind>("all");
-  const [toolFilter, setToolFilter] = useState("all");
-  const [registryFilter, setRegistryFilter] = useState<(typeof registryFilters)[number]>("all");
-  const [activePreviewId, setActivePreviewId] = useState("");
-  const [preview, setPreview] = useState<DiscoveryReadResult | null>(null);
-  const [previewBusy, setPreviewBusy] = useState(false);
-  const [scanSummary, setScanSummary] = useState("");
   const [busy, setBusy] = useState(false);
-  const previewRequestRef = useRef(0);
-
-  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const tools = useMemo(
-    () => Array.from(new Set(candidates.map((candidate) => candidate.tool))).sort(),
-    [candidates],
-  );
-  const visibleCandidates = useMemo(
-    () =>
-      candidates.filter(
-        (candidate) =>
-          (kindFilter === "all" || candidate.kind === kindFilter) &&
-          (toolFilter === "all" || candidate.tool === toolFilter) &&
-          (registryFilter === "all" ||
-            (registryFilter === "existing" && candidate.exists_in_registry) ||
-            (registryFilter === "new" && !candidate.exists_in_registry)),
-      ),
-    [candidates, kindFilter, registryFilter, toolFilter],
-  );
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     try {
-      const payload = {
-        [mode === "collect" ? "github_url" : "path"]: value,
-        kind: kind === "auto" ? undefined : kind,
-        name,
-        push: true,
-      };
       const collectMode = mode === "collect";
       await runTask({
         kind: collectMode ? "resource-collect" : "resource-upload",
         title: collectMode ? t("add.modeCollect") : t("add.modeUpload"),
         context: name || value,
-        action: () => lpmAction(collectMode ? "collect" : "upload", payload),
+        action: () => lpmAction(collectMode ? "collect" : "upload", {
+          [collectMode ? "github_url" : "path"]: value,
+          kind: kind === "auto" ? undefined : kind,
+          name,
+          push: true,
+        }),
         successMessage: collectMode ? t("add.successCollected") : t("add.successUploaded"),
         retryPolicy: "none",
       });
@@ -93,127 +50,6 @@ export function AddResourceView({
     }
   }
 
-  async function scan() {
-    if (scope === "directory" && !directory.trim()) {
-      onError(t("add.discoverDirectoryRequired"));
-      return;
-    }
-    setBusy(true);
-    previewRequestRef.current += 1;
-    setActivePreviewId("");
-    setPreview(null);
-    setPreviewBusy(false);
-    setScanSummary("");
-    try {
-      await runTask({
-        kind: "resource-discovery",
-        title: t("add.discoverScan"),
-        context: scope === "directory" ? directory : t("add.discoverGlobal"),
-        action: async () => {
-          const data = await lpmAction<{ items: DiscoveredResource[] }>("discover_resources", discoveryPayload());
-          setCandidates(data.items);
-          setSelectedIds([]);
-          setCandidateNames(Object.fromEntries(data.items.map((item) => [item.id, item.name_hint])));
-          setScanSummary(t("add.discoverFound", { count: data.items.length }));
-          return data;
-        },
-        successMessage: (result) => t("add.discoverFound", { count: result.items.length }),
-        retryPolicy: "safe-read",
-      });
-    } catch {
-      // TaskCenter owns feedback for tracked operations.
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function readPreview(candidate: DiscoveredResource) {
-    if (activePreviewId === candidate.id) {
-      previewRequestRef.current += 1;
-      setActivePreviewId("");
-      setPreview(null);
-      setPreviewBusy(false);
-      return;
-    }
-
-    const requestId = previewRequestRef.current + 1;
-    previewRequestRef.current = requestId;
-    setPreviewBusy(true);
-    setActivePreviewId(candidate.id);
-    setPreview(null);
-    try {
-      const data = await lpmAction<DiscoveryReadResult>("read_discovered_resource", {
-        ...discoveryPayload(),
-        id: candidate.id,
-      });
-      if (previewRequestRef.current === requestId) {
-        setPreview(data);
-      }
-    } catch (err) {
-      if (previewRequestRef.current === requestId) {
-        setActivePreviewId("");
-        setPreview(null);
-        onError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      if (previewRequestRef.current === requestId) {
-        setPreviewBusy(false);
-      }
-    }
-  }
-
-  async function uploadSelected() {
-    setBusy(true);
-    try {
-      await runTask({
-        kind: "resource-import",
-        title: t("add.discoverUploadSelected"),
-        context: t("add.discoverSelected", { count: selectedIds.length }),
-        action: async () => {
-          const data = await lpmAction<DiscoveryUploadResult>("upload_discovered_resources", {
-            ...discoveryPayload(),
-            items: selectedIds.map((id) => ({ id, name: candidateNames[id] })),
-            overwrite,
-            push: true,
-          });
-          const failures = data.results.filter((item) => !item.ok).map((item) => `${item.name}: ${item.error}`);
-          if (failures.length) {
-            throw new Error(`${t("add.discoverUploaded", { count: data.imported, failed: data.failed })}\n${failures.slice(0, 3).join("\n")}`);
-          }
-          return data;
-        },
-        successMessage: (data) => t("add.discoverUploaded", { count: data.imported, failed: data.failed }),
-        retryPolicy: "none",
-      });
-      await Promise.resolve(onChanged());
-    } catch {
-      await Promise.resolve(onChanged());
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function discoveryPayload() {
-    return {
-      scope,
-      root_path: scope === "directory" ? directory : undefined,
-    };
-  }
-
-  function toggleCandidate(id: string) {
-    setSelectedIds((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
-
-  function selectVisible() {
-    setSelectedIds(Array.from(new Set([...selectedIds, ...visibleCandidates.map((item) => item.id)])));
-  }
-
-  function updateCandidateName(id: string, nextName: string) {
-    setCandidateNames((current) => ({ ...current, [id]: nextName }));
-  }
-
   return (
     <section className="panel form-panel add-resource-panel">
       <div className="panel-head">
@@ -223,124 +59,31 @@ export function AddResourceView({
         </div>
       </div>
       <div className="mode-tabs">
-        <button className={mode === "collect" ? "active" : ""} onClick={() => setMode("collect")}><GitBranch size={17} />{t("add.modeCollect")}</button>
-        <button className={mode === "upload" ? "active" : ""} onClick={() => setMode("upload")}><Upload size={17} />{t("add.modeUpload")}</button>
-        <button className={mode === "discover" ? "active" : ""} onClick={() => setMode("discover")}><FolderSearch size={17} />{t("add.modeDiscover")}</button>
+        <button className={mode === "collect" ? "active" : ""} onClick={() => setMode("collect")}>
+          <GitBranch size={17} />{t("add.modeCollect")}
+        </button>
+        <button className={mode === "upload" ? "active" : ""} onClick={() => setMode("upload")}>
+          <Upload size={17} />{t("add.modeUpload")}
+        </button>
       </div>
-      {mode === "discover" ? (
-        <div className="stack-form discovery-panel">
-          <div>
-            <span className="field-label">{t("add.discoverScope")}</span>
-            <div className="segmented">
-              <button className={scope === "global" ? "active" : ""} onClick={() => setScope("global")}>{t("add.discoverGlobal")}</button>
-              <button className={scope === "directory" ? "active" : ""} onClick={() => setScope("directory")}>{t("add.discoverDirectory")}</button>
-            </div>
-          </div>
-          {scope === "directory" ? (
-            <label>
-              <span>{t("add.discoverDirectoryPath")}</span>
-              <input value={directory} onChange={(event) => setDirectory(event.target.value)} placeholder={t("add.localPath")} />
-            </label>
-          ) : null}
-          <div className="discovery-actions">
-            <button className="primary" onClick={scan} disabled={busy}><Search size={17} />{busy ? t("common.working") : t("add.discoverScan")}</button>
-            {scanSummary ? <span>{scanSummary}</span> : null}
-          </div>
-          {candidates.length ? (
-            <>
-              <div className="stack-form two-column">
-                <label>
-                  <span>{t("add.discoverKindFilter")}</span>
-                  <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value as "all" | ResourceKind)}>
-                    {filterKinds.map((item) => <option key={item} value={item}>{resourceKindLabel(item, t)}</option>)}
-                  </select>
-                </label>
-                <label>
-                  <span>{t("add.discoverToolFilter")}</span>
-                  <select value={toolFilter} onChange={(event) => setToolFilter(event.target.value)}>
-                    <option value="all">{t("kind.all")}</option>
-                    {tools.map((tool) => <option key={tool} value={tool}>{tool}</option>)}
-                  </select>
-                </label>
-                <label>
-                  <span>{t("add.discoverRegistryFilter")}</span>
-                  <select
-                    value={registryFilter}
-                    onChange={(event) => setRegistryFilter(event.target.value as (typeof registryFilters)[number])}
-                  >
-                    <option value="all">{t("add.discoverRegistryAll")}</option>
-                    <option value="existing">{t("add.discoverRegistryExisting")}</option>
-                    <option value="new">{t("add.discoverRegistryNew")}</option>
-                  </select>
-                </label>
-              </div>
-              <div className="discovery-actions">
-                <button className="secondary" onClick={selectVisible}>{t("add.discoverSelectVisible")}</button>
-                <button className="secondary" onClick={() => setSelectedIds([])}>{t("add.discoverClearSelection")}</button>
-                <span>{t("add.discoverSelected", { count: selectedIds.length })}</span>
-              </div>
-              <div className="discovery-list">
-                {visibleCandidates.map((candidate) => (
-                  <div key={candidate.id} className={candidate.status === "conflict" ? "discovery-row conflict" : "discovery-row"}>
-                    <input
-                      type="checkbox"
-                      checked={selectedSet.has(candidate.id)}
-                      onChange={() => toggleCandidate(candidate.id)}
-                      aria-label={candidate.name_hint}
-                    />
-                    <KindBadge kind={candidate.kind} label={resourceKindLabel(candidate.kind, t)} />
-                    <div className="discovery-main">
-                      <input value={candidateNames[candidate.id] || ""} onChange={(event) => updateCandidateName(candidate.id, event.target.value)} />
-                      <small>{candidate.tool} / {candidate.path}</small>
-                      {candidate.description ? <p>{candidate.description}</p> : null}
-                      {candidate.warnings.length ? <p className="discovery-warning">{candidate.warnings.join(" ")}</p> : null}
-                    </div>
-                    <button
-                      className={activePreviewId === candidate.id ? "icon-button active" : "icon-button"}
-                      onClick={() => readPreview(candidate)}
-                      disabled={previewBusy && activePreviewId !== candidate.id}
-                      title={t("add.discoverPreview")}
-                    >
-                      {activePreviewId === candidate.id ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                    {activePreviewId === candidate.id && preview?.id === candidate.id ? (
-                      <div className="preview-panel discovery-preview">
-                        <strong>{preview.path}</strong>
-                        {preview.warning ? <p className="discovery-warning">{preview.warning}</p> : null}
-                        <pre>{preview.text}{preview.truncated ? "\n..." : ""}</pre>
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-              <label className="checkline">
-                <input type="checkbox" checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />
-                <span>{t("add.discoverOverwrite")}</span>
-              </label>
-              <button className="primary" onClick={uploadSelected} disabled={busy || selectedIds.length === 0}>{busy ? t("common.working") : t("add.discoverUploadSelected")}</button>
-            </>
-          ) : null}
-        </div>
-      ) : (
-        <form onSubmit={submit} className="stack-form">
-          <label>
-            <span>{mode === "collect" ? t("add.githubUrl") : t("add.localPath")}</span>
-            <input value={value} onChange={(event) => setValue(event.target.value)} required />
-          </label>
-          <label>
-            <span>{t("add.resourceName")}</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("add.inferPlaceholder")} />
-          </label>
-          <label>
-            <span>{t("add.type")}</span>
-            <select value={kind} onChange={(event) => setKind(event.target.value as "auto" | ResourceKind)}>
-              <option value="auto">{t("kind.auto")}</option>
-              {kinds.map((item) => <option key={item} value={item}>{resourceKindLabel(item, t)}</option>)}
-            </select>
-          </label>
-          <button className="primary" disabled={busy}>{busy ? t("common.working") : t("common.confirm")}</button>
-        </form>
-      )}
+      <form onSubmit={submit} className="stack-form">
+        <label>
+          <span>{mode === "collect" ? t("add.githubUrl") : t("add.localPath")}</span>
+          <input value={value} onChange={(event) => setValue(event.target.value)} required />
+        </label>
+        <label>
+          <span>{t("add.resourceName")}</span>
+          <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("add.inferPlaceholder")} />
+        </label>
+        <label>
+          <span>{t("add.type")}</span>
+          <select value={kind} onChange={(event) => setKind(event.target.value as "auto" | ResourceKind)}>
+            <option value="auto">{t("kind.auto")}</option>
+            {kinds.map((item) => <option key={item} value={item}>{resourceKindLabel(item, t)}</option>)}
+          </select>
+        </label>
+        <button className="primary" disabled={busy}>{busy ? t("common.working") : t("common.confirm")}</button>
+      </form>
     </section>
   );
 }

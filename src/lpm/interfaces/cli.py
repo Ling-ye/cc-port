@@ -32,25 +32,14 @@ from ..core.resource_detection import (
 from ..infrastructure import git_ops
 from ..services import publisher
 from ..services.asset_sync import (
+    AssetBatchChoice,
     apply_asset_action_plan,
+    apply_asset_batch_plan,
     build_asset_action_plan,
+    build_asset_batch_plan,
     build_asset_inventory,
 )
 from ..services.doctor import build_doctor_checks, has_doctor_errors
-from ..services.env_manager import (
-    apply_env_import,
-    apply_env_pull,
-    apply_env_push,
-    build_deploy_plan,
-    build_env_import_diff,
-    build_env_pull_diff,
-    build_env_push_diff,
-    capture_environment,
-    deploy_environment,
-    discover_environment,
-    export_environment_snapshot,
-    load_env_choices,
-)
 from ..services.installer import (
     SyncAction,
     check_all,
@@ -104,12 +93,12 @@ app = typer.Typer(
     help="LPM (LingyePluginMarketplace): publish, register and sync skills, MCP servers and rules across AI coding platforms.",
 )
 resource_app = typer.Typer(help="Manage the private LPM resource repository.")
-asset_app = typer.Typer(help="Compare and synchronize assets per platform.")
-env_app = typer.Typer(help="Discover, capture, export and deploy local AI tool environment configs.")
+asset_app = typer.Typer(
+    help="Inspect and synchronize logical resources across local AI tools and the private repository."
+)
 operations_app = typer.Typer(help="Inspect and restore persisted local write operations.")
 app.add_typer(resource_app, name="resource")
 app.add_typer(asset_app, name="asset")
-app.add_typer(env_app, name="env")
 app.add_typer(operations_app, name="operations")
 console = Console()
 VALID_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
@@ -173,9 +162,13 @@ def cmd_init(
     console.print(f"[green]Config generated at[/green] {written}")
     console.print()
     console.print("Next steps:")
-    console.print(f"  1. Edit [bold]{written}[/bold] to fill in your [bold]token[/bold] and [bold]owner[/bold]")
-    console.print(f"     Or set env var: [bold]$env:{CONFIG_ENV_VAR} = \"ghp_xxx\"[/bold]")
-    console.print("  2. Run [bold]lpm resource init[/bold] to create/connect your private resource repo")
+    console.print(
+        f"  1. Edit [bold]{written}[/bold] to fill in your [bold]token[/bold] and [bold]owner[/bold]"
+    )
+    console.print(f'     Or set env var: [bold]$env:{CONFIG_ENV_VAR} = "ghp_xxx"[/bold]')
+    console.print(
+        "  2. Run [bold]lpm resource init[/bold] to create/connect your private resource repo"
+    )
     console.print("  3. Run [bold]lpm doctor[/bold] to verify")
 
 
@@ -427,7 +420,7 @@ def cmd_asset_list(
     ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
-    """List one asset row per platform without modifying local targets."""
+    """List one logical resource row with nested local tool instances."""
     try:
         inventory = build_asset_inventory(
             config=_load(),
@@ -438,25 +431,25 @@ def cmd_asset_list(
         console.print(f"[red]Asset inventory failed:[/red] {exc}")
         raise typer.Exit(1) from exc
     if json_output:
-        _print_machine_json(asdict(inventory))
+        payload = asdict(inventory)
+        payload.pop("rows", None)
+        _print_machine_json(payload)
         return
 
     table = Table(title=f"LPM assets ({inventory.branch or 'unconfigured branch'})")
     table.add_column("Resource", style="bold")
-    table.add_column("Platform")
-    table.add_column("Install name")
+    table.add_column("Description")
+    table.add_column("Local")
+    table.add_column("Remote")
     table.add_column("Status")
-    table.add_column("Ownership")
-    table.add_column("Path")
     table.add_column("Actions")
-    for row in inventory.rows:
+    for row in inventory.resources:
         table.add_row(
             row.resource_key,
-            row.platform,
-            row.install_name,
+            row.description or "-",
+            row.local_status,
+            row.remote_status,
             row.status,
-            row.ownership,
-            str(row.local_path or row.target_path or "-"),
             ", ".join(row.available_actions) or "-",
         )
     console.print(table)
@@ -563,6 +556,197 @@ def cmd_asset_apply(
         raise typer.Exit(1)
 
 
+@asset_app.command("upload")
+def cmd_asset_upload(
+    resource: list[str] = typer.Option(
+        [], "--resource", "-r", help="Logical resource key. Repeatable."
+    ),
+    all_resources: bool = typer.Option(
+        False, "--all", help="Upload every scanned logical resource."
+    ),
+    choices: Path | None = typer.Option(None, "--choices", help="YAML batch choices file."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the current plan without writing."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive confirmation."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Upload selected local resources in one remote commit."""
+    _run_asset_batch_command(
+        "upload",
+        resource_keys=resource,
+        all_resources=all_resources,
+        platforms=[],
+        choices_path=choices,
+        dry_run=dry_run,
+        yes=yes,
+        json_output=json_output,
+    )
+
+
+@asset_app.command("download")
+def cmd_asset_download(
+    resource: list[str] = typer.Option(
+        [], "--resource", "-r", help="Logical resource key. Repeatable."
+    ),
+    all_resources: bool = typer.Option(
+        False, "--all", help="Download every remote logical resource."
+    ),
+    platform: list[str] = typer.Option(
+        [], "--platform", "-p", help="Enabled target AI tool. Repeatable."
+    ),
+    choices: Path | None = typer.Option(None, "--choices", help="YAML batch choices file."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the current plan without writing."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive confirmation."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Download selected remote resources to one or more enabled AI tools."""
+    if not platform:
+        console.print("[red]Select at least one target with --platform.[/red]")
+        raise typer.Exit(2)
+    _run_asset_batch_command(
+        "download",
+        resource_keys=resource,
+        all_resources=all_resources,
+        platforms=platform,
+        choices_path=choices,
+        dry_run=dry_run,
+        yes=yes,
+        json_output=json_output,
+    )
+
+
+def _run_asset_batch_command(
+    direction: str,
+    *,
+    resource_keys: list[str],
+    all_resources: bool,
+    platforms: list[str],
+    choices_path: Path | None,
+    dry_run: bool,
+    yes: bool,
+    json_output: bool,
+) -> None:
+    cfg = _load()
+    keys = list(dict.fromkeys(item.strip() for item in resource_keys if item.strip()))
+    if all_resources:
+        inventory = build_asset_inventory(config=cfg, scan_local=True, refresh_remote=True)
+        keys = [
+            item.resource_key
+            for item in inventory.resources
+            if direction == "upload" or item.remote.exists
+        ]
+    if not keys:
+        console.print("[red]Select at least one resource with --resource or --all.[/red]")
+        raise typer.Exit(2)
+    batch_choices = _load_asset_batch_choices(choices_path)
+    try:
+        plan = build_asset_batch_plan(
+            direction,
+            resource_keys=keys,
+            target_platforms=platforms,
+            choices=batch_choices,
+            config=cfg,
+        )
+    except Exception as exc:
+        console.print(f"[red]Asset batch planning failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if json_output and dry_run:
+        _print_machine_json(asdict(plan))
+        return
+    if not json_output:
+        _print_asset_batch_plan(plan)
+    if dry_run:
+        return
+    if plan.executable_count == 0:
+        console.print("[red]The plan has no executable items.[/red]")
+        raise typer.Exit(1)
+    if plan.blocked_count:
+        console.print("[red]Resolve or remove blocked items before applying.[/red]")
+        raise typer.Exit(1)
+    if not yes and not typer.confirm(
+        f"Apply {plan.executable_count} {direction} action(s)?",
+        default=False,
+    ):
+        console.print("[yellow]Batch cancelled.[/yellow]")
+        return
+    result = apply_asset_batch_plan(
+        direction,
+        resource_keys=keys,
+        target_platforms=platforms,
+        choices=batch_choices,
+        expected_plan_hash=plan.plan_hash,
+        config=cfg,
+    )
+    if json_output:
+        _print_machine_json(asdict(result))
+    else:
+        console.print(f"[bold]{result.status}[/bold]")
+        for item in result.results:
+            console.print(
+                f"{item.status}: {item.target_resource_key}"
+                f"{f' on {item.platform}' if item.platform else ''} - {item.message}"
+            )
+    if result.status not in {"succeeded"}:
+        raise typer.Exit(1)
+
+
+def _load_asset_batch_choices(path: Path | None) -> list[AssetBatchChoice]:
+    if path is None:
+        return []
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw_items = payload.get("items", payload) if isinstance(payload, dict) else payload
+    choices: list[AssetBatchChoice] = []
+    if isinstance(raw_items, dict):
+        iterable = [
+            {"resource_key": key, **(value if isinstance(value, dict) else {"resolution": value})}
+            for key, value in raw_items.items()
+        ]
+    elif isinstance(raw_items, list):
+        iterable = raw_items
+    else:
+        raise ValueError("Batch choices must be a mapping or list.")
+    for item in iterable:
+        if not isinstance(item, dict) or not str(item.get("resource_key") or "").strip():
+            continue
+        choices.append(
+            AssetBatchChoice(
+                resource_key=str(item["resource_key"]).strip(),
+                platform=str(item.get("platform") or "").strip(),
+                local_instance_id=str(item.get("local_instance_id") or "").strip(),
+                resolution=str(item.get("resolution") or "overwrite").strip(),
+                new_name=str(item.get("new_name") or "").strip(),
+                overwrite_unmanaged=bool(item.get("overwrite_unmanaged", False)),
+            )
+        )
+    return choices
+
+
+def _print_asset_batch_plan(plan: object) -> None:
+    table = Table(title=f"LPM asset batch {getattr(plan, 'direction', '')}")
+    table.add_column("Resource", style="bold")
+    table.add_column("Platform")
+    table.add_column("Action")
+    table.add_column("Plan")
+    table.add_column("Reason")
+    for item in getattr(plan, "items", []):
+        table.add_row(
+            getattr(item, "resource_key", ""),
+            getattr(item, "platform", "") or "-",
+            getattr(item, "action", ""),
+            getattr(item, "disposition", ""),
+            getattr(item, "reason", "") or "-",
+        )
+    console.print(table)
+    console.print(
+        f"Executable: {getattr(plan, 'executable_count', 0)}; "
+        f"blocked: {getattr(plan, 'blocked_count', 0)}; "
+        f"skipped: {getattr(plan, 'skipped_count', 0)}"
+    )
+
+
 def _print_resource_info(info: object) -> None:
     table = Table(title="LPM resource repository")
     table.add_column("Field", style="bold")
@@ -619,7 +803,9 @@ def _maybe_push_resource_repo(cfg: Config, *, push: bool, no_push: bool) -> None
         raise typer.Exit(2)
     should_push = push
     if not push and not no_push:
-        should_push = typer.confirm("Push changes to your private resource repo now?", default=False)
+        should_push = typer.confirm(
+            "Push changes to your private resource repo now?", default=False
+        )
     if not should_push:
         console.print("[yellow]Not pushed.[/yellow] Run `lpm resource push` when ready.")
         return
@@ -659,8 +845,7 @@ def cmd_operations_list(
         )
     console.print(table)
     console.print(
-        f"Showing {len(page.operations)} of {page.total} operation(s) "
-        f"from offset {page.offset}."
+        f"Showing {len(page.operations)} of {page.total} operation(s) from offset {page.offset}."
     )
 
 
@@ -900,8 +1085,7 @@ def cmd_operations_quarantine_delete(
         console.print(f"[red]Quarantine delete failed:[/red] {result.error}")
         raise typer.Exit(1)
     console.print(
-        f"[green]Deleted[/green] {quarantine_id}; "
-        f"reclaimed {result.reclaimed_bytes} bytes."
+        f"[green]Deleted[/green] {quarantine_id}; reclaimed {result.reclaimed_bytes} bytes."
     )
     console.print(f"Audit: {result.audit_path}")
 
@@ -941,358 +1125,6 @@ def cmd_operations_audit(
         console.print(f"[red]Maintenance audit failed:[/red] {exc}")
         raise typer.Exit(1) from exc
     _print_machine_json(payload)
-
-
-
-# ---- environment capture / deploy ---- #
-
-
-@env_app.command("discover")
-def cmd_env_discover() -> None:
-    """Scan this computer for supported AI tool configs without saving."""
-    result = discover_environment()
-    _print_env_discovery(result)
-
-
-@env_app.command("capture")
-def cmd_env_capture(
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the capture confirmation."),
-    push: bool = typer.Option(False, "--push", help="Push private resource repo after capture."),
-    no_push: bool = typer.Option(False, "--no-push", help="Do not push private resource repo."),
-    tool: list[str] = typer.Option([], "--tool", help="Restrict to a discovered tool id. Repeatable."),
-    kind: list[str] = typer.Option([], "--kind", "-k", help="Restrict to resource kind. Repeatable."),
-) -> None:
-    """Capture non-secret skills, prompts, rules, plugins and MCP configs into the private repo."""
-    invalid = sorted({item for item in kind if item not in VALID_KINDS})
-    if invalid:
-        console.print(f"[red]Invalid kind(s):[/red] {', '.join(invalid)}")
-        raise typer.Exit(2)
-
-    cfg = _load()
-    if not yes:
-        discovery = discover_environment()
-        selected_tools = {item.strip() for item in tool if item.strip()}
-        selected_kinds = {item.strip() for item in kind if item.strip()}
-        resource_count = sum(
-            1
-            for item in discovery.resources
-            if (not selected_tools or item.tool in selected_tools)
-            and (not selected_kinds or item.kind in selected_kinds)
-        )
-        mcp_count = sum(
-            1
-            for item in discovery.mcp_servers
-            if (not selected_tools or item.tool in selected_tools)
-            and (not selected_kinds or "mcp" in selected_kinds)
-        )
-        if not typer.confirm(
-            f"Capture {resource_count} resource file(s) and {mcp_count} MCP server(s) into the private resource repo?",
-            default=True,
-        ):
-            console.print("[yellow]Capture cancelled.[/yellow]")
-            raise typer.Exit(0)
-
-    try:
-        result = capture_environment(
-            config=cfg,
-            tools=tool or None,
-            kinds=kind or None,
-        )
-    except Exception as exc:
-        console.print(f"[red]Environment capture failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
-
-    console.print(f"[green]Captured[/green] {len(result.captured)} resource(s) into {result.root}")
-    _print_captured_resources(result.captured)
-    if result.secrets:
-        console.print(f"[yellow]Secrets template:[/yellow] {result.secrets_path}")
-    console.print(f"[green]Profile:[/green] {result.profile_path}")
-    _maybe_push_resource_repo(cfg, push=push, no_push=no_push or (yes and not push))
-
-
-@env_app.command("export")
-def cmd_env_export(
-    out: Path = typer.Option(..., "--out", "-o", help="Output zip snapshot path."),
-) -> None:
-    """Export the private environment repo as an offline zip snapshot."""
-    try:
-        path = export_environment_snapshot(out, config=_load())
-    except Exception as exc:
-        console.print(f"[red]Environment export failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
-    console.print(f"[green]Exported[/green] {path}")
-
-
-@env_app.command("push")
-def cmd_env_push(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show local-vs-remote diff without pushing."),
-    choices: Path | None = typer.Option(None, "--choices", help="YAML choices file."),
-) -> None:
-    """Review and push the private environment repository with resource-level choices."""
-    try:
-        plan = build_env_push_diff(config=_load()) if dry_run else apply_env_push(
-            config=_load(),
-            choices=_load_env_choices_arg(choices, operation="push", source="remote"),
-        )
-    except Exception as exc:
-        console.print(f"[red]Environment push failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
-    _print_env_diff_plan(plan)
-    if not dry_run:
-        console.print("[green]Pushed environment repo.[/green]")
-
-
-@env_app.command("pull")
-def cmd_env_pull(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show remote-vs-local diff without writing local repo."),
-    choices: Path | None = typer.Option(None, "--choices", help="YAML choices file."),
-) -> None:
-    """Review and pull the configured remote private environment repository."""
-    try:
-        plan = build_env_pull_diff(config=_load()) if dry_run else apply_env_pull(
-            config=_load(),
-            choices=_load_env_choices_arg(choices, operation="pull", source="remote"),
-        )
-    except Exception as exc:
-        console.print(f"[red]Environment pull failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
-    _print_env_diff_plan(plan)
-    if not dry_run:
-        console.print("[green]Applied remote choices to local environment repo.[/green]")
-
-
-@env_app.command("import")
-def cmd_env_import(
-    snapshot: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False, help="Zip snapshot exported by `lpm env export`."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show snapshot-vs-local diff without writing local repo."),
-    choices: Path | None = typer.Option(None, "--choices", help="YAML choices file."),
-) -> None:
-    """Review and import an offline environment snapshot into the local private repo."""
-    try:
-        plan = build_env_import_diff(snapshot, config=_load()) if dry_run else apply_env_import(
-            snapshot,
-            config=_load(),
-            choices=_load_env_choices_arg(choices, operation="import", source="snapshot"),
-        )
-    except Exception as exc:
-        console.print(f"[red]Environment import failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
-    _print_env_diff_plan(plan)
-    if not dry_run:
-        console.print("[green]Imported snapshot choices to local environment repo.[/green]")
-
-
-@env_app.command("deploy")
-def cmd_env_deploy(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show the restore plan without writing tool files."),
-    force: bool = typer.Option(False, "--force", "-f", help="Allow updates over existing non-managed targets."),
-    only: list[str] = typer.Option([], "--only", help="Deploy only the named captured resource. Repeatable."),
-) -> None:
-    """Deploy captured environment resources into enabled AI tool directories."""
-    cfg = _load()
-    try:
-        plan = build_deploy_plan(config=cfg, force=force, names=only or None) if dry_run else deploy_environment(
-            config=cfg,
-            force=force,
-            names=only or None,
-        )
-    except Exception as exc:
-        console.print(f"[red]Environment deploy failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
-    _print_deploy_plan(plan)
-
-
-def _print_env_discovery(result: object) -> None:
-    tools = list(getattr(result, "tools", []))
-    tool_table = Table(title="Discovered AI tools")
-    tool_table.add_column("Tool", style="bold")
-    tool_table.add_column("Detected")
-    tool_table.add_column("Confidence")
-    tool_table.add_column("Kinds")
-    tool_table.add_column("Root")
-    for tool in tools:
-        tool_table.add_row(
-            getattr(tool, "name", ""),
-            "yes" if getattr(tool, "detected", False) else "no",
-            getattr(tool, "confidence", ""),
-            ", ".join(getattr(tool, "supports_kinds", [])) or "-",
-            str(getattr(tool, "root_path", "")),
-        )
-    console.print(tool_table)
-
-    resources = list(getattr(result, "resources", []))
-    if resources:
-        resource_table = Table(title="Discovered resources")
-        resource_table.add_column("Tool")
-        resource_table.add_column("Kind")
-        resource_table.add_column("Name")
-        resource_table.add_column("Path")
-        resource_table.add_column("Warnings")
-        for item in resources:
-            resource_table.add_row(
-                getattr(item, "tool", ""),
-                getattr(item, "kind", ""),
-                getattr(item, "name_hint", ""),
-                str(getattr(item, "path", "")),
-                "; ".join(getattr(item, "warnings", [])) or "-",
-            )
-        console.print(resource_table)
-    else:
-        console.print("[yellow]No skill/prompt/rule/plugin files found.[/yellow]")
-
-    mcp_servers = list(getattr(result, "mcp_servers", []))
-    if mcp_servers:
-        mcp_table = Table(title="Discovered MCP servers")
-        mcp_table.add_column("Tool")
-        mcp_table.add_column("Server")
-        mcp_table.add_column("Config")
-        mcp_table.add_column("Secret placeholders")
-        for server in mcp_servers:
-            mcp_table.add_row(
-                getattr(server, "tool", ""),
-                getattr(server, "name", ""),
-                str(getattr(server, "config_path", "")),
-                ", ".join(getattr(server, "secret_keys", [])) or "-",
-            )
-        console.print(mcp_table)
-    else:
-        console.print("[yellow]No MCP server configs found.[/yellow]")
-
-
-def _print_captured_resources(items: list[object]) -> None:
-    if not items:
-        console.print("[yellow]Nothing captured.[/yellow]")
-        return
-    table = Table(title="Captured environment resources")
-    table.add_column("Name", style="bold")
-    table.add_column("Kind")
-    table.add_column("Stored path")
-    table.add_column("Secrets")
-    table.add_column("Warnings")
-    for item in items:
-        table.add_row(
-            getattr(item, "name", ""),
-            getattr(item, "kind", ""),
-            str(getattr(item, "path", "")),
-            ", ".join(getattr(item, "secret_placeholders", [])) or "-",
-            "; ".join(getattr(item, "warnings", [])) or "-",
-        )
-    console.print(table)
-
-
-def _load_env_choices_arg(path: Path | None, *, operation: str, source: str) -> dict[str, str] | None:
-    if path is None:
-        return None
-    return load_env_choices(path, operation=operation, source=source)
-
-
-def _print_env_diff_plan(plan: object) -> None:
-    items = list(getattr(plan, "items", []))
-    title = f"Environment {getattr(plan, 'operation', 'diff')} review"
-    table = Table(title=title)
-    table.add_column("ID", style="bold")
-    table.add_column("Status")
-    table.add_column("Kind")
-    table.add_column("Choice")
-    table.add_column("Local")
-    table.add_column("Incoming")
-    for item in items:
-        status = getattr(item, "status", "")
-        style = {
-            "added": "green",
-            "modified": "cyan",
-            "deleted": "yellow",
-            "conflict": "red",
-            "same": "white",
-        }.get(status, "white")
-        choice = getattr(item, "selected_choice", "") or getattr(item, "default_choice", "")
-        table.add_row(
-            getattr(item, "id", ""),
-            f"[{style}]{status}[/{style}]",
-            getattr(item, "kind", ""),
-            choice,
-            str(getattr(item, "local_path", "") or "-"),
-            str(getattr(item, "incoming_path", "") or "-"),
-        )
-    console.print(table)
-
-    findings = list(getattr(plan, "secret_findings", []))
-    if findings:
-        secret_table = Table(title="Blocked secret-like content")
-        secret_table.add_column("Path", style="bold")
-        secret_table.add_column("Reason")
-        secret_table.add_column("Preview")
-        for finding in findings:
-            secret_table.add_row(
-                str(getattr(finding, "path", "")),
-                getattr(finding, "reason", ""),
-                getattr(finding, "preview", ""),
-            )
-        console.print(secret_table)
-
-    preview_count = 0
-    for item in items:
-        preview = str(getattr(item, "preview", "") or "").strip()
-        if not preview:
-            continue
-        console.print(f"[bold]Diff preview:[/bold] {getattr(item, 'id', '')}")
-        console.print(escape(preview[:2000]))
-        preview_count += 1
-        if preview_count >= 6:
-            break
-
-    if getattr(plan, "blocked", False):
-        console.print("[red]Apply is blocked until secret-like content is removed.[/red]")
-    console.print("Choices file format:")
-    console.print("operation: push|pull|import")
-    console.print("source: remote|snapshot")
-    console.print('items: {"resource:name": "local"}')
-
-
-def _print_deploy_plan(plan: object) -> None:
-    items = list(getattr(plan, "items", []))
-    table = Table(title="Environment deploy plan")
-    table.add_column("Resource", style="bold")
-    table.add_column("Kind")
-    table.add_column("Platform")
-    table.add_column("Action")
-    table.add_column("Target")
-    table.add_column("Reason")
-    for item in items:
-        action = getattr(item, "action", "")
-        style = {
-            "create": "green",
-            "update": "cyan",
-            "conflict": "red",
-            "skip": "yellow",
-        }.get(action, "white")
-        table.add_row(
-            getattr(item, "name", ""),
-            getattr(item, "kind", ""),
-            getattr(item, "platform", "") or "-",
-            f"[{style}]{action}[/{style}]",
-            str(getattr(item, "target_path", "")) or "-",
-            getattr(item, "reason", "") or "-",
-        )
-    console.print(table)
-    missing = list(getattr(plan, "missing_secrets", []))
-    if missing:
-        secret_table = Table(title="Missing secret environment variables")
-        secret_table.add_column("Name", style="bold")
-        secret_table.add_column("Tool")
-        secret_table.add_column("Resource")
-        secret_table.add_column("Purpose")
-        for item in missing:
-            secret_table.add_row(
-                getattr(item, "name", ""),
-                getattr(item, "tool", ""),
-                getattr(item, "resource", ""),
-                getattr(item, "purpose", ""),
-            )
-        console.print(secret_table)
-    backup_root = getattr(plan, "backup_root", None)
-    if backup_root:
-        console.print(f"[green]Backup root:[/green] {backup_root}")
 
 
 # ---- publish ---- #
@@ -1343,7 +1175,9 @@ def cmd_publish(
     cfg = _load()
 
     if kind not in VALID_KINDS:
-        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin.")
+        console.print(
+            f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin."
+        )
         raise typer.Exit(2)
 
     mcp_config = None
@@ -1356,10 +1190,14 @@ def cmd_publish(
 
     if private is None and not yes:
         default = cfg.github.default_private
-        choice = typer.prompt(
-            "Repository visibility? [public/private]",
-            default="private" if default else "public",
-        ).strip().lower()
+        choice = (
+            typer.prompt(
+                "Repository visibility? [public/private]",
+                default="private" if default else "public",
+            )
+            .strip()
+            .lower()
+        )
         if choice in {"private", "priv", "p"}:
             private = True
         elif choice in {"public", "pub"}:
@@ -1418,7 +1256,7 @@ def cmd_add(
     mcp_config_json: str | None = typer.Option(
         None,
         "--mcp-config",
-        help='MCP server config as JSON string (for --kind mcp).',
+        help="MCP server config as JSON string (for --kind mcp).",
     ),
     tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for discovery (repeatable)."),
     category: str = typer.Option("", "--category", "-c", help="Category, e.g. 'productivity'."),
@@ -1432,7 +1270,9 @@ def cmd_add(
     """Register an external (third-party) resource in the registry."""
     cfg = _load()
     if kind not in VALID_KINDS:
-        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin.")
+        console.print(
+            f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin."
+        )
         raise typer.Exit(2)
 
     mcp_config = None
@@ -1527,7 +1367,9 @@ def cmd_upload(
         "-p",
         help="Restrict installation to these platforms (repeatable).",
     ),
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing local resource."),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Overwrite an existing local resource."
+    ),
     push: bool = typer.Option(False, "--push", help="Push private resource repo without asking."),
     no_push: bool = typer.Option(False, "--no-push", help="Do not push private resource repo."),
 ) -> None:
@@ -1557,8 +1399,12 @@ def cmd_import_local(
     path: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=True),
     name: str | None = typer.Option(None, "--name", help="Override the item name."),
     description: str | None = typer.Option(None, "--description"),
-    kind: str = typer.Option("skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."),
-    category: str = typer.Option("", "--category", "-c", help="Stored under <kind>/<category>/<name>."),
+    kind: str = typer.Option(
+        "skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."
+    ),
+    category: str = typer.Option(
+        "", "--category", "-c", help="Stored under <kind>/<category>/<name>."
+    ),
     tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for discovery (repeatable)."),
     platforms: list[str] = typer.Option(
         [],
@@ -1566,12 +1412,18 @@ def cmd_import_local(
         "-p",
         help="Restrict installation to these platforms (repeatable).",
     ),
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing local resource."),
-    mcp_config_json: str | None = typer.Option(None, "--mcp-config", help="MCP server config JSON."),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Overwrite an existing local resource."
+    ),
+    mcp_config_json: str | None = typer.Option(
+        None, "--mcp-config", help="MCP server config JSON."
+    ),
 ) -> None:
     """Copy a local resource into this repository and register it."""
     if kind not in VALID_KINDS:
-        console.print(f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin.")
+        console.print(
+            f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin."
+        )
         raise typer.Exit(2)
 
     mcp_config = None
@@ -1704,7 +1556,9 @@ def cmd_search(
     tags_filter: list[str] = typer.Option([], "--tag", "-t", help="Filter by tag (repeatable)."),
     kind: str | None = typer.Option(None, "--kind", "-k", help="Filter by resource type."),
     category: str | None = typer.Option(None, "--category", "-c", help="Filter by category."),
-    remote: bool = typer.Option(False, "--remote", "-r", help="Also search GitHub for SKILL.md repos."),
+    remote: bool = typer.Option(
+        False, "--remote", "-r", help="Also search GitHub for SKILL.md repos."
+    ),
 ) -> None:
     """Search the local registry (and optionally GitHub) for resources.
 
@@ -1726,7 +1580,8 @@ def cmd_search(
     if query:
         q = query.lower()
         items = [
-            i for i in items
+            i
+            for i in items
             if q in i.name.lower()
             or q in i.description.lower()
             or any(q in t.lower() for t in i.tags)
@@ -1797,13 +1652,17 @@ def _search_github(query: str) -> None:
 def cmd_sync(
     only: list[str] = typer.Option(None, "--only", help="Restrict to one or more item names."),
     kind: str | None = typer.Option(None, "--kind", "-k", help="Only sync items of this type."),
-    tags_filter: list[str] = typer.Option(None, "--tag", "-t", help="Only sync items with these tags."),
+    tags_filter: list[str] = typer.Option(
+        None, "--tag", "-t", help="Only sync items with these tags."
+    ),
     include_mcp: bool = typer.Option(False, "--include-mcp", help="Also sync MCP configs."),
     include_rule: bool = typer.Option(False, "--include-rule", help="Also sync rules."),
     include_prompt: bool = typer.Option(False, "--include-prompt", help="Also sync prompts."),
     include_plugin: bool = typer.Option(False, "--include-plugin", help="Also sync plugins."),
     all_kinds: bool = typer.Option(False, "--all-kinds", help="Sync every resource kind."),
-    platform: str | None = typer.Option(None, "--platform", "-p", help="Only sync to this platform."),
+    platform: str | None = typer.Option(
+        None, "--platform", "-p", help="Only sync to this platform."
+    ),
 ) -> None:
     """Install or update registry items.
 
@@ -1875,7 +1734,9 @@ def cmd_sync(
 @app.command("plan-install")
 def cmd_plan_install(
     name: str = typer.Argument(..., help="Registered resource name."),
-    platform: str | None = typer.Option(None, "--platform", "-p", help="Only plan for this platform."),
+    platform: str | None = typer.Option(
+        None, "--platform", "-p", help="Only plan for this platform."
+    ),
 ) -> None:
     """Build an install plan without writing local files."""
     try:
@@ -1944,7 +1805,9 @@ def cmd_status(
 @app.command("check")
 def cmd_check(
     kind: str | None = typer.Option(None, "--kind", "-k", help="Filter by resource type."),
-    prune: bool = typer.Option(False, "--prune", help="Remove unreachable items from the registry."),
+    prune: bool = typer.Option(
+        False, "--prune", help="Remove unreachable items from the registry."
+    ),
     uninstall: bool = typer.Option(
         False, "--uninstall", help="Also delete local files when pruning."
     ),
@@ -1955,9 +1818,7 @@ def cmd_check(
     inaccessible.  Use ``--prune`` to automatically remove dead entries.
     """
     cfg = _load()
-    results, pruned = check_all(
-        config=cfg, kind=kind, prune=prune, uninstall=uninstall
-    )
+    results, pruned = check_all(config=cfg, kind=kind, prune=prune, uninstall=uninstall)
     if not results:
         console.print("[yellow]Registry is empty.[/yellow]")
         return
@@ -1984,7 +1845,9 @@ def cmd_check(
     console.print(table)
 
     if pruned:
-        console.print(f"\n[green]Pruned {len(pruned)} unreachable item(s):[/green] {', '.join(pruned)}")
+        console.print(
+            f"\n[green]Pruned {len(pruned)} unreachable item(s):[/green] {', '.join(pruned)}"
+        )
     elif unreachable:
         console.print(
             f"\n[yellow]{unreachable} unreachable item(s) found.[/yellow] "
@@ -2003,8 +1866,12 @@ def cmd_doctor() -> None:
     """Check that the environment is ready (git, token, permissions, platforms)."""
     cfg = _load()
     checks = build_doctor_checks(cfg)
-    general_checks = [check for check in checks if not str(check.get("id", "")).startswith("platform:")]
-    platform_checks = [check for check in checks if str(check.get("id", "")).startswith("platform:")]
+    general_checks = [
+        check for check in checks if not str(check.get("id", "")).startswith("platform:")
+    ]
+    platform_checks = [
+        check for check in checks if str(check.get("id", "")).startswith("platform:")
+    ]
 
     for check in general_checks:
         _print_doctor_check(check)
@@ -2062,7 +1929,9 @@ def cmd_set_visibility(
     cfg = _load()
     v = visibility.strip().lower()
     if v not in {"public", "private"}:
-        console.print(f"[red]Invalid visibility {visibility!r}.[/red] Expected 'public' or 'private'.")
+        console.print(
+            f"[red]Invalid visibility {visibility!r}.[/red] Expected 'public' or 'private'."
+        )
         raise typer.Exit(2)
     private = v == "private"
     try:
@@ -2134,11 +2003,13 @@ def cmd_install_self(
             "\nNext: register the MCP server in your platform's MCP config. Example for Cursor:\n"
             '  ~/.cursor/mcp.json -> {"mcpServers": {"lpm": {"command": "lpm-mcp"}}}\n'
             "Example for Claude Code:\n"
-            '  claude mcp add lpm -- lpm-mcp\n'
+            "  claude mcp add lpm -- lpm-mcp\n"
             "Then restart your IDE."
         )
     else:
-        console.print("[yellow]Nothing copied. SKILL.md already installed on all platforms.[/yellow]")
+        console.print(
+            "[yellow]Nothing copied. SKILL.md already installed on all platforms.[/yellow]"
+        )
 
 
 # ---- platforms ---- #
@@ -2197,10 +2068,15 @@ def cmd_update(
 @app.command("link")
 def cmd_link(
     project: Path = typer.Option(
-        ".", "--project", "-p", help="Project root directory (defaults to CWD).",
+        ".",
+        "--project",
+        "-p",
+        help="Project root directory (defaults to CWD).",
     ),
     only: list[str] = typer.Option(None, "--only", help="Only link specific items."),
-    tags_filter: list[str] = typer.Option(None, "--tag", "-t", help="Only link items with these tags."),
+    tags_filter: list[str] = typer.Option(
+        None, "--tag", "-t", help="Only link items with these tags."
+    ),
     kind: str | None = typer.Option(None, "--kind", "-k", help="Only link items of this type."),
 ) -> None:
     """Link registry skills into a project for AI auto-discovery.
@@ -2223,16 +2099,19 @@ def cmd_link(
     if linked:
         console.print(f"[green]Linked {len(linked)} skill(s):[/green] {', '.join(linked)}")
     else:
-        console.print("[yellow]No skill symlinks created (skills may not be installed yet).[/yellow]")
-    console.print(
-        "\nAI agents in this project will now auto-discover linked skills."
-    )
+        console.print(
+            "[yellow]No skill symlinks created (skills may not be installed yet).[/yellow]"
+        )
+    console.print("\nAI agents in this project will now auto-discover linked skills.")
 
 
 @app.command("unlink")
 def cmd_unlink(
     project: Path = typer.Option(
-        ".", "--project", "-p", help="Project root directory (defaults to CWD).",
+        ".",
+        "--project",
+        "-p",
+        help="Project root directory (defaults to CWD).",
     ),
 ) -> None:
     """Remove all LPM links and the skill index from a project."""

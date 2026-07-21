@@ -28,6 +28,8 @@ from ..core.ownership import (
 )
 from ..core.platforms import PlatformProfile, build_platform
 from ..core.registry import DEFAULT_REGISTRY_FILENAME, load_registry, save_registry
+from ..core.resource_files import is_resource_path_excluded
+from ..core.secret_scan import find_secret_text
 from ..core.secrets import sanitize_mcp_config_for_storage
 from ..core.tool_adapters import tool_adapter_by_id
 from ..core.validator import validate_item
@@ -137,6 +139,51 @@ class AssetInventory:
     generated_at: str
     legacy_write_blocker: str
     rows: list[AssetPlatformRow]
+    resources: list[AssetResourceRow] = field(default_factory=list)
+
+
+@dataclass
+class AssetLocalInstance:
+    id: str
+    platform: str
+    install_name: str
+    path: Path | None
+    ownership: str
+    fingerprint: str
+    description: str
+    status: AssetStatus
+    warnings: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AssetRemoteState:
+    exists: bool
+    status: str
+    writable: bool
+    read_only: bool
+    commit: str
+    path: Path | None
+    description: str
+
+
+@dataclass
+class AssetResourceRow:
+    resource_key: str
+    kind: ItemKind
+    name: str
+    description: str
+    description_source: str
+    local_status: str
+    remote_status: str
+    status: AssetStatus
+    remote: AssetRemoteState
+    local_instances: list[AssetLocalInstance]
+    metadata_differences: list[str] = field(default_factory=list)
+    diff_summary: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    available_actions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -186,6 +233,53 @@ class AssetActionResult:
 
 
 @dataclass
+class AssetBatchChoice:
+    resource_key: str
+    platform: str = ""
+    local_instance_id: str = ""
+    resolution: str = "overwrite"
+    new_name: str = ""
+    overwrite_unmanaged: bool = False
+
+
+@dataclass
+class AssetBatchPlanItem:
+    id: str
+    resource_key: str
+    platform: str
+    local_instance_id: str
+    action: str
+    disposition: str
+    target_resource_key: str
+    reason: str = ""
+    warnings: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    plan: AssetActionPlan | None = None
+
+
+@dataclass
+class AssetBatchPlan:
+    direction: str
+    resource_keys: list[str]
+    target_platforms: list[str]
+    remote_commit: str
+    plan_hash: str
+    items: list[AssetBatchPlanItem]
+    executable_count: int
+    blocked_count: int
+    skipped_count: int
+    status: str = "planned"
+
+
+@dataclass
+class AssetBatchResult:
+    status: str
+    plan_hash: str
+    results: list[AssetActionResult]
+    stale_plan: AssetBatchPlan | None = None
+
+
+@dataclass
 class _PlatformContext:
     profile: PlatformProfile
     configured: bool
@@ -214,7 +308,7 @@ def build_asset_inventory(
     refresh_remote: bool = True,
     remote_snapshot: RemoteSnapshot | None = None,
 ) -> AssetInventory:
-    """Build one row per asset/platform/local instance without writing user targets."""
+    """Build logical resources plus internal platform comparison rows without writes."""
     cfg = config or load_config()
     git_ops.configure_git_executable(cfg.git.executable)
     _cleanup_expired_asset_plans(cfg)
@@ -274,7 +368,7 @@ def build_asset_inventory(
         )
     )
     blocker = _legacy_write_blocker(cfg, fetch=False)
-    return AssetInventory(
+    inventory = AssetInventory(
         branch=snapshot.branch,
         remote_commit=snapshot.commit,
         repo_url=snapshot.repo_url,
@@ -285,6 +379,178 @@ def build_asset_inventory(
         legacy_write_blocker=blocker,
         rows=rows,
     )
+    inventory.resources = _aggregate_resource_rows(inventory)
+    return inventory
+
+
+def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow]:
+    grouped: dict[str, list[AssetPlatformRow]] = {}
+    for row in inventory.rows:
+        grouped.setdefault(row.resource_key, []).append(row)
+
+    resources: list[AssetResourceRow] = []
+    for resource_key, rows in grouped.items():
+        exemplar = rows[0]
+        entry = next((row.entry for row in rows if row.entry is not None), None)
+        local_rows = [row for row in rows if row.local_exists]
+        local_instances = [_local_instance_summary(row) for row in local_rows]
+        local_descriptions = _unique_strings(
+            [item.description for item in local_instances if item.description]
+        )
+        remote_description = str(getattr(entry, "description", "") or "")
+        description = remote_description or (local_descriptions[0] if local_descriptions else "")
+        description_source = "remote" if remote_description else "local" if description else "none"
+        remote_exists = entry is not None
+        read_only = bool(entry and not _is_private_repo_asset(entry))
+        remote_status = (
+            "unavailable"
+            if not inventory.remote_available
+            else "read-only"
+            if read_only
+            else "present"
+            if remote_exists
+            else "missing"
+        )
+        local_status = _aggregate_local_status(local_rows, scanned=inventory.scanned_local)
+        status = _aggregate_asset_status(
+            rows,
+            scanned=inventory.scanned_local,
+            remote_available=inventory.remote_available,
+            remote_exists=remote_exists,
+            local_status=local_status,
+        )
+        metadata_differences = _unique_strings(
+            [item for row in rows for item in row.metadata_differences]
+        )
+        if remote_description and any(
+            item and item != remote_description for item in local_descriptions
+        ):
+            metadata_differences = _unique_strings([*metadata_differences, "description"])
+        resources.append(
+            AssetResourceRow(
+                resource_key=resource_key,
+                kind=exemplar.kind,
+                name=exemplar.name,
+                description=description,
+                description_source=description_source,
+                local_status=local_status,
+                remote_status=remote_status,
+                status=status,
+                remote=AssetRemoteState(
+                    exists=remote_exists,
+                    status=remote_status,
+                    writable=bool(entry and _is_private_repo_asset(entry)),
+                    read_only=read_only,
+                    commit=inventory.remote_commit,
+                    path=next(
+                        (row.remote_path for row in rows if row.remote_path is not None),
+                        None,
+                    ),
+                    description=remote_description,
+                ),
+                local_instances=local_instances,
+                metadata_differences=metadata_differences,
+                diff_summary=_aggregate_diff_summary(status, local_status, remote_status),
+                warnings=_unique_strings([item for row in rows for item in row.warnings]),
+                blockers=_unique_strings([item for row in rows for item in row.blockers]),
+                available_actions=_unique_strings(
+                    [item for row in rows for item in row.available_actions]
+                ),
+            )
+        )
+    resources.sort(key=lambda item: (item.kind, item.name))
+    return resources
+
+
+def _local_instance_summary(row: AssetPlatformRow) -> AssetLocalInstance:
+    description = ""
+    if row.local_path is not None:
+        metadata = _derive_metadata(
+            row.kind,
+            row.local_path,
+            mcp_config=_read_mcp_server(row.local_path, row.install_name)
+            if row.kind == "mcp"
+            else None,
+        )
+        description = str(metadata.get("description") or "")
+    return AssetLocalInstance(
+        id=row.local_instance_id,
+        platform=row.platform,
+        install_name=row.install_name,
+        path=row.local_path,
+        ownership=row.ownership,
+        fingerprint=row.local_fingerprint,
+        description=description,
+        status=row.status,
+        warnings=list(row.warnings),
+        blockers=list(row.blockers),
+    )
+
+
+def _aggregate_local_status(rows: list[AssetPlatformRow], *, scanned: bool) -> str:
+    if not scanned:
+        return "unknown"
+    if not rows:
+        return "missing"
+    fingerprints = {row.local_fingerprint for row in rows if row.local_fingerprint}
+    if len(rows) == 1:
+        return "single"
+    if any(not row.local_fingerprint for row in rows):
+        return "variants"
+    if len(fingerprints) <= 1:
+        return "identical-copies"
+    return "variants"
+
+
+def _aggregate_asset_status(
+    rows: list[AssetPlatformRow],
+    *,
+    scanned: bool,
+    remote_available: bool,
+    remote_exists: bool,
+    local_status: str,
+) -> AssetStatus:
+    if not scanned or not remote_available:
+        return "uncomparable"
+    local_exists = local_status not in {"unknown", "missing"}
+    if local_exists and not remote_exists:
+        return "local-only"
+    if remote_exists and not local_exists:
+        return "remote-only"
+    statuses = {row.status for row in rows if row.local_exists}
+    if "target-conflict" in statuses:
+        return "target-conflict"
+    if local_status == "variants" or "content-different" in statuses:
+        return "content-different"
+    if "metadata-only" in statuses:
+        return "metadata-only"
+    if local_exists and remote_exists and statuses and statuses <= {"same"}:
+        return "same"
+    return "uncomparable"
+
+
+def _aggregate_diff_summary(
+    status: AssetStatus,
+    local_status: str,
+    remote_status: str,
+) -> list[str]:
+    if local_status == "unknown":
+        return ["Local assets have not been scanned yet."]
+    if status == "local-only":
+        return ["Local content is not present in the remote repository."]
+    if status == "remote-only":
+        return ["Remote content is not installed in any scanned local tool."]
+    if status == "same":
+        return ["Local and remote content fingerprints match."]
+    if status == "content-different":
+        return ["Local and remote content differ, or multiple local variants exist."]
+    if status == "metadata-only":
+        return ["Content matches but metadata differs."]
+    if status == "target-conflict":
+        return ["Multiple resources resolve to the same local target."]
+    if remote_status == "unavailable":
+        return ["The current remote state is unavailable; no absence is inferred."]
+    return ["The resource cannot be compared safely."]
 
 
 def build_asset_action_plan(
@@ -298,6 +564,9 @@ def build_asset_action_plan(
     new_install_name: str = "",
     overwrite_unmanaged: bool = False,
     config: Config | None = None,
+    _remote_snapshot: RemoteSnapshot | None = None,
+    _inventory: AssetInventory | None = None,
+    _persist: bool = True,
 ) -> AssetActionPlan:
     """Persist a revalidatable plan for exactly one asset/platform row."""
     if action not in {
@@ -309,8 +578,8 @@ def build_asset_action_plan(
     }:
         raise ValueError(f"Unsupported asset action: {action}")
     cfg = config or load_config()
-    snapshot = _refresh_remote_snapshot(cfg, refresh=True)
-    inventory = build_asset_inventory(
+    snapshot = _remote_snapshot or _refresh_remote_snapshot(cfg, refresh=True)
+    inventory = _inventory or build_asset_inventory(
         config=cfg,
         scan_local=True,
         refresh_remote=False,
@@ -318,14 +587,10 @@ def build_asset_action_plan(
     )
     key = ResourceKey(kind=kind, name=name)
     candidates = [
-        row
-        for row in inventory.rows
-        if row.resource_key == str(key) and row.platform == platform
+        row for row in inventory.rows if row.resource_key == str(key) and row.platform == platform
     ]
     if local_instance_id:
-        candidates = [
-            row for row in candidates if row.local_instance_id == local_instance_id
-        ]
+        candidates = [row for row in candidates if row.local_instance_id == local_instance_id]
     row = _select_plan_row(candidates, action=action, local_instance_id=local_instance_id)
     blockers: list[str] = []
     warnings = list(row.warnings)
@@ -372,9 +637,7 @@ def build_asset_action_plan(
     elif action == "copy-to-remote":
         blockers.extend(_copy_to_remote_blockers(row, snapshot.registry, normalized_new_name))
         target_entry = (
-            snapshot.registry.get(normalized_new_name, kind)
-            if normalized_new_name
-            else None
+            snapshot.registry.get(normalized_new_name, kind) if normalized_new_name else None
         )
         remote_target_exists = target_entry is not None
         remote_target_fingerprint = (
@@ -413,9 +676,7 @@ def build_asset_action_plan(
             exclude_key=target_key,
         )
         if duplicates:
-            warnings.append(
-                "Identical content already exists under: " + ", ".join(duplicates)
-            )
+            warnings.append("Identical content already exists under: " + ", ".join(duplicates))
 
     plan = AssetActionPlan(
         operation_id=uuid.uuid4().hex,
@@ -443,7 +704,8 @@ def build_asset_action_plan(
         blocked=bool(blockers),
         created_at=_utc_now(),
     )
-    _save_asset_plan(plan)
+    if _persist:
+        _save_asset_plan(plan)
     return plan
 
 
@@ -490,6 +752,500 @@ def apply_asset_action_plan(
         )
     _save_asset_result(result)
     return result
+
+
+def build_asset_batch_plan(
+    direction: str,
+    *,
+    resource_keys: list[str],
+    target_platforms: list[str] | None = None,
+    choices: list[AssetBatchChoice] | None = None,
+    config: Config | None = None,
+) -> AssetBatchPlan:
+    """Build a stateless, revalidatable plan for selected logical resources."""
+    normalized_direction = direction.strip().lower()
+    if normalized_direction not in {"upload", "download"}:
+        raise ValueError("Batch direction must be 'upload' or 'download'.")
+    keys = list(dict.fromkeys(item.strip() for item in resource_keys if item.strip()))
+    platforms = list(
+        dict.fromkeys(item.strip() for item in (target_platforms or []) if item.strip())
+    )
+    cfg = config or load_config()
+    snapshot = _refresh_remote_snapshot(cfg, refresh=True)
+    inventory = build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        refresh_remote=False,
+        remote_snapshot=snapshot,
+    )
+    rows_by_key: dict[str, list[AssetPlatformRow]] = {}
+    for row in inventory.rows:
+        rows_by_key.setdefault(row.resource_key, []).append(row)
+    choice_items = choices or []
+    choice_map = {(item.resource_key, item.platform): item for item in choice_items}
+    items: list[AssetBatchPlanItem] = []
+    for resource_key in keys:
+        rows = rows_by_key.get(resource_key, [])
+        if normalized_direction == "upload":
+            upload_choices = [
+                choice for choice in choice_items if choice.resource_key == resource_key
+            ]
+            if len(upload_choices) > 1:
+                items.extend(
+                    _build_batch_upload_item(
+                        resource_key,
+                        rows,
+                        choice,
+                        cfg=cfg,
+                        snapshot=snapshot,
+                        inventory=inventory,
+                    )
+                    for choice in upload_choices
+                )
+            else:
+                items.append(
+                    _build_batch_upload_item(
+                        resource_key,
+                        rows,
+                        upload_choices[0] if upload_choices else None,
+                        cfg=cfg,
+                        snapshot=snapshot,
+                        inventory=inventory,
+                    )
+                )
+            continue
+        if not platforms:
+            items.append(
+                _batch_non_action_item(
+                    resource_key,
+                    action="download",
+                    disposition="blocked",
+                    reason="Select at least one target platform.",
+                )
+            )
+            continue
+        for platform in platforms:
+            items.append(
+                _build_batch_download_item(
+                    resource_key,
+                    platform,
+                    rows,
+                    choice_map.get((resource_key, platform)) or choice_map.get((resource_key, "")),
+                    cfg=cfg,
+                    snapshot=snapshot,
+                    inventory=inventory,
+                )
+            )
+    _block_duplicate_batch_targets(items, direction=normalized_direction)
+    plan = AssetBatchPlan(
+        direction=normalized_direction,
+        resource_keys=keys,
+        target_platforms=platforms,
+        remote_commit=snapshot.commit,
+        plan_hash="",
+        items=items,
+        executable_count=sum(
+            item.plan is not None
+            and not item.blockers
+            and item.disposition in {"create", "update", "rename"}
+            for item in items
+        ),
+        blocked_count=sum(item.disposition == "blocked" for item in items),
+        skipped_count=sum(item.disposition in {"skip", "unchanged"} for item in items),
+    )
+    plan.plan_hash = _asset_batch_plan_hash(plan)
+    return plan
+
+
+def apply_asset_batch_plan(
+    direction: str,
+    *,
+    resource_keys: list[str],
+    expected_plan_hash: str,
+    target_platforms: list[str] | None = None,
+    choices: list[AssetBatchChoice] | None = None,
+    config: Config | None = None,
+) -> AssetBatchResult:
+    """Rebuild and apply a batch plan only when its normalized hash is current."""
+    cfg = config or load_config()
+    current = build_asset_batch_plan(
+        direction,
+        resource_keys=resource_keys,
+        target_platforms=target_platforms,
+        choices=choices,
+        config=cfg,
+    )
+    if not expected_plan_hash or current.plan_hash != expected_plan_hash:
+        return AssetBatchResult(
+            status="stale-plan",
+            plan_hash=current.plan_hash,
+            results=[],
+            stale_plan=current,
+        )
+    executable = [
+        item.plan
+        for item in current.items
+        if item.plan is not None
+        and not item.blockers
+        and item.disposition in {"create", "update", "rename"}
+    ]
+    passive = [
+        _batch_passive_result(item)
+        for item in current.items
+        if item.plan is None or item.disposition not in {"create", "update", "rename"}
+    ]
+    if current.direction == "upload":
+        applied = _apply_remote_asset_batch(executable, cfg)
+    else:
+        applied = []
+        for plan in executable:
+            try:
+                applied.append(_apply_local_asset_action(plan, cfg))
+            except _StaleAssetTarget as exc:
+                applied.append(_batch_error_result(plan, exc.code, str(exc)))
+            except Exception as exc:  # noqa: BLE001 - continue independent local transactions
+                applied.append(_batch_error_result(plan, "failed", str(exc)))
+    results = [*passive, *applied]
+    failures = [
+        item for item in results if item.status not in {"succeeded", "unchanged", "skipped"}
+    ]
+    successes = [item for item in results if item.status in {"succeeded", "unchanged"}]
+    status = "partial" if failures and successes else "failed" if failures else "succeeded"
+    return AssetBatchResult(status=status, plan_hash=current.plan_hash, results=results)
+
+
+def _build_batch_upload_item(
+    resource_key: str,
+    rows: list[AssetPlatformRow],
+    choice: AssetBatchChoice | None,
+    *,
+    cfg: Config,
+    snapshot: RemoteSnapshot,
+    inventory: AssetInventory,
+) -> AssetBatchPlanItem:
+    local_rows = [row for row in rows if row.local_exists and row.local_fingerprint]
+    if not local_rows:
+        return _batch_non_action_item(
+            resource_key,
+            action="upload",
+            disposition="skip",
+            reason="No scanned local source exists.",
+        )
+    selected: AssetPlatformRow | None = None
+    if choice and choice.local_instance_id:
+        selected = next(
+            (row for row in local_rows if row.local_instance_id == choice.local_instance_id),
+            None,
+        )
+        if selected is None:
+            return _batch_non_action_item(
+                resource_key,
+                action="upload",
+                disposition="blocked",
+                reason="The selected local instance no longer exists.",
+            )
+    else:
+        fingerprint_groups = {row.local_fingerprint for row in local_rows if row.local_fingerprint}
+        if len(fingerprint_groups) > 1:
+            return _batch_non_action_item(
+                resource_key,
+                action="upload",
+                disposition="blocked",
+                reason="Multiple different local versions exist; select a source instance.",
+            )
+        selected = sorted(local_rows, key=lambda row: (row.platform, row.local_instance_id))[0]
+    resolution = choice.resolution if choice else "overwrite"
+    new_name = choice.new_name.strip() if choice else ""
+    action = "copy-to-remote" if resolution == "rename" else "upload"
+    if (
+        action == "upload"
+        and selected.remote_exists
+        and selected.status == "same"
+        and not selected.metadata_differences
+    ):
+        return _batch_non_action_item(
+            resource_key,
+            action=action,
+            disposition="unchanged",
+            platform=selected.platform,
+            local_instance_id=selected.local_instance_id,
+            target_resource_key=resource_key,
+            reason="Local and remote content already match.",
+        )
+    plan = build_asset_action_plan(
+        action,
+        kind=selected.kind,
+        name=selected.name,
+        platform=selected.platform,
+        local_instance_id=selected.local_instance_id,
+        new_name=new_name,
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    disposition = (
+        "blocked"
+        if plan.blocked
+        else "rename"
+        if action == "copy-to-remote"
+        else "update"
+        if plan.remote_target_exists
+        else "create"
+    )
+    return AssetBatchPlanItem(
+        id=f"upload:{resource_key}:{selected.local_instance_id}",
+        resource_key=resource_key,
+        platform=selected.platform,
+        local_instance_id=selected.local_instance_id,
+        action=action,
+        disposition=disposition,
+        target_resource_key=plan.target_resource_key,
+        reason="; ".join(plan.blockers),
+        warnings=list(plan.warnings),
+        blockers=list(plan.blockers),
+        plan=plan,
+    )
+
+
+def _build_batch_download_item(
+    resource_key: str,
+    platform: str,
+    rows: list[AssetPlatformRow],
+    choice: AssetBatchChoice | None,
+    *,
+    cfg: Config,
+    snapshot: RemoteSnapshot,
+    inventory: AssetInventory,
+) -> AssetBatchPlanItem:
+    remote_row = next((row for row in rows if row.entry is not None), None)
+    if remote_row is None:
+        return _batch_non_action_item(
+            resource_key,
+            action="download",
+            disposition="skip",
+            platform=platform,
+            reason="No remote asset exists.",
+        )
+    if remote_row.read_only_reference:
+        return _batch_non_action_item(
+            resource_key,
+            action="download",
+            disposition="skip",
+            platform=platform,
+            reason="The read-only reference has no private snapshot that can be installed safely.",
+        )
+    platform_rows = [row for row in rows if row.platform == platform]
+    if not platform_rows:
+        return _batch_non_action_item(
+            resource_key,
+            action="download",
+            disposition="skip",
+            platform=platform,
+            reason="The resource has no compatible target on this platform.",
+        )
+    expected = next(
+        (row for row in platform_rows if row.local_locator == "expected"), platform_rows[0]
+    )
+    if not expected.configured or not expected.enabled:
+        return _batch_non_action_item(
+            resource_key,
+            action="download",
+            disposition="skip",
+            platform=platform,
+            reason="The target platform is not enabled.",
+        )
+    if not expected.supported:
+        return _batch_non_action_item(
+            resource_key,
+            action="download",
+            disposition="skip",
+            platform=platform,
+            reason="The resource is not compatible with this platform.",
+        )
+    resolution = choice.resolution if choice else "overwrite"
+    new_name = choice.new_name.strip() if choice else ""
+    action = "copy-to-local" if resolution == "rename" else "download"
+    if (
+        action == "download"
+        and expected.local_exists
+        and expected.status == "same"
+        and not expected.metadata_differences
+    ):
+        return _batch_non_action_item(
+            resource_key,
+            action=action,
+            disposition="unchanged",
+            platform=platform,
+            local_instance_id=expected.local_instance_id,
+            target_resource_key=resource_key,
+            reason="The target already matches the remote asset.",
+        )
+    plan = build_asset_action_plan(
+        action,
+        kind=remote_row.kind,
+        name=remote_row.name,
+        platform=platform,
+        new_name=new_name,
+        overwrite_unmanaged=bool(choice and choice.overwrite_unmanaged),
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    disposition = (
+        "blocked"
+        if plan.blocked
+        else "rename"
+        if action == "copy-to-local"
+        else "update"
+        if plan.target_exists
+        else "create"
+    )
+    return AssetBatchPlanItem(
+        id=f"download:{resource_key}:{platform}",
+        resource_key=resource_key,
+        platform=platform,
+        local_instance_id=plan.local_instance_id,
+        action=action,
+        disposition=disposition,
+        target_resource_key=plan.target_resource_key,
+        reason="; ".join(plan.blockers),
+        warnings=list(plan.warnings),
+        blockers=list(plan.blockers),
+        plan=plan,
+    )
+
+
+def _batch_non_action_item(
+    resource_key: str,
+    *,
+    action: str,
+    disposition: str,
+    reason: str,
+    platform: str = "",
+    local_instance_id: str = "",
+    target_resource_key: str = "",
+) -> AssetBatchPlanItem:
+    return AssetBatchPlanItem(
+        id=f"{action}:{resource_key}:{platform or local_instance_id}",
+        resource_key=resource_key,
+        platform=platform,
+        local_instance_id=local_instance_id,
+        action=action,
+        disposition=disposition,
+        target_resource_key=target_resource_key or resource_key,
+        reason=reason,
+        blockers=[reason] if disposition == "blocked" else [],
+    )
+
+
+def _block_duplicate_batch_targets(
+    items: list[AssetBatchPlanItem],
+    *,
+    direction: str,
+) -> None:
+    grouped: dict[tuple[str, str], list[AssetBatchPlanItem]] = {}
+    for item in items:
+        if item.plan is None or item.disposition not in {"create", "update", "rename"}:
+            continue
+        target = (
+            item.target_resource_key,
+            item.platform if direction == "download" else "",
+        )
+        grouped.setdefault(target, []).append(item)
+    for duplicates in grouped.values():
+        if len(duplicates) < 2:
+            continue
+        message = "Multiple batch items resolve to the same target."
+        for item in duplicates:
+            item.disposition = "blocked"
+            item.reason = message
+            item.blockers = _unique_strings([*item.blockers, message])
+            if item.plan is not None:
+                item.plan.blockers = _unique_strings([*item.plan.blockers, message])
+                item.plan.blocked = True
+
+
+def _asset_batch_plan_hash(plan: AssetBatchPlan) -> str:
+    payload = {
+        "direction": plan.direction,
+        "resource_keys": plan.resource_keys,
+        "target_platforms": plan.target_platforms,
+        "remote_commit": plan.remote_commit,
+        "items": [
+            {
+                "resource_key": item.resource_key,
+                "platform": item.platform,
+                "local_instance_id": item.local_instance_id,
+                "action": item.action,
+                "disposition": item.disposition,
+                "target_resource_key": item.target_resource_key,
+                "reason": item.reason,
+                "warnings": item.warnings,
+                "blockers": item.blockers,
+                "assertions": _batch_plan_assertions(item.plan),
+            }
+            for item in plan.items
+        ],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _batch_plan_assertions(plan: AssetActionPlan | None) -> dict[str, Any]:
+    if plan is None:
+        return {}
+    return {
+        "local_locator": plan.local_locator,
+        "remote_target_exists": plan.remote_target_exists,
+        "remote_target_fingerprint": plan.remote_target_fingerprint,
+        "local_source_fingerprint": plan.local_source_fingerprint,
+        "target_exists": plan.target_exists,
+        "target_path": str(plan.target_path) if plan.target_path is not None else "",
+        "target_fingerprint": plan.target_fingerprint,
+        "target_managed": plan.target_managed,
+        "overwrite_unmanaged": plan.overwrite_unmanaged,
+        "new_name": plan.new_name,
+        "new_install_name": plan.new_install_name,
+    }
+
+
+def _batch_passive_result(item: AssetBatchPlanItem) -> AssetActionResult:
+    status = (
+        "blocked"
+        if item.disposition == "blocked"
+        else "unchanged"
+        if item.disposition == "unchanged"
+        else "skipped"
+    )
+    return AssetActionResult(
+        operation_id="",
+        action=item.action,  # type: ignore[arg-type]
+        status=status,
+        resource_key=item.resource_key,
+        target_resource_key=item.target_resource_key,
+        platform=item.platform,
+        message=item.reason or item.disposition,
+        warnings=item.warnings,
+    )
+
+
+def _batch_error_result(
+    plan: AssetActionPlan,
+    status: str,
+    message: str,
+) -> AssetActionResult:
+    return AssetActionResult(
+        operation_id=plan.operation_id,
+        action=plan.action,
+        status=status,
+        resource_key=plan.resource_key,
+        target_resource_key=plan.target_resource_key,
+        platform=plan.platform,
+        message=message,
+        warnings=plan.warnings,
+    )
 
 
 def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
@@ -595,10 +1351,7 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                 git_ops.checkout_local_branch(transport, branch)
 
             snapshot_root = (
-                state_root
-                / REMOTE_SNAPSHOT_DIR
-                / cache_key
-                / (remote_commit or "unborn")
+                state_root / REMOTE_SNAPSHOT_DIR / cache_key / (remote_commit or "unborn")
             )
             if not snapshot_root.exists():
                 snapshot_root.parent.mkdir(parents=True, exist_ok=True)
@@ -620,6 +1373,10 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
     except Exception as exc:
         cached = _latest_cached_snapshot(state_root / REMOTE_SNAPSHOT_DIR / cache_key)
         if cached is not None:
+            cached_at = datetime.fromtimestamp(
+                cached.stat().st_mtime,
+                tz=timezone.utc,
+            ).isoformat()
             return RemoteSnapshot(
                 root=cached,
                 registry=load_registry(cached / DEFAULT_REGISTRY_FILENAME),
@@ -627,7 +1384,10 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                 branch=branch,
                 repo_url=repo_url,
                 available=False,
-                warning=f"Remote refresh failed; showing the latest cached snapshot: {exc}",
+                warning=(
+                    "Remote refresh failed; showing the latest cached snapshot "
+                    f"from {cached_at}: {exc}"
+                ),
             )
         return _local_compatibility_snapshot(
             cfg,
@@ -685,7 +1445,9 @@ def _platform_contexts(
             profile=profile,
             configured=True,
             detected=False,
-            supported_kinds=set(adapter.supports_kinds) if adapter else set(RESOURCE_PARENT_BY_KIND),
+            supported_kinds=set(adapter.supports_kinds)
+            if adapter
+            else set(RESOURCE_PARENT_BY_KIND),
         )
     if discovery is None:
         return contexts
@@ -721,9 +1483,8 @@ def _expected_row(
     target = context.profile.resolve_install_path(entry.kind, install_name)
     if target is None:
         return None
-    supported = (
-        entry.supports_platform(platform_name)
-        and (not context.supported_kinds or entry.kind in context.supported_kinds)
+    supported = entry.supports_platform(platform_name) and (
+        not context.supported_kinds or entry.kind in context.supported_kinds
     )
     target = target.expanduser().absolute()
     remote_path = _remote_content_path(snapshot.root, entry)
@@ -746,9 +1507,7 @@ def _expected_row(
         local_metadata = _derive_metadata(
             entry.kind,
             target,
-            mcp_config=_read_mcp_server(target, install_name)
-            if entry.kind == "mcp"
-            else None,
+            mcp_config=_read_mcp_server(target, install_name) if entry.kind == "mcp" else None,
         )
         metadata_differences = _metadata_differences(entry, local_metadata)
     status = _asset_status(
@@ -915,13 +1674,9 @@ def _local_candidate_row(
     local_metadata = _derive_metadata(
         key.kind,
         local_path,
-        mcp_config=_read_mcp_server(local_path, install_name)
-        if key.kind == "mcp"
-        else None,
+        mcp_config=_read_mcp_server(local_path, install_name) if key.kind == "mcp" else None,
     )
-    metadata_differences = (
-        _metadata_differences(entry, local_metadata) if entry else []
-    )
+    metadata_differences = _metadata_differences(entry, local_metadata) if entry else []
     status = _asset_status(
         remote_exists=remote_exists,
         local_exists=True,
@@ -991,9 +1746,7 @@ def _expected_local_state(
         config = _read_mcp_server(target, install_name)
         exists = config is not None
         fingerprint = (
-            _json_fingerprint(sanitize_mcp_config_for_storage(config) or {})
-            if exists
-            else ""
+            _json_fingerprint(sanitize_mcp_config_for_storage(config) or {}) if exists else ""
         )
         managed = (
             is_lpm_managed_mcp(
@@ -1019,9 +1772,7 @@ def _entry_content_fingerprint(entry: RegistryItem | None, path: Path | None) ->
     if entry is None:
         return ""
     if entry.kind == "mcp" and entry.mcp_config is not None:
-        return _json_fingerprint(
-            sanitize_mcp_config_for_storage(entry.mcp_config) or {}
-        )
+        return _json_fingerprint(sanitize_mcp_config_for_storage(entry.mcp_config) or {})
     if path is None or path.is_symlink() or not path.exists():
         if entry.repo and not _is_private_repo_asset(entry):
             return _json_fingerprint(
@@ -1104,11 +1855,7 @@ def _diff_summary(status: AssetStatus, metadata: list[str]) -> list[str]:
 def _mark_target_collisions(rows: list[AssetPlatformRow]) -> None:
     groups: dict[tuple[str, str, str], list[AssetPlatformRow]] = {}
     for row in rows:
-        if (
-            row.local_locator != "expected"
-            or row.target_path is None
-            or not row.remote_exists
-        ):
+        if row.local_locator != "expected" or row.target_path is None or not row.remote_exists:
             continue
         target_key = os.path.normcase(str(row.target_path.absolute()))
         logical_name = row.install_name if row.kind == "mcp" else ""
@@ -1136,9 +1883,7 @@ def _mark_duplicate_remote_content(rows: list[AssetPlatformRow]) -> None:
         names = groups.get((row.kind, row.remote_content_fingerprint), set())
         if len(names) > 1:
             others = sorted(names - {row.resource_key})
-            row.warnings.append(
-                "Identical content also exists under: " + ", ".join(others)
-            )
+            row.warnings.append("Identical content also exists under: " + ", ".join(others))
 
 
 def _remote_duplicate_keys(
@@ -1152,10 +1897,13 @@ def _remote_duplicate_keys(
     for entry in snapshot.registry.items:
         if entry.kind != kind or entry.resource_key == exclude_key:
             continue
-        if _entry_content_fingerprint(
-            entry,
-            _remote_content_path(snapshot.root, entry),
-        ) == fingerprint:
+        if (
+            _entry_content_fingerprint(
+                entry,
+                _remote_content_path(snapshot.root, entry),
+            )
+            == fingerprint
+        ):
             matches.append(entry.resource_key)
     return sorted(matches)
 
@@ -1216,7 +1964,9 @@ def _download_plan_blockers(
     if not row.remote_exists:
         blockers.append("The remote asset does not exist.")
     if not row.remote_writable:
-        blockers.append("Read-only references cannot be downloaded from the private asset snapshot.")
+        blockers.append(
+            "Read-only references cannot be downloaded from the private asset snapshot."
+        )
     if not row.configured or not row.enabled:
         blockers.append("The platform must be configured and enabled before downloading.")
     if not row.supported:
@@ -1233,9 +1983,7 @@ def _upload_plan_blockers(row: AssetPlatformRow) -> list[str]:
     if not row.local_exists:
         blockers.append("The local source does not exist.")
     if row.remote_exists and not row.remote_writable:
-        blockers.append(
-            "The matching remote item is a read-only reference; use copy-to-remote."
-        )
+        blockers.append("The matching remote item is a read-only reference; use copy-to-remote.")
     if not row.local_fingerprint:
         blockers.append("The local source cannot be fingerprinted safely.")
     return blockers
@@ -1316,9 +2064,7 @@ def _copy_local_target_state(
         config = _read_mcp_server(target, new_name)
         exists = config is not None
         fingerprint = (
-            _json_fingerprint(sanitize_mcp_config_for_storage(config) or {})
-            if exists
-            else ""
+            _json_fingerprint(sanitize_mcp_config_for_storage(config) or {}) if exists else ""
         )
         managed = (
             is_lpm_managed_mcp(target, new_name, resource_key=f"{row.kind}:{new_name}")
@@ -1376,9 +2122,7 @@ def _apply_local_asset_action(
     source_key = ResourceKey.parse(plan.resource_key)
     entry = snapshot.registry.get(source_key.name, source_key.kind)
     current_remote_exists = entry is not None
-    current_remote_fingerprint = (
-        _remote_asset_fingerprint(snapshot.root, entry) if entry else ""
-    )
+    current_remote_fingerprint = _remote_asset_fingerprint(snapshot.root, entry) if entry else ""
     if (
         current_remote_exists != plan.remote_target_exists
         or current_remote_fingerprint != plan.remote_target_fingerprint
@@ -1487,9 +2231,7 @@ def _apply_local_asset_action(
                 resource_key=marker_entry.resource_key,
                 platform=plan.platform,
             )
-            actual = sanitize_mcp_config_for_storage(
-                list_mcp_servers(target).get(install_name)
-            )
+            actual = sanitize_mcp_config_for_storage(list_mcp_servers(target).get(install_name))
             if actual != config:
                 raise AssetSyncError("MCP download verification failed.")
         else:
@@ -1500,7 +2242,9 @@ def _apply_local_asset_action(
             write_managed_marker(target, marker_entry, platform=plan.platform)
             if resource_hash_path(source) != resource_hash_path(target):
                 raise AssetSyncError("Downloaded asset verification failed.")
-        record = transaction.complete(message=f"Applied {plan.action} for {plan.target_resource_key}.")
+        record = transaction.complete(
+            message=f"Applied {plan.action} for {plan.target_resource_key}."
+        )
     except Exception as exc:
         transaction.rollback(str(exc))
         raise
@@ -1658,6 +2402,178 @@ def _apply_remote_asset_action(
     raise AssetSyncError(str(last_push_error or "Remote push failed."))
 
 
+def _apply_remote_asset_batch(
+    plans: list[AssetActionPlan],
+    cfg: Config,
+) -> list[AssetActionResult]:
+    if not plans:
+        return []
+    blocker = _legacy_write_blocker(cfg, fetch=True)
+    if blocker:
+        return [_batch_error_result(plan, "blocked", blocker) for plan in plans]
+    repo_url = _configured_remote_url(cfg)
+    if not repo_url:
+        return [
+            _batch_error_result(
+                plan,
+                "blocked",
+                "No remote resource repository URL is configured.",
+            )
+            for plan in plans
+        ]
+
+    last_push_error: Exception | None = None
+    for attempt in range(2):
+        with tempfile.TemporaryDirectory(
+            prefix="lpm-asset-batch-write-",
+            ignore_cleanup_errors=True,
+        ) as temporary:
+            worktree = Path(temporary) / "repo"
+            _clone_remote_for_write(repo_url, worktree, cfg)
+            registry_path = worktree / DEFAULT_REGISTRY_FILENAME
+            if not registry_path.is_file():
+                ensure_structure(worktree)
+            registry = load_registry(registry_path)
+            latest_commit = git_ops.head_commit(worktree) or ""
+            current_snapshot = RemoteSnapshot(
+                root=worktree,
+                registry=registry,
+                commit=latest_commit,
+                branch=cfg.resources.branch or "main",
+                repo_url=repo_url,
+            )
+            inventory = build_asset_inventory(
+                config=cfg,
+                scan_local=True,
+                refresh_remote=False,
+                remote_snapshot=current_snapshot,
+            )
+            attempt_results: list[AssetActionResult] = []
+            prepared: list[tuple[AssetActionPlan, AssetPlatformRow]] = []
+            for plan in plans:
+                try:
+                    target_key = ResourceKey.parse(plan.target_resource_key)
+                    target_entry = registry.get(target_key.name, target_key.kind)
+                    target_exists = target_entry is not None
+                    target_fingerprint = (
+                        _remote_asset_fingerprint(worktree, target_entry)
+                        if target_entry is not None
+                        else ""
+                    )
+                    if (
+                        target_exists != plan.remote_target_exists
+                        or target_fingerprint != plan.remote_target_fingerprint
+                    ):
+                        raise _StaleAssetTarget(
+                            "stale-target",
+                            "The target remote asset changed after planning.",
+                        )
+                    source_row = _find_planned_local_row(inventory, plan)
+                    if (
+                        not source_row.local_exists
+                        or source_row.local_fingerprint != plan.local_source_fingerprint
+                    ):
+                        raise _StaleAssetTarget(
+                            "stale-local-source",
+                            "The local source changed after planning.",
+                        )
+                    _validate_remote_batch_source(source_row, target_key.kind)
+                    prepared.append((plan, source_row))
+                except _StaleAssetTarget as exc:
+                    attempt_results.append(_batch_error_result(plan, exc.code, str(exc)))
+                except Exception as exc:  # noqa: BLE001 - exclude invalid source and continue
+                    attempt_results.append(_batch_error_result(plan, "failed", str(exc)))
+
+            changed: list[AssetActionPlan] = []
+            try:
+                for plan, source_row in prepared:
+                    if _mutate_remote_asset(
+                        worktree,
+                        registry,
+                        plan,
+                        source_row,
+                    ):
+                        changed.append(plan)
+                    else:
+                        attempt_results.append(
+                            AssetActionResult(
+                                operation_id=plan.operation_id,
+                                action=plan.action,
+                                status="unchanged",
+                                resource_key=plan.resource_key,
+                                target_resource_key=plan.target_resource_key,
+                                platform=plan.platform,
+                                message="The requested remote state already matches.",
+                                remote_commit=latest_commit,
+                                replayed_on_latest=latest_commit != plan.remote_commit,
+                                push_retry_count=attempt,
+                                warnings=plan.warnings,
+                            )
+                        )
+            except Exception as exc:  # noqa: BLE001 - discard the uncommitted worktree
+                return [
+                    *attempt_results,
+                    *[
+                        _batch_error_result(plan, "failed", str(exc))
+                        for plan, _source_row in prepared
+                    ],
+                ]
+            if not changed:
+                return attempt_results
+            try:
+                commit_resource_changes_unlocked(
+                    worktree,
+                    message=f"lpm: batch upload {len(changed)} assets",
+                )
+            except Exception as exc:  # noqa: BLE001 - no remote write occurred
+                return [
+                    *attempt_results,
+                    *[_batch_error_result(plan, "failed", str(exc)) for plan in changed],
+                ]
+            committed = git_ops.head_commit(worktree) or ""
+            try:
+                git_ops.push(
+                    worktree,
+                    branch=cfg.resources.branch or "main",
+                    token=resource_repo_auth_token(cfg),
+                )
+            except git_ops.GitError as exc:
+                last_push_error = exc
+                if attempt == 0:
+                    continue
+                return [
+                    *attempt_results,
+                    *[_batch_error_result(plan, "failed", str(exc)) for plan in changed],
+                ]
+            return [
+                *attempt_results,
+                *[
+                    AssetActionResult(
+                        operation_id=plan.operation_id,
+                        action=plan.action,
+                        status="succeeded",
+                        resource_key=plan.resource_key,
+                        target_resource_key=plan.target_resource_key,
+                        platform=plan.platform,
+                        message=f"Applied {plan.action} in one batch commit.",
+                        remote_commit=committed,
+                        replayed_on_latest=latest_commit != plan.remote_commit,
+                        push_retry_count=attempt,
+                        warnings=plan.warnings,
+                    )
+                    for plan in changed
+                ],
+            ]
+    return [
+        _batch_error_result(
+            plan,
+            "failed",
+            str(last_push_error or "Remote batch push failed."),
+        )
+        for plan in plans
+    ]
+
+
 def _clone_remote_for_write(repo_url: str, destination: Path, cfg: Config) -> None:
     branch = cfg.resources.branch or "main"
     try:
@@ -1698,6 +2614,48 @@ def _find_planned_local_row(
     return matches[0]
 
 
+def _validate_remote_batch_source(row: AssetPlatformRow, kind: ItemKind) -> None:
+    source = row.local_path
+    if source is None:
+        raise AssetSyncError("The local source is unavailable.")
+    if kind == "mcp":
+        sanitized = sanitize_mcp_config_for_storage(_read_mcp_server(source, row.install_name))
+        if not sanitized:
+            raise AssetSyncError("The local MCP source cannot be parsed safely.")
+        validate_item(source, "mcp", mcp_config=sanitized)
+        _raise_for_batch_secret(
+            json.dumps(sanitized, ensure_ascii=False),
+            display_path=f"{row.resource_key}/mcp.json",
+        )
+        return
+
+    validate_item(source, kind)
+    candidates = [source] if source.is_file() else sorted(source.rglob("*"))
+    for candidate in candidates:
+        if not candidate.is_file() or candidate.is_symlink():
+            continue
+        relative = candidate.name if source.is_file() else candidate.relative_to(source)
+        if is_resource_path_excluded(Path(relative)):
+            continue
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            raise AssetSyncError(f"The local source cannot be read safely: {exc}") from exc
+        if b"\x00" in raw[: min(len(raw), 4096)]:
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        _raise_for_batch_secret(text, display_path=str(relative))
+
+
+def _raise_for_batch_secret(text: str, *, display_path: str) -> None:
+    finding = find_secret_text(text)
+    if finding is not None:
+        raise AssetSyncError(f"Secret-like content in {display_path}: {finding.reason}")
+
+
 def _mutate_remote_asset(
     root: Path,
     registry: Registry,
@@ -1725,9 +2683,7 @@ def _mutate_remote_asset(
         raise _StaleAssetTarget("stale-local-source", "The local source is unavailable.")
     local_path = source_row.local_path
     local_mcp_config = (
-        _read_mcp_server(local_path, source_row.install_name)
-        if target_key.kind == "mcp"
-        else None
+        _read_mcp_server(local_path, source_row.install_name) if target_key.kind == "mcp" else None
     )
     if target_key.kind == "mcp":
         local_mcp_config = sanitize_mcp_config_for_storage(local_mcp_config)
@@ -1813,22 +2769,16 @@ def _current_target_assertion(
         config = _read_mcp_server(target, install_name)
         exists = config is not None
         fingerprint = (
-            _json_fingerprint(sanitize_mcp_config_for_storage(config) or {})
-            if exists
-            else ""
+            _json_fingerprint(sanitize_mcp_config_for_storage(config) or {}) if exists else ""
         )
         managed = (
-            is_lpm_managed_mcp(target, install_name, resource_key=resource_key)
-            if exists
-            else False
+            is_lpm_managed_mcp(target, install_name, resource_key=resource_key) if exists else False
         )
         return exists, fingerprint, managed
     exists = target.exists()
     fingerprint = resource_hash_path(target) if exists else ""
     managed = (
-        is_lpm_managed(target, resource_key=resource_key)
-        if exists and target.is_dir()
-        else False
+        is_lpm_managed(target, resource_key=resource_key) if exists and target.is_dir() else False
     )
     return exists, fingerprint, managed
 
@@ -1939,8 +2889,7 @@ def _non_empty_metadata(values: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value.strip() if isinstance(value, str) else value
         for key, value in values.items()
-        if value not in (None, "")
-        and (not isinstance(value, str) or value.strip())
+        if value not in (None, "") and (not isinstance(value, str) or value.strip())
     }
 
 

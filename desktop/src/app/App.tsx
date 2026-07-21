@@ -15,21 +15,20 @@ import { Banner } from "@/components/Banner";
 import { TaskCenterPanel, ToastViewport } from "@/components/TaskFeedback";
 import { AddResourceView } from "@/features/add/AddResourceView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
-import { EnvironmentView } from "@/features/environment/EnvironmentView";
 import { GuideView } from "@/features/guide/GuideView";
 import { OperationsView } from "@/features/operations/OperationsView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
 import { SettingsView } from "@/features/settings/SettingsView";
-import type { AssetInventory, AssetPlatformRow, RegistryItem, Summary } from "@/types/lpm";
+import type { AssetInventory, RegistryItem, Summary } from "@/types/lpm";
 
 export default function App() {
   const { runTask, runningCount } = useTaskCenter();
   const [view, setView] = useState<View>("dashboard");
   const [language, setLanguage] = useState<Language>(() => readStoredLanguage());
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [items, setItems] = useState<RegistryItem[]>([]);
+  const [items, setItems] = useState<Array<Pick<RegistryItem, "name" | "kind">>>([]);
   const [assetInventory, setAssetInventory] = useState<AssetInventory | null>(null);
-  const [selectedRowId, setSelectedRowId] = useState<string>("");
+  const [selectedResourceKey, setSelectedResourceKey] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
@@ -45,16 +44,15 @@ export default function App() {
     ]);
     setSummary(nextSummary);
     setAssetInventory(inventory);
-    const entries = new Map<string, RegistryItem>();
-    inventory.rows.forEach((row) => {
-      if (row.entry) entries.set(row.resource_key, row.entry);
-    });
-    setItems([...entries.values()]);
-    setSelectedRowId((current) => (
-      inventory.rows.some((row) => assetRowId(row) === current)
+    setItems(inventory.resources.map((resource) => ({
+      name: resource.name,
+      kind: resource.kind,
+    })));
+    setSelectedResourceKey((current) => (
+      inventory.resources.some((resource) => resource.resource_key === current)
         ? current
-        : inventory.rows[0]
-          ? assetRowId(inventory.rows[0])
+        : inventory.resources[0]
+          ? inventory.resources[0].resource_key
           : ""
     ));
   }
@@ -95,9 +93,6 @@ export default function App() {
       return next;
     });
   }
-
-  const selected = assetInventory?.rows.find((row) => assetRowId(row) === selectedRowId)
-    || assetInventory?.rows[0];
 
   return (
     <div className="app-shell">
@@ -147,18 +142,13 @@ export default function App() {
         {view === "resources" ? (
           <ResourcesView
             inventory={assetInventory}
-            selected={selected}
+            selectedKey={selectedResourceKey}
             t={t}
-            onSelect={setSelectedRowId}
+            onSelect={setSelectedResourceKey}
             onInventory={setAssetInventory}
             onChanged={() => refresh(false, Boolean(assetInventory?.scanned_local))}
             onError={setError}
-          />
-        ) : null}
-        {view === "environment" ? (
-          <EnvironmentView
-            t={t}
-            onChanged={() => refresh(false)}
+            onOpenSettings={() => setView("settings")}
           />
         ) : null}
         {view === "add" ? (
@@ -182,10 +172,6 @@ export default function App() {
       <ToastViewport t={t} />
     </div>
   );
-}
-
-function assetRowId(row: AssetPlatformRow): string {
-  return `${row.resource_key}|${row.platform}|${row.local_instance_id}`;
 }
 
 function Topbar({
