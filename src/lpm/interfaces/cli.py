@@ -1452,7 +1452,10 @@ def cmd_add(
     no_verify: bool = typer.Option(
         False,
         "--no-verify",
-        help="Skip remote repository reachability check.",
+        help=(
+            "Allow an already complete commit SHA without an online probe; "
+            "branch and tag refs are still resolved."
+        ),
     ),
     mcp_config_json: str | None = typer.Option(
         None,
@@ -1502,6 +1505,9 @@ def cmd_add(
     except publisher.RepoUnreachableError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
+    except publisher.UnsafeMcpConfigError as exc:
+        console.print(f"[red]Unsafe MCP config:[/red] {exc}")
+        raise typer.Exit(1) from exc
     console.print(f"[green]Added[/green] {entry.name} ({entry.kind}) ({entry.repo}@{entry.ref})")
 
 
@@ -1514,6 +1520,11 @@ def cmd_collect(
         help="Override detected type: skill, mcp, rule, prompt, plugin.",
     ),
     name: str | None = typer.Option(None, "--name", help="Override the resource name."),
+    mcp_config_json: str | None = typer.Option(
+        None,
+        "--mcp-config",
+        help="Portable MCP server config as JSON (required when the collected type is mcp).",
+    ),
     platforms: list[str] = typer.Option(
         [],
         "--platform",
@@ -1523,20 +1534,30 @@ def cmd_collect(
     push: bool = typer.Option(False, "--push", help="Push private resource repo without asking."),
     no_push: bool = typer.Option(False, "--no-push", help="Do not push private resource repo."),
 ) -> None:
-    """Collect a third-party resource by recording its upstream URL only."""
+    """Collect a third-party resource as an immutable upstream reference."""
     cfg = _load()
     try:
+        mcp_config = json.loads(mcp_config_json) if mcp_config_json else None
+        if mcp_config is not None and not isinstance(mcp_config, dict):
+            raise ValueError("--mcp-config must decode to a JSON object.")
         detected = detect_remote_resource(
             github_url,
             explicit_type=resource_type,
             token=cfg.github.token or None,
         )
+        if detected.kind == "mcp" and not mcp_config:
+            raise ValueError(
+                "GitHub MCP references require --mcp-config with a portable command or url."
+            )
+        if detected.kind != "mcp" and mcp_config is not None:
+            raise ValueError("--mcp-config is only valid when the collected type is mcp.")
         entry = publisher.add_external_skill(
             detected.repo_url,
             name=name or detected.name_hint,
             subdir=detected.subdir,
             ref=detected.ref,
             kind=detected.kind,
+            mcp_config=mcp_config,
             skip_verify=False,
             token=cfg.github.token or None,
             tags=detected.tags,

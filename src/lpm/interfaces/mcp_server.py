@@ -178,8 +178,9 @@ def add_external_skill(
 ) -> dict[str, Any]:
     """Register a third-party resource in registry.yaml.
 
-    The remote repository is verified to be reachable before adding.
-    Set ``skip_verify=True`` to skip this check (e.g. for offline use).
+    Branch and tag refs are always resolved to a complete commit SHA before
+    writing. ``skip_verify=True`` only allows an already complete SHA to be
+    recorded without an online probe.
 
     Args:
         github_url: HTTPS or SSH URL of the upstream repo.
@@ -189,7 +190,7 @@ def add_external_skill(
         description: Optional human description.
         kind: Resource type: "skill", "mcp", "rule", "prompt", or "plugin".
         mcp_config: MCP server configuration dict (for kind="mcp").
-        skip_verify: Skip remote repository reachability check.
+        skip_verify: Allow an already complete SHA without an online probe.
         tags: Optional tags for selective sync and discovery.
         category: Optional category label.
         platforms: Optional installation platform allowlist.
@@ -212,6 +213,8 @@ def add_external_skill(
         )
     except publisher.RepoUnreachableError as exc:
         return {"error": "repo_unreachable", "message": str(exc)}
+    except publisher.UnsafeMcpConfigError as exc:
+        return {"error": "unsafe_mcp_config", "message": str(exc)}
     return redact_item_dump(entry.model_dump())
 
 
@@ -229,7 +232,7 @@ def collect_resource(
     category: str = "",
     platforms: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Collect a third-party resource by recording its upstream URL only."""
+    """Collect a third-party resource as an immutable upstream reference."""
     return add_external_skill(
         github_url=github_url,
         name=name,
@@ -316,7 +319,7 @@ def add_mcp_server(
         subdir: Subdirectory in the repo.
         ref: Branch/tag to track.
         description: Human description.
-        skip_verify: Skip remote repository reachability check.
+        skip_verify: Allow an already complete SHA without an online probe.
     """
     cfg = load_config()
     mcp_config: dict[str, Any] = {}

@@ -14,7 +14,6 @@ import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import { TaskCenterPanel, ToastViewport } from "@/components/TaskFeedback";
 import { GuideView } from "@/features/guide/GuideView";
-import { OperationsView } from "@/features/operations/OperationsView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
 import { SettingsView } from "@/features/settings/SettingsView";
 import type { AssetInventory, Summary } from "@/types/lpm";
@@ -141,7 +140,6 @@ export default function App() {
             onOpenSettings={() => setView("settings")}
           />
         ) : null}
-        {view === "operations" ? <OperationsView t={t} /> : null}
         {view === "settings" ? (
           <SettingsView
             t={t}

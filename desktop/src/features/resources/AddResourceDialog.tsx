@@ -6,11 +6,14 @@ import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import type {
   AddResourceResult,
+  CollectResourcePayload,
+  McpTransport,
   PluginOriginType,
   PluginPlatform,
   PluginProject,
   PluginReferenceResult,
   PluginScope,
+  PortableMcpConfig,
   ResourceKind,
 } from "@/types/lpm";
 
@@ -32,6 +35,11 @@ interface AddDraft {
   scope: PluginScope;
   projectId: string;
   enabled: boolean;
+  mcpTransport: McpTransport;
+  mcpCommand: string;
+  mcpArgs: string;
+  mcpUrl: string;
+  mcpEnv: string;
 }
 
 const kinds: ResourceKind[] = ["skill", "mcp", "rule", "prompt", "plugin"];
@@ -52,6 +60,54 @@ function emptyDraft(): AddDraft {
     scope: "user",
     projectId: "",
     enabled: true,
+    mcpTransport: "stdio",
+    mcpCommand: "",
+    mcpArgs: "",
+    mcpUrl: "",
+    mcpEnv: "",
+  };
+}
+
+function nonEmptyLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function parseMcpEnvironment(value: string): Record<string, string> | null {
+  const env: Record<string, string> = {};
+  for (const line of nonEmptyLines(value)) {
+    const nameOnly = /^([A-Za-z_][A-Za-z0-9_]*)$/.exec(line);
+    const placeholderOnly = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(line);
+    const mapping = /^([A-Za-z_][A-Za-z0-9_]*)=(\$\{[A-Za-z_][A-Za-z0-9_]*\})$/.exec(line);
+    if (nameOnly) {
+      env[nameOnly[1]] = `\${${nameOnly[1]}}`;
+    } else if (placeholderOnly) {
+      env[placeholderOnly[1]] = placeholderOnly[0];
+    } else if (mapping) {
+      env[mapping[1]] = mapping[2];
+    } else {
+      return null;
+    }
+  }
+  return env;
+}
+
+function buildMcpConfig(draft: AddDraft, env: Record<string, string>): PortableMcpConfig {
+  const withEnvironment = Object.keys(env).length ? { env } : {};
+  if (draft.mcpTransport === "http") {
+    return {
+      type: "http",
+      url: draft.mcpUrl.trim(),
+      ...withEnvironment,
+    };
+  }
+  const args = nonEmptyLines(draft.mcpArgs);
+  return {
+    command: draft.mcpCommand.trim(),
+    ...(args.length ? { args } : {}),
+    ...withEnvironment,
   };
 }
 
@@ -95,6 +151,11 @@ export function AddResourceDialog({
       || item.scope !== "user"
       || Boolean(item.projectId)
       || !item.enabled
+      || item.mcpTransport !== "stdio"
+      || Boolean(item.mcpCommand.trim())
+      || Boolean(item.mcpArgs.trim())
+      || Boolean(item.mcpUrl.trim())
+      || Boolean(item.mcpEnv.trim())
     ))
   ), [drafts, pushAfterCompletion]);
 
@@ -145,10 +206,30 @@ export function AddResourceDialog({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    setPathError("");
+    const collectMode = mode === "collect";
+    const pluginMode = mode === "plugin-reference";
+    let collectPayload: CollectResourcePayload | undefined;
+    if (collectMode) {
+      let mcpConfig: PortableMcpConfig | undefined;
+      if (draft.kind === "mcp") {
+        const env = parseMcpEnvironment(draft.mcpEnv);
+        if (env === null) {
+          setPathError(t("add.mcpEnvInvalid"));
+          return;
+        }
+        mcpConfig = buildMcpConfig(draft, env);
+      }
+      collectPayload = {
+        github_url: draft.value,
+        ...(draft.kind === "auto" ? {} : { kind: draft.kind }),
+        name: draft.name,
+        push: pushAfterCompletion,
+        ...(mcpConfig ? { mcp_config: mcpConfig } : {}),
+      };
+    }
     setBusy(true);
     try {
-      const collectMode = mode === "collect";
-      const pluginMode = mode === "plugin-reference";
       const result = await runTask<PluginReferenceResult | AddResourceResult>({
         kind: pluginMode ? "plugin-reference-add" : collectMode ? "resource-collect" : "resource-import",
         title: pluginMode ? t("add.modePluginReference") : collectMode ? t("add.modeCollect") : t("add.modeImport"),
@@ -169,12 +250,7 @@ export function AddResourceDialog({
               name: draft.name,
               push: pushAfterCompletion,
             })
-          : lpmAction<AddResourceResult>(collectMode ? "collect" : "upload", collectMode ? {
-              github_url: draft.value,
-              kind: draft.kind === "auto" ? undefined : draft.kind,
-              name: draft.name,
-              push: pushAfterCompletion,
-            } : {
+          : lpmAction<AddResourceResult>(collectMode ? "collect" : "upload", collectMode ? collectPayload! : {
               path: draft.value,
               kind: draft.kind === "auto" ? undefined : draft.kind,
               name: draft.name,
@@ -334,6 +410,80 @@ export function AddResourceDialog({
                 )}
               </div>
             </details>
+
+            {mode === "collect" && draft.kind === "auto" ? (
+              <p className="field-note add-mcp-auto-note">{t("add.mcpAutoWarning")}</p>
+            ) : null}
+
+            {mode === "collect" && draft.kind === "mcp" ? (
+              <fieldset className="add-mcp-config">
+                <legend>{t("add.mcpConfig")}</legend>
+                <p>{t("add.mcpReferenceHint")}</p>
+                <div className="add-mcp-config-grid">
+                  <label>
+                    <span>{t("add.mcpTransport")}</span>
+                    <select
+                      value={draft.mcpTransport}
+                      onChange={(event) => {
+                        setPathError("");
+                        updateDraft("collect", { mcpTransport: event.target.value as McpTransport });
+                      }}
+                    >
+                      <option value="stdio">{t("add.mcpStdio")}</option>
+                      <option value="http">{t("add.mcpHttp")}</option>
+                    </select>
+                  </label>
+                  {draft.mcpTransport === "stdio" ? (
+                    <>
+                      <label>
+                        <span>{t("add.mcpCommand")}</span>
+                        <input
+                          value={draft.mcpCommand}
+                          onChange={(event) => {
+                            setPathError("");
+                            updateDraft("collect", { mcpCommand: event.target.value });
+                          }}
+                          required
+                        />
+                      </label>
+                      <label className="add-mcp-wide-field">
+                        <span>{t("add.mcpArgs")}</span>
+                        <textarea
+                          value={draft.mcpArgs}
+                          onChange={(event) => updateDraft("collect", { mcpArgs: event.target.value })}
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <label>
+                      <span>{t("add.mcpUrl")}</span>
+                      <input
+                        type="url"
+                        value={draft.mcpUrl}
+                        onChange={(event) => {
+                          setPathError("");
+                          updateDraft("collect", { mcpUrl: event.target.value });
+                        }}
+                        required
+                      />
+                    </label>
+                  )}
+                  <label className="add-mcp-wide-field">
+                    <span>{t("add.mcpEnv")}</span>
+                    <textarea
+                      aria-label={t("add.mcpEnv")}
+                      value={draft.mcpEnv}
+                      onChange={(event) => {
+                        setPathError("");
+                        updateDraft("collect", { mcpEnv: event.target.value });
+                      }}
+                      placeholder={t("add.mcpEnvPlaceholder")}
+                    />
+                    <small>{t("add.mcpEnvHint")}</small>
+                  </label>
+                </div>
+              </fieldset>
+            ) : null}
 
             <label className="add-push-option">
               <input type="checkbox" checked={pushAfterCompletion} onChange={(event) => setPushAfterCompletion(event.target.checked)} />

@@ -907,7 +907,8 @@ button {
 }
 
 .stack-form input,
-.stack-form select {
+.stack-form select,
+.stack-form textarea {
   width: 100%;
   border: 1px solid #cbd5dc;
   border-radius: 8px;
@@ -1714,6 +1715,51 @@ button {
   margin-top: 12px;
 }
 
+.add-mcp-auto-note {
+  margin: -2px 0 0;
+}
+
+.add-mcp-config {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid #dce4e9;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.add-mcp-config > legend {
+  padding: 0 5px;
+  color: #46525c;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.add-mcp-config > p,
+.add-mcp-config small {
+  color: #65727c;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.add-mcp-config > p {
+  margin: 0 0 12px;
+}
+
+.add-mcp-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.add-mcp-config textarea {
+  min-height: 78px;
+  resize: vertical;
+}
+
+.add-mcp-wide-field {
+  grid-column: 1 / -1;
+}
+
 .stack-form .add-push-option {
   display: flex;
   grid-template-columns: none;
@@ -1740,7 +1786,8 @@ button {
 
 @media (max-width: 640px) {
   .path-input-row,
-  .add-resource-advanced-fields {
+  .add-resource-advanced-fields,
+  .add-mcp-config-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1898,6 +1945,7 @@ button {
   .mode-tabs button,
   .stack-form input,
   .stack-form select,
+  .stack-form textarea,
   .platform-toggle,
   .settings-simple-grid .settings-section,
   .platform-toggle-section,
@@ -1919,13 +1967,17 @@ button {
     color: #a7b6be;
   }
 
-  .add-resource-advanced {
+  .add-resource-advanced,
+  .add-mcp-config {
     background: #111b21;
     border-color: #2b3d46;
   }
 
   .add-resource-description,
   .add-resource-advanced > summary,
+  .add-mcp-config > legend,
+  .add-mcp-config > p,
+  .add-mcp-config small,
   .add-discard-modal > p {
     color: #9cafb8;
   }

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { lpmAction, selectDirectory } from "@/api/client";
@@ -106,6 +106,81 @@ describe("AddResourceDialog", () => {
     expect(await screen.findByText("write failed")).toBeVisible();
     expect(screen.getByRole("dialog", { name: "Add resource" })).toBeVisible();
     expect(screen.getByLabelText("GitHub URL")).toHaveValue("https://github.com/example/demo");
+  });
+
+  it("collects an explicit stdio MCP reference with portable arguments and env placeholders", async () => {
+    const user = userEvent.setup();
+    vi.mocked(lpmAction).mockResolvedValue({ entry: { kind: "mcp", name: "github-server" } });
+    const { onAdded } = renderDialog();
+
+    await user.type(screen.getByLabelText("GitHub URL"), "https://github.com/example/mcp-server");
+    await user.click(screen.getByText("Advanced settings"));
+    await user.selectOptions(screen.getByLabelText("Type"), "mcp");
+    await user.type(screen.getByLabelText("Command"), "npx");
+    await user.type(screen.getByLabelText("Arguments (one per line)"), "-y\n@acme/github-server");
+    fireEvent.change(screen.getByLabelText("Environment variables (one per line)"), {
+      target: { value: "GITHUB_TOKEN\nCACHE_TOKEN=${SHARED_TOKEN}" },
+    });
+    const submitButtons = screen.getAllByRole("button", { name: "Collect from GitHub" });
+    await user.click(submitButtons[submitButtons.length - 1]);
+
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith("mcp:github-server"));
+    expect(lpmAction).toHaveBeenCalledWith("collect", {
+      github_url: "https://github.com/example/mcp-server",
+      kind: "mcp",
+      name: "",
+      push: true,
+      mcp_config: {
+        command: "npx",
+        args: ["-y", "@acme/github-server"],
+        env: {
+          GITHUB_TOKEN: "${GITHUB_TOKEN}",
+          CACHE_TOKEN: "${SHARED_TOKEN}",
+        },
+      },
+    });
+  });
+
+  it("collects an explicit HTTP MCP reference without carrying stdio fields", async () => {
+    const user = userEvent.setup();
+    vi.mocked(lpmAction).mockResolvedValue({ entry: { kind: "mcp", name: "remote-server" } });
+    renderDialog();
+
+    await user.type(screen.getByLabelText("GitHub URL"), "https://github.com/example/remote-mcp");
+    await user.click(screen.getByText("Advanced settings"));
+    await user.selectOptions(screen.getByLabelText("Type"), "mcp");
+    await user.selectOptions(screen.getByLabelText("MCP transport"), "http");
+    expect(screen.queryByLabelText("Command")).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("Server URL"), "https://mcp.example.test/api");
+    const submitButtons = screen.getAllByRole("button", { name: "Collect from GitHub" });
+    await user.click(submitButtons[submitButtons.length - 1]);
+
+    await waitFor(() => expect(lpmAction).toHaveBeenCalledWith("collect", expect.objectContaining({
+      kind: "mcp",
+      mcp_config: {
+        type: "http",
+        url: "https://mcp.example.test/api",
+      },
+    })));
+  });
+
+  it("warns for auto detection and blocks literal MCP env values", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByText("Advanced settings"));
+    expect(screen.getByText(/Auto-detected MCP resources still require portable configuration/)).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Type"), "mcp");
+    await user.type(screen.getByLabelText("GitHub URL"), "https://github.com/example/mcp-server");
+    await user.type(screen.getByLabelText("Command"), "node");
+    await user.type(screen.getByLabelText("Environment variables (one per line)"), "API_TOKEN=literal-secret");
+    const submitButtons = screen.getAllByRole("button", { name: "Collect from GitHub" });
+    await user.click(submitButtons[submitButtons.length - 1]);
+
+    expect(await screen.findByText(
+      "Use NAME or NAME=${PLACEHOLDER} for each environment variable; literal values are not allowed.",
+    )).toBeVisible();
+    expect(lpmAction).not.toHaveBeenCalled();
   });
 
   it("adds a plugin reference with selector and desired state without uploading content", async () => {

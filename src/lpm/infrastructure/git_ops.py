@@ -84,6 +84,12 @@ class RemoteBindingProbe:
 
 
 _CONFIGURED_GIT_EXECUTABLE = ""
+_FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def is_full_commit_sha(ref: str | None) -> bool:
+    """Return whether *ref* is a complete Git SHA-1 commit identifier."""
+    return bool(ref and _FULL_COMMIT_SHA_RE.fullmatch(ref.strip()))
 
 
 def configure_git_executable(value: str | None) -> None:
@@ -345,12 +351,28 @@ def clone(
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     url = strip_url_credentials(_validate_argument(url, "remote URL"))
+    normalized_ref = _validate_argument(ref, "ref") if ref else None
+    if normalized_ref and is_full_commit_sha(normalized_ref):
+        normalized_ref = normalized_ref.lower()
+        env = _token_env(token)
+        try:
+            _run(["init", "--quiet", str(dest)])
+            _run(["remote", "add", "origin", url], cwd=dest)
+            fetch_args = ["fetch"]
+            if depth:
+                fetch_args += ["--depth", str(depth)]
+            fetch_args += ["origin", normalized_ref]
+            _run(fetch_args, cwd=dest, extra_env=env)
+            _run(["checkout", "--detach", normalized_ref], cwd=dest)
+        finally:
+            _cleanup_askpass(env)
+        return
+
     args = ["clone"]
     if depth:
         args += ["--depth", str(depth)]
-    if ref:
-        ref = _validate_argument(ref, "ref")
-        args += ["--branch", ref]
+    if normalized_ref:
+        args += ["--branch", normalized_ref]
     args += [url, str(dest)]
     env = _token_env(token)
     try:
@@ -370,9 +392,22 @@ def pull(path: Path, ref: str | None = None, token: str | None = None) -> None:
     try:
         if ref:
             ref = _validate_argument(ref, "ref")
+            if is_full_commit_sha(ref):
+                commit = ref.lower()
+                _run(["fetch", "origin", commit], cwd=path, extra_env=env)
+                _run(["checkout", "--detach", commit], cwd=path)
+                return
             _run(["fetch", "origin", ref], cwd=path, extra_env=env)
-            checkout_local_branch(path, ref)
-            _run(["merge", "--ff-only", f"origin/{ref}"], cwd=path)
+            remote_branch = _run(
+                ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{ref}"],
+                cwd=path,
+                check=False,
+            )
+            if remote_branch.returncode == 0:
+                checkout_local_branch(path, ref)
+                _run(["merge", "--ff-only", "FETCH_HEAD"], cwd=path)
+            else:
+                _run(["checkout", "--detach", "FETCH_HEAD"], cwd=path)
         else:
             _run(["pull", "--ff-only"], cwd=path, extra_env=env)
     finally:
@@ -652,13 +687,22 @@ def remote_commit(
     token: str | None = None,
 ) -> str | None:
     ref = _validate_argument(ref, "ref")
+    if is_full_commit_sha(ref):
+        commit = ref.lower()
+        resolved = rev_parse(path, f"{commit}^{{commit}}")
+        return commit if resolved and resolved.lower() == commit else None
     remote = _validate_argument(remote, "remote name")
     env = _token_env(token)
     try:
-        res = _run(["ls-remote", remote, ref], cwd=path, check=False, extra_env=env)
+        res = _run(
+            ["ls-remote", remote, *_remote_ref_patterns(ref)],
+            cwd=path,
+            check=False,
+            extra_env=env,
+        )
         if res.returncode != 0 or not res.stdout.strip():
             return None
-        return res.stdout.split()[0]
+        return _resolved_remote_commit(res.stdout, ref)
     finally:
         _cleanup_askpass(env)
 
@@ -672,14 +716,56 @@ def remote_url_commit(
     """Resolve one ref on a remote URL without creating or modifying a repository."""
     url = strip_url_credentials(_validate_argument(url, "remote URL"))
     ref = _validate_argument(ref, "ref")
+    if is_full_commit_sha(ref):
+        return ref.lower()
     env = _token_env(token)
     try:
-        res = _run(["ls-remote", url, ref], check=False, extra_env=env)
+        res = _run(
+            ["ls-remote", url, *_remote_ref_patterns(ref)],
+            check=False,
+            extra_env=env,
+        )
         if res.returncode != 0 or not res.stdout.strip():
             return None
-        return res.stdout.split()[0]
+        return _resolved_remote_commit(res.stdout, ref)
     finally:
         _cleanup_askpass(env)
+
+
+def _remote_ref_patterns(ref: str) -> list[str]:
+    if ref == "HEAD" or ref.startswith("refs/"):
+        if ref.startswith("refs/tags/") and not ref.endswith("^{}"):
+            return [ref, f"{ref}^{{}}"]
+        return [ref]
+    return [
+        f"refs/heads/{ref}",
+        f"refs/tags/{ref}",
+        f"refs/tags/{ref}^{{}}",
+    ]
+
+
+def _resolved_remote_commit(output: str, ref: str) -> str | None:
+    advertised: dict[str, str] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or not is_full_commit_sha(parts[0]):
+            continue
+        advertised[parts[1]] = parts[0].lower()
+
+    if ref == "HEAD":
+        candidates = ["HEAD"]
+    elif ref.startswith("refs/tags/"):
+        tag = ref.removesuffix("^{}")
+        candidates = [f"{tag}^{{}}", tag]
+    elif ref.startswith("refs/"):
+        candidates = [ref]
+    else:
+        candidates = [
+            f"refs/heads/{ref}",
+            f"refs/tags/{ref}^{{}}",
+            f"refs/tags/{ref}",
+        ]
+    return next((advertised[candidate] for candidate in candidates if candidate in advertised), None)
 
 
 def remote_branches(
@@ -897,14 +983,19 @@ def probe_remote(
 ) -> bool:
     """Return True if the remote repo (and optional ref) is reachable.
 
-    Uses ``git ls-remote`` without cloning.  Returns False on network errors,
-    authentication failures, or non-existent repositories.
+    Branches and tags use ``git ls-remote``. Full commit SHAs are fetched into
+    a temporary bare repository so an unadvertised but reachable commit can be
+    verified without falling back to the remote's default branch. Returns False
+    on network errors, authentication failures, or missing repositories/refs.
     """
+    token_env: dict[str, str] = {}
     try:
         url = strip_url_credentials(_validate_argument(url, "remote URL"))
         ref = _validate_argument(ref, "ref")
         token_env = _token_env(token)
         env = {**os.environ, **_NO_PROMPT_ENV, **token_env}
+        if is_full_commit_sha(ref):
+            return _probe_remote_commit(url, ref.lower(), env=env, timeout=timeout)
         result = subprocess.run(
             [_git_executable(), "ls-remote", "--exit-code", url, ref],
             capture_output=True,
@@ -916,8 +1007,51 @@ def probe_remote(
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
     finally:
-        if "token_env" in locals():
-            _cleanup_askpass(token_env)
+        _cleanup_askpass(token_env)
+
+
+def _probe_remote_commit(
+    url: str,
+    commit: str,
+    *,
+    env: dict[str, str],
+    timeout: int,
+) -> bool:
+    executable = _git_executable()
+    run_options = {
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "env": env,
+    }
+    with tempfile.TemporaryDirectory(prefix="lpm-commit-probe-") as temp_dir:
+        init_result = subprocess.run(
+            [executable, "init", "--bare", "--quiet", temp_dir],
+            **run_options,
+        )
+        if init_result.returncode != 0:
+            return False
+        fetch_result = subprocess.run(
+            [
+                executable,
+                "-C",
+                temp_dir,
+                "fetch",
+                "--depth",
+                "1",
+                "--no-tags",
+                url,
+                commit,
+            ],
+            **run_options,
+        )
+        if fetch_result.returncode != 0:
+            return False
+        verify_result = subprocess.run(
+            [executable, "-C", temp_dir, "cat-file", "-e", f"{commit}^{{commit}}"],
+            **run_options,
+        )
+        return verify_result.returncode == 0
 
 
 _REPO_GONE_PATTERNS = (

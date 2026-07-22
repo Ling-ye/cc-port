@@ -230,12 +230,23 @@ def _collect(payload: JsonDict) -> JsonDict:
         explicit_type=_optional_str(payload.get("kind")),
         token=cfg.github.token or None,
     )
+    raw_mcp_config = payload.get("mcp_config")
+    if raw_mcp_config is not None and not isinstance(raw_mcp_config, dict):
+        raise ValueError("mcp_config must be a mapping.")
+    mcp_config = raw_mcp_config if isinstance(raw_mcp_config, dict) else None
+    if detected.kind == "mcp" and not mcp_config:
+        raise ValueError(
+            "GitHub MCP references require a portable mcp_config with command or url."
+        )
+    if detected.kind != "mcp" and mcp_config is not None:
+        raise ValueError("mcp_config is only valid when the collected resource kind is mcp.")
     entry = publisher.add_external_skill(
         detected.repo_url,
         name=_optional_str(payload.get("name")) or detected.name_hint,
         subdir=detected.subdir,
         ref=detected.ref,
         kind=detected.kind,
+        mcp_config=mcp_config,
         skip_verify=bool(payload.get("skip_verify", False)),
         token=cfg.github.token or None,
         tags=detected.tags,

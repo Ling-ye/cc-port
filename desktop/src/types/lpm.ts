@@ -3,6 +3,30 @@ export type DiscoveryScope = "global" | "directory";
 export type ResourceLifecycle = "active" | "removed";
 export type RemovedEffect = "index_only" | "local_files_deleted" | "remote_repo_deleted" | "";
 
+export type McpTransport = "stdio" | "http";
+
+export interface PortableMcpStdioConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface PortableMcpHttpConfig {
+  type: "http";
+  url: string;
+  env?: Record<string, string>;
+}
+
+export type PortableMcpConfig = PortableMcpStdioConfig | PortableMcpHttpConfig;
+
+export interface CollectResourcePayload extends Record<string, unknown> {
+  github_url: string;
+  kind?: ResourceKind;
+  name: string;
+  push: boolean;
+  mcp_config?: PortableMcpConfig;
+}
+
 export interface RegistryItem {
   name: string;
   kind: ResourceKind;

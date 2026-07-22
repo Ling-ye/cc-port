@@ -7,6 +7,8 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from lpm.core.config import Config
+from lpm.core.models import RegistryItem
+from lpm.core.resource_detection import DetectedRemoteResource
 from lpm.interfaces import cli
 from lpm.services.asset_sync import (
     AssetActionPlan,
@@ -18,6 +20,55 @@ from lpm.services.asset_sync import (
 from lpm.services.resource_repo import ResourceRepoInfo
 
 runner = CliRunner()
+
+
+def test_collect_cli_forwards_portable_mcp_config(monkeypatch) -> None:
+    detected = DetectedRemoteResource(
+        repo_url="https://github.com/example/demo-mcp",
+        ref="main",
+        subdir="",
+        kind="mcp",
+        name_hint="demo-mcp",
+        tags=["mcp"],
+    )
+    captured: dict = {}
+
+    def fake_add_external_skill(repo: str, **kwargs) -> RegistryItem:
+        captured["repo"] = repo
+        captured.update(kwargs)
+        return RegistryItem(
+            name="demo-mcp",
+            kind="mcp",
+            source="external",
+            repo=repo,
+            ref="a" * 40,
+            mcp_config=kwargs["mcp_config"],
+        )
+
+    monkeypatch.setattr(cli, "_load", Config)
+    monkeypatch.setattr(cli, "detect_remote_resource", lambda *_args, **_kwargs: detected)
+    monkeypatch.setattr(cli.publisher, "add_external_skill", fake_add_external_skill)
+
+    config = '{"command":"npx","args":["-y","@example/demo-mcp@1.0.0"]}'
+    result = runner.invoke(
+        cli.app,
+        [
+            "collect",
+            detected.repo_url,
+            "--type",
+            "mcp",
+            "--mcp-config",
+            config,
+            "--no-push",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["repo"] == detected.repo_url
+    assert captured["mcp_config"] == {
+        "command": "npx",
+        "args": ["-y", "@example/demo-mcp@1.0.0"],
+    }
 
 
 def test_asset_cli_list_plan_and_apply(monkeypatch) -> None:

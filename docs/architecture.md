@@ -11,7 +11,7 @@ LPM 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skil
 - Tauri/Rust 只负责桌面外壳、sidecar 调用和系统路径打开。
 - CLI、Desktop API 和 MCP Server 复用同一套 Python services。
 
-当前不提供第三方适配器插件 API，也不引入 SQLite。registry 已升级为 v6，以 `kind:name` 作为复合资源身份；适配器契约先作为内部 API 演进，稳定后再决定是否外部开放。
+当前不提供第三方适配器插件 API，也不引入 SQLite。registry 已升级为 v7，以 `kind:name` 作为复合资源身份，并为插件提供 content/reference 双轨；适配器契约先作为内部 API 演进，稳定后再决定是否外部开放。
 
 ## 组件关系
 
@@ -34,7 +34,7 @@ flowchart LR
 
 | 模块 | 职责 | 主要约束 |
 | --- | --- | --- |
-| `core.models` / `core.registry` | registry v6 复合键模型、v5 迁移和读写 | 私有仓库配置分支中的资源索引是跨设备事实源 |
+| `core.models` / `core.registry` | registry v7 复合键模型、旧版本迁移和读写 | 私有仓库配置分支中的资源索引是跨设备事实源 |
 | `core.tool_adapters` | 工具能力、默认路径、发现信号和安装机制 | 当前仅内部使用，不承诺第三方兼容性 |
 | `core.resource_files` | 资源复制与同步共用的文件策略 | 排除真实 `.env`、构建产物、依赖目录和符号链接 |
 | `core.secret_scan` | 资源文本的凭据模式检查 | 只返回脱敏预览，不在日志中保存真实值 |
@@ -70,7 +70,7 @@ resources/  # 兼容旧仓库布局
   mcp/
 ```
 
-该仓库只保存可跨设备同步的数据，不保存真实密钥、机器备份、临时 worktree 或操作日志。
+该仓库只保存可跨设备同步的数据，不保存真实密钥、机器备份、临时 worktree 或操作日志。第三方 GitHub Skill/MCP 只在 `registry.yaml` 保存锁定到完整 commit SHA 的引用；本地导入才写入内容目录。具体收集、脱敏、恢复失败与旧 branch/tag 兼容语义见 [GitHub 引用收集与本地内容导入规格](specs/github-reference-collection.md)。
 
 ### 本机状态目录
 

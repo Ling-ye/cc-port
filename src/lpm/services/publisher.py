@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 from ..core.config import Config
 from ..core.models import ItemKind, Registry, RegistryItem
 from ..core.registry import load_registry, save_registry
+from ..core.secret_scan import find_secret_text
 from ..core.secrets import sanitize_mcp_config_for_storage
 from ..core.validator import parse_skill
 from ..infrastructure import git_ops
@@ -247,8 +249,19 @@ class RepoUnreachableError(RuntimeError):
         self.repo = repo
         self.ref = ref
         super().__init__(
-            f"Repository {repo} (ref={ref}) is unreachable. "
-            f"Pass --no-verify (CLI) or skip_verify=True to skip this check."
+            f"Repository {repo} is unreachable or ref {ref!r} cannot be resolved "
+            "to an exact commit."
+        )
+
+
+class UnsafeMcpConfigError(ValueError):
+    """Raised when a collected MCP config still contains a likely secret."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(
+            f"MCP config contains secret-like content ({reason}). "
+            "Replace credentials with environment placeholders before collecting."
         )
 
 
@@ -270,16 +283,35 @@ def add_external_skill(
 ) -> RegistryItem:
     """Register a third-party resource in the registry.
 
-    When *skip_verify* is False (the default), the remote repository is probed
-    with ``git ls-remote`` before writing the entry.  Set *skip_verify* to True
-    to allow offline or private-without-token registrations.
+    Floating branch/tag refs are always resolved to a full commit SHA before
+    writing the registry. ``skip_verify=True`` only bypasses the remote probe
+    when the caller already supplied a full commit SHA.
     """
     repo_url = github_url.rstrip("/")
-    effective_ref = ref or "main"
+    effective_ref = str(ref or "main").strip() or "main"
 
-    if not skip_verify:
-        if not git_ops.probe_remote(repo_url, effective_ref, token=token):
+    if git_ops.is_full_commit_sha(effective_ref):
+        pinned_ref = effective_ref.lower()
+        if not skip_verify and not git_ops.probe_remote(repo_url, pinned_ref, token=token):
             raise RepoUnreachableError(repo_url, effective_ref)
+    else:
+        try:
+            pinned_ref = git_ops.remote_url_commit(repo_url, effective_ref, token=token)
+        except git_ops.GitError:
+            pinned_ref = None
+        if pinned_ref is None:
+            raise RepoUnreachableError(repo_url, effective_ref)
+
+    stored_mcp_config = sanitize_mcp_config_for_storage(mcp_config)
+    if stored_mcp_config is not None:
+        serialized_config = json.dumps(
+            stored_mcp_config,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        finding = find_secret_text(serialized_config)
+        if finding is not None:
+            raise UnsafeMcpConfigError(finding.reason)
 
     inferred_name = name or _infer_name_from_url(github_url, subdir)
     entry = RegistryItem(
@@ -288,10 +320,10 @@ def add_external_skill(
         repo=repo_url,
         source="external",
         subdir=(subdir or "").strip().strip("/"),
-        ref=effective_ref,
+        ref=pinned_ref,
         install_dir="",
         description=description.strip(),
-        mcp_config=sanitize_mcp_config_for_storage(mcp_config),
+        mcp_config=stored_mcp_config,
         tags=tags or [],
         category=category,
         platforms=platforms or [],

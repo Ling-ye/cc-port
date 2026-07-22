@@ -16,6 +16,7 @@ from lpm.core.config import (
 )
 from lpm.core.models import RegistryItem
 from lpm.core.platforms import PlatformProfile, PlatformsConfig
+from lpm.core.resource_detection import DetectedRemoteResource
 from lpm.infrastructure.github_client import GithubAuthError
 from lpm.interfaces import desktop_api
 from lpm.services.asset_sync import (
@@ -126,6 +127,73 @@ def test_desktop_upload_allows_explicit_no_push(tmp_path: Path, monkeypatch) -> 
 
     assert result["ok"] is True
     assert result["data"]["push"] is None
+
+
+def test_desktop_collect_mcp_requires_and_forwards_portable_config(monkeypatch) -> None:
+    detected = DetectedRemoteResource(
+        repo_url="https://github.com/example/demo-mcp",
+        ref="main",
+        subdir="",
+        kind="mcp",
+        name_hint="demo-mcp",
+        tags=["mcp"],
+    )
+    captured: dict = {}
+
+    def fake_add_external_skill(repo: str, **kwargs) -> RegistryItem:
+        captured["repo"] = repo
+        captured.update(kwargs)
+        return RegistryItem(
+            name="demo-mcp",
+            kind="mcp",
+            source="external",
+            repo=repo,
+            ref="a" * 40,
+            mcp_config=kwargs["mcp_config"],
+        )
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "detect_remote_resource", lambda *_args, **_kwargs: detected)
+    monkeypatch.setattr(desktop_api.publisher, "add_external_skill", fake_add_external_skill)
+
+    config = {
+        "command": "npx",
+        "args": ["-y", "@example/demo-mcp@1.0.0"],
+        "env": {"EXAMPLE_TOKEN": "${EXAMPLE_TOKEN}"},
+    }
+    result = desktop_api.run_action(
+        "collect",
+        {"github_url": detected.repo_url, "kind": "mcp", "mcp_config": config},
+    )
+
+    assert result["ok"] is True
+    assert captured["repo"] == detected.repo_url
+    assert captured["mcp_config"] == config
+
+
+def test_desktop_collect_rejects_mcp_without_portable_config(monkeypatch) -> None:
+    detected = DetectedRemoteResource(
+        repo_url="https://github.com/example/demo-mcp",
+        ref="main",
+        subdir="",
+        kind="mcp",
+        name_hint="demo-mcp",
+        tags=["mcp"],
+    )
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "detect_remote_resource", lambda *_args, **_kwargs: detected)
+    monkeypatch.setattr(
+        desktop_api.publisher,
+        "add_external_skill",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid MCP collection must not reach the publisher")
+        ),
+    )
+
+    result = desktop_api.run_action("collect", {"github_url": detected.repo_url})
+
+    assert result["ok"] is False
+    assert "require a portable mcp_config" in result["error"]["message"]
 
 
 def test_desktop_resource_delete_pushes_resource_repo_by_default(
