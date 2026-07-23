@@ -27,17 +27,34 @@ struct LpmActionResponse {
     error: Option<Value>,
 }
 
+#[derive(Debug, Serialize)]
+struct LpmBridgeError {
+    code: String,
+    detail: String,
+}
+
+impl LpmBridgeError {
+    fn new(code: &str, detail: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            detail: detail.into(),
+        }
+    }
+}
+
 #[tauri::command]
-async fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, String> {
+async fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, LpmBridgeError> {
     let action = request.action;
-    let payload = serde_json::to_string(&request.payload).map_err(|err| err.to_string())?;
+    let payload = serde_json::to_string(&request.payload)
+        .map_err(|err| LpmBridgeError::new("bridge.request_serialize_failed", err.to_string()))?;
     let output = tauri::async_runtime::spawn_blocking(move || run_lpm_ui_api(&action, &payload))
         .await
-        .map_err(|err| format!("lpm-desktop-api task failed: {err}"))??;
+        .map_err(|err| LpmBridgeError::new("bridge.sidecar_task_failed", err.to_string()))?
+        .map_err(|err| LpmBridgeError::new("bridge.sidecar_unavailable", err))?;
     let raw = String::from_utf8_lossy(&output).trim().to_string();
 
     let parsed: Value = serde_json::from_str(&raw)
-        .map_err(|err| format!("lpm-desktop-api returned invalid JSON: {err}"))?;
+        .map_err(|err| LpmBridgeError::new("bridge.invalid_sidecar_response", err.to_string()))?;
 
     Ok(LpmActionResponse {
         ok: parsed.get("ok").and_then(Value::as_bool).unwrap_or(false),
@@ -47,10 +64,11 @@ async fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, Stri
 }
 
 #[tauri::command]
-async fn open_path(path: String) -> Result<(), String> {
+async fn open_path(path: String) -> Result<(), LpmBridgeError> {
     tauri::async_runtime::spawn_blocking(move || open_path_with_system(&path))
         .await
-        .map_err(|err| format!("open_path task failed: {err}"))?
+        .map_err(|err| LpmBridgeError::new("bridge.open_path_task_failed", err.to_string()))?
+        .map_err(|err| LpmBridgeError::new("bridge.open_path_failed", err))
 }
 
 /// One way to invoke lpm-desktop-api.
@@ -251,4 +269,18 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![lpm_action, open_path])
         .run(tauri::generate_context!())
         .expect("error while running LPM Desktop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LpmBridgeError;
+
+    #[test]
+    fn bridge_errors_serialize_stable_code_and_external_detail() {
+        let error = LpmBridgeError::new("bridge.open_path_failed", "Path does not exist: C:\\x");
+        let json = serde_json::to_value(error).expect("bridge error must serialize");
+
+        assert_eq!(json["code"], "bridge.open_path_failed");
+        assert_eq!(json["detail"], "Path does not exist: C:\\x");
+    }
 }

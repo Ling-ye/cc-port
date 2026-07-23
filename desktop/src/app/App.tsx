@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { lpmAction } from "@/api/client";
 import {
   createTranslator,
+  displayError,
   nextLanguage,
   readStoredLanguage,
   storeLanguage,
@@ -78,13 +79,14 @@ export default function App() {
               ? t("assets.remoteUpToDate")
               : t("assets.remoteUpdated");
           },
+          failureMessage: (error) => displayError(error, t),
           retryPolicy: "safe-read",
         });
       } else {
         await loadInventory(scope);
       }
     } catch (err) {
-      if (!track) setError(err instanceof Error ? err.message : String(err));
+      if (!track) setError(displayError(err, t));
     } finally {
       refreshInFlightRef.current = false;
       setRefreshBusy(false);
@@ -102,6 +104,7 @@ export default function App() {
       ...inventory,
       remote_available: assetInventory.remote_available,
       remote_warning: assetInventory.remote_warning,
+      remote_warning_ref: assetInventory.remote_warning_ref,
     } : inventory);
     setScanScope({
       scan_global: scope.scan_global,

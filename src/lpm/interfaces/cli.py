@@ -130,7 +130,28 @@ def _load() -> Config:
 
 def _print_machine_json(data: object) -> None:
     """Write stable JSON without terminal styling or ANSI escape sequences."""
-    typer.echo(json.dumps(data, default=str, ensure_ascii=False, indent=2))
+    typer.echo(
+        json.dumps(
+            _without_desktop_message_refs(data),
+            default=str,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def _without_desktop_message_refs(data: object) -> object:
+    """Keep desktop-only localization metadata out of stable CLI JSON."""
+
+    if isinstance(data, dict):
+        return {
+            key: _without_desktop_message_refs(value)
+            for key, value in data.items()
+            if not (isinstance(key, str) and key.endswith(("_ref", "_refs")))
+        }
+    if isinstance(data, list):
+        return [_without_desktop_message_refs(value) for value in data]
+    return data
 
 
 def _print_sync_deprecation() -> None:

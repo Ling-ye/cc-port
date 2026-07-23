@@ -1,7 +1,12 @@
 import { Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { lpmAction } from "@/api/client";
-import type { TFunction } from "@/app/i18n";
+import {
+  displayError,
+  translateMessage,
+  translateMessageList,
+  type TFunction,
+} from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import type { PluginDeletePlan, PluginDeleteResult } from "@/types/lpm";
@@ -30,7 +35,7 @@ export function PluginDeleteDialog({
         setPlan(next);
         setSelected(next.selected_instance_ids);
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .catch((reason) => setError(displayError(reason, t)))
       .finally(() => setBusy(false));
   }, [resourceKey]);
 
@@ -45,7 +50,7 @@ export function PluginDeleteDialog({
       setPlan(next);
       return next;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(displayError(reason, t));
       return null;
     } finally {
       setBusy(false);
@@ -67,6 +72,7 @@ export function PluginDeleteDialog({
           plan_hash: current.plan_hash,
         }),
         successMessage: (value) => value.status === "succeeded" ? t("plugin.deleteComplete") : t("plugin.deleteNeedsAction"),
+        failureMessage: (error) => displayError(error, t),
         retryPolicy: "none",
       });
       if (result.status === "stale-plan" && result.stale_plan) {
@@ -75,7 +81,9 @@ export function PluginDeleteDialog({
         return;
       }
       if (result.status !== "succeeded") {
-        setError(result.results.map((item) => item.message).join("; "));
+        setError(result.results
+          .map((item) => translateMessage(item.message_ref, t, item.message))
+          .join("; "));
         return;
       }
       await Promise.resolve(onDone());
@@ -109,12 +117,15 @@ export function PluginDeleteDialog({
               <span>
                 <strong>{instance.platform} / {instance.scope}</strong>
                 <small>{instance.method}</small>
-                <small>{instance.detail}</small>
+                <small>{translateMessage(instance.detail_ref, t, instance.detail)}</small>
               </span>
             </label>
           ))}
         </div>
-        {plan?.blockers.map((message) => <Banner tone="danger" text={message} key={message} />)}
+        {plan
+          ? translateMessageList(plan.blocker_refs, plan.blockers, t)
+            .map((message) => <Banner tone="danger" text={message} key={message} />)
+          : null}
         {error ? <Banner tone="danger" text={error} /> : null}
         <div className="modal-actions">
           <button className="secondary" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>

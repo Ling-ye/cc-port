@@ -16,7 +16,7 @@ import {
   lpmAction,
   openExternalUrl,
 } from "@/api/client";
-import type { TFunction } from "@/app/i18n";
+import { displayError, translateMessage, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
   ConfigBindRepoResult,
@@ -98,7 +98,7 @@ export function SettingsView({
       setBindError("");
     } catch (err) {
       if (requestId === settingsRequestRef.current) {
-        onError(errorMessage(err));
+        onError(displayError(err, t));
       }
     } finally {
       if (requestId === settingsRequestRef.current) {
@@ -156,7 +156,7 @@ export function SettingsView({
           void lpmAction("github_web_auth_cancel", {
             session_id: authSession.session_id,
           }).catch(() => undefined);
-          onError(githubAuthErrorMessage(err, t));
+          onError(displayError(err, t));
         }
       } finally {
         polling = false;
@@ -185,7 +185,7 @@ export function SettingsView({
       if (stopped) dispose();
       else unlisten = dispose;
     }).catch((err) => {
-      if (!stopped) onError(errorMessage(err));
+      if (!stopped) onError(displayError(err, t));
     });
     return () => {
       stopped = true;
@@ -224,13 +224,14 @@ export function SettingsView({
           expected_current_repo_url: expectedCurrentUrl,
         }),
         successMessage: t("settings.bindSuccess"),
+        failureMessage: (error) => displayError(error, t),
         retryPolicy: "none",
       });
       applySettings(result.settings);
       setLastBinding(result.binding);
       void onChanged();
     } catch (err) {
-      setBindError(errorMessage(err));
+      setBindError(displayError(err, t));
     } finally {
       setBinding(false);
     }
@@ -251,7 +252,7 @@ export function SettingsView({
       }
     } catch (err) {
       setAuthRetry(true);
-      onError(githubAuthErrorMessage(err, t));
+      onError(displayError(err, t));
     } finally {
       setAuthStarting(false);
     }
@@ -273,7 +274,7 @@ export function SettingsView({
     try {
       await lpmAction("github_web_auth_cancel", { session_id: sessionId });
     } catch (err) {
-      onError(errorMessage(err));
+      onError(displayError(err, t));
     }
   }
 
@@ -284,7 +285,7 @@ export function SettingsView({
       setAuth(status);
       void onChanged();
     } catch (err) {
-      onError(errorMessage(err));
+      onError(displayError(err, t));
     }
   }
 
@@ -295,7 +296,7 @@ export function SettingsView({
       applySettings(next, false);
       void onChanged();
     } catch (err) {
-      onError(errorMessage(err));
+      onError(displayError(err, t));
     } finally {
       setPlatformSaving("");
     }
@@ -314,6 +315,7 @@ export function SettingsView({
           return result;
         },
         successMessage: (result) => t("settings.diagnostics.completed", { count: result.checks.length }),
+        failureMessage: (error) => displayError(error, t),
         retryPolicy: "safe-read",
       });
     } catch {
@@ -569,7 +571,7 @@ function DiagnosticsResults({ checks, t }: { checks: DoctorCheck[]; t: TFunction
                 {status === "error" ? <XCircle size={18} /> : <AlertTriangle size={18} />}
                 <div>
                   <strong>{doctorLabel(check, t)}</strong>
-                  <p>{check.detail}</p>
+                  <p>{translateMessage(check.detail_ref, t, check.detail)}</p>
                 </div>
               </li>
             );
@@ -646,20 +648,4 @@ function platformDisplayName(name: string): string {
     windsurf: "Windsurf",
     opencode: "opencode",
   }[name] || name;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function githubAuthErrorMessage(error: unknown, t: TFunction): string {
-  const code = error instanceof Error && "code" in error
-    ? String((error as Error & { code: unknown }).code)
-    : "";
-  if (code) {
-    if (code === "OAuthConfigurationError") return t("settings.oauthNotConfigured");
-    if (code === "GithubApiError") return t("settings.authValidationFailed");
-    if (code === "OAuthSessionError") return t("settings.authServiceUnavailable");
-  }
-  return errorMessage(error);
 }

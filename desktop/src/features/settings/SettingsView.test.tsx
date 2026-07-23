@@ -23,7 +23,6 @@ vi.mock("@/api/client", () => ({
   openExternalUrl: vi.fn(),
 }));
 
-const t = createTranslator("en");
 const platformNames = ["codex", "claude-code", "cursor", "windsurf", "opencode"];
 
 function settings(repoUrl = "", repoName = "LingyeAIResources"): ConfigSettings {
@@ -112,13 +111,13 @@ function mockInitial(data = settings(), status = auth()) {
   });
 }
 
-function renderView(refreshVersion = 0) {
+function renderView(refreshVersion = 0, language: "en" | "zh" = "en") {
   const onChanged = vi.fn(async () => undefined);
   const onError = vi.fn();
   const view = (version: number) => (
     <TaskCenterProvider>
       <SettingsView
-        t={t}
+        t={createTranslator(language)}
         refreshVersion={version}
         onError={onError}
         onChanged={onChanged}
@@ -311,6 +310,35 @@ describe("SettingsView simplified settings", () => {
     expect(within(issues).queryByText("Ready")).not.toBeInTheDocument();
     expect(within(issues).queryByText("Using defaults")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run again" })).toBeEnabled();
+  });
+
+  it("renders structured diagnostic details in Chinese", async () => {
+    const checks: DoctorCheck[] = [{
+      id: "resource_repo",
+      label: "Resource repo",
+      ok: true,
+      status: "warning",
+      detail: "Configured but local path does not exist: C:/resources",
+      detail_ref: {
+        code: "doctor.resource_repo.path_missing",
+        fallback: "Configured but local path does not exist: C:/resources",
+        params: { path: "C:/resources" },
+      },
+    }];
+    vi.mocked(lpmAction).mockImplementation(async (action) => {
+      if (action === "config_get") return settings();
+      if (action === "github_auth_status") return auth();
+      if (action === "doctor") return { checks };
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    renderView(0, "zh");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("诊断"));
+    await user.click(screen.getByRole("button", { name: "运行诊断" }));
+
+    expect(await screen.findByText("配置的资源路径不存在：C:/resources")).toBeVisible();
+    expect(screen.queryByText(checks[0].detail)).not.toBeInTheDocument();
   });
 
   it("clears stale diagnostics on failure without disabling other settings", async () => {

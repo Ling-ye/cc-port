@@ -192,6 +192,18 @@ describe("App inventory orchestration", () => {
     expect(screen.queryByTitle("Refresh")).toBeNull();
   });
 
+  it("rerenders the current desktop view when the language changes", async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await waitForStartup();
+
+    expect(screen.getByRole("heading", { level: 1, name: "Resources" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Switch to Chinese" }));
+
+    expect(screen.getByRole("heading", { level: 1, name: "资源" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "切换到英文" })).toBeVisible();
+  });
+
   it("requests a settings refresh on every settings navigation click", async () => {
     const user = userEvent.setup();
     renderApp();

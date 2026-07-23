@@ -48,6 +48,43 @@ afterEach(() => {
 });
 
 describe("PluginDeleteDialog", () => {
+  it("renders structured deletion details in Chinese", async () => {
+    vi.mocked(lpmAction).mockResolvedValue({
+      ...plan,
+      instances: [
+        {
+          ...plan.instances[0],
+          detail_ref: {
+            code: "plugin.delete.detail.claude_cli",
+            fallback: plan.instances[0].detail,
+            params: { plugin_id: "demo" },
+          },
+        },
+        {
+          ...plan.instances[1],
+          detail_ref: {
+            code: "plugin.delete.detail.managed_policy",
+            fallback: plan.instances[1].detail,
+          },
+        },
+      ],
+    } as never);
+
+    render(
+      <TaskCenterProvider>
+        <PluginDeleteDialog
+          resourceKey={plan.resource_key}
+          t={createTranslator("zh")}
+          onClose={vi.fn()}
+          onDone={vi.fn()}
+        />
+      </TaskCenterProvider>,
+    );
+
+    expect(await screen.findByText("对 demo 执行带作用域的 Claude 插件卸载。")).toBeVisible();
+    expect(screen.getByText("该实例由组织策略控制，LPM 无法卸载。")).toBeVisible();
+  });
+
   it("keeps managed instances unselectable and applies the revalidated selected plan", async () => {
     const user = userEvent.setup();
     const onDone = vi.fn();

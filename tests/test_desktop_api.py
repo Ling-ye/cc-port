@@ -65,6 +65,69 @@ def test_desktop_main_consumes_packaged_payload_environment_before_action(monkey
     assert responses == [{"ok": True, "data": {"value": 9}}]
 
 
+def test_desktop_main_structures_invalid_json_and_non_object_payloads(monkeypatch) -> None:
+    responses: list[dict] = []
+    monkeypatch.setattr(desktop_api, "_write_json_response", responses.append)
+
+    monkeypatch.setattr(desktop_api.sys, "stdin", io.StringIO("{"))
+    invalid_json_exit = desktop_api.main(["summary"])
+    monkeypatch.setattr(desktop_api.sys, "stdin", io.StringIO("[]"))
+    invalid_payload_exit = desktop_api.main(["summary"])
+
+    assert invalid_json_exit == 1
+    assert responses[0]["error"]["code"] == "invalid_json"
+    assert responses[0]["error"]["message_ref"]["code"] == "api.invalid_json"
+    assert responses[0]["error"]["message_ref"]["fallback"] == responses[0]["error"]["message"]
+    assert responses[0]["error"]["message_ref"]["params"] == {
+        "detail": responses[0]["error"]["message"],
+    }
+    assert invalid_payload_exit == 1
+    assert responses[1]["error"] == {
+        "code": "invalid_payload",
+        "message": "Payload must be a JSON object.",
+        "message_ref": {
+            "code": "api.invalid_payload",
+            "fallback": "Payload must be a JSON object.",
+            "params": {},
+        },
+    }
+
+
+def test_desktop_unknown_action_returns_message_reference(monkeypatch) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+
+    result = desktop_api.run_action("missing_desktop_action")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "unknown_action"
+    assert result["error"]["message"] == "Unknown UI API action: missing_desktop_action"
+    assert result["error"]["message_ref"] == {
+        "code": "api.unknown_action",
+        "fallback": "Unknown UI API action: missing_desktop_action",
+        "params": {"action": "missing_desktop_action"},
+    }
+
+
+def test_desktop_auth_error_keeps_original_text_and_adds_semantic_reference(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setitem(
+        desktop_api.ACTIONS,
+        "auth_failure_test",
+        lambda _payload: (_ for _ in ()).throw(GithubAuthError("Token rejected.")),
+    )
+
+    result = desktop_api.run_action("auth_failure_test")
+
+    assert result["error"]["message"] == "Token rejected."
+    assert result["error"]["message_ref"] == {
+        "code": "api.github.authentication_failed",
+        "fallback": "Token rejected.",
+        "params": {"detail": "Token rejected."},
+    }
+
+
 def test_desktop_upload_pushes_resource_repo_by_default(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "demo"
     stored = tmp_path / "resources" / "skills" / "demo"

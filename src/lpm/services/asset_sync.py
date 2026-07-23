@@ -65,6 +65,13 @@ from .resource_commit import commit_resource_changes_unlocked
 from .resource_repo import ensure_structure, resource_root
 from .resource_repo_lock import resource_repo_write_lock
 from .resource_sync import load_resource_sync_plan
+from .ui_messages import (
+    UiMessageRef,
+    fallback_text,
+    ui_message,
+    ui_message_from_data,
+    ui_messages_from_data,
+)
 
 AssetStatus = Literal[
     "remote-only",
@@ -112,6 +119,7 @@ class RemoteSnapshot:
     repo_url: str
     available: bool = True
     warning: str = ""
+    warning_ref: UiMessageRef | None = None
 
 
 @dataclass
@@ -143,8 +151,11 @@ class AssetPlatformRow:
     local_fingerprint: str = ""
     metadata_differences: list[str] = field(default_factory=list)
     diff_summary: list[str] = field(default_factory=list)
+    diff_summary_refs: list[UiMessageRef] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
+    blocker_refs: list[UiMessageRef] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    warning_refs: list[UiMessageRef] = field(default_factory=list)
     available_actions: list[str] = field(default_factory=list)
     entry: RegistryItem | None = None
     plugin_track: str = ""
@@ -171,6 +182,8 @@ class AssetInventory:
     generated_at: str
     legacy_write_blocker: str
     rows: list[AssetPlatformRow]
+    remote_warning_ref: UiMessageRef | None = None
+    legacy_write_blocker_ref: UiMessageRef | None = None
     resources: list[AssetResourceRow] = field(default_factory=list)
 
 
@@ -185,7 +198,9 @@ class AssetLocalInstance:
     description: str
     status: AssetStatus
     warnings: list[str] = field(default_factory=list)
+    warning_refs: list[UiMessageRef] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
+    blocker_refs: list[UiMessageRef] = field(default_factory=list)
     track: str = ""
     scope: str = ""
     project_id: str = ""
@@ -222,8 +237,11 @@ class AssetResourceRow:
     local_instances: list[AssetLocalInstance]
     metadata_differences: list[str] = field(default_factory=list)
     diff_summary: list[str] = field(default_factory=list)
+    diff_summary_refs: list[UiMessageRef] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    warning_refs: list[UiMessageRef] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
+    blocker_refs: list[UiMessageRef] = field(default_factory=list)
     available_actions: list[str] = field(default_factory=list)
     plugin_track: str = ""
     plugin_platform: str = ""
@@ -257,7 +275,9 @@ class AssetActionPlan:
     new_name: str = ""
     new_install_name: str = ""
     warnings: list[str] = field(default_factory=list)
+    warning_refs: list[UiMessageRef] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
+    blocker_refs: list[UiMessageRef] = field(default_factory=list)
     blocked: bool = False
     created_at: str = ""
     plugin_data: dict[str, Any] = field(default_factory=dict)
@@ -273,11 +293,13 @@ class AssetActionResult:
     target_resource_key: str
     platform: str
     message: str
+    message_ref: UiMessageRef | None = None
     remote_commit: str = ""
     local_path: Path | None = None
     replayed_on_latest: bool = False
     push_retry_count: int = 0
     warnings: list[str] = field(default_factory=list)
+    warning_refs: list[UiMessageRef] = field(default_factory=list)
     operation_status: str = ""
 
 
@@ -305,8 +327,11 @@ class AssetBatchPlanItem:
     disposition: str
     target_resource_key: str
     reason: str = ""
+    reason_ref: UiMessageRef | None = None
     warnings: list[str] = field(default_factory=list)
+    warning_refs: list[UiMessageRef] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
+    blocker_refs: list[UiMessageRef] = field(default_factory=list)
     plan: AssetActionPlan | None = None
 
 
@@ -352,6 +377,7 @@ class PluginDeleteInstancePlan:
     selectable: bool
     method: str
     detail: str
+    detail_ref: UiMessageRef | None = None
     local_path: Path | None = None
     state_path: Path | None = None
     installation: dict[str, Any] = field(default_factory=dict)
@@ -368,6 +394,7 @@ class PluginDeletePlan:
     plan_hash: str
     blocked: bool = False
     blockers: list[str] = field(default_factory=list)
+    blocker_refs: list[UiMessageRef] = field(default_factory=list)
 
 
 @dataclass
@@ -496,16 +523,19 @@ def build_asset_inventory(
             item.local_path.as_posix().lower() if item.local_path else "",
         )
     )
-    blocker = _legacy_write_blocker(cfg, fetch=False)
+    blocker_ref = _legacy_write_blocker_message(cfg, fetch=False)
+    blocker = blocker_ref.fallback if blocker_ref else ""
     inventory = AssetInventory(
         branch=snapshot.branch,
         remote_commit=snapshot.commit,
         repo_url=snapshot.repo_url,
         remote_available=snapshot.available,
         remote_warning=snapshot.warning,
+        remote_warning_ref=snapshot.warning_ref,
         scanned_local=scan_local,
         generated_at=_utc_now(),
         legacy_write_blocker=blocker,
+        legacy_write_blocker_ref=blocker_ref,
         rows=rows,
     )
     inventory.resources = _aggregate_resource_rows(inventory)
@@ -555,6 +585,11 @@ def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow
             item and item != remote_description for item in local_descriptions
         ):
             metadata_differences = _unique_strings([*metadata_differences, "description"])
+        diff_summary_refs = _aggregate_diff_summary_refs(
+            status,
+            local_status,
+            remote_status,
+        )
         resources.append(
             AssetResourceRow(
                 resource_key=resource_key,
@@ -579,9 +614,16 @@ def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow
                 ),
                 local_instances=local_instances,
                 metadata_differences=metadata_differences,
-                diff_summary=_aggregate_diff_summary(status, local_status, remote_status),
+                diff_summary=fallback_text(diff_summary_refs),
+                diff_summary_refs=diff_summary_refs,
                 warnings=_unique_strings([item for row in rows for item in row.warnings]),
+                warning_refs=_unique_message_refs(
+                    [item for row in rows for item in row.warning_refs]
+                ),
                 blockers=_unique_strings([item for row in rows for item in row.blockers]),
+                blocker_refs=_unique_message_refs(
+                    [item for row in rows for item in row.blocker_refs]
+                ),
                 available_actions=_unique_strings(
                     [item for row in rows for item in row.available_actions]
                 ),
@@ -621,7 +663,9 @@ def _local_instance_summary(row: AssetPlatformRow) -> AssetLocalInstance:
         description=description,
         status=row.status,
         warnings=list(row.warnings),
+        warning_refs=list(row.warning_refs),
         blockers=list(row.blockers),
+        blocker_refs=list(row.blocker_refs),
         track=row.plugin_track,
         scope=row.plugin_scope,
         project_id=row.plugin_project_id,
@@ -683,23 +727,76 @@ def _aggregate_diff_summary(
     local_status: str,
     remote_status: str,
 ) -> list[str]:
+    return fallback_text(_aggregate_diff_summary_refs(status, local_status, remote_status))
+
+
+def _aggregate_diff_summary_refs(
+    status: AssetStatus,
+    local_status: str,
+    remote_status: str,
+) -> list[UiMessageRef]:
     if local_status == "unknown":
-        return ["Local assets have not been scanned yet."]
+        return [
+            ui_message(
+                "asset.diff.local_not_scanned",
+                "Local assets have not been scanned yet.",
+            )
+        ]
     if status == "local-only":
-        return ["Local content is not present in the remote repository."]
+        return [
+            ui_message(
+                "asset.diff.local_only",
+                "Local content is not present in the remote repository.",
+            )
+        ]
     if status == "remote-only":
-        return ["Remote content is not installed in any scanned local tool."]
+        return [
+            ui_message(
+                "asset.diff.remote_only",
+                "Remote content is not installed in any scanned local tool.",
+            )
+        ]
     if status == "same":
-        return ["Local and remote content fingerprints match."]
+        return [
+            ui_message(
+                "asset.diff.same",
+                "Local and remote content fingerprints match.",
+            )
+        ]
     if status == "content-different":
-        return ["Local and remote content differ, or multiple local variants exist."]
+        return [
+            ui_message(
+                "asset.diff.content_different",
+                "Local and remote content differ, or multiple local variants exist.",
+            )
+        ]
     if status == "metadata-only":
-        return ["Content matches but metadata differs."]
+        return [
+            ui_message(
+                "asset.diff.metadata_only",
+                "Content matches but metadata differs.",
+            )
+        ]
     if status == "target-conflict":
-        return ["Multiple resources resolve to the same local target."]
+        return [
+            ui_message(
+                "asset.diff.target_conflict",
+                "Multiple resources resolve to the same local target.",
+            )
+        ]
     if remote_status == "unavailable":
-        return ["The current remote state is unavailable; no absence is inferred."]
-    return ["The resource cannot be compared safely."]
+        return [
+            ui_message(
+                "asset.diff.remote_unavailable",
+                "The current remote state is unavailable; no absence is inferred.",
+            )
+        ]
+    return [
+        ui_message(
+            "asset.diff.uncomparable",
+            "The resource cannot be compared safely.",
+        )
+    ]
 
 
 def build_asset_action_plan(
@@ -742,7 +839,9 @@ def build_asset_action_plan(
         candidates = [row for row in candidates if row.local_instance_id == local_instance_id]
     row = _select_plan_row(candidates, action=action, local_instance_id=local_instance_id)
     blockers: list[str] = list(row.blockers)
+    blocker_refs = list(row.blocker_refs)
     warnings = list(row.warnings)
+    warning_refs = list(row.warning_refs)
     target_key = row.resource_key
     target_path = row.target_path
     target_exists = row.local_exists
@@ -755,36 +854,71 @@ def build_asset_action_plan(
     normalized_install_name = new_install_name.strip()
     if action in {"copy-to-local", "copy-to-remote"}:
         if not normalized_new_name:
-            blockers.append("A new resource name is required.")
+            _append_message(
+                blockers,
+                blocker_refs,
+                ui_message("asset.blocker.new_name_required", "A new resource name is required."),
+            )
         elif not ITEM_NAME_RE.match(normalized_new_name):
-            blockers.append(
-                "The new resource name must use lowercase letters, digits, and hyphens."
+            _append_message(
+                blockers,
+                blocker_refs,
+                ui_message(
+                    "asset.blocker.new_name_invalid",
+                    "The new resource name must use lowercase letters, digits, and hyphens.",
+                ),
             )
         else:
             target_key = str(ResourceKey(kind=kind, name=normalized_new_name))
 
     if action == "download":
-        blockers.extend(_download_plan_blockers(row, overwrite_unmanaged))
+        _extend_messages(
+            blockers,
+            blocker_refs,
+            _download_plan_blocker_refs(row, overwrite_unmanaged),
+        )
     elif action == "upload":
-        blockers.extend(_upload_plan_blockers(row))
+        _extend_messages(blockers, blocker_refs, _upload_plan_blocker_refs(row))
     elif action == "copy-to-local":
-        blockers.extend(_copy_to_local_blockers(row, snapshot.registry, normalized_new_name))
+        _extend_messages(
+            blockers,
+            blocker_refs,
+            _copy_to_local_blocker_refs(row, snapshot.registry, normalized_new_name),
+        )
         target_path, target_exists, target_fingerprint, target_managed = _copy_local_target_state(
             cfg,
             row,
             normalized_new_name,
         )
         if target_exists:
-            blockers.append("The new local name already resolves to an existing target.")
+            _append_message(
+                blockers,
+                blocker_refs,
+                ui_message(
+                    "asset.blocker.local_target_exists",
+                    "The new local name already resolves to an existing target.",
+                ),
+            )
         if normalized_new_name and any(
             item.local_exists
             and item.resource_key == target_key
             and item.local_instance_id != row.local_instance_id
             for item in inventory.rows
         ):
-            blockers.append("The new local name already exists as another local instance.")
+            _append_message(
+                blockers,
+                blocker_refs,
+                ui_message(
+                    "asset.blocker.local_instance_exists",
+                    "The new local name already exists as another local instance.",
+                ),
+            )
     elif action == "copy-to-remote":
-        blockers.extend(_copy_to_remote_blockers(row, snapshot.registry, normalized_new_name))
+        _extend_messages(
+            blockers,
+            blocker_refs,
+            _copy_to_remote_blocker_refs(row, snapshot.registry, normalized_new_name),
+        )
         target_entry = (
             snapshot.registry.get(normalized_new_name, kind) if normalized_new_name else None
         )
@@ -795,8 +929,10 @@ def build_asset_action_plan(
             else ""
         )
     else:
-        blockers.extend(
-            _install_alias_plan_blockers(
+        _extend_messages(
+            blockers,
+            blocker_refs,
+            _install_alias_plan_blocker_refs(
                 row,
                 snapshot.registry,
                 cfg,
@@ -810,9 +946,18 @@ def build_asset_action_plan(
                 snapshot.warning
                 or "The configured remote branch is unavailable; remote writes are blocked."
             )
-        legacy_blocker = _legacy_write_blocker(cfg, fetch=True)
-        if legacy_blocker:
-            blockers.append(legacy_blocker)
+            if snapshot.warning_ref:
+                blocker_refs.append(snapshot.warning_ref)
+            elif not snapshot.warning:
+                blocker_refs.append(
+                    ui_message(
+                        "asset.blocker.remote_unavailable",
+                        "The configured remote branch is unavailable; remote writes are blocked.",
+                    )
+                )
+        legacy_blocker_ref = _legacy_write_blocker_message(cfg, fetch=True)
+        if legacy_blocker_ref:
+            _append_message(blockers, blocker_refs, legacy_blocker_ref)
     if (
         action in {"upload", "copy-to-remote"}
         and not remote_target_exists
@@ -825,7 +970,15 @@ def build_asset_action_plan(
             exclude_key=target_key,
         )
         if duplicates:
-            warnings.append("Identical content already exists under: " + ", ".join(duplicates))
+            _append_message(
+                warnings,
+                warning_refs,
+                ui_message(
+                    "asset.warning.identical_remote_content",
+                    "Identical content already exists under: " + ", ".join(duplicates),
+                    resource_keys=", ".join(duplicates),
+                ),
+            )
 
     plan = AssetActionPlan(
         operation_id=uuid.uuid4().hex,
@@ -848,8 +1001,10 @@ def build_asset_action_plan(
         overwrite_unmanaged=overwrite_unmanaged,
         new_name=normalized_new_name,
         new_install_name=normalized_install_name,
-        warnings=warnings,
+        warnings=_unique_strings(warnings),
+        warning_refs=_unique_message_refs(warning_refs),
         blockers=_unique_strings(blockers),
+        blocker_refs=_unique_message_refs(blocker_refs),
         blocked=bool(blockers),
         created_at=_utc_now(),
         plugin_data=dict(row.plugin_data),
@@ -870,6 +1025,7 @@ def apply_asset_action_plan(
         return existing
     plan = load_asset_action_plan(operation_id)
     if plan.blocked:
+        blocked_message = "; ".join(plan.blockers) or "The asset action plan is blocked."
         result = AssetActionResult(
             operation_id=plan.operation_id,
             action=plan.action,
@@ -877,8 +1033,14 @@ def apply_asset_action_plan(
             resource_key=plan.resource_key,
             target_resource_key=plan.target_resource_key,
             platform=plan.platform,
-            message="; ".join(plan.blockers) or "The asset action plan is blocked.",
+            message=blocked_message,
+            message_ref=ui_message(
+                "asset.result.plan_blocked",
+                blocked_message,
+                detail="; ".join(plan.blockers),
+            ),
             warnings=plan.warnings,
+            warning_refs=plan.warning_refs,
         )
         _save_asset_result(result)
         return result
@@ -890,6 +1052,7 @@ def apply_asset_action_plan(
         else:
             result = _apply_remote_asset_action(plan, cfg)
     except _StaleAssetTarget as exc:
+        detail = str(exc)
         result = AssetActionResult(
             operation_id=plan.operation_id,
             action=plan.action,
@@ -897,8 +1060,14 @@ def apply_asset_action_plan(
             resource_key=plan.resource_key,
             target_resource_key=plan.target_resource_key,
             platform=plan.platform,
-            message=str(exc),
+            message=detail,
+            message_ref=ui_message(
+                "asset.result.stale",
+                detail,
+                detail=detail,
+            ),
             warnings=plan.warnings,
+            warning_refs=plan.warning_refs,
         )
     _save_asset_result(result)
     return result
@@ -971,6 +1140,10 @@ def build_asset_batch_plan(
                     action="download",
                     disposition="blocked",
                     reason="Select at least one target platform.",
+                    reason_ref=ui_message(
+                        "asset.batch.select_target_platform",
+                        "Select at least one target platform.",
+                    ),
                 )
             )
             continue
@@ -1325,14 +1498,38 @@ def build_plugin_delete_plan(
         requested = [item.id for item in instances if item.selectable]
     known_ids = {item.id for item in instances}
     blockers: list[str] = []
+    blocker_refs: list[UiMessageRef] = []
     if not requested:
-        blockers.append("Select at least one writable plugin instance.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "plugin.delete.select_instance",
+                "Select at least one writable plugin instance.",
+            ),
+        )
     unknown = [item for item in requested if item not in known_ids]
     if unknown:
-        blockers.append("Unknown plugin instance selection: " + ", ".join(unknown))
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "plugin.delete.unknown_instance",
+                "Unknown plugin instance selection: " + ", ".join(unknown),
+                instance_ids=", ".join(unknown),
+            ),
+        )
     unselectable = [item.id for item in instances if item.id in requested and not item.selectable]
     if unselectable:
-        blockers.append("Managed plugin instances cannot be selected: " + ", ".join(unselectable))
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "plugin.delete.managed_instance",
+                "Managed plugin instances cannot be selected: " + ", ".join(unselectable),
+                instance_ids=", ".join(unselectable),
+            ),
+        )
     payload = {
         "resource_key": resource_key,
         "remote_commit": snapshot.commit,
@@ -1348,6 +1545,7 @@ def build_plugin_delete_plan(
         plan_hash=plan_hash,
         blocked=bool(blockers),
         blockers=blockers,
+        blocker_refs=blocker_refs,
     )
 
 
@@ -1374,12 +1572,22 @@ def apply_plugin_delete_plan(
             stale_plan=current,
         )
     if current.blocked:
+        message = "; ".join(current.blockers)
         return PluginDeleteResult(
             status="failed",
             resource_key=resource_key,
             plan_hash=current.plan_hash,
             results=[
-                _plugin_delete_action_result(resource_key, "blocked", "; ".join(current.blockers))
+                _plugin_delete_action_result(
+                    resource_key,
+                    "blocked",
+                    message,
+                    message_ref=ui_message(
+                        "plugin.delete.result.blocked",
+                        message,
+                        detail=message,
+                    ),
+                )
             ],
         )
     selected = [item for item in current.instances if item.id in set(selected_instance_ids)]
@@ -1401,11 +1609,17 @@ def apply_plugin_delete_plan(
         and item.method != "verified-absent"
     }
     if still_present:
+        message = "Instances remain after uninstall: " + ", ".join(sorted(still_present))
         results.append(
             _plugin_delete_action_result(
                 resource_key,
                 "verification-failed",
-                "Instances remain after uninstall: " + ", ".join(sorted(still_present)),
+                message,
+                message_ref=ui_message(
+                    "plugin.delete.result.verification_failed",
+                    message,
+                    instance_ids=", ".join(sorted(still_present)),
+                ),
             )
         )
         return PluginDeleteResult(
@@ -1440,28 +1654,48 @@ def _plugin_delete_instance(
     )[:24]
     if installation.scope == "managed":
         method = "managed-policy"
-        detail = "Organization policy controls this instance; LPM cannot uninstall it."
+        detail_ref = ui_message(
+            "plugin.delete.detail.managed_policy",
+            "Organization policy controls this instance; LPM cannot uninstall it.",
+        )
         selectable = False
     elif row is None:
         method = "verified-absent"
-        detail = "No matching local installation was found; only desired remote state will be removed."
+        detail_ref = ui_message(
+            "plugin.delete.detail.verified_absent",
+            "No matching local installation was found; only desired remote state will be removed.",
+        )
         selectable = True
     elif spec.platform == "claude-code" and shutil.which("claude"):
         method = "claude-cli"
-        detail = f"Run the scope-aware Claude plugin uninstall for {spec.plugin_id}."
+        detail_ref = ui_message(
+            "plugin.delete.detail.claude_cli",
+            f"Run the scope-aware Claude plugin uninstall for {spec.plugin_id}.",
+            plugin_id=spec.plugin_id,
+        )
         selectable = True
     elif spec.platform == "opencode" and spec.origin.type == "npm" and row.plugin_data.get("state_path"):
         method = "opencode-config"
-        detail = "Remove only this npm declaration from opencode.json."
+        detail_ref = ui_message(
+            "plugin.delete.detail.opencode_config",
+            "Remove only this npm declaration from opencode.json.",
+        )
         selectable = True
     elif spec.track == "content" and row.local_path is not None:
         method = "delete-content"
-        detail = "Transactionally delete this selected local plugin content path."
+        detail_ref = ui_message(
+            "plugin.delete.detail.delete_content",
+            "Transactionally delete this selected local plugin content path.",
+        )
         selectable = True
     else:
         method = "manual"
-        detail = "No stable automatic uninstall entry is available; uninstall manually and rescan."
+        detail_ref = ui_message(
+            "plugin.delete.detail.manual",
+            "No stable automatic uninstall entry is available; uninstall manually and rescan.",
+        )
         selectable = True
+    detail = detail_ref.fallback
     return PluginDeleteInstancePlan(
         id=instance_id,
         platform=spec.platform,
@@ -1472,6 +1706,7 @@ def _plugin_delete_instance(
         selectable=selectable,
         method=method,
         detail=detail,
+        detail_ref=detail_ref,
         local_path=row.local_path if row else None,
         state_path=Path(str(row.plugin_data.get("state_path"))) if row and row.plugin_data.get("state_path") else None,
         installation=installation_data,
@@ -1492,11 +1727,29 @@ def _apply_plugin_delete_instance(
     cfg: Config,
 ) -> AssetActionResult:
     if instance.method == "managed-policy":
-        return _plugin_delete_action_result(resource_key, "blocked", instance.detail, instance)
+        return _plugin_delete_action_result(
+            resource_key,
+            "blocked",
+            instance.detail,
+            instance,
+            message_ref=instance.detail_ref,
+        )
     if instance.method == "manual":
-        return _plugin_delete_action_result(resource_key, "needs-action", instance.detail, instance)
+        return _plugin_delete_action_result(
+            resource_key,
+            "needs-action",
+            instance.detail,
+            instance,
+            message_ref=instance.detail_ref,
+        )
     if instance.method == "verified-absent":
-        return _plugin_delete_action_result(resource_key, "unchanged", instance.detail, instance)
+        return _plugin_delete_action_result(
+            resource_key,
+            "unchanged",
+            instance.detail,
+            instance,
+            message_ref=instance.detail_ref,
+        )
     if instance.method == "claude-cli":
         result = subprocess.run(
             ["claude", "plugin", "uninstall", instance.source_id or instance.plugin_id, "--scope", instance.scope],
@@ -1512,10 +1765,30 @@ def _apply_plugin_delete_instance(
                 (result.stderr or result.stdout or "Claude plugin uninstall failed.").strip(),
                 instance,
             )
-        return _plugin_delete_action_result(resource_key, "succeeded", "Claude CLI uninstall completed.", instance)
+        message_ref = ui_message(
+            "plugin.delete.result.claude_complete",
+            "Claude CLI uninstall completed.",
+        )
+        return _plugin_delete_action_result(
+            resource_key,
+            "succeeded",
+            message_ref.fallback,
+            instance,
+            message_ref=message_ref,
+        )
     target = instance.state_path if instance.method == "opencode-config" else instance.local_path
     if target is None:
-        return _plugin_delete_action_result(resource_key, "failed", "The planned local target is unavailable.", instance)
+        message_ref = ui_message(
+            "plugin.delete.result.target_unavailable",
+            "The planned local target is unavailable.",
+        )
+        return _plugin_delete_action_result(
+            resource_key,
+            "failed",
+            message_ref.fallback,
+            instance,
+            message_ref=message_ref,
+        )
     transaction = LocalChangeTransaction.begin(
         "plugin-delete",
         [ChangeTarget(path=target, change_action="plugin-delete", resource=resource_key, platform=instance.platform)],
@@ -1541,11 +1814,17 @@ def _apply_plugin_delete_instance(
     except Exception as exc:
         transaction.rollback(str(exc))
         return _plugin_delete_action_result(resource_key, "failed", str(exc), instance)
+    message_ref = ui_message(
+        "plugin.delete.result.removed",
+        f"Local plugin instance removed ({record.status}).",
+        status=record.status,
+    )
     return _plugin_delete_action_result(
         resource_key,
         "succeeded",
-        f"Local plugin instance removed ({record.status}).",
+        message_ref.fallback,
         instance,
+        message_ref=message_ref,
     )
 
 
@@ -1554,6 +1833,8 @@ def _plugin_delete_action_result(
     status: str,
     message: str,
     instance: PluginDeleteInstancePlan | None = None,
+    *,
+    message_ref: UiMessageRef | None = None,
 ) -> AssetActionResult:
     return AssetActionResult(
         operation_id="",
@@ -1563,6 +1844,7 @@ def _plugin_delete_action_result(
         target_resource_key=resource_key,
         platform=instance.platform if instance else "",
         message=message,
+        message_ref=message_ref,
         local_path=instance.local_path if instance else None,
     )
 
@@ -1638,6 +1920,10 @@ def _build_batch_upload_item(
             action="upload",
             disposition="skip",
             reason="No scanned local source exists.",
+            reason_ref=ui_message(
+                "asset.batch.no_local_source",
+                "No scanned local source exists.",
+            ),
         )
     selected: AssetPlatformRow | None = None
     reference_rows = [
@@ -1673,6 +1959,10 @@ def _build_batch_upload_item(
                 action="upload",
                 disposition="blocked",
                 reason="The selected local instance no longer exists.",
+                reason_ref=ui_message(
+                    "asset.batch.local_instance_missing",
+                    "The selected local instance no longer exists.",
+                ),
             )
     else:
         fingerprint_groups = {row.local_fingerprint for row in local_rows if row.local_fingerprint}
@@ -1682,6 +1972,10 @@ def _build_batch_upload_item(
                 action="upload",
                 disposition="blocked",
                 reason="Multiple different local versions exist; select a source instance.",
+                reason_ref=ui_message(
+                    "asset.batch.select_source_instance",
+                    "Multiple different local versions exist; select a source instance.",
+                ),
             )
         selected = sorted(local_rows, key=lambda row: (row.platform, row.local_instance_id))[0]
     if selected.kind == "plugin":
@@ -1693,6 +1987,10 @@ def _build_batch_upload_item(
                 platform=selected.platform,
                 local_instance_id=selected.local_instance_id,
                 reason="Plugin candidate was explicitly skipped.",
+                reason_ref=ui_message(
+                    "asset.batch.plugin_skipped",
+                    "Plugin candidate was explicitly skipped.",
+                ),
             )
         if selected.plugin_track == "content" and (
             not selected.plugin_writable or selected.plugin_scope == "managed"
@@ -1704,6 +2002,10 @@ def _build_batch_upload_item(
                 platform=selected.platform,
                 local_instance_id=selected.local_instance_id,
                 reason="Managed or read-only plugin content cannot be uploaded.",
+                reason_ref=ui_message(
+                    "asset.batch.plugin_read_only",
+                    "Managed or read-only plugin content cannot be uploaded.",
+                ),
             )
         existing_spec = selected.entry.plugin if selected.entry is not None else None
         if selected.plugin_track == "content" and existing_spec is None:
@@ -1731,6 +2033,11 @@ def _build_batch_upload_item(
                         "Confirm that this is owned source content, choose reference with a portable origin, "
                         "or skip it."
                     ),
+                    reason_ref=ui_message(
+                        "asset.batch.plugin_source_choice_required",
+                        "Confirm that this is owned source content, choose reference with a portable origin, "
+                        "or skip it.",
+                    ),
                 )
             elif selected.platform == "opencode":
                 selected.plugin_data["plugin"]["dependencies"] = dict(
@@ -1753,6 +2060,10 @@ def _build_batch_upload_item(
             local_instance_id=selected.local_instance_id,
             target_resource_key=resource_key,
             reason="Local and remote content already match.",
+            reason_ref=ui_message(
+                "asset.batch.content_already_matches",
+                "Local and remote content already match.",
+            ),
         )
     plan = build_asset_action_plan(
         action,
@@ -1775,6 +2086,29 @@ def _build_batch_upload_item(
         if plan.remote_target_exists
         else "create"
     )
+    reason = (
+        "; ".join(plan.blockers)
+        or (
+            "Save plugin reference without content."
+            if selected.plugin_data.get("plugin", {}).get("track") == "reference"
+            else "Upload plugin content."
+        )
+        if selected.kind == "plugin"
+        else ""
+    )
+    reason_ref = (
+        ui_message("asset.batch.blocked", reason, detail=reason)
+        if plan.blocked
+        else ui_message(
+            "asset.batch.save_plugin_reference",
+            reason,
+        )
+        if selected.kind == "plugin"
+        and selected.plugin_data.get("plugin", {}).get("track") == "reference"
+        else ui_message("asset.batch.upload_plugin_content", reason)
+        if selected.kind == "plugin"
+        else None
+    )
     return AssetBatchPlanItem(
         id=f"upload:{resource_key}:{selected.local_instance_id}",
         resource_key=resource_key,
@@ -1783,14 +2117,12 @@ def _build_batch_upload_item(
         action=action,
         disposition=disposition,
         target_resource_key=plan.target_resource_key,
-        reason=(
-            "; ".join(plan.blockers)
-            or ("Save plugin reference without content." if selected.plugin_data.get("plugin", {}).get("track") == "reference" else "Upload plugin content.")
-            if selected.kind == "plugin"
-            else ""
-        ),
+        reason=reason,
+        reason_ref=reason_ref,
         warnings=list(plan.warnings),
+        warning_refs=list(plan.warning_refs),
         blockers=list(plan.blockers),
+        blocker_refs=list(plan.blocker_refs),
         plan=plan,
     )
 
@@ -1813,6 +2145,10 @@ def _build_batch_download_item(
             disposition="skip",
             platform=platform,
             reason="No remote asset exists.",
+            reason_ref=ui_message(
+                "asset.batch.remote_asset_missing",
+                "No remote asset exists.",
+            ),
         )
     if (
         remote_row.entry is not None
@@ -1828,6 +2164,10 @@ def _build_batch_download_item(
             disposition="skip",
             platform=platform,
             reason="The read-only reference has no private snapshot that can be installed safely.",
+            reason_ref=ui_message(
+                "asset.batch.read_only_snapshot_missing",
+                "The read-only reference has no private snapshot that can be installed safely.",
+            ),
         )
     platform_rows = [row for row in rows if row.platform == platform]
     if not platform_rows:
@@ -1837,6 +2177,10 @@ def _build_batch_download_item(
             disposition="skip",
             platform=platform,
             reason="The resource has no compatible target on this platform.",
+            reason_ref=ui_message(
+                "asset.batch.compatible_target_missing",
+                "The resource has no compatible target on this platform.",
+            ),
         )
     expected = next(
         (
@@ -1858,6 +2202,10 @@ def _build_batch_download_item(
             disposition="skip",
             platform=platform,
             reason="The target platform is not enabled.",
+            reason_ref=ui_message(
+                "asset.batch.platform_disabled",
+                "The target platform is not enabled.",
+            ),
         )
     if not expected.supported:
         return _batch_non_action_item(
@@ -1866,6 +2214,10 @@ def _build_batch_download_item(
             disposition="skip",
             platform=platform,
             reason="The resource is not compatible with this platform.",
+            reason_ref=ui_message(
+                "asset.batch.platform_incompatible",
+                "The resource is not compatible with this platform.",
+            ),
         )
     resolution = choice.resolution if choice else "overwrite"
     new_name = choice.new_name.strip() if choice else ""
@@ -1884,6 +2236,10 @@ def _build_batch_download_item(
             local_instance_id=expected.local_instance_id,
             target_resource_key=resource_key,
             reason="The target already matches the remote asset.",
+            reason_ref=ui_message(
+                "asset.batch.target_already_matches",
+                "The target already matches the remote asset.",
+            ),
         )
     plan = build_asset_action_plan(
         action,
@@ -1909,6 +2265,7 @@ def _build_batch_download_item(
         if plan.target_exists
         else "create"
     )
+    reason = "; ".join(plan.blockers)
     return AssetBatchPlanItem(
         id=f"download:{resource_key}:{platform}:{plan.local_instance_id}",
         resource_key=resource_key,
@@ -1917,9 +2274,16 @@ def _build_batch_download_item(
         action=action,
         disposition=disposition,
         target_resource_key=plan.target_resource_key,
-        reason="; ".join(plan.blockers),
+        reason=reason,
+        reason_ref=(
+            ui_message("asset.batch.blocked", reason, detail=reason)
+            if plan.blocked
+            else None
+        ),
         warnings=list(plan.warnings),
+        warning_refs=list(plan.warning_refs),
         blockers=list(plan.blockers),
+        blocker_refs=list(plan.blocker_refs),
         plan=plan,
     )
 
@@ -1938,6 +2302,10 @@ def _build_plugin_reference_download_item(
             disposition="skip",
             platform=platform,
             reason="This plugin reference belongs to a different platform.",
+            reason_ref=ui_message(
+                "asset.batch.plugin_platform_mismatch",
+                "This plugin reference belongs to a different platform.",
+            ),
         )
     local_rows = [
         row
@@ -2016,6 +2384,10 @@ def _build_plugin_reference_download_item(
             plugin_data=plugin_data,
             created_at=_utc_now(),
         )
+        reason = (
+            f"Align {len(alignments)} installed plugin state(s)."
+            + (" Remaining manual actions: " + "; ".join(pending) if pending else "")
+        )
         return AssetBatchPlanItem(
             id=f"download:{resource_key}:{platform}:state",
             resource_key=resource_key,
@@ -2024,9 +2396,12 @@ def _build_plugin_reference_download_item(
             action="align-plugin-state",
             disposition="update",
             target_resource_key=resource_key,
-            reason=(
-                f"Align {len(alignments)} installed plugin state(s)."
-                + (" Remaining manual actions: " + "; ".join(pending) if pending else "")
+            reason=reason,
+            reason_ref=ui_message(
+                "asset.batch.align_plugin_state",
+                reason,
+                count=len(alignments),
+                detail="; ".join(pending),
             ),
             warnings=list(pending),
             plan=plan,
@@ -2038,6 +2413,11 @@ def _build_plugin_reference_download_item(
             disposition="unchanged",
             platform=platform,
             reason=f"{unchanged} plugin installation state(s) already match.",
+            reason_ref=ui_message(
+                "asset.batch.plugin_state_already_matches",
+                f"{unchanged} plugin installation state(s) already match.",
+                count=unchanged,
+            ),
         )
     return _batch_non_action_item(
         resource_key,
@@ -2095,6 +2475,7 @@ def _batch_non_action_item(
     action: str,
     disposition: str,
     reason: str,
+    reason_ref: UiMessageRef | None = None,
     platform: str = "",
     local_instance_id: str = "",
     target_resource_key: str = "",
@@ -2108,7 +2489,9 @@ def _batch_non_action_item(
         disposition=disposition,
         target_resource_key=target_resource_key or resource_key,
         reason=reason,
+        reason_ref=reason_ref,
         blockers=[reason] if disposition == "blocked" else [],
+        blocker_refs=[reason_ref] if disposition == "blocked" and reason_ref else [],
     )
 
 
@@ -2129,13 +2512,22 @@ def _block_duplicate_batch_targets(
     for duplicates in grouped.values():
         if len(duplicates) < 2:
             continue
-        message = "Multiple batch items resolve to the same target."
+        message_ref = ui_message(
+            "asset.batch.duplicate_target",
+            "Multiple batch items resolve to the same target.",
+        )
+        message = message_ref.fallback
         for item in duplicates:
             item.disposition = "blocked"
             item.reason = message
+            item.reason_ref = message_ref
             item.blockers = _unique_strings([*item.blockers, message])
+            item.blocker_refs = _unique_message_refs([*item.blocker_refs, message_ref])
             if item.plan is not None:
                 item.plan.blockers = _unique_strings([*item.plan.blockers, message])
+                item.plan.blocker_refs = _unique_message_refs(
+                    [*item.plan.blocker_refs, message_ref]
+                )
                 item.plan.blocked = True
 
 
@@ -2202,7 +2594,9 @@ def _batch_passive_result(item: AssetBatchPlanItem) -> AssetActionResult:
         target_resource_key=item.target_resource_key,
         platform=item.platform,
         message=item.reason or item.disposition,
+        message_ref=item.reason_ref,
         warnings=item.warnings,
+        warning_refs=item.warning_refs,
     )
 
 
@@ -2210,6 +2604,7 @@ def _batch_error_result(
     plan: AssetActionPlan,
     status: str,
     message: str,
+    message_ref: UiMessageRef | None = None,
 ) -> AssetActionResult:
     return AssetActionResult(
         operation_id=plan.operation_id,
@@ -2219,7 +2614,9 @@ def _batch_error_result(
         target_resource_key=plan.target_resource_key,
         platform=plan.platform,
         message=message,
+        message_ref=message_ref,
         warnings=plan.warnings,
+        warning_refs=plan.warning_refs,
     )
 
 
@@ -2269,7 +2666,9 @@ def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
         new_name=str(data.get("new_name") or ""),
         new_install_name=str(data.get("new_install_name") or ""),
         warnings=[str(item) for item in data.get("warnings", [])],
+        warning_refs=ui_messages_from_data(data.get("warning_refs")),
         blockers=[str(item) for item in data.get("blockers", [])],
+        blocker_refs=ui_messages_from_data(data.get("blocker_refs")),
         blocked=bool(data.get("blocked", False)),
         created_at=str(data.get("created_at") or ""),
         plugin_data=dict(data.get("plugin_data") or {}),
@@ -2281,9 +2680,14 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
     branch = cfg.resources.branch or "main"
     repo_url = _configured_remote_url(cfg)
     if not repo_url:
+        warning_ref = ui_message(
+            "asset.remote.not_configured",
+            "No remote resource repository URL is configured; remote writes are blocked.",
+        )
         return _local_compatibility_snapshot(
             cfg,
-            warning="No remote resource repository URL is configured; remote writes are blocked.",
+            warning=warning_ref.fallback,
+            warning_ref=warning_ref,
         )
 
     cache_key = hashlib.sha256(f"{repo_url}\0{branch}".encode()).hexdigest()[:24]
@@ -2302,6 +2706,12 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                         cached.stat().st_mtime,
                         tz=timezone.utc,
                     ).isoformat()
+                    warning_ref = ui_message(
+                        "asset.remote.refresh_skipped_cached",
+                        "Remote refresh was skipped; showing the latest cached "
+                        f"snapshot from {cached_at}.",
+                        cached_at=cached_at,
+                    )
                     return RemoteSnapshot(
                         root=cached,
                         registry=load_registry(cached / DEFAULT_REGISTRY_FILENAME),
@@ -2309,18 +2719,19 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                         branch=branch,
                         repo_url=repo_url,
                         available=False,
-                        warning=(
-                            "Remote refresh was skipped; showing the latest cached "
-                            f"snapshot from {cached_at}."
-                        ),
+                        warning=warning_ref.fallback,
+                        warning_ref=warning_ref,
                     )
+                warning_ref = ui_message(
+                    "asset.remote.refresh_skipped_legacy",
+                    "Remote refresh was skipped and no cached snapshot is "
+                    "available; showing the legacy local snapshot read-only.",
+                )
                 return _local_compatibility_snapshot(
                     cfg,
                     repo_url=repo_url,
-                    warning=(
-                        "Remote refresh was skipped and no cached snapshot is "
-                        "available; showing the legacy local snapshot read-only."
-                    ),
+                    warning=warning_ref.fallback,
+                    warning_ref=warning_ref,
                 )
 
             if not transport_is_repo:
@@ -2383,6 +2794,13 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                 cached.stat().st_mtime,
                 tz=timezone.utc,
             ).isoformat()
+            warning_ref = ui_message(
+                "asset.remote.refresh_failed_cached",
+                "Remote refresh failed; showing the latest cached snapshot "
+                f"from {cached_at}: {exc}",
+                cached_at=cached_at,
+                detail=str(exc),
+            )
             return RemoteSnapshot(
                 root=cached,
                 registry=load_registry(cached / DEFAULT_REGISTRY_FILENAME),
@@ -2390,15 +2808,19 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                 branch=branch,
                 repo_url=repo_url,
                 available=False,
-                warning=(
-                    "Remote refresh failed; showing the latest cached snapshot "
-                    f"from {cached_at}: {exc}"
-                ),
+                warning=warning_ref.fallback,
+                warning_ref=warning_ref,
             )
+        warning_ref = ui_message(
+            "asset.remote.refresh_failed_legacy",
+            f"Remote refresh failed; showing the legacy local snapshot read-only: {exc}",
+            detail=str(exc),
+        )
         return _local_compatibility_snapshot(
             cfg,
             repo_url=repo_url,
-            warning=f"Remote refresh failed; showing the legacy local snapshot read-only: {exc}",
+            warning=warning_ref.fallback,
+            warning_ref=warning_ref,
         )
 
 
@@ -2407,6 +2829,7 @@ def _local_compatibility_snapshot(
     *,
     repo_url: str = "",
     warning: str,
+    warning_ref: UiMessageRef | None = None,
 ) -> RemoteSnapshot:
     root = resource_root(cfg)
     registry = load_registry(root / DEFAULT_REGISTRY_FILENAME)
@@ -2419,6 +2842,7 @@ def _local_compatibility_snapshot(
         repo_url=repo_url,
         available=False,
         warning=warning,
+        warning_ref=warning_ref,
     )
 
 
@@ -2532,16 +2956,47 @@ def _expected_row(
         install_name if entry.kind == "mcp" else "",
     )
     blockers: list[str] = []
+    blocker_refs: list[UiMessageRef] = []
     if not context.configured:
-        blockers.append("Platform is detected but not configured; configure it before downloading.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.platform_not_configured",
+                "Platform is detected but not configured; configure it before downloading.",
+            ),
+        )
     elif not context.profile.enabled:
-        blockers.append("Platform is configured but disabled; enable it before downloading.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.platform_disabled",
+                "Platform is configured but disabled; enable it before downloading.",
+            ),
+        )
     if not supported:
-        blockers.append("The resource is not enabled for this platform.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.resource_not_enabled",
+                "The resource is not enabled for this platform.",
+            ),
+        )
     if read_only:
-        blockers.append("This registry item is a read-only reference in asset sync.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.read_only_reference",
+                "This registry item is a read-only reference in asset sync.",
+            ),
+        )
     if not snapshot.available:
         blockers.append(snapshot.warning or "Remote snapshot is not current.")
+        if snapshot.warning_ref:
+            blocker_refs.append(snapshot.warning_ref)
     return AssetPlatformRow(
         resource_key=entry.resource_key,
         kind=entry.kind,
@@ -2570,7 +3025,9 @@ def _expected_row(
         local_fingerprint=local_fingerprint,
         metadata_differences=metadata_differences,
         diff_summary=_diff_summary(status, metadata_differences),
+        diff_summary_refs=_diff_summary_refs(status, metadata_differences),
         blockers=_unique_strings(blockers),
+        blocker_refs=_unique_message_refs(blocker_refs),
         entry=entry,
     )
 
@@ -2606,10 +3063,25 @@ def _expected_plugin_rows(
             read_only=False,
         )
         blockers: list[str] = []
+        blocker_refs: list[UiMessageRef] = []
         if spec.track == "content" and target is None:
-            blockers.append("No portable local target is configured for this plugin installation.")
+            _append_message(
+                blockers,
+                blocker_refs,
+                ui_message(
+                    "asset.blocker.plugin_target_missing",
+                    "No portable local target is configured for this plugin installation.",
+                ),
+            )
         if installation.scope == "managed":
-            blockers.append("Managed plugin installations are read-only.")
+            _append_message(
+                blockers,
+                blocker_refs,
+                ui_message(
+                    "asset.blocker.managed_plugin_read_only",
+                    "Managed plugin installations are read-only.",
+                ),
+            )
         local_id = _instance_id(
             "plugin-expected",
             entry.resource_key,
@@ -2644,7 +3116,9 @@ def _expected_plugin_rows(
                 remote_asset_fingerprint=_remote_asset_fingerprint(snapshot.root, entry),
                 local_fingerprint=local_fingerprint,
                 diff_summary=_diff_summary(status, []),
+                diff_summary_refs=_diff_summary_refs(status, []),
                 blockers=blockers,
+                blocker_refs=blocker_refs,
                 entry=entry,
                 plugin_track=spec.track,
                 plugin_id=spec.plugin_id,
@@ -2818,10 +3292,25 @@ def _plugin_candidate_row(
         read_only=False,
     )
     blockers: list[str] = []
+    blocker_refs: list[UiMessageRef] = []
     if not candidate.complete:
-        blockers.append("Plugin discovery is incomplete; missing fields must not be inferred.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.plugin_discovery_incomplete",
+                "Plugin discovery is incomplete; missing fields must not be inferred.",
+            ),
+        )
     if candidate.scope in {"project", "local"} and not candidate.project_repo:
-        blockers.append("Projects without a Git remote are observation-only and cannot be uploaded.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.project_without_remote",
+                "Projects without a Git remote are observation-only and cannot be uploaded.",
+            ),
+        )
     return AssetPlatformRow(
         resource_key=str(key),
         kind="plugin",
@@ -2848,7 +3337,9 @@ def _plugin_candidate_row(
         remote_asset_fingerprint=_remote_asset_fingerprint(snapshot.root, entry) if entry else "",
         local_fingerprint=local_fingerprint,
         diff_summary=_diff_summary(status, []),
+        diff_summary_refs=_diff_summary_refs(status, []),
         blockers=_unique_strings(blockers),
+        blocker_refs=_unique_message_refs(blocker_refs),
         warnings=list(candidate.warnings),
         entry=entry,
         plugin_track=candidate.track,
@@ -3083,12 +3574,34 @@ def _local_candidate_row(
     )
     supported = not context.supported_kinds or key.kind in context.supported_kinds
     blockers: list[str] = []
+    blocker_refs: list[UiMessageRef] = []
     if not context.configured:
-        blockers.append("Platform is detected but not configured; configure it before downloading.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.platform_not_configured",
+                "Platform is detected but not configured; configure it before downloading.",
+            ),
+        )
     if not supported:
-        blockers.append("The detected platform does not declare support for this resource kind.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.kind_not_supported",
+                "The detected platform does not declare support for this resource kind.",
+            ),
+        )
     if read_only:
-        blockers.append("This registry item is a read-only reference in asset sync.")
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.read_only_reference",
+                "This registry item is a read-only reference in asset sync.",
+            ),
+        )
     return AssetPlatformRow(
         resource_key=str(key),
         kind=key.kind,
@@ -3117,7 +3630,9 @@ def _local_candidate_row(
         local_fingerprint=local_fingerprint,
         metadata_differences=metadata_differences,
         diff_summary=_diff_summary(status, metadata_differences),
+        diff_summary_refs=_diff_summary_refs(status, metadata_differences),
         blockers=_unique_strings(blockers),
+        blocker_refs=_unique_message_refs(blocker_refs),
         warnings=list(getattr(entry, "warnings", [])) if entry else [],
         entry=entry,
     )
@@ -3231,21 +3746,70 @@ def _asset_status(
 
 
 def _diff_summary(status: AssetStatus, metadata: list[str]) -> list[str]:
+    return fallback_text(_diff_summary_refs(status, metadata))
+
+
+def _diff_summary_refs(
+    status: AssetStatus,
+    metadata: list[str],
+) -> list[UiMessageRef]:
     if status == "remote-only":
-        return ["Remote content is available; no local instance exists."]
+        return [
+            ui_message(
+                "asset.platform_diff.remote_only",
+                "Remote content is available; no local instance exists.",
+            )
+        ]
     if status == "local-only":
-        return ["Local content is not present in the remote registry."]
+        return [
+            ui_message(
+                "asset.platform_diff.local_only",
+                "Local content is not present in the remote registry.",
+            )
+        ]
     if status == "same":
-        return ["Content fingerprints match."]
+        return [
+            ui_message(
+                "asset.platform_diff.same",
+                "Content fingerprints match.",
+            )
+        ]
     if status == "content-different":
-        return ["Local and remote content fingerprints differ."]
+        return [
+            ui_message(
+                "asset.platform_diff.content_different",
+                "Local and remote content fingerprints differ.",
+            )
+        ]
     if status == "metadata-only":
-        return [f"Derived metadata differs: {', '.join(metadata)}."]
+        fields = ", ".join(metadata)
+        return [
+            ui_message(
+                "asset.platform_diff.metadata_only",
+                f"Derived metadata differs: {fields}.",
+                fields=fields,
+            )
+        ]
     if status == "read-only-reference":
-        return ["The item is tracked by an external or pathless repository reference."]
+        return [
+            ui_message(
+                "asset.platform_diff.read_only_reference",
+                "The item is tracked by an external or pathless repository reference.",
+            )
+        ]
     if status == "target-conflict":
-        return ["Multiple resources resolve to the same platform target."]
-    return ["The content cannot be compared safely."]
+        return [
+            ui_message(
+                "asset.platform_diff.target_conflict",
+                "Multiple resources resolve to the same platform target.",
+            )
+        ]
+    return [
+        ui_message(
+            "asset.platform_diff.uncomparable",
+            "The content cannot be compared safely.",
+        )
+    ]
 
 
 def _mark_target_collisions(rows: list[AssetPlatformRow]) -> None:
@@ -3265,10 +3829,16 @@ def _mark_target_collisions(rows: list[AssetPlatformRow]) -> None:
         if len(resource_keys) <= 1:
             continue
         detail = "Target is shared by: " + ", ".join(sorted(resource_keys))
+        detail_ref = ui_message(
+            "asset.blocker.target_shared",
+            detail,
+            resource_keys=", ".join(sorted(resource_keys)),
+        )
         for row in group:
             row.status = "target-conflict"
-            row.blockers.append(detail)
-            row.diff_summary = _diff_summary("target-conflict", [])
+            _append_message(row.blockers, row.blocker_refs, detail_ref)
+            row.diff_summary_refs = _diff_summary_refs("target-conflict", [])
+            row.diff_summary = fallback_text(row.diff_summary_refs)
 
 
 def _mark_duplicate_remote_content(rows: list[AssetPlatformRow]) -> None:
@@ -3283,7 +3853,12 @@ def _mark_duplicate_remote_content(rows: list[AssetPlatformRow]) -> None:
         names = groups.get((row.kind, row.remote_content_fingerprint), set())
         if len(names) > 1:
             others = sorted(names - {row.resource_key})
-            row.warnings.append("Identical content also exists under: " + ", ".join(others))
+            warning_ref = ui_message(
+                "asset.warning.identical_content",
+                "Identical content also exists under: " + ", ".join(others),
+                resource_keys=", ".join(others),
+            )
+            _append_message(row.warnings, row.warning_refs, warning_ref)
 
 
 def _remote_duplicate_keys(
@@ -3365,85 +3940,164 @@ def _select_plan_row(
     raise ValueError("Multiple local instances match; pass local_instance_id explicitly.")
 
 
-def _download_plan_blockers(
+def _download_plan_blocker_refs(
     row: AssetPlatformRow,
     overwrite_unmanaged: bool,
-) -> list[str]:
-    blockers: list[str] = []
+) -> list[UiMessageRef]:
+    blockers: list[UiMessageRef] = []
     if not row.remote_exists:
-        blockers.append("The remote asset does not exist.")
+        blockers.append(
+            ui_message("asset.blocker.remote_asset_missing", "The remote asset does not exist.")
+        )
     if not row.remote_writable:
         blockers.append(
-            "Read-only references cannot be downloaded from the private asset snapshot."
+            ui_message(
+                "asset.blocker.read_only_download",
+                "Read-only references cannot be downloaded from the private asset snapshot.",
+            )
         )
     if not row.configured or not row.enabled:
-        blockers.append("The platform must be configured and enabled before downloading.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.platform_not_ready",
+                "The platform must be configured and enabled before downloading.",
+            )
+        )
     if not row.supported:
-        blockers.append("The resource is not supported on this platform.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.platform_unsupported",
+                "The resource is not supported on this platform.",
+            )
+        )
     if row.status == "target-conflict":
-        blockers.append("Change the platform install name before downloading.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.change_install_name",
+                "Change the platform install name before downloading.",
+            )
+        )
     if row.local_exists and row.ownership != "managed" and not overwrite_unmanaged:
-        blockers.append("The target is unmanaged; explicitly confirm overwrite to continue.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.unmanaged_target",
+                "The target is unmanaged; explicitly confirm overwrite to continue.",
+            )
+        )
     return blockers
 
 
-def _upload_plan_blockers(row: AssetPlatformRow) -> list[str]:
-    blockers: list[str] = []
+def _upload_plan_blocker_refs(row: AssetPlatformRow) -> list[UiMessageRef]:
+    blockers: list[UiMessageRef] = []
     if not row.local_exists:
-        blockers.append("The local source does not exist.")
+        blockers.append(
+            ui_message("asset.blocker.local_source_missing", "The local source does not exist.")
+        )
     if row.remote_exists and not row.remote_writable:
-        blockers.append("The matching remote item is a read-only reference; use copy-to-remote.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.remote_read_only",
+                "The matching remote item is a read-only reference; use copy-to-remote.",
+            )
+        )
     if not row.local_fingerprint:
-        blockers.append("The local source cannot be fingerprinted safely.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.local_fingerprint_missing",
+                "The local source cannot be fingerprinted safely.",
+            )
+        )
     return blockers
 
 
-def _copy_to_local_blockers(
+def _copy_to_local_blocker_refs(
     row: AssetPlatformRow,
     registry: Registry,
     new_name: str,
-) -> list[str]:
-    blockers: list[str] = []
+) -> list[UiMessageRef]:
+    blockers: list[UiMessageRef] = []
     if not row.remote_exists:
-        blockers.append("The remote source does not exist.")
+        blockers.append(
+            ui_message("asset.blocker.remote_source_missing", "The remote source does not exist.")
+        )
     if not row.remote_writable:
-        blockers.append("Only private-repository assets can be copied to a local target.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.copy_local_private_only",
+                "Only private-repository assets can be copied to a local target.",
+            )
+        )
     if not row.configured or not row.enabled:
-        blockers.append("The platform must be configured and enabled before copying locally.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.copy_local_platform_not_ready",
+                "The platform must be configured and enabled before copying locally.",
+            )
+        )
     if new_name and registry.get(new_name, row.kind) is not None:
-        blockers.append("The new name already exists in the remote registry for this kind.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.remote_name_exists",
+                "The new name already exists in the remote registry for this kind.",
+            )
+        )
     return blockers
 
 
-def _copy_to_remote_blockers(
+def _copy_to_remote_blocker_refs(
     row: AssetPlatformRow,
     registry: Registry,
     new_name: str,
-) -> list[str]:
-    blockers: list[str] = []
+) -> list[UiMessageRef]:
+    blockers: list[UiMessageRef] = []
     if not row.local_exists:
-        blockers.append("The local source does not exist.")
+        blockers.append(
+            ui_message("asset.blocker.local_source_missing", "The local source does not exist.")
+        )
     if not row.local_fingerprint:
-        blockers.append("The local source cannot be fingerprinted safely.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.local_fingerprint_missing",
+                "The local source cannot be fingerprinted safely.",
+            )
+        )
     if new_name and registry.get(new_name, row.kind) is not None:
-        blockers.append("The new remote name already exists for this kind.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.new_remote_name_exists",
+                "The new remote name already exists for this kind.",
+            )
+        )
     return blockers
 
 
-def _install_alias_plan_blockers(
+def _install_alias_plan_blocker_refs(
     row: AssetPlatformRow,
     registry: Registry,
     cfg: Config,
     install_name: str,
-) -> list[str]:
-    blockers: list[str] = []
+) -> list[UiMessageRef]:
+    blockers: list[UiMessageRef] = []
     if not row.remote_exists or not row.remote_writable:
-        blockers.append("Only private-repository assets can store a platform install name.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.install_name_private_only",
+                "Only private-repository assets can store a platform install name.",
+            )
+        )
     if not install_name:
-        blockers.append("A platform install name is required.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.install_name_required",
+                "A platform install name is required.",
+            )
+        )
     elif not ITEM_NAME_RE.match(install_name):
         blockers.append(
-            "The platform install name must use lowercase letters, digits, and hyphens."
+            ui_message(
+                "asset.blocker.install_name_invalid",
+                "The platform install name must use lowercase letters, digits, and hyphens.",
+            )
         )
     if install_name and _install_name_collision(
         registry,
@@ -3453,7 +4107,12 @@ def _install_alias_plan_blockers(
         install_name=install_name,
         exclude_key=row.resource_key,
     ):
-        blockers.append("The platform install name collides with another resource target.")
+        blockers.append(
+            ui_message(
+                "asset.blocker.install_name_collision",
+                "The platform install name collides with another resource target.",
+            )
+        )
     return blockers
 
 
@@ -3663,6 +4322,12 @@ def _apply_local_asset_action(
         transaction.rollback(str(exc))
         raise
 
+    message_ref = ui_message(
+        "asset.result.applied",
+        f"Applied {plan.action} for {plan.target_resource_key}.",
+        action=plan.action,
+        resource_key=plan.target_resource_key,
+    )
     return AssetActionResult(
         operation_id=plan.operation_id,
         action=plan.action,
@@ -3670,11 +4335,13 @@ def _apply_local_asset_action(
         resource_key=plan.resource_key,
         target_resource_key=plan.target_resource_key,
         platform=plan.platform,
-        message=f"Applied {plan.action} for {plan.target_resource_key}.",
+        message=message_ref.fallback,
+        message_ref=message_ref,
         remote_commit=snapshot.commit,
         local_path=target,
         replayed_on_latest=snapshot.commit != plan.remote_commit,
         warnings=plan.warnings,
+        warning_refs=plan.warning_refs,
         operation_status=record.status,
     )
 
@@ -3762,6 +4429,11 @@ def _apply_plugin_content_download(
     except Exception as exc:
         transaction.rollback(str(exc))
         raise
+    message_ref = ui_message(
+        "asset.result.plugin_downloaded",
+        f"Downloaded plugin content for {plan.target_resource_key}.",
+        resource_key=plan.target_resource_key,
+    )
     return AssetActionResult(
         operation_id=plan.operation_id,
         action=plan.action,
@@ -3769,11 +4441,13 @@ def _apply_plugin_content_download(
         resource_key=plan.resource_key,
         target_resource_key=plan.target_resource_key,
         platform=plan.platform,
-        message=f"Downloaded plugin content for {plan.target_resource_key}.",
+        message=message_ref.fallback,
+        message_ref=message_ref,
         remote_commit=snapshot.commit,
         local_path=target,
         replayed_on_latest=snapshot.commit != plan.remote_commit,
         warnings=plan.warnings,
+        warning_refs=plan.warning_refs,
         operation_status=record.status,
     )
 
@@ -3877,6 +4551,12 @@ def _apply_plugin_reference_state(
     message = f"Aligned {len(alignments)} plugin installation state(s)."
     if manual:
         message += " Manual actions remain: " + "; ".join(manual)
+    message_ref = ui_message(
+        "asset.result.plugin_state_aligned",
+        message,
+        count=len(alignments),
+        detail="; ".join(manual),
+    )
     return AssetActionResult(
         operation_id=plan.operation_id,
         action=plan.action,
@@ -3885,10 +4565,12 @@ def _apply_plugin_reference_state(
         target_resource_key=plan.target_resource_key,
         platform=plan.platform,
         message=message,
+        message_ref=message_ref,
         remote_commit=snapshot.commit,
         local_path=targets[0].path if targets else None,
         replayed_on_latest=snapshot.commit != plan.remote_commit,
         warnings=[*plan.warnings, *manual],
+        warning_refs=plan.warning_refs,
         operation_status=record.status,
     )
 
@@ -4124,8 +4806,8 @@ def _apply_remote_asset_action(
     plan: AssetActionPlan,
     cfg: Config,
 ) -> AssetActionResult:
-    blocker = _legacy_write_blocker(cfg, fetch=True)
-    if blocker:
+    blocker_ref = _legacy_write_blocker_message(cfg, fetch=True)
+    if blocker_ref:
         return AssetActionResult(
             operation_id=plan.operation_id,
             action=plan.action,
@@ -4133,11 +4815,17 @@ def _apply_remote_asset_action(
             resource_key=plan.resource_key,
             target_resource_key=plan.target_resource_key,
             platform=plan.platform,
-            message=blocker,
+            message=blocker_ref.fallback,
+            message_ref=blocker_ref,
             warnings=plan.warnings,
+            warning_refs=plan.warning_refs,
         )
     repo_url = _configured_remote_url(cfg)
     if not repo_url:
+        message_ref = ui_message(
+            "asset.result.remote_not_configured",
+            "No remote resource repository URL is configured.",
+        )
         return AssetActionResult(
             operation_id=plan.operation_id,
             action=plan.action,
@@ -4145,8 +4833,10 @@ def _apply_remote_asset_action(
             resource_key=plan.resource_key,
             target_resource_key=plan.target_resource_key,
             platform=plan.platform,
-            message="No remote resource repository URL is configured.",
+            message=message_ref.fallback,
+            message_ref=message_ref,
             warnings=plan.warnings,
+            warning_refs=plan.warning_refs,
         )
 
     last_push_error: Exception | None = None
@@ -4211,6 +4901,10 @@ def _apply_remote_asset_action(
                 source_row,
             )
             if not changed:
+                message_ref = ui_message(
+                    "asset.result.remote_already_matches",
+                    "The requested remote state already matches.",
+                )
                 return AssetActionResult(
                     operation_id=plan.operation_id,
                     action=plan.action,
@@ -4218,11 +4912,13 @@ def _apply_remote_asset_action(
                     resource_key=plan.resource_key,
                     target_resource_key=plan.target_resource_key,
                     platform=plan.platform,
-                    message="The requested remote state already matches.",
+                    message=message_ref.fallback,
+                    message_ref=message_ref,
                     remote_commit=latest_commit,
                     replayed_on_latest=latest_commit != plan.remote_commit,
                     push_retry_count=attempt,
                     warnings=plan.warnings,
+                    warning_refs=plan.warning_refs,
                 )
 
             commit_resource_changes_unlocked(
@@ -4241,6 +4937,11 @@ def _apply_remote_asset_action(
                 if attempt == 0:
                     continue
                 raise
+            message_ref = ui_message(
+                "asset.result.remote_applied",
+                f"Applied {plan.action} and pushed one asset-level commit.",
+                action=plan.action,
+            )
             return AssetActionResult(
                 operation_id=plan.operation_id,
                 action=plan.action,
@@ -4248,11 +4949,13 @@ def _apply_remote_asset_action(
                 resource_key=plan.resource_key,
                 target_resource_key=plan.target_resource_key,
                 platform=plan.platform,
-                message=f"Applied {plan.action} and pushed one asset-level commit.",
+                message=message_ref.fallback,
+                message_ref=message_ref,
                 remote_commit=committed,
                 replayed_on_latest=latest_commit != plan.remote_commit,
                 push_retry_count=attempt,
                 warnings=plan.warnings,
+                warning_refs=plan.warning_refs,
             )
     raise AssetSyncError(str(last_push_error or "Remote push failed."))
 
@@ -4263,16 +4966,29 @@ def _apply_remote_asset_batch(
 ) -> list[AssetActionResult]:
     if not plans:
         return []
-    blocker = _legacy_write_blocker(cfg, fetch=True)
-    if blocker:
-        return [_batch_error_result(plan, "blocked", blocker) for plan in plans]
-    repo_url = _configured_remote_url(cfg)
-    if not repo_url:
+    blocker_ref = _legacy_write_blocker_message(cfg, fetch=True)
+    if blocker_ref:
         return [
             _batch_error_result(
                 plan,
                 "blocked",
-                "No remote resource repository URL is configured.",
+                blocker_ref.fallback,
+                blocker_ref,
+            )
+            for plan in plans
+        ]
+    repo_url = _configured_remote_url(cfg)
+    if not repo_url:
+        message_ref = ui_message(
+            "asset.result.remote_not_configured",
+            "No remote resource repository URL is configured.",
+        )
+        return [
+            _batch_error_result(
+                plan,
+                "blocked",
+                message_ref.fallback,
+                message_ref,
             )
             for plan in plans
         ]
@@ -4337,7 +5053,15 @@ def _apply_remote_asset_batch(
                     _validate_remote_batch_source(source_row, target_key.kind)
                     prepared.append((plan, source_row))
                 except _StaleAssetTarget as exc:
-                    attempt_results.append(_batch_error_result(plan, exc.code, str(exc)))
+                    detail = str(exc)
+                    attempt_results.append(
+                        _batch_error_result(
+                            plan,
+                            exc.code,
+                            detail,
+                            ui_message("asset.result.stale", detail, detail=detail),
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001 - exclude invalid source and continue
                     attempt_results.append(_batch_error_result(plan, "failed", str(exc)))
 
@@ -4352,6 +5076,10 @@ def _apply_remote_asset_batch(
                     ):
                         changed.append(plan)
                     else:
+                        message_ref = ui_message(
+                            "asset.result.remote_already_matches",
+                            "The requested remote state already matches.",
+                        )
                         attempt_results.append(
                             AssetActionResult(
                                 operation_id=plan.operation_id,
@@ -4360,11 +5088,13 @@ def _apply_remote_asset_batch(
                                 resource_key=plan.resource_key,
                                 target_resource_key=plan.target_resource_key,
                                 platform=plan.platform,
-                                message="The requested remote state already matches.",
+                                message=message_ref.fallback,
+                                message_ref=message_ref,
                                 remote_commit=latest_commit,
                                 replayed_on_latest=latest_commit != plan.remote_commit,
                                 push_retry_count=attempt,
                                 warnings=plan.warnings,
+                                warning_refs=plan.warning_refs,
                             )
                         )
             except Exception as exc:  # noqa: BLE001 - discard the uncommitted worktree
@@ -4413,10 +5143,16 @@ def _apply_remote_asset_batch(
                         target_resource_key=plan.target_resource_key,
                         platform=plan.platform,
                         message=f"Applied {plan.action} in one batch commit.",
+                        message_ref=ui_message(
+                            "asset.result.batch_applied",
+                            f"Applied {plan.action} in one batch commit.",
+                            action=plan.action,
+                        ),
                         remote_commit=committed,
                         replayed_on_latest=latest_commit != plan.remote_commit,
                         push_retry_count=attempt,
                         warnings=plan.warnings,
+                        warning_refs=plan.warning_refs,
                     )
                     for plan in changed
                 ],
@@ -4949,13 +5685,23 @@ def _is_private_repo_asset(entry: RegistryItem) -> bool:
 
 
 def _legacy_write_blocker(cfg: Config, *, fetch: bool) -> str:
+    ref = _legacy_write_blocker_message(cfg, fetch=fetch)
+    return ref.fallback if ref else ""
+
+
+def _legacy_write_blocker_message(
+    cfg: Config,
+    *,
+    fetch: bool,
+) -> UiMessageRef | None:
     root = resource_root(cfg)
     if git_ops.is_repo(root):
         try:
             if git_ops.status_short(root):
-                return (
+                return ui_message(
+                    "asset.legacy.dirty",
                     "The legacy resource workspace is dirty. Use the deprecated resource "
-                    "commit/sync commands to commit, cancel, or clean it before remote asset writes."
+                    "commit/sync commands to commit, cancel, or clean it before remote asset writes.",
                 )
             if fetch:
                 git_ops.fetch(
@@ -4969,18 +5715,25 @@ def _legacy_write_blocker(cfg: Config, *, fetch: bool) -> str:
             )
             current_branch = git_ops.current_branch(root)
             if current_branch != (cfg.resources.branch or "main"):
-                return (
+                return ui_message(
+                    "asset.legacy.wrong_branch",
                     "The legacy resource workspace is on the wrong branch. Resolve it "
-                    "with the deprecated resource sync commands before remote asset writes."
+                    "with the deprecated resource sync commands before remote asset writes.",
                 )
             if divergence.state in {"ahead", "diverged"}:
-                return (
+                return ui_message(
+                    "asset.legacy.diverged",
                     f"The legacy resource workspace is {divergence.state}. Resolve its "
                     "local commits with the deprecated resource sync commands before "
-                    "remote asset writes."
+                    "remote asset writes.",
+                    state=divergence.state,
                 )
         except Exception as exc:
-            return f"The legacy resource workspace state cannot be verified: {exc}"
+            return ui_message(
+                "asset.legacy.unverifiable",
+                f"The legacy resource workspace state cannot be verified: {exc}",
+                detail=str(exc),
+            )
 
     sync_root = default_state_dir() / "sync"
     if sync_root.is_dir():
@@ -4990,11 +5743,13 @@ def _legacy_write_blocker(cfg: Config, *, fetch: bool) -> str:
             except Exception:
                 continue
             if plan.status not in {"applied", "cancelled", "abandoned"}:
-                return (
+                return ui_message(
+                    "asset.legacy.pending_plan",
                     f"Legacy sync plan {plan.operation_id} is still pending. Apply, cancel, "
-                    "or clean it with the deprecated resource sync commands first."
+                    "or clean it with the deprecated resource sync commands first.",
+                    operation_id=plan.operation_id,
                 )
-    return ""
+    return None
 
 
 def _save_asset_plan(plan: AssetActionPlan) -> Path:
@@ -5035,11 +5790,13 @@ def _load_asset_result(operation_id: str) -> AssetActionResult | None:
         target_resource_key=str(data.get("target_resource_key") or ""),
         platform=str(data.get("platform") or ""),
         message=str(data.get("message") or ""),
+        message_ref=ui_message_from_data(data.get("message_ref")),
         remote_commit=str(data.get("remote_commit") or ""),
         local_path=Path(local_path) if local_path else None,
         replayed_on_latest=bool(data.get("replayed_on_latest", False)),
         push_retry_count=int(data.get("push_retry_count", 0)),
         warnings=[str(item) for item in data.get("warnings", [])],
+        warning_refs=ui_messages_from_data(data.get("warning_refs")),
         operation_status=str(data.get("operation_status") or ""),
     )
 
@@ -5138,6 +5895,36 @@ def _local_identity(
 
 def _unique_strings(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
+
+
+def _append_message(
+    values: list[str],
+    refs: list[UiMessageRef],
+    ref: UiMessageRef,
+) -> None:
+    values.append(ref.fallback)
+    refs.append(ref)
+
+
+def _extend_messages(
+    values: list[str],
+    refs: list[UiMessageRef],
+    new_refs: list[UiMessageRef],
+) -> None:
+    values.extend(fallback_text(new_refs))
+    refs.extend(new_refs)
+
+
+def _unique_message_refs(values: list[UiMessageRef]) -> list[UiMessageRef]:
+    seen: set[tuple[str, str, tuple[tuple[str, object], ...]]] = set()
+    unique: list[UiMessageRef] = []
+    for value in values:
+        key = (value.code, value.fallback, tuple(sorted(value.params.items())))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(value)
+    return unique
 
 
 def _utc_now() -> str:

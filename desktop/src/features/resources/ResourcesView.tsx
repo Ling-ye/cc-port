@@ -2,7 +2,9 @@ import {
   Cloud,
   Download,
   ExternalLink,
+  FolderInput,
   FolderOpen,
+  Github,
   Monitor,
   PackagePlus,
   RefreshCcw,
@@ -14,12 +16,19 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { lpmAction, openPath } from "@/api/client";
-import { resourceKindLabel, type TFunction } from "@/app/i18n";
+import {
+  displayError,
+  resourceKindLabel,
+  translateMessage,
+  translateMessageList,
+  type TFunction,
+} from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
-import { AddResourceDialog } from "@/features/resources/AddResourceDialog";
+import { CollectGithubDialog } from "@/features/resources/CollectGithubDialog";
+import { ImportLocalDialog } from "@/features/resources/ImportLocalDialog";
 import { ScanLocalDialog, type ScanScope } from "@/features/resources/ScanLocalDialog";
 import { PluginDeleteDialog } from "@/features/resources/PluginDeleteDialog";
 import type {
@@ -100,7 +109,7 @@ export function ResourcesView({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [batchDirection, setBatchDirection] = useState<"upload" | "download" | null>(null);
-  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [entryDialog, setEntryDialog] = useState<"collect" | "import" | null>(null);
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
   const selectVisibleRef = useRef<HTMLInputElement>(null);
 
@@ -136,6 +145,27 @@ export function ResourcesView({
     .filter((value) => value !== "all").length + (query.trim() ? 1 : 0);
   const localInstanceCount = resources.reduce((count, item) => count + item.local_instances.length, 0);
   const repoConfigured = Boolean(inventory?.repo_url);
+  const legacyWriteBlocker = translateMessage(
+    inventory?.legacy_write_blocker_ref,
+    t,
+    inventory?.legacy_write_blocker || "",
+  );
+  const remoteWarning = translateMessage(
+    inventory?.remote_warning_ref,
+    t,
+    inventory?.remote_warning || "",
+  );
+  const entryBlocker = refreshBusy
+    ? t("add.refreshInProgress")
+    : !inventory
+      ? t("add.repositoryLoading")
+      : !repoConfigured
+        ? t("add.repositoryRequired")
+        : legacyWriteBlocker
+          ? legacyWriteBlocker
+          : !inventory.remote_available
+            ? t("add.remoteUnavailable")
+            : "";
   const selectedResource = resources.find((item) => item.resource_key === selectedKey)
     ?? resources[0];
 
@@ -179,7 +209,7 @@ export function ResourcesView({
   }
 
   async function handleResourceAdded(resourceKey: string) {
-    setAddDialogOpen(false);
+    setEntryDialog(null);
     setKindFilter("all");
     setStatusFilter("all");
     setLocalFilter("all");
@@ -195,14 +225,6 @@ export function ResourcesView({
   return (
     <section className="asset-unified-view">
       <div className="panel asset-inventory-panel">
-        <div className="asset-unified-head">
-          <div className="asset-toolbar">
-            <button className="secondary" onClick={() => setAddDialogOpen(true)} disabled={refreshBusy}>
-              <PackagePlus size={16} />{t("add.title")}
-            </button>
-          </div>
-        </div>
-
         <div className="asset-source-strip" aria-label={t("assets.sourceStatus")}>
           <section className="asset-source-card asset-remote-source-card">
             <div className="asset-source-card-head">
@@ -251,8 +273,53 @@ export function ResourcesView({
           </section>
         </div>
 
-        {inventory?.remote_warning ? <Banner tone="danger" text={inventory.remote_warning} /> : null}
-        {inventory?.legacy_write_blocker ? <Banner tone="danger" text={inventory.legacy_write_blocker} /> : null}
+        <section className="asset-entry-strip" aria-labelledby="asset-entry-title">
+          <div className="asset-entry-copy">
+            <PackagePlus size={19} />
+            <div>
+              <h3 id="asset-entry-title">{t("add.collectionTitle")}</h3>
+              <p>{t("add.collectionDescription")}</p>
+              {entryBlocker ? <small id="asset-entry-blocker">{entryBlocker}</small> : null}
+            </div>
+          </div>
+          <div className="asset-entry-actions">
+            <button
+              className="primary"
+              type="button"
+              onClick={() => setEntryDialog("collect")}
+              disabled={Boolean(entryBlocker)}
+              aria-describedby={entryBlocker ? "asset-entry-blocker" : undefined}
+            >
+              <Github size={16} />{t("add.modeCollect")}
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => setEntryDialog("import")}
+              disabled={Boolean(entryBlocker)}
+              aria-describedby={entryBlocker ? "asset-entry-blocker" : undefined}
+            >
+              <FolderInput size={16} />{t("add.modeImport")}
+            </button>
+            {!refreshBusy && inventory && !repoConfigured ? (
+              <button className="secondary asset-entry-recovery" type="button" onClick={onOpenSettings}>
+                {t("assets.configureRepository")}
+              </button>
+            ) : null}
+            {!refreshBusy && inventory && repoConfigured && !inventory.remote_available ? (
+              <button
+                className="secondary asset-entry-recovery"
+                type="button"
+                onClick={() => void Promise.resolve(onRefreshRemote())}
+              >
+                <RefreshCcw size={15} />{t("assets.refreshRemote")}
+              </button>
+            ) : null}
+          </div>
+        </section>
+
+        {remoteWarning ? <Banner tone="danger" text={remoteWarning} /> : null}
+        {legacyWriteBlocker ? <Banner tone="danger" text={legacyWriteBlocker} /> : null}
 
         <div className="asset-filter-toolbar">
           <label className="asset-search-field">
@@ -405,10 +472,18 @@ export function ResourcesView({
         />
       ) : null}
 
-      {addDialogOpen ? (
-        <AddResourceDialog
+      {entryDialog === "collect" ? (
+        <CollectGithubDialog
           t={t}
-          onClose={() => setAddDialogOpen(false)}
+          onClose={() => setEntryDialog(null)}
+          onAdded={handleResourceAdded}
+        />
+      ) : null}
+
+      {entryDialog === "import" ? (
+        <ImportLocalDialog
+          t={t}
+          onClose={() => setEntryDialog(null)}
           onAdded={handleResourceAdded}
         />
       ) : null}
@@ -473,11 +548,17 @@ function ResourceDetail({
         <p className="asset-detail-description">{resource.description || "-"}</p>
       </header>
 
-      {[...resource.warnings, ...resource.blockers].map((message) => <Banner key={message} tone="danger" text={message} />)}
+      {[
+        ...translateMessageList(resource.warning_refs, resource.warnings, t),
+        ...translateMessageList(resource.blocker_refs, resource.blockers, t),
+      ].map((message) => <Banner key={message} tone="danger" text={message} />)}
 
       <section className="asset-detail-section asset-detail-diff">
         <h3>{t("assets.diffPreview")}</h3>
-        <ul>{resource.diff_summary.map((item) => <li key={item}>{item}</li>)}</ul>
+        <ul>
+          {translateMessageList(resource.diff_summary_refs, resource.diff_summary, t)
+            .map((item) => <li key={item}>{item}</li>)}
+        </ul>
         {resource.metadata_differences.length ? <p>{t("assets.metadataFields")}: {resource.metadata_differences.join(", ")}</p> : null}
         {resource.metadata_differences.includes("description") ? (
           <div className="asset-description-compare">
@@ -529,11 +610,14 @@ function ResourceDetail({
                   <small>{instance.selector || t("plugin.floating")} · {instance.observed_version || "-"}</small>
                 </>
               ) : null}
-              {[...instance.warnings, ...instance.blockers].map((message) => (
+              {[
+                ...translateMessageList(instance.warning_refs, instance.warnings, t),
+                ...translateMessageList(instance.blocker_refs, instance.blockers, t),
+              ].map((message) => (
                 <small className="asset-instance-warning" key={message}>{message}</small>
               ))}
               {instance.path ? (
-                <button className="secondary" onClick={() => void openPath(instance.path || "").catch((error) => onError(String(error)))}>
+                <button className="secondary" onClick={() => void openPath(instance.path || "").catch((error) => onError(displayError(error, t)))}>
                   <FolderOpen size={15} />{t("assets.open")}
                 </button>
               ) : null}
@@ -596,7 +680,7 @@ function BatchDialog({
     if (direction === "download") {
       void lpmAction<ConfigSettings>("config_get")
         .then((settings) => setPlatforms(settings.config.platforms))
-        .catch((reason) => setError(String(reason)));
+      .catch((reason) => setError(displayError(reason, t)));
     } else {
       void createPlan();
     }
@@ -667,11 +751,12 @@ function BatchDialog({
           blocked: value.blocked_count,
           skipped: value.skipped_count,
         }),
+        failureMessage: (error) => displayError(error, t),
         retryPolicy: "safe-read",
       });
       setPlan(next);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(displayError(reason, t));
     } finally {
       setBusy(false);
     }
@@ -694,6 +779,7 @@ function BatchDialog({
           plan_hash: plan.plan_hash,
         }),
         successMessage: (value) => t("assets.batchComplete", { count: value.results.length }),
+        failureMessage: (error) => displayError(error, t),
         retryPolicy: "none",
       });
       if (result.status === "stale-plan" && result.stale_plan) {
@@ -702,12 +788,15 @@ function BatchDialog({
         return;
       }
       if (result.status === "needs-action" || result.status === "partial") {
-        setError(result.results.filter((item) => item.status === "needs-action").map((item) => item.message).join("; "));
+        setError(result.results
+          .filter((item) => item.status === "needs-action")
+          .map((item) => translateMessage(item.message_ref, t, item.message))
+          .join("; "));
         return;
       }
       await onDone();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(displayError(reason, t));
     } finally {
       setBusy(false);
     }
@@ -791,8 +880,8 @@ function BatchDialog({
                       <strong>{item.resource_key}</strong>
                       <span>{item.platform || "-"}</span>
                       <span>{batchDispositionLabel(item.disposition, t)}</span>
-                      <small>{item.reason || item.target_resource_key}</small>
-                      {item.blockers.some((blocker) => blocker.toLowerCase().includes("unmanaged")) ? (
+                      <small>{translateMessage(item.reason_ref, t, item.reason) || item.target_resource_key}</small>
+                      {item.plan?.target_exists && !item.plan.target_managed ? (
                         <label className="checkline">
                           <input
                             type="checkbox"

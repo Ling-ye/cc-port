@@ -3,15 +3,17 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { LpmResponse } from "@/types/lpm";
+import type { LpmResponse, UiMessageRef } from "@/types/lpm";
 
 export class LpmApiError extends Error {
   code: string;
+  messageRef?: UiMessageRef;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, messageRef?: UiMessageRef) {
     super(message);
     this.name = "LpmApiError";
     this.code = code;
+    this.messageRef = messageRef;
   }
 }
 
@@ -25,7 +27,11 @@ export async function lpmAction<T>(
 
   if (!response.ok) {
     const message = response.error?.message || "LPM action failed";
-    throw new LpmApiError(response.error?.code || "lpm_error", message);
+    throw new LpmApiError(
+      response.error?.code || "lpm_error",
+      message,
+      response.error?.message_ref || undefined,
+    );
   }
 
   return response.data as T;

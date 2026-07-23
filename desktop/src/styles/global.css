@@ -1649,7 +1649,6 @@ button {
   color: #65727c;
 }
 
-.add-resource-modes button,
 .path-input-row button {
   display: inline-flex;
   align-items: center;
@@ -2163,8 +2162,6 @@ button {
   container: asset-inventory / inline-size;
 }
 
-.asset-unified-head,
-.asset-toolbar,
 .asset-selection-bar,
 .modal-head,
 .asset-instance-card > div,
@@ -2175,18 +2172,10 @@ button {
   gap: 10px;
 }
 
-.asset-unified-head {
-  margin-bottom: 14px;
-  justify-content: flex-end;
-}
-
-.asset-unified-head h2,
-.asset-unified-head small,
 .asset-detail-diff h3 {
   margin: 0;
 }
 
-.asset-unified-head small,
 .asset-resource-name small,
 .asset-instance-card small,
 .asset-platform-picker small,
@@ -2194,8 +2183,8 @@ button {
   color: #697781;
 }
 
-.asset-toolbar button,
 .asset-source-card button,
+.asset-entry-actions button,
 .asset-selection-actions button,
 .asset-more-filters,
 .asset-instance-card button,
@@ -2210,7 +2199,7 @@ button {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .asset-source-card {
@@ -2306,6 +2295,75 @@ button {
 .asset-source-card > button {
   width: 100%;
   align-self: end;
+}
+
+.asset-entry-strip {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: center;
+  gap: 12px 18px;
+  padding: 10px 12px;
+  border: 1px solid #dbe4e8;
+  border-radius: 10px;
+  background: #f8fafb;
+}
+
+.asset-entry-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+}
+
+.asset-entry-copy > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #16665b;
+}
+
+.asset-entry-copy > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.asset-entry-copy h3,
+.asset-entry-copy p {
+  margin: 0;
+}
+
+.asset-entry-copy h3 {
+  color: #24313a;
+  font-size: 14px;
+}
+
+.asset-entry-copy p {
+  color: #52606b;
+  font-size: 12px;
+}
+
+.asset-entry-copy small {
+  color: #9a3f39;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.asset-entry-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.asset-entry-actions button {
+  white-space: nowrap;
+}
+
+.asset-entry-actions button:disabled {
+  cursor: not-allowed;
+  filter: saturate(.35);
+  opacity: .58;
 }
 
 .asset-filter-toolbar {
@@ -2686,6 +2744,16 @@ button {
   }
 }
 
+@container asset-inventory (max-width: 580px) {
+  .asset-entry-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .asset-entry-actions {
+    justify-content: flex-start;
+  }
+}
+
 @container asset-inventory (min-width: 900px) {
   .asset-source-metadata {
     grid-template-columns: minmax(0, 1.7fr) repeat(3, minmax(80px, auto));
@@ -2945,6 +3013,27 @@ button {
 @media (prefers-color-scheme: dark) {
   .task-running-badge {
     border-color: #10171b;
+  }
+
+  .asset-entry-strip {
+    background: #172228;
+    border-color: #2b3d46;
+  }
+
+  .asset-entry-copy > svg {
+    color: #8bd4bf;
+  }
+
+  .asset-entry-copy h3 {
+    color: #e7edf0;
+  }
+
+  .asset-entry-copy p {
+    color: #9cafb8;
+  }
+
+  .asset-entry-copy small {
+    color: #efb2ad;
   }
 
   .task-toast,

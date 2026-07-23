@@ -3,6 +3,14 @@ export type DiscoveryScope = "global" | "directory";
 export type ResourceLifecycle = "active" | "removed";
 export type RemovedEffect = "index_only" | "local_files_deleted" | "remote_repo_deleted" | "";
 
+export type UiMessageParam = string | number | boolean | null;
+
+export interface UiMessageRef {
+  code: string;
+  fallback: string;
+  params?: Record<string, UiMessageParam>;
+}
+
 export type McpTransport = "stdio" | "http";
 
 export interface PortableMcpStdioConfig {
@@ -133,14 +141,6 @@ export interface PluginProject {
   exists: boolean;
 }
 
-export interface PluginReferenceResult {
-  status: string;
-  resource_key: string;
-  entry: RegistryItem;
-  remote_commit: string;
-  pushed: boolean;
-}
-
 export interface PluginDeleteInstancePlan {
   id: string;
   platform: PluginPlatform;
@@ -151,6 +151,7 @@ export interface PluginDeleteInstancePlan {
   selectable: boolean;
   method: string;
   detail: string;
+  detail_ref?: UiMessageRef | null;
   local_path?: string | null;
   state_path?: string | null;
 }
@@ -163,6 +164,7 @@ export interface PluginDeletePlan {
   plan_hash: string;
   blocked: boolean;
   blockers: string[];
+  blocker_refs?: UiMessageRef[];
 }
 
 export interface PluginDeleteResult {
@@ -350,8 +352,11 @@ export interface AssetPlatformRow {
   local_fingerprint: string;
   metadata_differences: string[];
   diff_summary: string[];
+  diff_summary_refs?: UiMessageRef[];
   blockers: string[];
+  blocker_refs?: UiMessageRef[];
   warnings: string[];
+  warning_refs?: UiMessageRef[];
   available_actions: AssetAction[];
   entry?: RegistryItem | null;
 }
@@ -362,9 +367,11 @@ export interface AssetInventory {
   repo_url: string;
   remote_available: boolean;
   remote_warning: string;
+  remote_warning_ref?: UiMessageRef | null;
   scanned_local: boolean;
   generated_at: string;
   legacy_write_blocker: string;
+  legacy_write_blocker_ref?: UiMessageRef | null;
   resources: AssetResourceRow[];
 }
 
@@ -381,7 +388,9 @@ export interface AssetLocalInstance {
   description: string;
   status: AssetStatus;
   warnings: string[];
+  warning_refs?: UiMessageRef[];
   blockers: string[];
+  blocker_refs?: UiMessageRef[];
   track?: PluginTrack | "";
   scope?: PluginScope | "";
   project_id?: string;
@@ -416,8 +425,11 @@ export interface AssetResourceRow {
   local_instances: AssetLocalInstance[];
   metadata_differences: string[];
   diff_summary: string[];
+  diff_summary_refs?: UiMessageRef[];
   warnings: string[];
+  warning_refs?: UiMessageRef[];
   blockers: string[];
+  blocker_refs?: UiMessageRef[];
   available_actions: AssetAction[];
   plugin_track?: PluginTrack | "";
   plugin_platform?: PluginPlatform | "";
@@ -450,8 +462,11 @@ export interface AssetBatchPlanItem {
   disposition: "create" | "update" | "rename" | "unchanged" | "skip" | "manual" | "blocked";
   target_resource_key: string;
   reason: string;
+  reason_ref?: UiMessageRef | null;
   warnings: string[];
+  warning_refs?: UiMessageRef[];
   blockers: string[];
+  blocker_refs?: UiMessageRef[];
   plan?: AssetActionPlan | null;
 }
 
@@ -497,7 +512,9 @@ export interface AssetActionPlan {
   new_name: string;
   new_install_name: string;
   warnings: string[];
+  warning_refs?: UiMessageRef[];
   blockers: string[];
+  blocker_refs?: UiMessageRef[];
   blocked: boolean;
   created_at: string;
   schema_version: number;
@@ -511,11 +528,13 @@ export interface AssetActionResult {
   target_resource_key: string;
   platform: string;
   message: string;
+  message_ref?: UiMessageRef | null;
   remote_commit: string;
   local_path?: string | null;
   replayed_on_latest: boolean;
   push_retry_count: number;
   warnings: string[];
+  warning_refs?: UiMessageRef[];
   operation_status: string;
 }
 
@@ -533,6 +552,7 @@ export interface ConfigCheckItem {
   id: string;
   label: string;
   detail: string;
+  detail_ref?: UiMessageRef | null;
 }
 
 export interface ConfigCheckResult {
@@ -660,6 +680,7 @@ export interface DoctorCheck {
   ok: boolean;
   status: DoctorStatus;
   detail: string;
+  detail_ref?: UiMessageRef | null;
   enabled?: boolean;
   profile?: PlatformProfile;
 }
@@ -870,6 +891,7 @@ export interface OperationHistorySummary {
   started_at: string;
   finished_at: string;
   message: string;
+  message_ref?: UiMessageRef | null;
   rolled_back: boolean;
   target_count: number;
   changed_target_count: number;
@@ -1063,5 +1085,6 @@ export interface LpmResponse<T> {
   error?: {
     code: string;
     message: string;
+    message_ref?: UiMessageRef | null;
   };
 }

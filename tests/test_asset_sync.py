@@ -404,6 +404,8 @@ def test_logical_inventory_folds_identical_instances_and_preserves_variants(
     )
     assert batch.blocked_count == 1
     assert "select a source instance" in batch.items[0].reason
+    assert batch.items[0].reason_ref is not None
+    assert batch.items[0].reason_ref.code == "asset.batch.select_source_instance"
 
     separate = asset_sync.build_asset_batch_plan(
         "upload",
@@ -1473,6 +1475,8 @@ def test_first_content_plugin_upload_requires_explicit_ownership(
 
     assert blocked.disposition == "blocked"
     assert "Confirm" in blocked.reason
+    assert blocked.reason_ref is not None
+    assert blocked.reason_ref.code == "asset.batch.plugin_source_choice_required"
     assert confirmed.disposition == "create"
     assert confirmed.plan is not None
     assert confirmed.plan.plugin_data["plugin"]["dependencies"] == {"left-pad": "^1.3.0"}

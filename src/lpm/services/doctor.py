@@ -10,6 +10,7 @@ from ..core.config import CONFIG_ENV_VAR, Config, default_config_path, load_conf
 from ..core.platforms import PlatformProfile
 from ..infrastructure import git_ops
 from .resource_repo import ResourceRepoInfo, inspect_resource_repo
+from .ui_messages import UiMessageRef, ui_message
 
 DoctorStatus = Literal["ok", "warning", "error", "skipped"]
 DoctorCheck = dict[str, Any]
@@ -45,20 +46,7 @@ def build_doctor_checks(config: Config | None = None) -> list[DoctorCheck]:
     resource_configured = _resource_repo_configured(cfg, resource)
 
     checks: list[DoctorCheck] = [
-        _check(
-            "git",
-            "Git",
-            "ok" if git_path else "error",
-            (
-                f"{_git_version(git_path)}; {git_path} ({git_runtime.source})"
-                if git_path
-                else (
-                    f"configured path not found: {git_runtime.requested}"
-                    if git_runtime.requested
-                    else "Git not found in PATH or standard install locations"
-                )
-            ),
-        ),
+        _git_check(git_path, git_runtime.source, git_runtime.requested),
         _config_check(cfg),
         _github_token_check(cfg, resource_configured),
         _resource_repo_check(cfg, resource, resource_configured),
@@ -78,6 +66,7 @@ def _check(
     label: str,
     status: DoctorStatus,
     detail: str,
+    detail_ref: UiMessageRef | None = None,
     **extra: Any,
 ) -> DoctorCheck:
     return {
@@ -86,6 +75,7 @@ def _check(
         "status": status,
         "ok": status != "error",
         "detail": detail,
+        "detail_ref": detail_ref,
         **extra,
     }
 
@@ -101,6 +91,37 @@ def _config_check(cfg: Config) -> DoctorCheck:
     )
 
 
+def _git_check(git_path: str | None, source: str, requested: str) -> DoctorCheck:
+    if git_path:
+        return _check(
+            "git",
+            "Git",
+            "ok",
+            f"{_git_version(git_path)}; {git_path} ({source})",
+        )
+    if requested:
+        detail = f"configured path not found: {requested}"
+        return _check(
+            "git",
+            "Git",
+            "error",
+            detail,
+            ui_message(
+                "doctor.git.configured_not_found",
+                detail,
+                path=requested,
+            ),
+        )
+    detail = "Git not found in PATH or standard install locations"
+    return _check(
+        "git",
+        "Git",
+        "error",
+        detail,
+        ui_message("doctor.git.not_found", detail),
+    )
+
+
 def _github_token_check(cfg: Config, resource_configured: bool) -> DoctorCheck:
     if cfg.github.token:
         return _check(
@@ -110,11 +131,20 @@ def _github_token_check(cfg: Config, resource_configured: bool) -> DoctorCheck:
             f"Configured via {CONFIG_ENV_VAR} or config",
         )
     if resource_configured:
+        detail = (
+            f"Not configured; private GitHub resource repo actions need "
+            f"{CONFIG_ENV_VAR} or config"
+        )
         return _check(
             "github_token",
             "GitHub token",
             "warning",
-            f"Not configured; private GitHub resource repo actions need {CONFIG_ENV_VAR} or config",
+            detail,
+            ui_message(
+                "doctor.github_token.required",
+                detail,
+                env_var=CONFIG_ENV_VAR,
+            ),
         )
     return _check(
         "github_token",
@@ -137,18 +167,30 @@ def _resource_repo_check(
             f"Not configured; expected local path would be {resource.local_path}",
         )
     if not resource.exists:
+        detail = f"Configured but local path does not exist: {resource.local_path}"
         return _check(
             "resource_repo",
             "Resource repo",
             "warning",
-            f"Configured but local path does not exist: {resource.local_path}",
+            detail,
+            ui_message(
+                "doctor.resource_repo.path_missing",
+                detail,
+                path=str(resource.local_path),
+            ),
         )
     if not resource.is_git_repo:
+        detail = f"Configured path exists but is not a git repository: {resource.local_path}"
         return _check(
             "resource_repo",
             "Resource repo",
             "error",
-            f"Configured path exists but is not a git repository: {resource.local_path}",
+            detail,
+            ui_message(
+                "doctor.resource_repo.not_git",
+                detail,
+                path=str(resource.local_path),
+            ),
         )
 
     detail_parts = [f"Git repository at {resource.local_path}"]
@@ -158,21 +200,71 @@ def _resource_repo_check(
         detail_parts.append("no git remote configured")
 
     status: DoctorStatus = "ok"
+    detail_ref: UiMessageRef | None = None
     if cfg.resources.repo_url:
         if not resource.remote_url:
             status = "warning"
             detail_parts.append(f"configured URL is {cfg.resources.repo_url}")
+            code = (
+                "doctor.resource_repo.remote_missing_dirty"
+                if resource.dirty
+                else "doctor.resource_repo.remote_missing"
+            )
+            fallback = "; ".join(
+                [*detail_parts, *(["has local changes"] if resource.dirty else [])]
+            )
+            detail_ref = ui_message(
+                code,
+                fallback,
+                path=str(resource.local_path),
+                expected=cfg.resources.repo_url,
+            )
         else:
             expected = _normalize_git_url(cfg.resources.repo_url)
             actual = _normalize_git_url(resource.remote_url)
             if expected != actual:
                 status = "warning"
                 detail_parts.append(f"configured URL is {cfg.resources.repo_url}")
+                code = (
+                    "doctor.resource_repo.remote_mismatch_dirty"
+                    if resource.dirty
+                    else "doctor.resource_repo.remote_mismatch"
+                )
+                fallback = "; ".join(
+                    [*detail_parts, *(["has local changes"] if resource.dirty else [])]
+                )
+                detail_ref = ui_message(
+                    code,
+                    fallback,
+                    path=str(resource.local_path),
+                    actual=resource.remote_url,
+                    expected=cfg.resources.repo_url,
+                )
     if resource.dirty:
         status = "warning"
         detail_parts.append("has local changes")
+        if detail_ref is None:
+            if resource.remote_url:
+                detail_ref = ui_message(
+                    "doctor.resource_repo.dirty_with_remote",
+                    "; ".join(detail_parts),
+                    path=str(resource.local_path),
+                    remote=resource.remote_url,
+                )
+            else:
+                detail_ref = ui_message(
+                    "doctor.resource_repo.dirty",
+                    "; ".join(detail_parts),
+                    path=str(resource.local_path),
+                )
 
-    return _check("resource_repo", "Resource repo", status, "; ".join(detail_parts))
+    return _check(
+        "resource_repo",
+        "Resource repo",
+        status,
+        "; ".join(detail_parts),
+        detail_ref,
+    )
 
 
 def _install_target_check(cfg: Config) -> DoctorCheck:
@@ -185,18 +277,30 @@ def _install_target_check(cfg: Config) -> DoctorCheck:
             f"Not created yet; installs will use {target}",
         )
     if not target.is_dir():
+        detail = f"Configured install target is not a directory: {target}"
         return _check(
             "install_target",
             "Install target",
             "error",
-            f"Configured install target is not a directory: {target}",
+            detail,
+            ui_message(
+                "doctor.install_target.not_directory",
+                detail,
+                path=str(target),
+            ),
         )
     if not os.access(target, os.W_OK):
+        detail = f"Directory is not writable: {target}"
         return _check(
             "install_target",
             "Install target",
             "error",
-            f"Directory is not writable: {target}",
+            detail,
+            ui_message(
+                "doctor.install_target.not_writable",
+                detail,
+                path=str(target),
+            ),
         )
     return _check("install_target", "Install target", "ok", f"Writable directory: {target}")
 
@@ -214,11 +318,17 @@ def _platform_check(profile: PlatformProfile) -> DoctorCheck:
 
     problems = _platform_path_problems(profile)
     if problems:
+        detail = "; ".join(problems)
         return _check(
             f"platform:{profile.name}",
             f"Platform: {profile.name}",
             "error",
-            "; ".join(problems),
+            detail,
+            ui_message(
+                "doctor.platform.invalid_paths",
+                detail,
+                detail=detail,
+            ),
             enabled=True,
             profile=profile,
         )

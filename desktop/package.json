@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc && node scripts/stable-vite-build.mjs",
-    "test": "vitest run",
+    "build": "npm run check:i18n && tsc && node scripts/stable-vite-build.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "test": "npm run check:i18n && vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",
     "sidecar": "python ../tools/packaging/sidecar/build_sidecar.py",

@@ -125,6 +125,7 @@ from ..services.state_maintenance import (
     quarantine_orphan_backups,
 )
 from ..services.state_retention import build_state_retention_plan, prune_state
+from ..services.ui_messages import UiMessageRef, ui_message
 
 JsonDict = dict[str, Any]
 Handler = Callable[[JsonDict], Any]
@@ -156,7 +157,12 @@ def run_action(action: str, payload: JsonDict | None = None) -> JsonDict:
     try:
         handler = ACTIONS[action]
     except KeyError:
-        return _error("unknown_action", f"Unknown UI API action: {action}")
+        message_ref = ui_message(
+            "api.unknown_action",
+            f"Unknown UI API action: {action}",
+            action=action,
+        )
+        return _error("unknown_action", message_ref.fallback, message_ref)
 
     try:
         result = {"ok": True, "data": _to_jsonable(handler(data))}
@@ -165,7 +171,11 @@ def run_action(action: str, payload: JsonDict | None = None) -> JsonDict:
             result["warnings"] = [DEPRECATED_SYNC_MESSAGE]
         return result
     except Exception as exc:  # noqa: BLE001 - desktop needs a structured error boundary
-        return _error(exc.__class__.__name__, str(exc))
+        return _error(
+            exc.__class__.__name__,
+            str(exc),
+            _exception_message_ref(exc),
+        )
 
 
 def _summary(_: JsonDict) -> JsonDict:
@@ -1502,8 +1512,34 @@ def _to_jsonable(value: Any) -> Any:
     return str(value)
 
 
-def _error(code: str, message: str) -> JsonDict:
-    return {"ok": False, "error": {"code": code, "message": message}}
+def _error(
+    code: str,
+    message: str,
+    message_ref: UiMessageRef | None = None,
+) -> JsonDict:
+    error: JsonDict = {"code": code, "message": message}
+    if message_ref is not None:
+        error["message_ref"] = _to_jsonable(message_ref)
+    return {"ok": False, "error": error}
+
+
+def _exception_message_ref(exc: Exception) -> UiMessageRef | None:
+    message_codes = {
+        "OAuthConfigurationError": "api.github.oauth_not_configured",
+        "GithubApiError": "api.github.request_failed",
+        "OAuthSessionError": "api.github.session_failed",
+        "GithubAuthError": "api.github.authentication_failed",
+        "GithubOwnerScopeRequired": "api.github.owner_scope_required",
+        "GithubDeleteScopeRequired": "api.github.delete_scope_required",
+    }
+    code = message_codes.get(exc.__class__.__name__)
+    if code is None:
+        return None
+    return ui_message(
+        code,
+        str(exc),
+        **({"detail": str(exc)} if code == "api.github.authentication_failed" else {}),
+    )
 
 
 def _write_json_response(result: JsonDict) -> None:
@@ -1725,10 +1761,19 @@ def main(argv: list[str] | None = None) -> int:
         raw_payload = raw_payload.lstrip("\ufeff")
         payload = json.loads(raw_payload)
     except json.JSONDecodeError as exc:
-        result = _error("invalid_json", str(exc))
+        detail = str(exc)
+        result = _error(
+            "invalid_json",
+            detail,
+            ui_message("api.invalid_json", detail, detail=detail),
+        )
     else:
         if not isinstance(payload, dict):
-            result = _error("invalid_payload", "Payload must be a JSON object.")
+            message_ref = ui_message(
+                "api.invalid_payload",
+                "Payload must be a JSON object.",
+            )
+            result = _error("invalid_payload", message_ref.fallback, message_ref)
         else:
             result = run_action(args.action, payload)
 

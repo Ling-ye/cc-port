@@ -1,7 +1,7 @@
 import { FolderOpen, RefreshCcw, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { lpmAction, selectDirectory } from "@/api/client";
-import type { TFunction } from "@/app/i18n";
+import { displayError, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import type { AssetInventory, PluginProject } from "@/types/lpm";
@@ -33,7 +33,7 @@ export function ScanLocalDialog({
         setProjects(result.projects);
         setSelectedIds(result.projects.filter((item) => item.exists).map((item) => item.id));
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      .catch((reason) => setError(displayError(reason, t)));
   }, []);
 
   async function addProject() {
@@ -45,7 +45,7 @@ export function ScanLocalDialog({
       setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
       setSelectedIds((current) => Array.from(new Set([...current, project.id])));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(displayError(reason, t));
     }
   }
 
@@ -56,7 +56,7 @@ export function ScanLocalDialog({
       setProjects((current) => current.filter((item) => item.id !== projectId));
       setSelectedIds((current) => current.filter((item) => item !== projectId));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(displayError(reason, t));
     }
   }
 
@@ -74,6 +74,7 @@ export function ScanLocalDialog({
           refresh_remote: false,
         }),
         successMessage: t("assets.scanComplete"),
+        failureMessage: (error) => displayError(error, t),
         retryPolicy: "safe-read",
       });
       onScanned(inventory, { scan_global: scanGlobal, project_ids: [...selectedIds] });

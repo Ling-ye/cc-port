@@ -18,8 +18,6 @@ vi.mock("@/api/client", () => ({
   selectDirectory: vi.fn(),
 }));
 
-const t = createTranslator("en");
-
 function resource(overrides: Partial<AssetResourceRow> = {}): AssetResourceRow {
   return {
     resource_key: "skill:demo",
@@ -76,7 +74,11 @@ function inventory(resources: AssetResourceRow[]): AssetInventory {
 
 function renderView(
   resources = [resource()],
-  options: { inventory?: AssetInventory | null; refreshBusy?: boolean } = {},
+  options: {
+    inventory?: AssetInventory | null;
+    refreshBusy?: boolean;
+    language?: "en" | "zh";
+  } = {},
 ) {
   const data = options.inventory === undefined ? inventory(resources) : options.inventory;
   const onChanged = vi.fn(async () => undefined);
@@ -89,7 +91,7 @@ function renderView(
       <ResourcesView
         inventory={data}
         selectedKey={data?.resources[0]?.resource_key}
-        t={t}
+        t={createTranslator(options.language ?? "en")}
         onSelect={onSelect}
         refreshBusy={options.refreshBusy ?? false}
         remoteCheckedAt="2026-07-17T01:00:00Z"
@@ -138,6 +140,58 @@ afterEach(() => {
 });
 
 describe("ResourcesView unified inventory", () => {
+  it("renders structured resource messages in Chinese and English", () => {
+    const localOnly = resource({
+      status: "local-only",
+      remote_status: "missing",
+      remote: {
+        exists: false,
+        status: "missing",
+        writable: true,
+        read_only: false,
+        commit: "",
+        path: null,
+        description: "",
+      },
+      diff_summary: ["Local content is not present in the remote repository."],
+      diff_summary_refs: [{
+        code: "asset.diff.local_only",
+        fallback: "Local content is not present in the remote repository.",
+      }],
+      blockers: ["The target platform is not enabled."],
+      blocker_refs: [{
+        code: "asset.batch.platform_disabled",
+        fallback: "The target platform is not enabled.",
+      }],
+    });
+
+    renderView([localOnly], { language: "zh" });
+    expect(screen.getByText("本地内容不存在于远端仓库中。")).toBeVisible();
+    expect(screen.getByText("目标平台未启用。")).toBeVisible();
+
+    cleanup();
+    renderView([localOnly], { language: "en" });
+    expect(screen.getByText("Local content is not present in the remote repository."))
+      .toBeVisible();
+    expect(screen.getByText("The target platform is not enabled.")).toBeVisible();
+  });
+
+  it("renders a structured batch-plan reason in Chinese", async () => {
+    const user = userEvent.setup();
+    const plan = batchPlan("upload", "blocked");
+    plan.items[0].reason_ref = {
+      code: "asset.batch.select_source_instance",
+      fallback: plan.items[0].reason,
+    };
+    vi.mocked(lpmAction).mockResolvedValue(plan);
+    renderView([resource()], { language: "zh" });
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "上传到仓库" }));
+
+    expect(await screen.findByText("存在多个本地版本，请选择来源实例。")).toBeVisible();
+  });
+
   it("shows compact remote and local source status and refreshes only on demand", async () => {
     const user = userEvent.setup();
     const { onRefreshRemote } = renderView();
@@ -146,26 +200,61 @@ describe("ResourcesView unified inventory", () => {
     expect(screen.getByText("https://example.test/resources.git")).toBeVisible();
     expect(screen.getAllByText("1234567890ab").length).toBeGreaterThan(0);
     expect(screen.getByText("1 tools · 1 instances")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Collect and import" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Collect from GitHub" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Import local folder" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Add resource" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Plugin reference")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Refresh remote" }));
     expect(onRefreshRemote).toHaveBeenCalledTimes(1);
   });
 
-  it("routes an unconfigured repository to Settings and blocks competing entry points while refreshing", async () => {
+  it("keeps collection visible but disabled when the repository is unconfigured", async () => {
     const user = userEvent.setup();
     const unconfigured = { ...inventory([resource()]), repo_url: "", remote_available: false };
     const { onOpenSettings } = renderView(undefined, { inventory: unconfigured });
 
     expect(screen.getByText("Not configured", { selector: ".asset-source-state" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Configure repository" }));
+    expect(screen.getByText("Configure a resource repository before collecting or importing.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Collect from GitHub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Import local folder" })).toBeDisabled();
+    const configureButtons = screen.getAllByRole("button", { name: "Configure repository" });
+    await user.click(configureButtons[configureButtons.length - 1]);
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks collection while loading, refreshing, offline, or legacy-write-blocked", () => {
+    renderView(undefined, { inventory: null });
+    expect(screen.getByText("Loading repository status.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Collect from GitHub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Import local folder" })).toBeDisabled();
 
     cleanup();
     renderView([resource({ kind: "plugin", resource_key: "plugin:demo" })], { refreshBusy: true });
     expect(screen.getByRole("button", { name: "Refresh remote" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Scan local" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add resource" })).toBeDisabled();
+    expect(screen.getByText("Wait for the resource inventory refresh to finish.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Collect from GitHub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Import local folder" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Delete plugin" })).toBeDisabled();
+
+    cleanup();
+    renderView(undefined, { inventory: { ...inventory([resource()]), remote_available: false } });
+    expect(screen.getByText("The remote repository is unavailable. Refresh it before collecting or importing.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Collect from GitHub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Import local folder" })).toBeDisabled();
+
+    cleanup();
+    renderView(undefined, {
+      inventory: {
+        ...inventory([resource()]),
+        legacy_write_blocker: "Resolve the legacy workspace first.",
+      },
+    });
+    expect(screen.getAllByText("Resolve the legacy workspace first.").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Collect from GitHub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Import local folder" })).toBeDisabled();
   });
 
   it("shows one logical resource row with remote description and complete local detail", () => {
@@ -359,27 +448,41 @@ describe("ResourcesView unified inventory", () => {
     ));
   });
 
-  it("adds a GitHub resource, clears filters and batch selection, and targets the new row", async () => {
+  it("collects a GitHub resource, clears filters and batch selection, and targets the new row", async () => {
     const user = userEvent.setup();
     vi.mocked(lpmAction).mockResolvedValue({ entry: { kind: "skill", name: "new-resource" } });
     const { onChanged, onSelect } = renderView();
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
     await user.selectOptions(screen.getByLabelText("Resource type"), "prompt");
-    await user.click(screen.getByRole("button", { name: "Add resource" }));
+    await user.click(screen.getByRole("button", { name: "Collect from GitHub" }));
+    const dialog = screen.getByRole("dialog", { name: "Collect from GitHub" });
+    expect(dialog).toBeVisible();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("GitHub URL"), "https://github.com/example/new-resource");
-    const submitButtons = screen.getAllByRole("button", { name: "Collect from GitHub" });
-    await user.click(submitButtons[submitButtons.length - 1]);
+    await user.click(within(dialog).getByRole("button", { name: "Collect from GitHub" }));
 
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
     expect(onSelect).toHaveBeenCalledWith("skill:new-resource");
-    expect(screen.queryByRole("dialog", { name: "Add resource" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Collect from GitHub" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Resource type")).toHaveValue("all");
     expect(screen.queryByRole("toolbar", { name: "Selected resource actions" })).not.toBeInTheDocument();
     expect(lpmAction).toHaveBeenCalledWith("collect", expect.objectContaining({
       github_url: "https://github.com/example/new-resource",
       push: true,
     }));
+  });
+
+  it("opens local import as a separate dialog without collection mode tabs", async () => {
+    const user = userEvent.setup();
+    renderView();
+
+    await user.click(screen.getByRole("button", { name: "Import local folder" }));
+    expect(screen.getByRole("dialog", { name: "Import local folder" })).toBeVisible();
+    expect(screen.getByLabelText("Local path")).toBeVisible();
+    expect(screen.queryByLabelText("GitHub URL")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(screen.queryByText("Plugin reference")).not.toBeInTheDocument();
   });
 
   it("searches name, key, and description and exposes advanced filters with an active count", async () => {

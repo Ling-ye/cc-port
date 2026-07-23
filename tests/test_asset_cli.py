@@ -159,11 +159,24 @@ def test_asset_cli_list_plan_and_apply(monkeypatch) -> None:
     assert '"status": "succeeded"' in applied.stdout
     for result in (listed, planned, applied):
         assert "\x1b[" not in result.stdout
-        assert isinstance(json.loads(result.stdout), dict)
+        parsed = json.loads(result.stdout)
+        assert isinstance(parsed, dict)
+        assert not _contains_desktop_message_ref(parsed)
     assert calls == [
         ("plan", ("download", "skill", "demo", "cursor")),
         ("apply", "plan-1"),
     ]
+
+
+def _contains_desktop_message_ref(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(
+            key.endswith(("_ref", "_refs")) or _contains_desktop_message_ref(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_desktop_message_ref(item) for item in value)
+    return False
 
 
 def test_legacy_resource_pull_warns_but_keeps_behavior(monkeypatch) -> None:

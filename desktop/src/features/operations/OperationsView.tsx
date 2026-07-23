@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { lpmAction } from "@/api/client";
-import type { TFunction } from "@/app/i18n";
+import { displayError, translateMessage, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
   MaintenanceAudit,
@@ -40,6 +40,7 @@ const HISTORY_PAGE_SIZE = 20;
 
 export function OperationsView({ t }: { t: TFunction }) {
   const { runTask } = useTaskCenter();
+  const failureMessage = (error: unknown) => displayError(error, t);
   const [operations, setOperations] = useState<OperationHistorySummary[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyOffset, setHistoryOffset] = useState(0);
@@ -101,6 +102,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         title: t("operations.refresh"),
         action,
         successMessage: t("operations.refreshed"),
+        failureMessage,
         retryPolicy: "safe-read",
       });
     } else {
@@ -122,6 +124,7 @@ export function OperationsView({ t }: { t: TFunction }) {
           offset: requestedOffset,
           limit: HISTORY_PAGE_SIZE,
         }),
+        failureMessage,
         retryPolicy: "safe-read",
       });
       setOperations(page.operations);
@@ -146,6 +149,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         action: () => lpmAction<OperationHistoryEntry>("operation_detail", {
           operation_id: item.operation_id,
         }),
+        failureMessage,
         retryPolicy: "safe-read",
       });
       setSelectedOperation(detail);
@@ -169,6 +173,7 @@ export function OperationsView({ t }: { t: TFunction }) {
           force: forceRestore,
         }),
         successMessage: t("operations.restored"),
+        failureMessage,
         retryPolicy: "none",
       });
       await load(false, historyOffset);
@@ -191,6 +196,7 @@ export function OperationsView({ t }: { t: TFunction }) {
           operation_id: item.operation_id,
         }),
         successMessage: t("operations.cleaned"),
+        failureMessage,
         retryPolicy: "none",
       });
       await load(false, historyOffset);
@@ -213,6 +219,7 @@ export function OperationsView({ t }: { t: TFunction }) {
           max_backup_mb: maxBackupMb,
         }),
         successMessage: t("operations.retentionReady"),
+        failureMessage,
         retryPolicy: "safe-read",
       });
       setRetentionPlan(data);
@@ -244,6 +251,7 @@ export function OperationsView({ t }: { t: TFunction }) {
           count: result.deleted_operation_ids.length,
           size: formatBytes(result.reclaimed_bytes),
         }),
+        failureMessage,
         retryPolicy: "none",
       });
       await load(false, 0);
@@ -267,6 +275,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         successMessage: (result) => t("operations.orphanExported", {
           path: result.output_path,
         }),
+        failureMessage,
         retryPolicy: "none",
       });
     } catch {
@@ -292,6 +301,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         successMessage: (result) => t("operations.orphanQuarantined", {
           count: result.quarantine.item_count,
         }),
+        failureMessage,
         retryPolicy: "none",
       });
       setSelectedOrphanNames([]);
@@ -319,6 +329,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         successMessage: (result) => t("operations.quarantineDeleted", {
           size: formatBytes(result.reclaimed_bytes),
         }),
+        failureMessage,
         retryPolicy: "none",
       });
       await load(false, historyOffset);
@@ -339,6 +350,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         action: () => lpmAction<MaintenanceAuditDetail>("maintenance_audit", {
           audit_id: item.audit_id,
         }),
+        failureMessage,
         retryPolicy: "safe-read",
       });
       setSelectedAudit(detail);
@@ -590,7 +602,11 @@ export function OperationsView({ t }: { t: TFunction }) {
                   changed: item.changed_target_count,
                   total: item.target_count,
                 })}</small>
-                {item.message ? <small className="operation-message">{item.message}</small> : null}
+                {item.message ? (
+                  <small className="operation-message">
+                    {translateMessage(item.message_ref, t, item.message)}
+                  </small>
+                ) : null}
               </div>
               <div className="operation-actions">
                 <button
