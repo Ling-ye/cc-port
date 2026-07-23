@@ -13,12 +13,19 @@
     "windows": [
       {
         "title": "LPM Desktop",
-        "width": 1180,
-        "height": 760,
-        "minWidth": 980,
-        "minHeight": 640
+        "width": 1360,
+        "height": 820,
+        "minWidth": 1280,
+        "minHeight": 720
       }
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["lingye-lpm"]
+      }
+    }
   },
   "bundle": {
     "active": true,

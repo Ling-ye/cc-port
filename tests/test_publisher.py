@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from lpm.core.config import Config, GithubConfig, ResourcesConfig
 from lpm.core.registry import load_registry
+from lpm.infrastructure.github_client import CreatedRepo
 from lpm.services import publisher
 
 
@@ -189,3 +191,108 @@ def test_add_external_full_sha_verifies_exact_commit_before_writing(
 
     assert probes == [("https://github.com/example/demo", commit)]
     assert not registry_path.exists()
+
+
+def test_publish_uses_bound_repo_owner_for_creation_and_default_author(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    registry_path = tmp_path / "registry.yaml"
+    captured: dict[str, str] = {}
+
+    class FakeClient:
+        def __init__(self, token: str) -> None:
+            assert token == "token"
+
+        def authenticated_login(self) -> str:
+            raise AssertionError("bound repository owner must avoid account fallback")
+
+        def ensure_repo(
+            self,
+            owner: str,
+            name: str,
+            *,
+            description: str,
+            private: bool,
+        ) -> tuple[CreatedRepo, bool]:
+            captured["owner"] = owner
+            return (
+                CreatedRepo(
+                    full_name=f"{owner}/{name}",
+                    https_url=f"https://github.com/{owner}/{name}.git",
+                    ssh_url=f"git@github.com:{owner}/{name}.git",
+                    default_branch="main",
+                    private=private,
+                ),
+                True,
+            )
+
+    monkeypatch.setattr(publisher, "GithubClient", FakeClient)
+    monkeypatch.setattr(publisher, "_git_publish", lambda *_args, **_kwargs: True)
+    cfg = Config(
+        github=GithubConfig(token="token", owner="LegacyOwner"),
+        resources=ResourcesConfig(repo_url="https://github.com/BoundOwner/resources.git"),
+    )
+
+    result = publisher.publish_local_skill(
+        source,
+        config=cfg,
+        name="demo",
+        kind="rule",
+        registry_path=registry_path,
+    )
+
+    assert captured["owner"] == "BoundOwner"
+    assert result.entry.author == "BoundOwner"
+
+
+def test_publish_falls_back_to_authenticated_login_without_configured_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    captured: dict[str, str] = {}
+
+    class FakeClient:
+        def __init__(self, token: str) -> None:
+            assert token == "token"
+
+        def authenticated_login(self) -> str:
+            return "OAuthOwner"
+
+        def ensure_repo(
+            self,
+            owner: str,
+            name: str,
+            *,
+            description: str,
+            private: bool,
+        ) -> tuple[CreatedRepo, bool]:
+            captured["owner"] = owner
+            return (
+                CreatedRepo(
+                    full_name=f"{owner}/{name}",
+                    https_url=f"https://github.com/{owner}/{name}.git",
+                    ssh_url=f"git@github.com:{owner}/{name}.git",
+                    default_branch="main",
+                    private=private,
+                ),
+                True,
+            )
+
+    monkeypatch.setattr(publisher, "GithubClient", FakeClient)
+    monkeypatch.setattr(publisher, "_git_publish", lambda *_args, **_kwargs: True)
+
+    result = publisher.publish_local_skill(
+        source,
+        config=Config(github=GithubConfig(token="token")),
+        name="demo",
+        kind="rule",
+        registry_path=tmp_path / "registry.yaml",
+    )
+
+    assert captured["owner"] == "OAuthOwner"
+    assert result.entry.author == "OAuthOwner"

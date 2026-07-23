@@ -19,6 +19,7 @@ from ..core.config import (
 from ..core.registry import CURRENT_REGISTRY_VERSION, DEFAULT_REGISTRY_FILENAME, load_registry
 from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubClient
+from .resource_binding import configured_github_owner
 from .resource_commit import commit_resource_changes_unlocked
 from .resource_repo_lock import resource_repo_write_lock
 
@@ -101,7 +102,7 @@ def init_resource_repo(
         raise GithubAuthError("No GitHub token configured. Set LPM_GITHUB_TOKEN or run `lpm init`.")
 
     client = GithubClient(cfg.github.token)
-    owner = cfg.github.owner.strip() or client.authenticated_login()
+    owner = configured_github_owner(cfg) or client.authenticated_login()
     repo, _created = client.ensure_repo(
         owner=owner,
         name=repo_name,

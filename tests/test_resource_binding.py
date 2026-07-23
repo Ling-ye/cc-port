@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, ResourcesConfig, load_raw_config, write_config
+from lpm.core.config import Config, GithubConfig, ResourcesConfig, load_raw_config, write_config
 from lpm.infrastructure import git_ops
 from lpm.services import resource_binding
 
@@ -56,6 +56,28 @@ def test_parse_github_repo_url_preserves_transport(
 def test_parse_github_repo_url_rejects_unsupported_or_unsafe_urls(value: str) -> None:
     with pytest.raises(ValueError):
         resource_binding.parse_github_repo_url(value)
+
+
+@pytest.mark.parametrize(
+    "repo_url",
+    [
+        "https://github.com/BoundOwner/resources.git",
+        "git@github.com:BoundOwner/resources.git",
+    ],
+)
+def test_configured_github_owner_prefers_bound_repo_url(repo_url: str) -> None:
+    cfg = Config(
+        github=GithubConfig(owner="LegacyOwner"),
+        resources=ResourcesConfig(repo_url=repo_url),
+    )
+
+    assert resource_binding.configured_github_owner(cfg) == "BoundOwner"
+
+
+def test_configured_github_owner_falls_back_to_legacy_owner_when_unbound() -> None:
+    cfg = Config(github=GithubConfig(owner="LegacyOwner"))
+
+    assert resource_binding.configured_github_owner(cfg) == "LegacyOwner"
 
 
 def test_bind_resource_repo_verifies_before_saving_and_resets_old_local_path(

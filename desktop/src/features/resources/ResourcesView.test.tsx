@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { lpmAction } from "@/api/client";
@@ -171,12 +171,48 @@ describe("ResourcesView unified inventory", () => {
   it("shows one logical resource row with remote description and complete local detail", () => {
     renderView();
 
+    const table = screen.getByRole("table");
+    expect(within(table).getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "",
+      "Asset inventory",
+      "Description",
+      "Status",
+    ]);
+    const row = within(table).getByRole("row", { name: /skill:demo/ });
+    expect(within(row).getByText("content differs")).toBeVisible();
+    expect(within(row).queryByText("1 instance")).not.toBeInTheDocument();
+    expect(within(row).queryByText("present")).not.toBeInTheDocument();
+    expect(within(row).getByTitle("Remote demo description")).toBeVisible();
     expect(screen.getAllByText("demo").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Remote demo description").length).toBeGreaterThan(0);
     expect(screen.getAllByText("content differs").length).toBeGreaterThan(0);
     expect(screen.getByText("Local and remote content differ.")).toBeVisible();
     expect(screen.getAllByText("cursor").length).toBeGreaterThan(0);
     expect(screen.getByText("managed")).toBeVisible();
+  });
+
+  it("orders detail diagnosis before source metadata, local instances, and destructive actions", () => {
+    renderView([resource({
+      kind: "plugin",
+      resource_key: "plugin:demo",
+      plugin_track: "reference",
+      plugin_platform: "claude-code",
+      plugin_source_kind: "marketplace",
+      plugin_source_id: "demo",
+      warnings: ["Review this plugin warning."],
+    })]);
+
+    const warning = screen.getByText("Review this plugin warning.");
+    const differences = screen.getByRole("heading", { name: "Difference summary" });
+    const source = screen.getByRole("heading", { name: "Source and sync" });
+    const instances = screen.getByRole("heading", { name: "Local instances" });
+    const danger = screen.getByRole("heading", { name: "Danger zone" });
+
+    expect(warning.compareDocumentPosition(differences) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(differences.compareDocumentPosition(source) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(source.compareDocumentPosition(instances) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(instances.compareDocumentPosition(danger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete plugin" })).toBeVisible();
   });
 
   it("keeps selection across filters and plans mixed selections without hiding skipped items", async () => {

@@ -584,6 +584,15 @@ export interface GithubAuthSession {
   scopes: string[];
 }
 
+export interface GithubWebAuthSession {
+  session_id: string;
+  authorization_url: string;
+  expires_in: number;
+  interval: number;
+  purpose: GithubAuthPurpose;
+  scopes: string[];
+}
+
 export interface GithubAuthPollResult {
   state: "pending" | "slow_down" | "authorized" | "denied" | "expired";
   retry_after?: number;

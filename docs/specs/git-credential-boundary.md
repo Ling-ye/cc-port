@@ -14,7 +14,7 @@ GitHub token 或其他 Git HTTPS 凭据不得进入仓库配置、远端 URL、�
 - 子进程结束后不保留任何凭据文件。
 - 只有用户显式点击绑定时允许 Git Credential Manager 图形交互；后台读取、同步和推送继续禁用交互。
 
-GitHub API OAuth Token 与资源仓库 Git 凭据是两条独立链路。设备流 Token 明文保存在 `config.toml`，普通桌面响应只能返回掩码；除显式 `github_token_reveal` 外，不得复制到 Tauri 原始响应、任务中心或日志。`LPM_GITHUB_TOKEN` 覆盖配置 Token，且不能由 GUI 查看或清除。
+GitHub API OAuth Token 与资源仓库 Git 凭据是两条独立链路。浏览器 OAuth 与兼容设备流取得的 Token 均明文保存在 `config.toml`，普通桌面响应只能返回掩码；除显式 `github_token_reveal` 外，不得复制到 Tauri 原始响应、任务中心或日志。浏览器 OAuth 的 PKCE verifier、轮询凭据和临时会话只保存在本机状态目录，不得返回前端。`LPM_GITHUB_TOKEN` 覆盖配置 Token，且不能由 GUI 查看或清除。
 
 Tauri 向 sidecar 发送 JSON payload 时不使用命令行参数；优先写标准输入，并为 Windows 打包运行时同时设置仅属于该子进程的 `LPM_DESKTOP_API_PAYLOAD` 回退。sidecar 在解析后、执行任何业务动作前立即删除该环境变量，避免子进程继续继承。无论兼容接口是否含敏感字段，payload 均不得出现在进程列表；sidecar JSON 解析失败时不得把原始响应拼入错误消息。
 

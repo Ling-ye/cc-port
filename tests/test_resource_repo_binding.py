@@ -6,6 +6,7 @@ import pytest
 
 from lpm.core.config import Config, GithubConfig, ResourcesConfig
 from lpm.infrastructure import git_ops
+from lpm.infrastructure.github_client import CreatedRepo
 from lpm.services import resource_repo
 
 
@@ -88,3 +89,61 @@ def test_push_before_first_pull_is_blocked(tmp_path: Path) -> None:
 
     with pytest.raises(git_ops.GitError, match="has not been pulled yet"):
         resource_repo.push_resource_repo(config=cfg)
+
+
+def test_init_resource_repo_uses_bound_url_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    class FakeClient:
+        def __init__(self, token: str) -> None:
+            assert token == "token"
+
+        def authenticated_login(self) -> str:
+            raise AssertionError("bound repository owner must avoid account fallback")
+
+        def ensure_repo(
+            self,
+            owner: str,
+            name: str,
+            *,
+            description: str,
+            private: bool,
+        ) -> tuple[CreatedRepo, bool]:
+            captured["owner"] = owner
+            return (
+                CreatedRepo(
+                    full_name=f"{owner}/{name}",
+                    https_url=f"https://github.com/{owner}/{name}.git",
+                    ssh_url=f"git@github.com:{owner}/{name}.git",
+                    default_branch="main",
+                    private=private,
+                ),
+                False,
+            )
+
+    cfg = Config(
+        github=GithubConfig(token="token", owner="LegacyOwner"),
+        resources=ResourcesConfig(
+            repo_name="resources",
+            repo_url="git@github.com:BoundOwner/resources.git",
+            local_path=str(tmp_path / "resources"),
+        ),
+    )
+    monkeypatch.setattr(resource_repo, "GithubClient", FakeClient)
+    monkeypatch.setattr(
+        resource_repo,
+        "prepare_local_resource_repo",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(resource_repo, "inspect_resource_repo", lambda *_args, **_kwargs: "ready")
+
+    result = resource_repo.init_resource_repo(
+        config=cfg,
+        config_path=tmp_path / "config.toml",
+    )
+
+    assert result == "ready"
+    assert captured["owner"] == "BoundOwner"

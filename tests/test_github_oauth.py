@@ -142,6 +142,170 @@ def test_builtin_client_id_is_used_when_development_override_is_absent(
     assert github_oauth.oauth_client_id() == "release-client-id"
 
 
+def test_web_flow_returns_only_browser_safe_session_data(
+    oauth_environment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config_path, state_path = oauth_environment
+    monkeypatch.setenv("LPM_GITHUB_OAUTH_BROKER_URL", "https://oauth.example.workers.dev")
+    captured: dict[str, object] = {}
+
+    def fake_broker(url: str, *, method: str, data=None, bearer_token: str = ""):
+        captured.update(url=url, method=method, data=data, bearer_token=bearer_token)
+        return 200, {
+            "session_id": "A" * 32,
+            "poll_token": "private-poll-token-value-that-is-long-enough",
+            "authorization_url": (
+                "https://github.com/login/oauth/authorize"
+                "?client_id=registered-client-id&state=opaque"
+            ),
+            "expires_in": 600,
+            "interval": 2,
+        }, {}
+
+    monkeypatch.setattr(github_oauth, "_broker_request_json", fake_broker)
+
+    result = github_oauth.start_web_authorization("standard")
+
+    assert result["authorization_url"].startswith("https://github.com/login/oauth/authorize?")
+    assert result["scopes"] == ["repo"]
+    assert "poll_token" not in result
+    assert "code_verifier" not in result
+    assert captured["method"] == "POST"
+    data = captured["data"]
+    assert isinstance(data, dict)
+    assert data["purpose"] == "standard"
+    assert len(str(data["code_challenge"])) == 43
+    assert "retained_scopes" not in data
+    session_file = state_path / "oauth" / f"{result['session_id']}.json"
+    stored = json.loads(session_file.read_text(encoding="utf-8"))
+    assert stored["flow"] == "web"
+    assert stored["broker_session_id"] == "A" * 32
+
+
+def test_web_flow_validates_and_commits_token_only_after_success(
+    oauth_environment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path, _state_path = oauth_environment
+    write_config(Config(github=GithubConfig(token="old-token")), config_path)
+    monkeypatch.setenv("LPM_GITHUB_OAUTH_BROKER_URL", "https://oauth.example.workers.dev")
+    requests: list[tuple[str, str, str]] = []
+
+    def fake_validate(token: str) -> github_oauth.TokenIdentity:
+        if token == "old-token":
+            return github_oauth.TokenIdentity("Lingye", ("repo",))
+        assert token == "new-token"
+        return github_oauth.TokenIdentity("Lingye", ("repo",))
+
+    def fake_broker(url: str, *, method: str, data=None, bearer_token: str = ""):
+        requests.append((url, method, bearer_token))
+        if url.endswith("/v1/oauth/sessions"):
+            return 200, {
+                "session_id": "B" * 32,
+                "poll_token": "private-poll-token-value-that-is-long-enough",
+                "authorization_url": (
+                    "https://github.com/login/oauth/authorize"
+                    "?client_id=registered-client-id&state=opaque"
+                ),
+                "expires_in": 600,
+                "interval": 2,
+            }, {}
+        assert data and len(str(data["code_verifier"])) >= 43
+        return 200, {
+            "state": "authorized",
+            "access_token": "new-token",
+            "login": "Lingye",
+            "scopes": ["repo"],
+        }, {}
+
+    monkeypatch.setattr(github_oauth, "validate_token", fake_validate)
+    monkeypatch.setattr(github_oauth, "_broker_request_json", fake_broker)
+
+    session = github_oauth.start_web_authorization("standard")
+    assert load_raw_config(config_path).github.token == "old-token"
+
+    result = github_oauth.poll_web_authorization(session["session_id"], immediate=True)
+
+    assert result["state"] == "authorized"
+    assert "access_token" not in result
+    assert "token" not in result
+    assert "token_preview" not in result
+    assert load_raw_config(config_path).github.token == "new-token"
+    assert requests[-1][2] == "private-poll-token-value-that-is-long-enough"
+
+
+def test_web_flow_failure_preserves_existing_token(
+    oauth_environment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path, _state_path = oauth_environment
+    write_config(Config(github=GithubConfig(token="old-token")), config_path)
+    monkeypatch.setenv("LPM_GITHUB_OAUTH_BROKER_URL", "https://oauth.example.workers.dev")
+
+    responses = iter([
+        (200, {
+            "session_id": "C" * 32,
+            "poll_token": "private-poll-token-value-that-is-long-enough",
+            "authorization_url": (
+                "https://github.com/login/oauth/authorize"
+                "?client_id=registered-client-id&state=opaque"
+            ),
+            "expires_in": 600,
+            "interval": 2,
+        }, {}),
+        (503, {"error": "oauth_broker_unavailable"}, {}),
+    ])
+    monkeypatch.setattr(github_oauth, "_broker_request_json", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(
+        github_oauth,
+        "validate_token",
+        lambda _token: github_oauth.TokenIdentity("Lingye", ("repo",)),
+    )
+    session = github_oauth.start_web_authorization("standard")
+
+    with pytest.raises(github_oauth.OAuthSessionError, match="temporarily unavailable"):
+        github_oauth.poll_web_authorization(session["session_id"], immediate=True)
+
+    assert load_raw_config(config_path).github.token == "old-token"
+
+
+def test_web_flow_cancel_clears_local_session_even_when_broker_is_unavailable(
+    oauth_environment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config_path, state_path = oauth_environment
+    monkeypatch.setenv("LPM_GITHUB_OAUTH_BROKER_URL", "https://oauth.example.workers.dev")
+
+    def fake_broker(url: str, *, method: str, data=None, bearer_token: str = ""):
+        if method == "POST":
+            return 200, {
+                "session_id": "D" * 32,
+                "poll_token": "private-poll-token-value-that-is-long-enough",
+                "authorization_url": (
+                    "https://github.com/login/oauth/authorize"
+                    "?client_id=registered-client-id&state=opaque"
+                ),
+                "expires_in": 600,
+                "interval": 2,
+            }, {}
+        raise github_oauth.OAuthSessionError("offline")
+
+    monkeypatch.setattr(github_oauth, "_broker_request_json", fake_broker)
+    session = github_oauth.start_web_authorization("standard")
+    session_file = state_path / "oauth" / f"{session['session_id']}.json"
+
+    assert github_oauth.cancel_web_authorization(session["session_id"]) == {"cancelled": True}
+    assert not session_file.exists()
+
+
+def test_browser_oauth_configuration_requires_https_except_local_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LPM_GITHUB_OAUTH_BROKER_URL", "http://oauth.example.test")
+    with pytest.raises(github_oauth.OAuthConfigurationError, match="URL is invalid"):
+        github_oauth.start_web_authorization("standard")
+
+    monkeypatch.setenv("LPM_GITHUB_OAUTH_BROKER_URL", "http://127.0.0.1:8787")
+    assert github_oauth._validated_broker_url() == "http://127.0.0.1:8787"
+
+
 def test_device_poll_handles_slow_down_and_expiration(
     oauth_environment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

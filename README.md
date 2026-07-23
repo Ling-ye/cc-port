@@ -154,7 +154,7 @@ sync/<operation-id>/           # 弃用兼容：旧 Git 同步计划与临时 wo
 安装后：
 
 1. 安装 Git；通常无需手工配置 PATH，非标准位置通过 `config.toml` 的 `[git].executable` 或 `LPM_GIT_EXECUTABLE` 指定。
-2. 启动桌面应用，在设置页连接 GitHub、手工填写仓库 Owner，并绑定资源仓库。
+2. 启动桌面应用，在设置页绑定资源仓库；需要 GitHub API 能力时，点击“登录 GitHub”并在系统浏览器完成授权。
 3. 高级值需要时直接编辑 `~/.config/lpm/config.toml`；可参考 `config/config.example.toml`。
 4. 需要排障时，在桌面设置页展开“诊断”并运行检查，确认配置、Git、资源仓库和平台目录正常。
 
@@ -228,6 +228,8 @@ desktop/src-tauri/target/debug/                # Tauri/Cargo dev 调试输出
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1
 ```
+
+[KNOWN] 该默认发布命令始终以非交互模式准备环境，不读取 `y/n` 输入；缺失工具安装、依赖同步及协议接受按已展示的操作自动授权。`-NonInteractive` 参数仅为旧命令兼容而保留。置信度：HIGH。
 
 [KNOWN] 默认发布先验证依赖与 sidecar 缓存；只有缓存记录、输入指纹、工具链身份和产物验证全部匹配时才复用，缺失、损坏或过期时自动重建。需要忽略两类缓存并强制重新同步或重建时使用：置信度：HIGH。
 
@@ -329,25 +331,28 @@ Windows 下等价路径通常是：
 - 后续“刷新远端”只更新 LPM 隐藏维护的受管镜像和 commit 只读快照，不调用旧 `resource_pull`，也不写 AI 工具目录。
 - `[resources].credential_mode` 可选 `native`、`auto` 或 `token`；一键绑定使用 `native`，旧配置默认按 `auto` 兼容。
 
-设置页只编辑资源仓库绑定、GitHub 授权、仓库 Owner 和五个目标工具开关；分支、凭据模式、Git 可执行文件、仓库前缀与状态保留策略继续由 `config.toml` 和 CLI 管理。旧 `local_path` 与用户工作区只保留兼容，不会因设置页保存而被重置，也不进入新的桌面资源流程。
+设置页只编辑资源仓库绑定、精简 GitHub 授权和五个目标工具开关；Owner、分支、凭据模式、Git 可执行文件、仓库前缀与状态保留策略继续由内部规则、`config.toml` 和 CLI 管理。资源仓库 URL 中的 Owner 在绑定后优先于旧 `[github].owner`；未绑定时旧字段继续兼容。旧 `local_path` 与用户工作区只保留兼容，不会因设置页保存而被重置，也不进入新的桌面资源流程。
 
 桌面侧栏将资源类型、桌面功能和项目信息统一放在单一“说明”页，不再提供独立“关于”页。
 
-GitHub 访问使用 OAuth 设备流：
+GitHub 访问使用系统浏览器 OAuth Web Flow：
 
-- 普通连接只申请 `repo`；验证组织 Owner 时按需追加 `read:org`；删除 `source=owned` 的远端仓库时才追加 `delete_repo`。
-- Owner 必须手工填写。个人 Owner 必须与授权账号一致；组织 Owner 会验证组织存在和当前账号的有效成员关系。组织策略是否允许建仓只能由首次建仓请求最终确认。
-- OAuth Token 明文保存在本机 `config.toml`，普通界面只显示首尾各四位掩码；显式查看 30 秒后自动隐藏。
-- “移除本机 Token”只清空 `config.toml`，不会撤销 GitHub 上对 OAuth App 的授权。
-- `LPM_GITHUB_TOKEN` 始终优先于配置 Token；环境变量 Token 不能在 GUI 中查看、替换或清除。
+- 普通连接只申请 `repo`；旧组织 Owner 验证按需追加 `read:org`；删除 `source=owned` 的远端仓库时才追加 `delete_repo`。
+- 设置页只显示授权账号与连接状态，不展示 Token、Token 来源或 scope；点击登录或重新授权后在系统浏览器批准，应用会自动接收结果，不需要设备码或 Token 输入。
+- GitHub OAuth `client_secret` 只存在于项目部署的 Cloudflare Worker；桌面端使用 PKCE 和 `lingye-lpm://oauth/complete` 深链，定时轮询作为深链被拦截时的兜底。
+- 官方无输入登录由项目维护的共享 Worker 提供；内置官方 origin 后，普通安装用户和拉取源码自行构建的用户会默认直接使用它，不需要自行部署或填写 OAuth 字符串。
+- 打包不以 Worker 为前置条件；未配置有效 broker 的构建仍可正常安装和使用资源仓库等功能，但“登录 GitHub”会显示服务未配置并保持禁用。
+- “移除本机授权”只清空 `config.toml` 中的 Token，不会撤销 GitHub 上对 OAuth App 的授权。
+- `LPM_GITHUB_TOKEN` 始终优先于配置 Token；环境变量 Token 不能在 GUI 中替换或清除。
 
-全新配置默认创建私有仓库，使用 `lpm-` 前缀、`main` 分支、本机 Git/GCM 或 SSH 凭据，并启用 Codex、Claude Code、Cursor、Windsurf、opencode 五个完整平台预设。现有配置继续保留原 Owner、平台开关、目录和高级值。Cline 与 Gemini CLI 目前不提供完整可写平台预设。
+全新配置默认创建私有仓库，使用 `lpm-` 前缀、`main` 分支、本机 Git/GCM 或 SSH 凭据，并启用 Codex、Claude Code、Cursor、Windsurf、opencode 五个完整平台预设。绑定后以资源仓库 URL 中的 Owner 为准；未绑定的现有配置继续保留原 Owner、平台开关、目录和高级值。Cline 与 Gemini CLI 目前不提供完整可写平台预设。
 
 常用环境变量：
 
 - `LPM_CONFIG`：指定配置文件路径。
 - `LPM_GITHUB_TOKEN`：覆盖配置文件中的 GitHub token。
-- `LPM_GITHUB_OAUTH_CLIENT_ID`：仅用于开发环境覆盖桌面包内置的 OAuth App `client_id`。
+- `LPM_GITHUB_OAUTH_BROKER_URL`：开发、自托管或企业环境在运行时覆盖桌面包内置的官方共享 OAuth broker URL；只允许 HTTPS，或本机开发用的 `http://127.0.0.1` / `http://localhost`。
+- `LPM_GITHUB_OAUTH_CLIENT_ID`：只供旧设备流兼容接口使用，新设置页不读取。
 - `LPM_GIT_EXECUTABLE`：覆盖 `[git].executable`，指定 Git 可执行文件。
 - 后台分支刷新优先复用已绑定协议的非交互凭据；HTTPS 失败后可兼容回退到本机 GitHub SSH Key。只有用户显式点击绑定时允许浏览器登录。
 - `LPM_RESOURCE_HOME`：覆盖旧兼容工作区路径；新的桌面资源流程不把该路径作为资源中枢。
@@ -394,7 +399,9 @@ lpm doctor
 导入、本地发现、双端比较与同步的唯一入口：
 
 - 顶栏显示当前页面名称，只保留任务中心和语言切换；资源页页头只保留“添加资源”。
-- 资源页状态条分别展示远端仓库、分支、短 commit、上次检查时间与在线/缓存状态，以及本地扫描发现的工具数和实例数。
+- 桌面窗口默认使用 `1360×820`，最小尺寸为 `1280×720`；侧栏固定为 `220px`，资源清单吸收主要的宽屏新增空间，详情栏保持在 `320px` 至 `420px`。
+- 资源表和详情在视口剩余高度内独立滚动，窗口外层不再出现重复滚动条；设置页和说明页保留各自的单一内容滚动区。
+- 资源页并排状态卡分别展示远端仓库、分支、短 commit、上次检查时间与在线/缓存状态，以及本地扫描发现的工具数和实例数。
 - 应用启动静默刷新远端一次，停留期间不轮询；手动“刷新远端”会报告已是最新、获取到新版本或正在显示只读缓存。
 - “刷新远端”只更新受管镜像和远端快照；“扫描本地”只观察用户选择的全局环境与项目，不 fetch 或写远端。
 - 本次会话扫描过本地后，再刷新远端会复用完全相同的全局与项目范围重扫，避免本地独有资源从清单消失；扫描范围不会跨应用重启保存。
@@ -406,7 +413,8 @@ lpm doctor
 - 插件采用双轨管理：用户确认拥有的源码上传内容；Codex/Claude marketplace、opencode npm 和 managed 插件只保存引用、版本策略、作用域与启用状态。
 - Codex 的 `openai-bundled/chrome` 等 marketplace 插件从配置与版本清单识别为外部引用；扫描到的 cache 路径只用于观测，绝不展示或上传为源码。
 - Codex 和 Claude 的版本化 cache 永不作为上传源；第三方引用在目标机器缺失时给出安全安装指引，不复制缓存。
-- 远端描述优先显示；详情栏同时列出远端提交、路径和每个本地实例的工具、安装名、路径、所有权、内容状态与阻断原因。
+- 清单使用“选择、资源、描述、状态”四列，状态保留精确总体结论，描述最多显示两行；完整描述与双端状态在详情中展示。
+- 详情栏优先显示警告和差异，再列出远端提交、路径和每个本地实例的工具、安装名、路径、所有权、内容状态与阻断原因；危险操作位于底部。
 - 同一资源的相同本地副本折叠为一个逻辑资源；内容不同的多个实例保留，并在上传计划中要求选择来源。
 - 表头全选只选择当前可见资源，跨筛选选择继续保留；上下文操作栏显示总选中数和被筛选隐藏数。
 - 只有勾选资源后才显示“上传到仓库”和“安装到工具”；安装前选择一个或多个已启用 AI 工具。

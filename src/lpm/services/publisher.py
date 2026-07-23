@@ -16,6 +16,7 @@ from ..core.secrets import sanitize_mcp_config_for_storage
 from ..core.validator import parse_skill
 from ..infrastructure import git_ops
 from ..infrastructure.github_client import GithubClient
+from .resource_binding import configured_github_owner
 
 # Keep backward-compatible alias
 SkillEntry = RegistryItem
@@ -104,7 +105,7 @@ def publish_local_skill(
         )
 
     client = GithubClient(config.github.token)
-    owner = config.github.owner.strip() or client.authenticated_login()
+    owner = configured_github_owner(config) or client.authenticated_login()
     repo_name = f"{config.github.repo_prefix}{skill_name}" if config.github.repo_prefix else skill_name
 
     repo, created = client.ensure_repo(
@@ -146,7 +147,7 @@ def publish_local_skill(
         category=category,
         platforms=platforms or [],
         version=version,
-        author=author or config.github.owner,
+        author=author or owner,
         license=item_license,
     )
     registry.upsert(entry)

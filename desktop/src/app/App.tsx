@@ -31,6 +31,7 @@ export default function App() {
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [error, setError] = useState("");
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [settingsRefreshVersion, setSettingsRefreshVersion] = useState(0);
   const startupRequestedRef = useRef(false);
   const refreshInFlightRef = useRef(false);
   const t = useMemo(() => createTranslator(language), [language]);
@@ -125,6 +126,13 @@ export default function App() {
     });
   }
 
+  function navigateTo(nextView: View) {
+    if (nextView === "settings") {
+      setSettingsRefreshVersion((current) => current + 1);
+    }
+    setView(nextView);
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -142,7 +150,7 @@ export default function App() {
               <button
                 key={item.id}
                 className={view === item.id ? "nav-item active" : "nav-item"}
-                onClick={() => setView(item.id)}
+                onClick={() => navigateTo(item.id)}
                 title={t(item.labelKey)}
               >
                 <Icon size={18} />
@@ -184,6 +192,7 @@ export default function App() {
         {view === "settings" ? (
           <SettingsView
             t={t}
+            refreshVersion={settingsRefreshVersion}
             onError={setError}
             onChanged={refreshAfterChange}
           />

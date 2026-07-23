@@ -25,7 +25,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1 -Clean
 ```
 
-- [KNOWN] 两个入口支持 `-NonInteractive`；默认模式汇总操作后只确认一次。置信度：HIGH。
+- [KNOWN] `setup.ps1` 默认汇总操作后确认一次，并支持 `-NonInteractive` 跳过确认；`release-desktop.ps1` 必须始终以非交互模式调用它，因此默认发布命令不读取 `y/n` 输入。发布入口继续接受 `-NonInteractive` 以兼容旧调用，但该参数不再改变行为。置信度：HIGH。
 - [KNOWN] `-CheckOnly` 不安装系统包、不创建或修改 `.venv`、不运行 pip/npm 安装，并以退出码表示环境是否完整。置信度：HIGH。
 - [KNOWN] `release-desktop.ps1` 必须先调用 `setup.ps1`，不能复制第二套环境安装逻辑。置信度：HIGH。
 - [KNOWN] 默认入口必须复用验证通过的依赖、sidecar 与 Cargo 产物；`-ForceSync`/`-Clean` 是显式绕过路径，均不得执行 `cargo clean`。置信度：HIGH。
@@ -84,5 +84,6 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 - [KNOWN] Windows PowerShell 5.1 解析两个入口、共享模块和自测文件时没有语法错误。置信度：HIGH。
 - [KNOWN] 自测覆盖版本规则、稳定指纹、缓存损坏与原子写入、发布锁、门禁并行退出码与逐任务超时、Rust 装饰输出、可执行文件 fallback、安全目录、MSI/NSIS 判断、staging 缺失预检以及发布替换与回滚。置信度：HIGH。
 - [KNOWN] `setup.ps1 -CheckOnly` 在环境完整时返回 0，并保持 `.venv` 与 `node_modules` 不变。置信度：HIGH。
+- [KNOWN] 默认 `release-desktop.ps1` 和 `release-desktop.ps1 -Clean` 都必须把 `-NonInteractive` 显式传给 `setup.ps1`，且发布脚本不得包含未携带该开关的环境准备调用。置信度：HIGH。
 - [KNOWN] 一条 `release-desktop.ps1` 命令完成所有门禁，生成并哈希桌面 exe、sidecar、MSI 和 NSIS，且 sidecar 冒烟通过。置信度：HIGH。
 - [KNOWN] 性能验收必须在同一提交、机器和工具版本下，对优化前与优化后分别执行三次成功的无修改默认暖构建，取 `value.durationMs` 中位数，并满足 `candidateMedian <= baselineMedian * 0.70`；`-Clean`、前端、Python 和 Rust 修改场景仅单独记录，不套用该硬门槛。置信度：HIGH。

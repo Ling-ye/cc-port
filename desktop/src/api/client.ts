@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { LpmResponse } from "@/types/lpm";
@@ -36,6 +37,15 @@ export async function openPath(path: string): Promise<void> {
 
 export async function openExternalUrl(url: string): Promise<void> {
   await openUrl(url);
+}
+
+export async function listenForOAuthDeepLinks(
+  handler: (urls: string[]) => void,
+): Promise<() => void> {
+  const unlisten = await onOpenUrl(handler);
+  const current = await getCurrent();
+  if (current?.length) handler(current);
+  return unlisten;
 }
 
 export async function copyText(value: string): Promise<void> {

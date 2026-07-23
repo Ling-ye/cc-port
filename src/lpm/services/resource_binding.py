@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 
 from ..core.config import (
     DEFAULT_RESOURCE_BRANCH,
+    Config,
     default_config_path,
     load_raw_config,
     write_config,
@@ -94,6 +95,18 @@ def parse_github_repo_url(value: str) -> ParsedGithubRepository:
     if len(parts) != 2:
         raise ValueError("Use the repository root URL, without tree, issue, or file subpaths.")
     return _parsed_repo(parts[0], parts[1], transport=transport)
+
+
+def configured_github_owner(config: Config) -> str:
+    """Return the bound resource repository owner before the legacy owner field."""
+    repo_url = config.resources.repo_url.strip()
+    if repo_url:
+        try:
+            return parse_github_repo_url(repo_url).owner
+        except ValueError:
+            # Old configs may contain remotes outside the current binding contract.
+            pass
+    return config.github.owner.strip()
 
 
 def bind_resource_repo(

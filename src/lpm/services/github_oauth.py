@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -12,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from ..core.config import (
@@ -27,11 +29,16 @@ OAUTH_CLIENT_ID_ENV_VAR = "LPM_GITHUB_OAUTH_CLIENT_ID"
 # GitHub OAuth client IDs are public identifiers. Replace this empty value with
 # the project's registered OAuth App client ID before producing a public build.
 BUILTIN_GITHUB_OAUTH_CLIENT_ID = ""
+OAUTH_BROKER_URL_ENV_VAR = "LPM_GITHUB_OAUTH_BROKER_URL"
+# This public URL is filled with the deployed workers.dev endpoint before a
+# production release. Development builds can use OAUTH_BROKER_URL_ENV_VAR.
+BUILTIN_GITHUB_OAUTH_BROKER_URL = ""
 
 DEVICE_CODE_URL = "https://github.com/login/device/code"
 ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_API_URL = "https://api.github.com"
 DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+WEB_AUTH_SESSION_TTL_SECONDS = 600
 
 PURPOSE_SCOPES: dict[str, tuple[str, ...]] = {
     "standard": ("repo",),
@@ -80,6 +87,13 @@ def oauth_client_id() -> str:
     )
 
 
+def oauth_broker_url() -> str:
+    return (
+        os.environ.get(OAUTH_BROKER_URL_ENV_VAR, "").strip()
+        or BUILTIN_GITHUB_OAUTH_BROKER_URL.strip()
+    ).rstrip("/")
+
+
 def auth_status() -> dict[str, Any]:
     raw_cfg = load_raw_config()
     env_token = os.environ.get(CONFIG_ENV_VAR, "").strip()
@@ -96,7 +110,7 @@ def auth_status() -> dict[str, Any]:
         "can_reveal": bool(config_token),
         "can_clear": bool(config_token),
         "env_override": bool(env_token),
-        "oauth_configured": bool(oauth_client_id()),
+        "oauth_configured": _broker_is_configured(),
         "error": "",
     }
     if not effective_token:
@@ -112,16 +126,165 @@ def auth_status() -> dict[str, Any]:
     return base
 
 
+def start_web_authorization(purpose: str) -> dict[str, Any]:
+    purpose = str(purpose or "").strip()
+    base_scopes = PURPOSE_SCOPES.get(purpose)
+    if base_scopes is None:
+        raise ValueError("Unsupported GitHub authorization purpose.")
+    _require_gui_authorization_available()
+    broker_url = _validated_broker_url()
+    scopes = base_scopes
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = _pkce_challenge(code_verifier)
+    status, response, _headers = _broker_request_json(
+        f"{broker_url}/v1/oauth/sessions",
+        method="POST",
+        data={
+            "purpose": purpose,
+            "code_challenge": code_challenge,
+        },
+    )
+    if status == 429:
+        raise OAuthSessionError("GitHub sign-in is busy. Wait a minute and try again.")
+    if status != 200:
+        raise OAuthSessionError("GitHub sign-in service is temporarily unavailable.")
+
+    broker_session_id = _required_response_str(response, "session_id")
+    poll_token = _required_response_str(response, "poll_token")
+    authorization_url = _required_response_str(response, "authorization_url")
+    expires_in = _positive_response_int(response, "expires_in")
+    interval = max(1, min(10, int(response.get("interval") or 2)))
+    if not _SESSION_ID_RE.fullmatch(broker_session_id):
+        raise OAuthSessionError("GitHub sign-in service returned an invalid session.")
+    if len(poll_token) < 32 or len(poll_token) > 256:
+        raise OAuthSessionError("GitHub sign-in service returned an invalid session.")
+    if expires_in > WEB_AUTH_SESSION_TTL_SECONDS:
+        raise OAuthSessionError("GitHub sign-in service returned an invalid expiration.")
+    _validate_authorization_url(authorization_url)
+
+    session_id = secrets.token_urlsafe(24)
+    now = time.time()
+    _write_session(
+        session_id,
+        {
+            "flow": "web",
+            "broker_url": broker_url,
+            "broker_session_id": broker_session_id,
+            "poll_token": poll_token,
+            "code_verifier": code_verifier,
+            "authorization_url": authorization_url,
+            "purpose": purpose,
+            "scopes": list(scopes),
+            "expires_at": now + expires_in,
+            "interval": interval,
+            "next_poll_at": now + interval,
+        },
+    )
+    return {
+        "session_id": session_id,
+        "authorization_url": authorization_url,
+        "expires_in": expires_in,
+        "interval": interval,
+        "purpose": purpose,
+        "scopes": list(scopes),
+    }
+
+
+def poll_web_authorization(session_id: str, *, immediate: bool = False) -> dict[str, Any]:
+    session = _read_web_session(session_id)
+    now = time.time()
+    if now >= float(session["expires_at"]):
+        _delete_session(session_id)
+        return {"state": "expired"}
+
+    next_poll_at = float(session.get("next_poll_at") or 0)
+    if not immediate and now < next_poll_at:
+        return {
+            "state": "pending",
+            "retry_after": max(1, int(next_poll_at - now + 0.999)),
+        }
+
+    broker_url = str(session["broker_url"])
+    broker_session_id = str(session["broker_session_id"])
+    poll_token = str(session["poll_token"])
+    status, response, headers = _broker_request_json(
+        f"{broker_url}/v1/oauth/sessions/{broker_session_id}/poll",
+        method="POST",
+        data={"code_verifier": str(session["code_verifier"])},
+        bearer_token=poll_token,
+    )
+    if status == 410:
+        _delete_session(session_id)
+        return {"state": "expired"}
+    if status == 429:
+        retry_after = _retry_after(headers, response, default=int(session["interval"]))
+        session["next_poll_at"] = now + retry_after
+        _write_session(session_id, session)
+        return {"state": "pending", "retry_after": retry_after}
+    if status != 200:
+        raise OAuthSessionError("GitHub sign-in service is temporarily unavailable.")
+
+    state = str(response.get("state") or "")
+    if state == "pending":
+        retry_after = max(1, int(response.get("retry_after") or session["interval"]))
+        session["next_poll_at"] = now + retry_after
+        _write_session(session_id, session)
+        return {"state": "pending", "retry_after": retry_after}
+    if state in {"denied", "expired"}:
+        _delete_session(session_id)
+        return {"state": state}
+    if state != "authorized":
+        raise OAuthSessionError("GitHub sign-in service returned an invalid state.")
+
+    token = _required_response_str(response, "access_token")
+    identity = validate_token(token)
+    required_scopes = {str(scope) for scope in session.get("scopes", [])}
+    actual_scopes = set(identity.scopes)
+    missing = sorted(required_scopes - actual_scopes)
+    if missing:
+        raise OAuthSessionError(
+            f"GitHub authorization did not grant required scopes: {', '.join(missing)}."
+        )
+    broker_login = str(response.get("login") or "").strip()
+    if broker_login and broker_login.lower() != identity.login.lower():
+        raise OAuthSessionError("GitHub authorization account validation failed.")
+
+    cfg = load_raw_config()
+    cfg.github.token = token
+    write_config(cfg, cfg.source_path or default_config_path())
+    _delete_session(session_id)
+    return {
+        "state": "authorized",
+        "login": identity.login,
+        "scopes": list(identity.scopes),
+    }
+
+
+def cancel_web_authorization(session_id: str) -> dict[str, bool]:
+    path = _session_path(session_id)
+    if not path.is_file():
+        return {"cancelled": False}
+    try:
+        session = _read_web_session(session_id)
+        _broker_request_json(
+            f"{session['broker_url']}/v1/oauth/sessions/{session['broker_session_id']}",
+            method="DELETE",
+            bearer_token=str(session["poll_token"]),
+        )
+    except (OAuthConfigurationError, OAuthSessionError, URLError, ValueError):
+        # The remote session has a short TTL; local cancellation must remain reliable.
+        pass
+    finally:
+        _delete_session(session_id)
+    return {"cancelled": True}
+
+
 def start_authorization(purpose: str) -> dict[str, Any]:
     purpose = str(purpose or "").strip()
     base_scopes = PURPOSE_SCOPES.get(purpose)
     if base_scopes is None:
         raise ValueError("Unsupported GitHub authorization purpose.")
-    if os.environ.get(CONFIG_ENV_VAR, "").strip():
-        raise OAuthConfigurationError(
-            f"{CONFIG_ENV_VAR} overrides the token stored by the desktop app. "
-            "Update or remove the environment token before authorizing in the GUI."
-        )
+    _require_gui_authorization_available()
     client_id = oauth_client_id()
     if not client_id:
         raise OAuthConfigurationError(
@@ -356,6 +519,141 @@ def _authorization_scopes(base_scopes: tuple[str, ...]) -> tuple[str, ...]:
         except (GithubApiError, URLError, ValueError):
             pass
     return tuple(scope for scope in ("repo", "read:org", "delete_repo") if scope in retained)
+
+
+def _require_gui_authorization_available() -> None:
+    if os.environ.get(CONFIG_ENV_VAR, "").strip():
+        raise OAuthConfigurationError(
+            f"{CONFIG_ENV_VAR} overrides the token stored by the desktop app. "
+            "Update or remove the environment token before authorizing in the GUI."
+        )
+
+
+def _broker_is_configured() -> bool:
+    try:
+        return bool(_validated_broker_url())
+    except OAuthConfigurationError:
+        return False
+
+
+def _validated_broker_url(value: str | None = None) -> str:
+    raw = (oauth_broker_url() if value is None else str(value)).strip().rstrip("/")
+    if not raw:
+        raise OAuthConfigurationError(
+            "GitHub browser sign-in is not configured in this desktop build."
+        )
+    parsed = urlparse(raw)
+    local_development = parsed.scheme == "http" and parsed.hostname in {
+        "127.0.0.1",
+        "localhost",
+    }
+    if (
+        (parsed.scheme != "https" and not local_development)
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise OAuthConfigurationError("GitHub browser sign-in service URL is invalid.")
+    return raw
+
+
+def _validate_authorization_url(value: str) -> None:
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or parsed.path != "/login/oauth/authorize"
+        or parsed.username is not None
+        or parsed.password is not None
+        or not parsed.query
+        or parsed.fragment
+    ):
+        raise OAuthSessionError("GitHub sign-in service returned an invalid authorization URL.")
+
+
+def _pkce_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _read_web_session(session_id: str) -> dict[str, Any]:
+    session = _read_session(session_id)
+    if session.get("flow") != "web":
+        raise OAuthSessionError("GitHub browser authorization session is invalid.")
+    required = {
+        "broker_url",
+        "broker_session_id",
+        "poll_token",
+        "code_verifier",
+        "expires_at",
+        "interval",
+        "scopes",
+    }
+    if any(key not in session for key in required):
+        raise OAuthSessionError("GitHub browser authorization session is invalid.")
+    session["broker_url"] = _validated_broker_url(str(session["broker_url"]))
+    if not _SESSION_ID_RE.fullmatch(str(session["broker_session_id"])):
+        raise OAuthSessionError("GitHub browser authorization session is invalid.")
+    verifier = str(session["code_verifier"])
+    if not 43 <= len(verifier) <= 128:
+        raise OAuthSessionError("GitHub browser authorization session is invalid.")
+    return session
+
+
+def _broker_request_json(
+    url: str,
+    *,
+    method: str,
+    data: dict[str, Any] | None = None,
+    bearer_token: str = "",
+) -> tuple[int, dict[str, Any], dict[str, str]]:
+    body = json.dumps(data, ensure_ascii=True).encode("utf-8") if data is not None else None
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "LingyePluginMarketplace-Desktop",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    request = Request(url, data=body, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=20) as response:  # noqa: S310 - validated broker URL
+            status = int(response.status)
+            payload = json.loads(response.read().decode("utf-8"))
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+    except HTTPError as exc:
+        status = int(exc.code)
+        response_headers = {
+            key.lower(): value for key, value in (exc.headers.items() if exc.headers else [])
+        }
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+        except (ValueError, OSError):
+            payload = {}
+    except (URLError, TimeoutError) as exc:
+        raise OAuthSessionError("GitHub sign-in service is temporarily unavailable.") from exc
+    except (OSError, ValueError) as exc:
+        raise OAuthSessionError("GitHub sign-in service returned an invalid response.") from exc
+    if not isinstance(payload, dict):
+        raise OAuthSessionError("GitHub sign-in service returned an invalid response.")
+    return status, payload, response_headers
+
+
+def _retry_after(
+    headers: dict[str, str],
+    response: dict[str, Any],
+    *,
+    default: int,
+) -> int:
+    raw = headers.get("retry-after") or response.get("retry_after") or default
+    try:
+        return max(1, min(60, int(raw)))
+    except (TypeError, ValueError):
+        return max(1, default)
 
 
 def _request_json(

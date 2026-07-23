@@ -78,6 +78,7 @@ foreach ($functionName in @(
     "Complete-ReleasePhaseRecovery",
     "Invoke-ParallelReleaseGates",
     "Enter-ReleaseLock",
+    "Get-GithubOAuthBrokerBuildStatus",
     "Get-SidecarCacheStatus",
     "Remove-KnownTauriOutputs"
 )) {
@@ -127,6 +128,28 @@ try {
             [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null
             Assert-Equal -Expected 0 -Actual @($errors).Count -Message "Parser errors in $file"
         }
+    }
+
+    Invoke-Test "GitHub OAuth broker is optional at package time" {
+        $oauthRoot = Join-Path $tempRoot "optional-oauth-broker"
+        $oauthDirectory = Join-Path $oauthRoot "src\lpm\services"
+        New-Item -ItemType Directory -Path $oauthDirectory -Force | Out-Null
+        $oauthSource = Join-Path $oauthDirectory "github_oauth.py"
+
+        [IO.File]::WriteAllText($oauthSource, 'BUILTIN_GITHUB_OAUTH_BROKER_URL = ""')
+        $missing = Get-GithubOAuthBrokerBuildStatus -RepoRoot $oauthRoot
+        Assert-True -Condition (-not $missing.Enabled) -Message "Missing broker must disable only the optional login feature"
+        Assert-Equal -Expected "not-configured" -Actual $missing.Reason -Message "Missing broker reason"
+
+        [IO.File]::WriteAllText($oauthSource, 'BUILTIN_GITHUB_OAUTH_BROKER_URL = "http://oauth.example.test"')
+        $invalid = Get-GithubOAuthBrokerBuildStatus -RepoRoot $oauthRoot
+        Assert-True -Condition (-not $invalid.Enabled) -Message "Invalid broker must disable only the optional login feature"
+        Assert-Equal -Expected "invalid" -Actual $invalid.Reason -Message "Invalid broker reason"
+
+        [IO.File]::WriteAllText($oauthSource, 'BUILTIN_GITHUB_OAUTH_BROKER_URL = "https://oauth.example.workers.dev"')
+        $configured = Get-GithubOAuthBrokerBuildStatus -RepoRoot $oauthRoot
+        Assert-True -Condition $configured.Enabled -Message "Valid HTTPS broker must enable browser login"
+        Assert-Equal -Expected "https://oauth.example.workers.dev" -Actual $configured.Url -Message "Configured broker origin"
     }
 
     Invoke-Test "Python version policy" {
@@ -553,9 +576,18 @@ try {
         Assert-True -Condition ($moduleSource -match 'dependencyPolicyVersion=\d+') -Message "Dependency fingerprint must include a policy version"
     }
 
-    Invoke-Test "Release forwards non-interactive setup explicitly" {
+    Invoke-Test "Release always forwards non-interactive setup explicitly" {
         $source = [IO.File]::ReadAllText((Join-Path $RepoRoot "scripts\release-desktop.ps1"))
-        Assert-True -Condition ($source -match 'setup\.ps1"\) -NonInteractive') -Message "Release must bind the setup switch explicitly"
+        $setupCalls = [regex]::Matches(
+            $source,
+            '&\s+\(Join-Path\s+\$PSScriptRoot\s+"setup\.ps1"\)(?<arguments>[^\r\n]*)'
+        )
+        Assert-Equal -Expected 2 -Actual $setupCalls.Count -Message "Release setup call count"
+        foreach ($setupCall in $setupCalls) {
+            Assert-True `
+                -Condition ($setupCall.Groups["arguments"].Value -match '(^|\s)-NonInteractive(\s|$)') `
+                -Message "Every release setup call must bind the non-interactive switch explicitly"
+        }
         Assert-True -Condition ($source -notmatch '@setupArguments') -Message "Array splatting must not be used for named setup switches"
     }
 

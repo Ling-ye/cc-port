@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,8 +15,12 @@ def test_release_exposes_verified_cache_and_clean_contract() -> None:
     source = _source()
 
     assert "[switch]$Clean" in source
-    assert '"setup.ps1") -ForceSync' in source
-    assert '"setup.ps1") -NonInteractive -ForceSync' in source
+    assert "[switch]$NonInteractive" in source
+    setup_calls = re.findall(
+        r'&\s+\(Join-Path\s+\$PSScriptRoot\s+"setup\.ps1"\)([^\r\n]*)',
+        source,
+    )
+    assert setup_calls == [" -NonInteractive -ForceSync", " -NonInteractive"]
     assert "build\\cache\\sidecar.json" in source
     assert "build\\metrics" in source
 
@@ -82,3 +87,14 @@ def test_artifacts_are_hashed_before_the_verified_release_is_published() -> None
     hash_position = source.index('Description "Hashing verified release artifacts"')
     publish_position = source.index('Description "Publishing verified release"')
     assert hash_position < publish_position
+
+
+def test_release_treats_oauth_broker_as_an_optional_runtime_feature() -> None:
+    source = _source()
+
+    assert "Get-GithubOAuthBrokerBuildStatus" in source
+    assert "Assert-GithubOAuthBrokerConfigured" not in source
+    assert "BUILTIN_GITHUB_OAUTH_BROKER_URL" in source
+    assert 'Description "Checking optional GitHub OAuth broker"' in source
+    assert "Packaging will continue" in source
+    assert "disabled by default; runtime override supported" in source

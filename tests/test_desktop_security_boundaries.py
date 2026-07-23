@@ -23,3 +23,23 @@ def test_tauri_response_has_no_raw_field() -> None:
     response_block = source.split("struct LpmActionResponse", 1)[1].split("}", 1)[0]
 
     assert "raw" not in response_block
+
+
+def test_tauri_registers_narrow_oauth_deep_link_and_single_instance() -> None:
+    root = Path(__file__).parents[1]
+    source = (root / "desktop" / "src-tauri" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+    config = (root / "desktop" / "src-tauri" / "tauri.conf.json").read_text(
+        encoding="utf-8"
+    )
+    capability = (
+        root / "desktop" / "src-tauri" / "capabilities" / "default.json"
+    ).read_text(encoding="utf-8")
+
+    assert source.index("tauri_plugin_single_instance::init") < source.index(
+        "tauri_plugin_deep_link::init"
+    )
+    assert '"schemes": ["lingye-lpm"]' in config
+    assert '"deep-link:default"' in capability
+    assert "https://github.com/login/oauth/authorize*" in capability

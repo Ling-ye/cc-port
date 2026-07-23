@@ -9,10 +9,18 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
-  min-width: 980px;
-  min-height: 640px;
+  min-width: 1280px;
+  min-height: 720px;
 }
 
 button,
@@ -28,7 +36,11 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: 220px 1fr;
-  min-height: 100vh;
+  width: 100%;
+  height: 100dvh;
+  min-width: 1280px;
+  min-height: 720px;
+  overflow: hidden;
   background: #eef2f5;
 }
 
@@ -39,6 +51,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 26px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .brand {
@@ -98,11 +112,15 @@ button {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .topbar {
   display: flex;
+  flex: 0 0 auto;
   justify-content: space-between;
   align-items: center;
   gap: 16px;
@@ -680,6 +698,7 @@ button {
   font-size: 11px;
   line-height: 1.2;
   text-align: center;
+  white-space: nowrap;
 }
 
 .asset-status.status-same {
@@ -982,6 +1001,10 @@ button {
 }
 .settings-view {
   display: grid;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
   gap: 14px;
 }
 
@@ -1172,14 +1195,11 @@ button {
   font-size: 12px;
 }
 
-.settings-simple-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+.github-access-card {
   margin-top: 18px;
 }
 
-.settings-simple-grid .settings-section,
+.github-access-card,
 .platform-toggle-section {
   border: 1px solid #e0e7ec;
   border-radius: 10px;
@@ -1234,48 +1254,6 @@ button {
   overflow-wrap: anywhere;
 }
 
-.token-field,
-.owner-control {
-  display: grid;
-  gap: 6px;
-}
-
-.token-field > span,
-.owner-control label > span {
-  color: #46525c;
-  font-size: 13px;
-}
-
-.token-field > div,
-.owner-control {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-}
-
-.token-field > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 7px;
-}
-
-.token-field input,
-.owner-control input {
-  min-width: 0;
-  width: 100%;
-  min-height: 40px;
-  border: 1px solid #bfcdd4;
-  border-radius: 8px;
-  padding: 9px 11px;
-  background: #ffffff;
-  color: #202a32;
-}
-
-.owner-control label {
-  display: grid;
-  gap: 6px;
-}
-
-.owner-control button,
 .simple-actions button,
 .oauth-device-panel button {
   display: inline-flex;
@@ -1315,16 +1293,18 @@ button {
   background: #f2fbf8;
 }
 
-.oauth-device-panel p {
+.oauth-device-panel > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
-  color: #375950;
-  font-size: 13px;
+  color: #234c41;
+  font-weight: 650;
 }
 
-.oauth-device-panel strong {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 20px;
-  letter-spacing: 0.12em;
+.oauth-device-panel > small {
+  color: #375950;
+  font-size: 13px;
 }
 
 .oauth-device-panel > div {
@@ -1372,8 +1352,7 @@ button {
 }
 
 @media (max-width: 1120px) {
-  .repo-binding-status,
-  .settings-simple-grid {
+  .repo-binding-status {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1614,13 +1593,6 @@ button {
   margin: 4px 0 0;
   color: #5f6d76;
   overflow-wrap: anywhere;
-}
-
-@media (max-width: 640px) {
-  .owner-control,
-  .token-field > div {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 .modal-backdrop {
@@ -1947,7 +1919,7 @@ button {
   .stack-form select,
   .stack-form textarea,
   .platform-toggle,
-  .settings-simple-grid .settings-section,
+  .github-access-card,
   .platform-toggle-section,
   .resource-filter-stack,
   .modal {
@@ -2071,8 +2043,6 @@ button {
 
   .connection-pill,
   .repo-bind-control input,
-  .token-field input,
-  .owner-control input,
   .repo-binding-status > div,
   .rebind-comparison > div {
     background: #172228;
@@ -2093,7 +2063,7 @@ button {
   }
 
   .repo-bind-success,
-  .settings-simple-grid .settings-section,
+  .github-access-card,
   .platform-toggle-section {
     border-color: #2b3d46;
   }
@@ -2152,7 +2122,8 @@ button {
     border-color: #276754;
   }
 
-  .oauth-device-panel p {
+  .oauth-device-panel > span,
+  .oauth-device-panel > small {
     color: #b7e5d2;
   }
 
@@ -2172,14 +2143,24 @@ button {
 
 .asset-unified-view {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 26%, 420px);
+  flex: 1;
   gap: 16px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .asset-inventory-panel,
 .asset-unified-detail {
   min-width: 0;
+  min-height: 0;
+}
+
+.asset-inventory-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  container: asset-inventory / inline-size;
 }
 
 .asset-unified-head,
@@ -2234,9 +2215,9 @@ button {
 
 .asset-source-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px 14px;
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-content: start;
   padding: 12px;
   border: 1px solid #dbe4e8;
   border-radius: 10px;
@@ -2283,10 +2264,14 @@ button {
 
 .asset-source-metadata {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) repeat(3, minmax(80px, auto));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   min-width: 0;
   margin: 0;
+}
+
+.asset-source-repository {
+  grid-column: 1 / -1;
 }
 
 .asset-source-metadata > div,
@@ -2316,6 +2301,11 @@ button {
 .asset-source-time span:last-child {
   color: #52606b;
   font-size: 12px;
+}
+
+.asset-source-card > button {
+  width: 100%;
+  align-self: end;
 }
 
 .asset-filter-toolbar {
@@ -2419,15 +2409,31 @@ button {
 }
 
 .asset-table-wrap {
-  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid #dde5e9;
   border-radius: 9px;
 }
 
 .asset-resource-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.asset-select-column {
+  width: 44px;
+}
+
+.asset-name-column {
+  width: 31%;
+}
+
+.asset-status-column {
+  width: 144px;
 }
 
 .asset-resource-table th,
@@ -2435,7 +2441,7 @@ button {
   padding: 10px;
   border-bottom: 1px solid #e4eaed;
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 .asset-resource-table th {
@@ -2461,26 +2467,55 @@ button {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  min-width: 0;
 }
 
 .asset-resource-name > span {
   display: grid;
   gap: 3px;
+  min-width: 0;
+}
+
+.asset-resource-name strong {
+  overflow-wrap: anywhere;
+}
+
+.asset-resource-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .asset-description-cell {
-  max-width: 280px;
   color: #52606b;
 }
 
+.asset-description-cell > span {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.asset-resource-table .asset-status {
+  max-width: 100%;
+  white-space: nowrap;
+}
+
 .asset-unified-detail {
-  align-self: start;
-  position: sticky;
-  top: 0;
+  align-self: stretch;
   display: grid;
+  align-content: start;
   gap: 14px;
-  max-height: calc(100vh - 112px);
-  overflow: auto;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.asset-detail-header {
+  display: grid;
+  gap: 10px;
 }
 
 .asset-detail-description {
@@ -2491,7 +2526,7 @@ button {
 
 .asset-description-compare {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -2520,6 +2555,44 @@ button {
 .asset-plan-items {
   display: grid;
   gap: 9px;
+}
+
+.asset-detail-section {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid #e3eaee;
+}
+
+.asset-detail-section h3 {
+  margin: 0;
+  color: #384650;
+  font-size: 14px;
+}
+
+.asset-description-list {
+  margin-block: 0;
+}
+
+.asset-description-list div {
+  grid-template-columns: minmax(92px, .42fr) minmax(0, 1fr);
+}
+
+.asset-unified-detail .compact-empty {
+  min-height: 96px;
+  margin: 0;
+}
+
+.asset-unified-detail .compact-empty .empty {
+  min-height: 96px;
+}
+
+.asset-danger-zone h3 {
+  color: #9c2525;
+}
+
+.asset-danger-zone .danger {
+  width: 100%;
 }
 
 .asset-detail-diff ul {
@@ -2602,59 +2675,24 @@ button {
   opacity: .72;
 }
 
-@media (max-width: 1050px) {
-  .asset-unified-view {
-    grid-template-columns: 1fr;
-  }
-
-  .asset-unified-detail {
-    position: static;
-    max-height: none;
-  }
-
-  .asset-filter-grid {
-    grid-template-columns: repeat(2, minmax(130px, 1fr));
-  }
-
+@container asset-inventory (max-width: 720px) {
   .asset-filter-toolbar {
-    grid-template-columns: minmax(220px, 1.5fr) repeat(2, minmax(130px, 1fr));
+    grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(110px, 1fr));
   }
 
   .asset-more-filters {
     grid-column: 1 / -1;
-    justify-self: start;
-  }
-
-  .asset-source-metadata {
-    grid-template-columns: repeat(2, minmax(100px, 1fr));
+    justify-self: stretch;
   }
 }
 
-@media (max-width: 680px) {
-  .asset-unified-head,
-  .asset-toolbar {
-    align-items: stretch;
-    flex-direction: column;
+@container asset-inventory (min-width: 900px) {
+  .asset-source-metadata {
+    grid-template-columns: minmax(0, 1.7fr) repeat(3, minmax(80px, auto));
   }
 
-  .asset-filter-grid,
-  .asset-filter-toolbar,
-  .asset-source-strip,
-  .asset-choice-fields,
-  .asset-plan-item,
-  .asset-description-compare {
-    grid-template-columns: 1fr;
-  }
-
-  .asset-selection-bar,
-  .asset-selection-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .asset-selection-actions {
-    width: 100%;
-    margin-left: 0;
+  .asset-source-repository {
+    grid-column: auto;
   }
 }
 

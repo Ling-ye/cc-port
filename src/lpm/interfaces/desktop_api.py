@@ -80,7 +80,7 @@ from ..services.plugin_management import (
     list_plugin_projects,
     remove_plugin_project,
 )
-from ..services.resource_binding import bind_resource_repo
+from ..services.resource_binding import bind_resource_repo, configured_github_owner
 from ..services.resource_commit import build_resource_commit_plan
 from ..services.resource_discovery import (
     discover_resources,
@@ -881,6 +881,21 @@ def _github_auth_cancel(payload: JsonDict) -> JsonDict:
     return github_oauth.cancel_authorization(_required_str(payload, "session_id"))
 
 
+def _github_web_auth_start(payload: JsonDict) -> JsonDict:
+    return github_oauth.start_web_authorization(_required_str(payload, "purpose"))
+
+
+def _github_web_auth_poll(payload: JsonDict) -> JsonDict:
+    return github_oauth.poll_web_authorization(
+        _required_str(payload, "session_id"),
+        immediate=bool(payload.get("immediate", False)),
+    )
+
+
+def _github_web_auth_cancel(payload: JsonDict) -> JsonDict:
+    return github_oauth.cancel_web_authorization(_required_str(payload, "session_id"))
+
+
 def _github_token_reveal(_: JsonDict) -> JsonDict:
     return github_oauth.reveal_config_token()
 
@@ -1366,7 +1381,7 @@ def _target_repo_owner_name(cfg: Config, client: GithubClient) -> tuple[str, str
     parsed = _parse_github_repo(cfg.resources.repo_url)
     if parsed is not None:
         return parsed
-    owner = cfg.github.owner.strip() or client.authenticated_login()
+    owner = configured_github_owner(cfg) or client.authenticated_login()
     name = cfg.resources.repo_name.strip() or DEFAULT_RESOURCE_REPO_NAME
     return owner, name
 
@@ -1680,6 +1695,9 @@ ACTIONS: dict[str, Handler] = {
     "github_auth_start": _github_auth_start,
     "github_auth_poll": _github_auth_poll,
     "github_auth_cancel": _github_auth_cancel,
+    "github_web_auth_start": _github_web_auth_start,
+    "github_web_auth_poll": _github_web_auth_poll,
+    "github_web_auth_cancel": _github_web_auth_cancel,
     "github_token_reveal": _github_token_reveal,
     "github_token_clear": _github_token_clear,
     "github_owner_set": _github_owner_set,

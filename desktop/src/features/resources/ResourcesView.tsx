@@ -204,7 +204,7 @@ export function ResourcesView({
         </div>
 
         <div className="asset-source-strip" aria-label={t("assets.sourceStatus")}>
-          <section className="asset-source-card">
+          <section className="asset-source-card asset-remote-source-card">
             <div className="asset-source-card-head">
               <span className="asset-source-title"><Cloud size={17} />{t("assets.remoteSource")}</span>
               <span className={`asset-source-state state-${repoConfigured ? (inventory?.remote_available ? "online" : "cache") : "unconfigured"}`}>
@@ -214,7 +214,7 @@ export function ResourcesView({
               </span>
             </div>
             <dl className="asset-source-metadata">
-              <div><dt>{t("assets.repository")}</dt><dd title={inventory?.repo_url || "-"}>{inventory?.repo_url || "-"}</dd></div>
+              <div className="asset-source-repository"><dt>{t("assets.repository")}</dt><dd title={inventory?.repo_url || "-"}>{inventory?.repo_url || "-"}</dd></div>
               <div><dt>{t("assets.branch")}</dt><dd>{inventory?.branch || "-"}</dd></div>
               <div><dt>{t("assets.commit")}</dt><dd>{shortCommit(inventory?.remote_commit)}</dd></div>
               <div><dt>{t("assets.lastChecked")}</dt><dd>{formatTimestamp(remoteCheckedAt, t)}</dd></div>
@@ -229,7 +229,7 @@ export function ResourcesView({
               </button>
             )}
           </section>
-          <section className="asset-source-card">
+          <section className="asset-source-card asset-local-source-card">
             <div className="asset-source-card-head">
               <span className="asset-source-title"><Monitor size={17} />{t("assets.localSource")}</span>
               <span className={`asset-source-state state-${inventory?.scanned_local ? "online" : "unconfigured"}`}>
@@ -325,6 +325,12 @@ export function ResourcesView({
 
         <div className="asset-table-wrap">
           <table className="asset-resource-table">
+            <colgroup>
+              <col className="asset-select-column" />
+              <col className="asset-name-column" />
+              <col className="asset-description-column" />
+              <col className="asset-status-column" />
+            </colgroup>
             <thead>
               <tr>
                 <th>
@@ -339,8 +345,6 @@ export function ResourcesView({
                 </th>
                 <th>{t("assets.title")}</th>
                 <th>{t("assets.descriptionColumn")}</th>
-                <th>{t("assets.localColumn")}</th>
-                <th>{t("assets.remoteColumn")}</th>
                 <th>{t("assets.overallColumn")}</th>
               </tr>
             </thead>
@@ -366,9 +370,9 @@ export function ResourcesView({
                       <span><strong>{resource.name}</strong><small>{resource.resource_key}</small></span>
                     </div>
                   </td>
-                  <td className="asset-description-cell">{resource.description || "-"}</td>
-                  <td><StatusPill value={resource.local_status} label={localStatusLabel(resource.local_status, t)} /></td>
-                  <td><StatusPill value={resource.remote_status} label={remoteStatusLabel(resource.remote_status, t)} /></td>
+                  <td className="asset-description-cell" title={resource.description || "-"}>
+                    <span>{resource.description || "-"}</span>
+                  </td>
                   <td><StatusPill value={resource.status} label={assetStatusLabel(resource.status, t)} /></td>
                 </tr>
               ))}
@@ -458,23 +462,46 @@ function ResourceDetail({
   }
   return (
     <aside className="panel asset-unified-detail">
-      <div className="detail-title">
-        <div className="detail-title-main">
-          <KindBadge kind={resource.kind} label={resourceKindLabel(resource.kind, t)} />
-          <h2>{resource.name}</h2>
+      <header className="asset-detail-header">
+        <div className="detail-title">
+          <div className="detail-title-main">
+            <KindBadge kind={resource.kind} label={resourceKindLabel(resource.kind, t)} />
+            <h2>{resource.name}</h2>
+          </div>
+          <StatusPill value={resource.status} label={assetStatusLabel(resource.status, t)} />
         </div>
-        <StatusPill value={resource.status} label={assetStatusLabel(resource.status, t)} />
-      </div>
-      <p className="asset-detail-description">{resource.description || "-"}</p>
-      <dl className="description-list asset-description-list">
-        <div><dt>{t("assets.resourceKey")}</dt><dd>{resource.resource_key}</dd></div>
-        <div><dt>{t("assets.remoteCommit")}</dt><dd>{shortCommit(resource.remote.commit)}</dd></div>
-        <div><dt>{t("assets.remotePath")}</dt><dd>{resource.remote.path || "-"}</dd></div>
-        <div><dt>{t("assets.remoteColumn")}</dt><dd>{remoteStatusLabel(resource.remote_status, t)}</dd></div>
-        <div><dt>{t("assets.localColumn")}</dt><dd>{localStatusLabel(resource.local_status, t)}</dd></div>
-      </dl>
-      {resource.kind === "plugin" ? (
-        <>
+        <p className="asset-detail-description">{resource.description || "-"}</p>
+      </header>
+
+      {[...resource.warnings, ...resource.blockers].map((message) => <Banner key={message} tone="danger" text={message} />)}
+
+      <section className="asset-detail-section asset-detail-diff">
+        <h3>{t("assets.diffPreview")}</h3>
+        <ul>{resource.diff_summary.map((item) => <li key={item}>{item}</li>)}</ul>
+        {resource.metadata_differences.length ? <p>{t("assets.metadataFields")}: {resource.metadata_differences.join(", ")}</p> : null}
+        {resource.metadata_differences.includes("description") ? (
+          <div className="asset-description-compare">
+            <div><strong>{t("assets.remoteDescription")}</strong><p>{resource.remote.description || "-"}</p></div>
+            <div>
+              <strong>{t("assets.localDescriptions")}</strong>
+              {resource.local_instances.map((instance) => (
+                <p key={instance.id}>{instance.platform}: {instance.description || "-"}</p>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="asset-detail-section asset-source-sync-section">
+        <h3>{t("assets.sourceAndSync")}</h3>
+        <dl className="description-list asset-description-list">
+          <div><dt>{t("assets.resourceKey")}</dt><dd>{resource.resource_key}</dd></div>
+          <div><dt>{t("assets.remoteCommit")}</dt><dd>{shortCommit(resource.remote.commit)}</dd></div>
+          <div><dt>{t("assets.remotePath")}</dt><dd>{resource.remote.path || "-"}</dd></div>
+          <div><dt>{t("assets.remoteColumn")}</dt><dd>{remoteStatusLabel(resource.remote_status, t)}</dd></div>
+          <div><dt>{t("assets.localColumn")}</dt><dd>{localStatusLabel(resource.local_status, t)}</dd></div>
+        </dl>
+        {resource.kind === "plugin" ? (
           <dl className="description-list asset-description-list plugin-description-list">
             <div><dt>{t("plugin.track")}</dt><dd>{resource.plugin_track === "content" ? t("plugin.trackContent") : t("plugin.trackReference")}</dd></div>
             <div><dt>{t("plugin.platform")}</dt><dd>{resource.plugin_platform || "-"}</dd></div>
@@ -483,56 +510,48 @@ function ResourceDetail({
             <div><dt>{t("plugin.selector")}</dt><dd>{resource.plugin_selector || t("plugin.floating")}</dd></div>
             <div><dt>{t("plugin.observedVersion")}</dt><dd>{resource.plugin_observed_version || "-"}</dd></div>
           </dl>
-          {resource.remote.exists ? (
-            <button className="danger" type="button" onClick={() => setDeleteOpen(true)} disabled={refreshBusy}>
-              <Trash2 size={15} />{t("plugin.delete")}
-            </button>
-          ) : null}
-        </>
-      ) : null}
-      {resource.metadata_differences.includes("description") ? (
-        <div className="asset-description-compare">
-          <div><strong>{t("assets.remoteDescription")}</strong><p>{resource.remote.description || "-"}</p></div>
-          <div>
-            <strong>{t("assets.localDescriptions")}</strong>
-            {resource.local_instances.map((instance) => (
-              <p key={instance.id}>{instance.platform}: {instance.description || "-"}</p>
-            ))}
-          </div>
+        ) : null}
+      </section>
+
+      <section className="asset-detail-section asset-local-instances-section">
+        <h3>{t("assets.localInstances")}</h3>
+        <div className="asset-instance-list">
+          {resource.local_instances.map((instance) => (
+            <div className="asset-instance-card" key={instance.id}>
+              <div><strong>{instance.platform}</strong><StatusPill value={instance.status} label={assetStatusLabel(instance.status, t)} /></div>
+              <small>{instance.install_name}</small>
+              <small>{instance.path || "-"}</small>
+              <small>{instance.ownership}</small>
+              {resource.kind === "plugin" ? (
+                <>
+                  <small>{instance.track === "content" ? t("plugin.trackContent") : t("plugin.trackReference")} / {instance.scope || "-"}</small>
+                  <small>{instance.source_kind || "-"}: {instance.source_id || "-"}</small>
+                  <small>{instance.selector || t("plugin.floating")} · {instance.observed_version || "-"}</small>
+                </>
+              ) : null}
+              {[...instance.warnings, ...instance.blockers].map((message) => (
+                <small className="asset-instance-warning" key={message}>{message}</small>
+              ))}
+              {instance.path ? (
+                <button className="secondary" onClick={() => void openPath(instance.path || "").catch((error) => onError(String(error)))}>
+                  <FolderOpen size={15} />{t("assets.open")}
+                </button>
+              ) : null}
+            </div>
+          ))}
+          {!resource.local_instances.length ? <div className="compact-empty"><EmptyState text={localStatusLabel(resource.local_status, t)} /></div> : null}
         </div>
+      </section>
+
+      {resource.kind === "plugin" && resource.remote.exists ? (
+        <section className="asset-detail-section asset-danger-zone">
+          <h3>{t("assets.dangerZone")}</h3>
+          <button className="danger" type="button" onClick={() => setDeleteOpen(true)} disabled={refreshBusy}>
+            <Trash2 size={15} />{t("plugin.delete")}
+          </button>
+        </section>
       ) : null}
-      <div className="asset-detail-diff">
-        <h3>{t("assets.diffPreview")}</h3>
-        <ul>{resource.diff_summary.map((item) => <li key={item}>{item}</li>)}</ul>
-        {resource.metadata_differences.length ? <p>{t("assets.metadataFields")}: {resource.metadata_differences.join(", ")}</p> : null}
-      </div>
-      <div className="asset-instance-list">
-        {resource.local_instances.map((instance) => (
-          <div className="asset-instance-card" key={instance.id}>
-            <div><strong>{instance.platform}</strong><StatusPill value={instance.status} label={assetStatusLabel(instance.status, t)} /></div>
-            <small>{instance.install_name}</small>
-            <small>{instance.path || "-"}</small>
-            <small>{instance.ownership}</small>
-            {resource.kind === "plugin" ? (
-              <>
-                <small>{instance.track === "content" ? t("plugin.trackContent") : t("plugin.trackReference")} / {instance.scope || "-"}</small>
-                <small>{instance.source_kind || "-"}: {instance.source_id || "-"}</small>
-                <small>{instance.selector || t("plugin.floating")} · {instance.observed_version || "-"}</small>
-              </>
-            ) : null}
-            {[...instance.warnings, ...instance.blockers].map((message) => (
-              <small className="asset-instance-warning" key={message}>{message}</small>
-            ))}
-            {instance.path ? (
-              <button className="secondary" onClick={() => void openPath(instance.path || "").catch((error) => onError(String(error)))}>
-                <FolderOpen size={15} />{t("assets.open")}
-              </button>
-            ) : null}
-          </div>
-        ))}
-        {!resource.local_instances.length ? <EmptyState text={localStatusLabel(resource.local_status, t)} /> : null}
-      </div>
-      {[...resource.warnings, ...resource.blockers].map((message) => <Banner key={message} tone="danger" text={message} />)}
+
       {deleteOpen ? (
         <PluginDeleteDialog
           resourceKey={resource.resource_key}

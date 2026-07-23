@@ -70,7 +70,11 @@ vi.mock("@/features/resources/ResourcesView", () => ({
 }));
 
 vi.mock("@/features/settings/SettingsView", () => ({
-  SettingsView: () => <section aria-label="Settings test view" />,
+  SettingsView: ({ refreshVersion }: { refreshVersion: number }) => (
+    <section aria-label="Settings test view">
+      <span data-testid="settings-refresh-version">{refreshVersion}</span>
+    </section>
+  ),
 }));
 
 vi.mock("@/features/guide/GuideView", () => ({
@@ -186,6 +190,19 @@ describe("App inventory orchestration", () => {
     await user.click(screen.getByRole("button", { name: "Guide" }));
     expect(screen.getByRole("heading", { level: 1, name: "Guide" })).toBeVisible();
     expect(screen.queryByTitle("Refresh")).toBeNull();
+  });
+
+  it("requests a settings refresh on every settings navigation click", async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await waitForStartup();
+
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
+    await user.click(settingsButton);
+    expect(screen.getByTestId("settings-refresh-version")).toHaveTextContent("1");
+
+    await user.click(settingsButton);
+    expect(screen.getByTestId("settings-refresh-version")).toHaveTextContent("2");
   });
 
   it("replays the exact session scan scope for remote and post-change refreshes", async () => {

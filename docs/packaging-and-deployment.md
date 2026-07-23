@@ -53,9 +53,15 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -ForceSy
 
 ## 一键打包
 
-[KNOWN] 正式发布前必须在 `src/lpm/services/github_oauth.py` 的 `BUILTIN_GITHUB_OAUTH_CLIENT_ID` 写入项目已注册且启用 Device Flow 的 GitHub OAuth App `client_id`。空值构建可以完成，但成品中的 GitHub 连接入口会明确禁用；不得用占位值冒充正式 ID。置信度：HIGH。
+[KNOWN] 桌面应用打包不依赖 GitHub OAuth broker；未部署 broker 时仍会生成 MSI、NSIS 与便携产物，只有“GitHub 访问”登录入口在运行时被禁用，资源仓库及其他功能保持可用。置信度：HIGH。
 
-[KNOWN] 开发调试可设置 `LPM_GITHUB_OAUTH_CLIENT_ID` 覆盖内置值；OAuth App 不需要也不得把 `client_secret` 打入桌面包。置信度：HIGH。
+[KNOWN] 要为官方分发包启用无输入 GitHub 登录，项目维护者只需部署一次共享 broker：运行 `scripts/deploy-oauth-worker.ps1`，把输出的 `/oauth/callback` 地址登记为 GitHub OAuth App callback，并将输出的 origin 写入 `src/lpm/services/github_oauth.py` 的 `BUILTIN_GITHUB_OAUTH_BROKER_URL`。普通用户和源码构建默认共同使用该服务，不需要部署 Worker。置信度：HIGH。
+
+[KNOWN] Worker 部署脚本从维护者进程的 `LPM_GITHUB_OAUTH_CLIENT_ID` 与 `LPM_GITHUB_OAUTH_CLIENT_SECRET` 读取凭据，经标准输入交给 Wrangler Secret；不会写入仓库或命令行参数。置信度：HIGH。
+
+[KNOWN] 开发调试可设置 `LPM_GITHUB_OAUTH_BROKER_URL` 覆盖内置值；HTTP 只允许本机 `127.0.0.1` 或 `localhost`。旧 `LPM_GITHUB_OAUTH_CLIENT_ID` 仅保留设备流兼容。置信度：HIGH。
+
+[KNOWN] `release-desktop.ps1` 会在构建前检查内置 broker；为空或无效时输出醒目警告并继续，配置有效 HTTPS origin 时记录共享登录已启用。运行时仍会重新验证 broker URL。置信度：HIGH。
 
 [KNOWN] 更新代码后只执行：置信度：HIGH。
 
@@ -65,13 +71,11 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 
 [KNOWN] 发布入口会自动调用环境准备流程，不要求提前单独运行 `setup.ps1`。置信度：HIGH。
 
+[KNOWN] 默认发布入口始终以非交互模式准备环境，不读取 `y/n` 输入；列出的环境操作会被自动授权，WinGet 安装会使用静默安装与协议接受参数。置信度：HIGH。
+
 [KNOWN] 默认发布会先验证依赖与 sidecar 缓存；验证通过才复用，缓存缺失、损坏或失效时自动同步依赖或重建 sidecar。置信度：HIGH。
 
-[KNOWN] CI 或已明确接受自动安装行为的机器可以使用：置信度：HIGH。
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1 -NonInteractive
-```
+[KNOWN] 发布入口继续接受 `-NonInteractive` 以兼容旧命令，但它与默认发布行为等价，不再需要显式传入。独立运行 `setup.ps1` 时仍保留默认确认。置信度：HIGH。
 
 [KNOWN] 需要忽略依赖与 sidecar 缓存、完成一次干净的依赖同步和 PyInstaller sidecar 重建时使用：置信度：HIGH。
 
@@ -214,12 +218,20 @@ Pop-Location
 
 ## 发布检查清单
 
-- [ ] 已注册项目官方 GitHub OAuth App、启用 Device Flow，并写入正式 `client_id`。
-- [ ] 已验证首次授权只申请 `repo`，组织 Owner 与远端删除分别按需升级 `read:org`、`delete_repo`。
+基础安装包：
+
+- [ ] 未配置 broker 时，发布脚本只警告且继续，设置页禁用 GitHub 登录，资源仓库与其他功能可用。
 - [ ] PowerShell 自测、pytest、Ruff、Vitest、npm audit 和 Vite build 全部通过。
 - [ ] sidecar 缓存已按当前源码、Python/PyInstaller 环境、依赖清单、target triple 与产物哈希验证；缓存未命中时已 clean 重建。
 - [ ] MSI 与 NSIS 同时存在。
 - [ ] 收集后的 sidecar JSON 冒烟通过。
+
+启用官方共享 GitHub 登录时追加：
+
+- [ ] 已注册项目官方 GitHub OAuth App，并将 Worker 的 `/oauth/callback` 登记为 callback URL。
+- [ ] 已通过 `scripts/deploy-oauth-worker.ps1` 配置 Secret、运行 Worker 测试并部署。
+- [ ] 已把真实 HTTPS broker origin 写入 `BUILTIN_GITHUB_OAUTH_BROKER_URL`。
+- [ ] 已验证首次授权只申请 `repo`，组织 Owner 与远端删除分别按需升级 `read:org`、`delete_repo`。
 - [ ] 正式目录打印了四类产物的 SHA-256。
 - [ ] `build/metrics/` 中存在本次运行的 JSON，终端摘要与其成功/失败状态一致。
 - [ ] 已在干净 Windows x64 目标机完成安装、启动和升级验证。
