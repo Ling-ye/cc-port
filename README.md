@@ -11,8 +11,9 @@ LPM 用来管理和同步 AI coding 相关资源：
 - 管理 `skill`、`mcp`、`rule`、`prompt`、`plugin` 等资源类型。
 - 从 GitHub 收集第三方资源，只记录引用，不复制无关内容。
 - 上传本地资源到你的私有资源仓库。
-- 维护私有 `registry.yaml`，用于跨设备同步资源。
-- 按“资产 × 平台”比较远端配置分支最新提交与本地安装，逐行下载、上传、另存副本或设置平台安装别名。
+- 以私有资源仓库中的 `registry.yaml` 和资源内容作为跨设备事实源。
+- 在本机隐藏维护可重建的受管远端镜像，并从明确 commit 生成只读快照；AI 工具不直接链接该镜像。
+- 按“资产 × 平台”比较远端快照与 AI 工具原生目录中的本地实例，逐行安装、上传、另存副本或设置平台安装别名。
 - Git 隐藏承担远端快照、历史、目标并发检测和普通非强制推送；缺失资产绝不触发隐式删除。
 - 为单个资源配置可选的 `platforms` 白名单，避免平台专用资源被安装到不兼容的 AI 工具。
 - 自动发现本机 Codex、Claude Code、Cursor、Windsurf、opencode、Gemini CLI 等 AI 工具的非敏配置资源。
@@ -178,7 +179,15 @@ cd LingyePluginMarketplace
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1
 ```
 
-[KNOWN] 只检查、不安装、不修改 `.venv`：置信度：HIGH。
+[KNOWN] 默认准备流程会验证 `build/cache/dependencies.json` 中的 schema、输入指纹、工具版本与已安装依赖；全部匹配时复用现有 `.venv` 和 `desktop/node_modules`，任一验证失败时重新执行 pip 与 npm 同步。置信度：HIGH。
+
+[KNOWN] 需要无条件重新同步 Python 与前端依赖时使用：置信度：HIGH。
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -ForceSync
+```
+
+[KNOWN] 只检查、不安装、不修改 `.venv`、`desktop/node_modules` 或构建缓存记录：置信度：HIGH。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -CheckOnly
@@ -220,13 +229,29 @@ desktop/src-tauri/target/debug/                # Tauri/Cargo dev 调试输出
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1
 ```
 
+[KNOWN] 默认发布先验证依赖与 sidecar 缓存；只有缓存记录、输入指纹、工具链身份和产物验证全部匹配时才复用，缺失、损坏或过期时自动重建。需要忽略两类缓存并强制重新同步或重建时使用：置信度：HIGH。
+
+[KNOWN] 默认入口先做廉价依赖缓存预判，真正复用前再重新计算输入并执行唯一一次完整 Python/npm 环境探针；`setup.ps1 -CheckOnly` 直接执行完整探针。置信度：HIGH。
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1 -Clean
+```
+
+[KNOWN] `-Clean` 会强制同步依赖并完整重建 PyInstaller sidecar，但不会执行 `cargo clean`，因此仍保留 Cargo/Tauri 编译缓存。置信度：HIGH。
+
+[KNOWN] 依赖缓存会在依赖同步及后置探针成功后刷新，sidecar 缓存会在 clean 重建及隔离冒烟成功后刷新；两者都不等待整个 Tauri 发布成功。置信度：HIGH。
+
+[KNOWN] 唯一一次 Vite 生产构建先写入隔离目录；生成内容未变化时保留 `desktop/dist` 的现有文件与时间戳，避免无修改暖构建无谓触发 Cargo 主程序重新链接。置信度：HIGH。
+
 [KNOWN] 发布命令按顺序执行：置信度：HIGH。
 
-1. 检查或安装 Windows 构建工具，创建仓库 `.venv`，同步锁定依赖。
-2. 运行 PowerShell 自测、pytest、Ruff、Vitest、锁文件安全审计和前端生产构建。
-3. 完整构建 PyInstaller sidecar、Tauri MSI 和 NSIS 安装包。
-4. 在临时目录验证产物与 sidecar JSON API，全部成功后才替换上一次正式产物。
-5. 输出正式产物的绝对路径、大小和 SHA-256。
+1. 检查或安装 Windows 构建工具，验证依赖缓存；缓存失效或指定 `-Clean` 时同步锁定依赖。
+2. 无论是否命中缓存，都运行 PowerShell 自测、pytest、Ruff、Vitest、锁文件安全审计和一次前端生产构建。
+3. 验证并按需复用或重建 PyInstaller sidecar，把验证通过的源 sidecar 显式复制到 Tauri `target/release` 并校验 SHA-256。
+4. 构建 Tauri MSI 和 NSIS 安装包，并再次验证 Tauri 目标 sidecar 与源 sidecar 的 SHA-256。
+5. 在临时目录验证产物、sidecar JSON API 与全部 SHA-256，全部成功后才事务式切换上一次正式产物。
+6. 输出每一步的耗时与缓存命中状态，并写入 `build/metrics/` 下的 JSON 指标文件。
+7. 输出正式产物的绝对路径、大小和 SHA-256。
 
 [KNOWN] Windows x64 最终产物结构为：置信度：HIGH。
 
@@ -247,6 +272,23 @@ desktop/dist/                         # Vite 前端静态资源
 desktop/src-tauri/target/release/     # Tauri/Cargo release 输出
 desktop/src-tauri/target/release/bundle/  # Tauri 原始安装包输出
 ```
+
+[KNOWN] 构建缓存与指标文件保留在：置信度：HIGH。
+
+```text
+build/cache/dependencies.json             # schemaVersion=1，依赖验证缓存
+build/cache/sidecar.json                  # schemaVersion=1，sidecar 验证缓存
+build/cache/release.lock                  # 同一仓库发布进程的独占锁载体
+build/metrics/release-<UTC时间>-<8位runId>.json
+```
+
+[KNOWN] 同一仓库同一时间只允许一个 `release-desktop.ps1` 进程；冲突发布立即失败而不等待。锁文件会保留，进程退出时释放的是独占句柄。置信度：HIGH。
+
+[KNOWN] 正式发布锁不覆盖手工执行的 `npm run build`；不要在发布期间另行运行它，也不要并发运行多个独立前端生产构建。置信度：HIGH。
+
+[KNOWN] 发布指标 JSON 的顶层结构为 `{ "schemaVersion": 1, "value": { ... } }`；发布状态、错误、阶段和产物字段路径分别为 `value.success`、`value.error`、`value.phases` 和 `value.artifacts`。置信度：HIGH。
+
+[KNOWN] 30% 性能验收在同一提交、机器和工具版本下，对优化前与优化后各执行三次成功的无修改默认暖构建，取 `value.durationMs` 中位数，并要求 `candidateMedian <= baselineMedian * 0.70`；其他修改与 `-Clean` 场景只单独记录。置信度：HIGH。
 
 [KNOWN] `desktop/package.json` 中的 npm 命令和 `tools/packaging/` 下的 Python 文件都是内部构建步骤；完整发布不要手工拼接这些命令。置信度：HIGH。
 
@@ -283,10 +325,11 @@ Windows 下等价路径通常是：
 
 - HTTPS 缺少凭据时，Git Credential Manager 可以打开一次 GitHub 浏览器登录；SSH 链接复用现有 SSH Key。
 - 绑定只执行远端引用读取和 `push --dry-run` 权限探测，不 clone、pull、fetch、commit 或实际 push。
-- 绑定成功后，本地目录会在首次显式拉取时创建；重新绑定不会移动或删除旧目录。
+- 绑定成功后显示“下一次远端刷新生效”；绑定本身不下载资源，也不创建用户需要维护的本地仓库。
+- 后续“刷新远端”只更新 LPM 隐藏维护的受管镜像和 commit 只读快照，不调用旧 `resource_pull`，也不写 AI 工具目录。
 - `[resources].credential_mode` 可选 `native`、`auto` 或 `token`；一键绑定使用 `native`，旧配置默认按 `auto` 兼容。
 
-设置页只编辑资源仓库绑定、GitHub 授权、仓库 Owner 和五个目标工具开关；分支、本地路径、凭据模式、Git 可执行文件、仓库前缀与状态保留策略继续由 `config.toml` 和 CLI 管理。旧配置中的这些字段不会因设置页保存而被重置。
+设置页只编辑资源仓库绑定、GitHub 授权、仓库 Owner 和五个目标工具开关；分支、凭据模式、Git 可执行文件、仓库前缀与状态保留策略继续由 `config.toml` 和 CLI 管理。旧 `local_path` 与用户工作区只保留兼容，不会因设置页保存而被重置，也不进入新的桌面资源流程。
 
 桌面侧栏将资源类型、桌面功能和项目信息统一放在单一“说明”页，不再提供独立“关于”页。
 
@@ -307,7 +350,7 @@ GitHub 访问使用 OAuth 设备流：
 - `LPM_GITHUB_OAUTH_CLIENT_ID`：仅用于开发环境覆盖桌面包内置的 OAuth App `client_id`。
 - `LPM_GIT_EXECUTABLE`：覆盖 `[git].executable`，指定 Git 可执行文件。
 - 后台分支刷新优先复用已绑定协议的非交互凭据；HTTPS 失败后可兼容回退到本机 GitHub SSH Key。只有用户显式点击绑定时允许浏览器登录。
-- `LPM_RESOURCE_HOME`：覆盖私有资源仓库本地路径。
+- `LPM_RESOURCE_HOME`：覆盖旧兼容工作区路径；新的桌面资源流程不把该路径作为资源中枢。
 - `LPM_DESKTOP_API_BIN`：指定桌面 GUI 使用的 `lpm-desktop-api` 可执行文件，主要用于调试。
 
 `[git].executable` 可填写 Git 的绝对路径或命令名；留空时按 PATH、常见系统安装目录和应用邻近目录自动发现。
@@ -350,22 +393,30 @@ lpm doctor
 桌面端默认打开 **资源** 页面。侧栏不再提供独立“概览”和“添加资源”页；资源页是收集、
 导入、本地发现、双端比较与同步的唯一入口：
 
+- 顶栏显示当前页面名称，只保留任务中心和语言切换；资源页页头只保留“添加资源”。
+- 资源页状态条分别展示远端仓库、分支、短 commit、上次检查时间与在线/缓存状态，以及本地扫描发现的工具数和实例数。
+- 应用启动静默刷新远端一次，停留期间不轮询；手动“刷新远端”会报告已是最新、获取到新版本或正在显示只读缓存。
+- “刷新远端”只更新受管镜像和远端快照；“扫描本地”只观察用户选择的全局环境与项目，不 fetch 或写远端。
+- 本次会话扫描过本地后，再刷新远端会复用完全相同的全局与项目范围重扫，避免本地独有资源从清单消失；扫描范围不会跨应用重启保存。
+- 支持按名称、`kind:name` 和描述搜索；类型与总体状态筛选常驻，本地状态、远端状态和工具位于“更多筛选”。
 - “添加资源”弹窗支持登记 GitHub 引用、导入任意本地目录或手工添加插件引用；本地目录既可手工粘贴，也可通过系统目录选择器填写。
 - 收集和导入默认推送私有资源仓库，用户可在提交前关闭“完成后推送”；成功后清单刷新并定位新增资源。
-- 每一行表示一个 `kind:name` 逻辑资源，清单是本地资产和远端私有仓库资源的并集。
+- 每一行表示一个 `kind:name` 逻辑资源，清单是 commit 只读远端快照和 AI 工具原生本地实例的并集。
 - “扫描本地”弹窗显式选择全局环境和已保存项目；项目目录由用户添加，无 Git remote 的项目只观察、不上传。
 - 插件采用双轨管理：用户确认拥有的源码上传内容；Codex/Claude marketplace、opencode npm 和 managed 插件只保存引用、版本策略、作用域与启用状态。
 - Codex 的 `openai-bundled/chrome` 等 marketplace 插件从配置与版本清单识别为外部引用；扫描到的 cache 路径只用于观测，绝不展示或上传为源码。
 - Codex 和 Claude 的版本化 cache 永不作为上传源；第三方引用在目标机器缺失时给出安全安装指引，不复制缓存。
 - 远端描述优先显示；详情栏同时列出远端提交、路径和每个本地实例的工具、安装名、路径、所有权、内容状态与阻断原因。
 - 同一资源的相同本地副本折叠为一个逻辑资源；内容不同的多个实例保留，并在上传计划中要求选择来源。
-- 勾选一个或多个逻辑资源后，统一使用“上传所选”或“下载所选”；下载先选择一个或多个已启用 AI 工具。
-- 上传和下载都先生成服务端差异计划，按新增、覆盖、重命名、不变、跳过和阻断展示，冲突未解决时不能执行。
-- 下载使用路径锁、备份、验证和失败回滚；未管理目标必须显式确认覆盖。
-- 批量下载以“资源 × 工具”为独立本地事务，单项失败不回滚其他成功项；批量上传把有效项合并为一次远端提交。
+- 表头全选只选择当前可见资源，跨筛选选择继续保留；上下文操作栏显示总选中数和被筛选隐藏数。
+- 只有勾选资源后才显示“上传到仓库”和“安装到工具”；安装前选择一个或多个已启用 AI 工具。
+- 上传和安装都先生成服务端差异计划，按新增、覆盖、重命名、不变、跳过和阻断展示，冲突未解决时不能执行。
+- 安装使用路径锁、备份、验证和失败回滚；未管理目标必须显式确认覆盖。
+- 批量安装以“资源 × 工具”为独立本地事务，单项失败不回滚其他成功项；批量上传把有效项合并为一次远端提交。
 - 远端提交变化但目标资产未变化时，操作会重放到最新提交；目标新增、删除或改变时返回 `stale-target`。
 - external 和无私库 `path` 的 owned 引用在同步页只读；已有平台内容可以显式另存到私库。
-- 一端缺失只表示可上传或下载；卸载和删除始终使用独立入口。
+- 远端不可用时最近成功的缓存只供查看，依赖最新远端验证的写入继续阻断。
+- 一端缺失只表示可上传或安装；卸载和删除始终使用独立入口。资源页不提供仓库级“一键更新全部”，也不展示本地仓库路径、dirty、ahead、diverged 或 worktree。
 
 桌面侧栏暂不提供独立的 **操作历史** 入口。持久化操作记录、恢复、状态清理、
 维护审计及已有本机数据保持不变，相关能力暂时通过 CLI 或 Desktop API 使用；

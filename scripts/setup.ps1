@@ -12,11 +12,13 @@
 [CmdletBinding()]
 param(
     [switch]$CheckOnly,
-    [switch]$NonInteractive
+    [switch]$NonInteractive,
+    [switch]$ForceSync
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$env:LPM_DEPENDENCY_CACHE_STATUS = "miss:bootstrap"
 $ModulePath = Join-Path $PSScriptRoot "desktop-build.psm1"
 Import-Module $ModulePath -Force -ErrorAction Stop
 
@@ -74,6 +76,155 @@ function Test-NodeModulesReady {
         (Test-Path -LiteralPath (Join-Path $binDirectory "tauri.cmd") -PathType Leaf)
 }
 
+function Get-DependencyInputState {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$DesktopDirectory,
+        [Parameter(Mandatory = $true)][string]$VenvPython,
+        [Parameter(Mandatory = $true)][string]$NodeVersion,
+        [Parameter(Mandatory = $true)][string]$NodePath,
+        [Parameter(Mandatory = $true)][string]$NpmPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedTarget
+    )
+
+    $python = Invoke-LpmNative -FilePath $VenvPython -ArgumentList @(
+        "-c", "import platform,sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}|{platform.architecture()[0]}')"
+    ) -Capture -AllowFailure -Description "dependency cache Python version probe"
+    if ($python.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($python.Output)) {
+        throw "Repository Python version could not be determined for dependency caching."
+    }
+
+    $npm = Invoke-LpmNative -FilePath $NpmPath -ArgumentList @("--version") -WorkingDirectory $DesktopDirectory -Capture -AllowFailure -Description "npm version probe"
+    if ($npm.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($npm.Output)) {
+        throw "npm version could not be determined for dependency caching."
+    }
+
+    $contentFingerprint = Get-LpmContentFingerprint -Paths @(
+        (Join-Path $RepoRoot "pyproject.toml"),
+        (Join-Path $DesktopDirectory "package.json"),
+        (Join-Path $DesktopDirectory "package-lock.json")
+    )
+    $platform = @(
+        "os=$($env:OS)",
+        "osVersion=$([Environment]::OSVersion.VersionString)",
+        "is64Bit=$([Environment]::Is64BitOperatingSystem)",
+        "target=$ExpectedTarget"
+    ) -join ";"
+    $pythonVersion = $python.Output.Trim()
+    $normalizedNodeVersion = $NodeVersion.Trim()
+    $npmVersion = $npm.Output.Trim()
+    $fingerprint = Get-LpmDependencyInputFingerprint -ContentFingerprint $contentFingerprint `
+        -PythonVersion $pythonVersion -PythonPath $VenvPython `
+        -NodeVersion $normalizedNodeVersion -NodePath $NodePath `
+        -NpmVersion $npmVersion -NpmPath $NpmPath -Platform $platform
+
+    return [pscustomobject]@{
+        Fingerprint = $fingerprint
+        ContentFingerprint = $contentFingerprint
+        PythonVersion = $pythonVersion
+        PythonPath = [IO.Path]::GetFullPath($VenvPython)
+        NodeVersion = $normalizedNodeVersion
+        NodePath = [IO.Path]::GetFullPath($NodePath)
+        NpmVersion = $npmVersion
+        NpmPath = [IO.Path]::GetFullPath($NpmPath)
+        Platform = $platform
+    }
+}
+
+function Get-DependencyProbeState {
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvPython,
+        [Parameter(Mandatory = $true)][string]$NpmPath,
+        [Parameter(Mandatory = $true)][string]$DesktopDirectory
+    )
+
+    if (-not (Test-VenvReady -PythonPath $VenvPython)) {
+        return [pscustomobject]@{ Ready = $false; Reason = "python-build-probe" }
+    }
+    if (-not (Test-NodeModulesReady -DesktopDirectory $DesktopDirectory)) {
+        return [pscustomobject]@{ Ready = $false; Reason = "node-modules-tools" }
+    }
+
+    $pipCheck = Invoke-LpmNative -FilePath $VenvPython -ArgumentList @("-m", "pip", "check") -Capture -AllowFailure -Description "pip dependency check"
+    if ($pipCheck.ExitCode -ne 0) {
+        return [pscustomobject]@{ Ready = $false; Reason = "pip-check" }
+    }
+    $pipList = Invoke-LpmNative -FilePath $VenvPython -ArgumentList @("-m", "pip", "--disable-pip-version-check", "list", "--format=json") -Capture -AllowFailure -Description "pip dependency manifest"
+    if ($pipList.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($pipList.Output)) {
+        return [pscustomobject]@{ Ready = $false; Reason = "pip-list" }
+    }
+
+    $npmTree = Invoke-LpmNative -FilePath $NpmPath -ArgumentList @("ls", "--all", "--json") -WorkingDirectory $DesktopDirectory -Capture -AllowFailure -Description "npm dependency tree"
+    if ($npmTree.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($npmTree.Output)) {
+        return [pscustomobject]@{ Ready = $false; Reason = "npm-tree" }
+    }
+    $nodeModulesLock = Join-Path $DesktopDirectory "node_modules\.package-lock.json"
+    if (-not (Test-Path -LiteralPath $nodeModulesLock -PathType Leaf)) {
+        return [pscustomobject]@{ Ready = $false; Reason = "node-modules-lock" }
+    }
+
+    return [pscustomobject]@{
+        Ready = $true
+        Reason = $null
+        PythonManifestHash = Get-LpmStringHash -Value $pipList.Output.Trim()
+        NpmTreeHash = Get-LpmStringHash -Value $npmTree.Output.Trim()
+        NodeModulesLockHash = Get-LpmContentFingerprint -Paths @($nodeModulesLock)
+    }
+}
+
+function Get-DependencyCacheDecision {
+    param(
+        [Parameter(Mandatory = $true)][string]$CachePath,
+        [AllowNull()]$InputState,
+        [AllowNull()][string]$VenvPython,
+        [AllowNull()][string]$NpmPath,
+        [Parameter(Mandatory = $true)][string]$DesktopDirectory,
+        [switch]$ForceSync,
+        [switch]$DeferProbe
+    )
+
+    if ($ForceSync) {
+        return [pscustomobject]@{ Hit = $false; Status = "forced"; Probe = $null; Cache = $null }
+    }
+    if ($null -eq $InputState) {
+        return [pscustomobject]@{ Hit = $false; Status = "miss:environment"; Probe = $null; Cache = $null }
+    }
+    if (-not (Test-Path -LiteralPath $CachePath -PathType Leaf)) {
+        return [pscustomobject]@{ Hit = $false; Status = "miss:cache-missing"; Probe = $null; Cache = $null }
+    }
+
+    $cache = Read-LpmJsonCache -Path $CachePath
+    if ($null -eq $cache) {
+        return [pscustomobject]@{ Hit = $false; Status = "miss:cache-invalid"; Probe = $null; Cache = $null }
+    }
+    $fingerprintProperty = $cache.PSObject.Properties["fingerprint"]
+    if ($null -eq $fingerprintProperty -or [string]$fingerprintProperty.Value -ne $InputState.Fingerprint) {
+        return [pscustomobject]@{ Hit = $false; Status = "miss:inputs-changed"; Probe = $null; Cache = $cache }
+    }
+    if ($DeferProbe) {
+        return [pscustomobject]@{ Hit = $true; Status = "candidate:inputs-match"; Probe = $null; Cache = $cache }
+    }
+
+    $probe = Get-DependencyProbeState -VenvPython $VenvPython -NpmPath $NpmPath -DesktopDirectory $DesktopDirectory
+    if (-not $probe.Ready) {
+        return [pscustomobject]@{ Hit = $false; Status = "miss:$($probe.Reason)"; Probe = $probe; Cache = $cache }
+    }
+    $comparisons = @(
+        [pscustomobject]@{ CacheName = "pythonManifestHash"; ProbeName = "PythonManifestHash"; Reason = "python-manifest-changed" },
+        [pscustomobject]@{ CacheName = "npmTreeHash"; ProbeName = "NpmTreeHash"; Reason = "npm-tree-changed" },
+        [pscustomobject]@{ CacheName = "nodeModulesLockHash"; ProbeName = "NodeModulesLockHash"; Reason = "node-modules-lock-changed" }
+    )
+    foreach ($comparison in $comparisons) {
+        $cachedProperty = $cache.PSObject.Properties[$comparison.CacheName]
+        $actualProperty = $probe.PSObject.Properties[$comparison.ProbeName]
+        if ($null -eq $cachedProperty -or $null -eq $actualProperty -or
+            [string]$cachedProperty.Value -ne [string]$actualProperty.Value) {
+            return [pscustomobject]@{ Hit = $false; Status = "miss:$($comparison.Reason)"; Probe = $probe; Cache = $cache }
+        }
+    }
+    return [pscustomobject]@{ Hit = $true; Status = "hit"; Probe = $probe; Cache = $cache }
+}
+
 function Get-EnvironmentSnapshot {
     $python = Get-LpmPython
     $node = Get-LpmNode
@@ -117,6 +268,7 @@ try {
     $venvDirectory = Join-Path $repoRoot ".venv"
     $venvPython = Join-Path $venvDirectory "Scripts\python.exe"
     $expectedTarget = Get-LpmExpectedTarget
+    $dependencyCachePath = Join-Path $repoRoot "build\cache\dependencies.json"
 
     if ($env:OS -ne "Windows_NT") {
         throw "Desktop release setup supports Windows only."
@@ -151,6 +303,20 @@ try {
     $needsRustToolchain = -not $snapshot.Rust.Rustup -or $snapshot.Rust.Target -ne $expectedTarget
     $venvReady = Test-VenvReady -PythonPath $venvPython
     $nodeModulesReady = Test-NodeModulesReady -DesktopDirectory $desktopDirectory
+    $dependencyInputState = $null
+    if ($snapshot.Node -and $snapshot.Npm -and $venvReady) {
+        try {
+            $dependencyInputState = Get-DependencyInputState -RepoRoot $repoRoot -DesktopDirectory $desktopDirectory `
+                -VenvPython $venvPython -NodeVersion $snapshot.Node.Version -NodePath $snapshot.Node.Path -NpmPath $snapshot.Npm `
+                -ExpectedTarget $expectedTarget
+        } catch {
+            $dependencyInputState = $null
+        }
+    }
+    $dependencyDecision = Get-DependencyCacheDecision -CachePath $dependencyCachePath `
+        -InputState $dependencyInputState -VenvPython $venvPython -NpmPath $snapshot.Npm `
+        -DesktopDirectory $desktopDirectory -ForceSync:$ForceSync -DeferProbe:(-not $CheckOnly)
+    $env:LPM_DEPENDENCY_CACHE_STATUS = $dependencyDecision.Status
 
     Write-LpmSection "Required actions"
     if ($packages.Count -eq 0) {
@@ -166,7 +332,11 @@ try {
     if (-not $venvReady) {
         Write-Host "  Create or repair repository .venv"
     }
-    if ($CheckOnly) {
+    if ($dependencyDecision.Status -eq "candidate:inputs-match") {
+        Write-Host "  Dependency inputs match cache; complete probes run immediately before reuse"
+    } elseif ($dependencyDecision.Hit) {
+        Write-Host "  Reuse verified Python and frontend dependencies"
+    } elseif ($CheckOnly) {
         if ($venvReady) {
             Write-Host "  Repository .venv is ready"
         }
@@ -175,16 +345,19 @@ try {
         } else {
             Write-Host "  Install frontend dependencies from desktop/package-lock.json"
         }
+        Write-Host "  Dependency cache status: $($dependencyDecision.Status)"
     } else {
         Write-Host "  Synchronize Python dependencies from pyproject.toml"
         Write-Host "  Synchronize frontend dependencies from desktop/package-lock.json"
+        Write-Host "  Dependency cache status: $($dependencyDecision.Status)"
     }
 
     if ($CheckOnly) {
         $ready = $packages.Count -eq 0 -and
             -not $needsRustToolchain -and
             $venvReady -and
-            $nodeModulesReady
+            $nodeModulesReady -and
+            $dependencyDecision.Hit
         if (-not $ready) {
             if ($packages.Count -gt 0 -and -not $snapshot.Winget) {
                 Write-Host ""
@@ -270,18 +443,62 @@ try {
         Invoke-LpmNative -FilePath $snapshot.Python.Path -ArgumentList @("-m", "venv", $venvDirectory) -Description "Python virtual environment creation" | Out-Null
     }
 
-    Write-LpmSection "Installing Python build dependencies"
-    Invoke-LpmNative -FilePath $venvPython -ArgumentList @(
-        "-m", "pip", "install", "--disable-pip-version-check", "-e", ".[dev,desktop]"
-    ) -WorkingDirectory $repoRoot -Description "Python dependency installation" | Out-Null
+    $currentDependencyInput = Get-DependencyInputState -RepoRoot $repoRoot -DesktopDirectory $desktopDirectory `
+        -VenvPython $venvPython -NodeVersion $snapshot.Node.Version -NodePath $snapshot.Node.Path -NpmPath $snapshot.Npm `
+        -ExpectedTarget $expectedTarget
+    # Run the complete decision immediately before reuse. The earlier non-check-only
+    # decision intentionally validates only immutable inputs, because interactive
+    # pauses and tool setup can change either dependency tree before this point.
+    $dependencyDecision = Get-DependencyCacheDecision -CachePath $dependencyCachePath `
+        -InputState $currentDependencyInput -VenvPython $venvPython -NpmPath $snapshot.Npm `
+        -DesktopDirectory $desktopDirectory -ForceSync:$ForceSync
+    $env:LPM_DEPENDENCY_CACHE_STATUS = $dependencyDecision.Status
 
-    Write-LpmSection "Installing locked frontend dependencies"
-    Invoke-LpmNative -FilePath $snapshot.Npm -ArgumentList @(
-        "ci", "--ignore-scripts", "--no-audit", "--no-fund"
-    ) -WorkingDirectory $desktopDirectory -Description "frontend dependency installation" | Out-Null
+    if ($dependencyDecision.Hit) {
+        Write-LpmSection "Reusing verified dependency environment"
+        Write-Host "  cache: $dependencyCachePath"
+    } else {
+        # Invalidate the previous record before either package manager mutates the
+        # environment. A failed repair must never leave a stale record eligible
+        # for reuse on the next invocation.
+        Write-LpmJsonCacheAtomically -Path $dependencyCachePath -Value ([pscustomobject]@{
+            invalidatedAtUtc = [DateTime]::UtcNow.ToString("o")
+            reason = $dependencyDecision.Status
+        })
 
-    if (-not (Test-VenvReady -PythonPath $venvPython) -or -not (Test-NodeModulesReady -DesktopDirectory $desktopDirectory)) {
-        throw "Project dependency verification failed after installation."
+        Write-LpmSection "Installing Python build dependencies"
+        Invoke-LpmNative -FilePath $venvPython -ArgumentList @(
+            "-m", "pip", "install", "--disable-pip-version-check", "-e", ".[dev,desktop]"
+        ) -WorkingDirectory $repoRoot -Description "Python dependency installation" | Out-Null
+
+        Write-LpmSection "Installing locked frontend dependencies"
+        Invoke-LpmNative -FilePath $snapshot.Npm -ArgumentList @(
+            "ci", "--ignore-scripts", "--no-audit", "--no-fund"
+        ) -WorkingDirectory $desktopDirectory -Description "frontend dependency installation" | Out-Null
+
+        $probe = Get-DependencyProbeState -VenvPython $venvPython -NpmPath $snapshot.Npm -DesktopDirectory $desktopDirectory
+        if (-not $probe.Ready) {
+            throw "Project dependency verification failed after installation: $($probe.Reason)"
+        }
+        $cacheValue = [pscustomobject]@{
+            fingerprint = $currentDependencyInput.Fingerprint
+            inputs = [pscustomobject]@{
+                contentFingerprint = $currentDependencyInput.ContentFingerprint
+                pythonVersion = $currentDependencyInput.PythonVersion
+                pythonPath = $currentDependencyInput.PythonPath
+                nodeVersion = $currentDependencyInput.NodeVersion
+                nodePath = $currentDependencyInput.NodePath
+                npmVersion = $currentDependencyInput.NpmVersion
+                npmPath = $currentDependencyInput.NpmPath
+                platform = $currentDependencyInput.Platform
+            }
+            pythonManifestHash = $probe.PythonManifestHash
+            npmTreeHash = $probe.NpmTreeHash
+            nodeModulesLockHash = $probe.NodeModulesLockHash
+            writtenAtUtc = [DateTime]::UtcNow.ToString("o")
+        }
+        Write-LpmJsonCacheAtomically -Path $dependencyCachePath -Value $cacheValue
+        Write-Host "  dependency cache: $dependencyCachePath"
     }
 
     Write-LpmSection "Environment ready"
@@ -293,8 +510,12 @@ try {
     Write-Host "  rustc  : $($rust.Rustc)"
     Write-Host "  target : $($rust.Target)"
     Write-Host "  msvc   : $($snapshot.VisualStudio)"
+    Write-Host "  cache  : $($env:LPM_DEPENDENCY_CACHE_STATUS)"
     exit 0
 } catch {
+    if ([string]::IsNullOrWhiteSpace($env:LPM_DEPENDENCY_CACHE_STATUS)) {
+        $env:LPM_DEPENDENCY_CACHE_STATUS = "miss:setup-error"
+    }
     Write-Host ""
     Write-Host "Environment setup failed: $($_.Exception.Message)" -ForegroundColor Red
     exit 1

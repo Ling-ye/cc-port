@@ -74,26 +74,35 @@ function inventory(resources: AssetResourceRow[]): AssetInventory {
   };
 }
 
-function renderView(resources = [resource()]) {
-  const data = inventory(resources);
+function renderView(
+  resources = [resource()],
+  options: { inventory?: AssetInventory | null; refreshBusy?: boolean } = {},
+) {
+  const data = options.inventory === undefined ? inventory(resources) : options.inventory;
   const onChanged = vi.fn(async () => undefined);
   const onOpenSettings = vi.fn();
   const onSelect = vi.fn();
+  const onRefreshRemote = vi.fn(async () => undefined);
+  const onLocalScanned = vi.fn();
   render(
     <TaskCenterProvider>
       <ResourcesView
         inventory={data}
-        selectedKey={data.resources[0]?.resource_key}
+        selectedKey={data?.resources[0]?.resource_key}
         t={t}
         onSelect={onSelect}
-        onInventory={vi.fn()}
+        refreshBusy={options.refreshBusy ?? false}
+        remoteCheckedAt="2026-07-17T01:00:00Z"
+        localScannedAt="2026-07-17T02:00:00Z"
+        onRefreshRemote={onRefreshRemote}
+        onLocalScanned={onLocalScanned}
         onChanged={onChanged}
         onError={vi.fn()}
         onOpenSettings={onOpenSettings}
       />
     </TaskCenterProvider>,
   );
-  return { onChanged, onOpenSettings, onSelect };
+  return { onChanged, onLocalScanned, onOpenSettings, onRefreshRemote, onSelect };
 }
 
 function batchPlan(direction: "upload" | "download", disposition: "create" | "update" | "blocked" = "update"): AssetBatchPlan {
@@ -129,6 +138,36 @@ afterEach(() => {
 });
 
 describe("ResourcesView unified inventory", () => {
+  it("shows compact remote and local source status and refreshes only on demand", async () => {
+    const user = userEvent.setup();
+    const { onRefreshRemote } = renderView();
+
+    expect(screen.getByText("Online")).toBeVisible();
+    expect(screen.getByText("https://example.test/resources.git")).toBeVisible();
+    expect(screen.getAllByText("1234567890ab").length).toBeGreaterThan(0);
+    expect(screen.getByText("1 tools · 1 instances")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Refresh remote" }));
+    expect(onRefreshRemote).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes an unconfigured repository to Settings and blocks competing entry points while refreshing", async () => {
+    const user = userEvent.setup();
+    const unconfigured = { ...inventory([resource()]), repo_url: "", remote_available: false };
+    const { onOpenSettings } = renderView(undefined, { inventory: unconfigured });
+
+    expect(screen.getByText("Not configured", { selector: ".asset-source-state" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Configure repository" }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    renderView([resource({ kind: "plugin", resource_key: "plugin:demo" })], { refreshBusy: true });
+    expect(screen.getByRole("button", { name: "Refresh remote" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Scan local" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add resource" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete plugin" })).toBeDisabled();
+  });
+
   it("shows one logical resource row with remote description and complete local detail", () => {
     renderView();
 
@@ -156,10 +195,11 @@ describe("ResourcesView unified inventory", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
     await user.selectOptions(screen.getByLabelText("Resource type"), "prompt");
-    await user.click(screen.getByRole("button", { name: "Select visible" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select visible" }));
     expect(screen.getByText("2 selected")).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "Upload selected" }));
+    expect(screen.getByText("1 selected outside the current filters")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
     expect(await screen.findByText("Choose a source instance.")).toBeVisible();
     expect(lpmAction).toHaveBeenCalledWith("asset_batch_plan", expect.objectContaining({
       direction: "upload",
@@ -194,7 +234,7 @@ describe("ResourcesView unified inventory", () => {
     const { onChanged } = renderView();
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
-    await user.click(screen.getByRole("button", { name: "Download selected" }));
+    await user.click(screen.getByRole("button", { name: "Install to tools" }));
     const cursor = await screen.findByRole("checkbox", { name: /cursor/i });
     const codex = screen.getByRole("checkbox", { name: /codex/i });
     expect(codex).toBeDisabled();
@@ -230,7 +270,7 @@ describe("ResourcesView unified inventory", () => {
     renderView();
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
-    await user.click(screen.getByRole("button", { name: "Upload selected" }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
     expect(await screen.findByText("Content differs.")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Apply batch" }));
 
@@ -257,7 +297,7 @@ describe("ResourcesView unified inventory", () => {
     renderView([variants]);
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
-    await user.click(screen.getByRole("button", { name: "Upload selected" }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
     await screen.findByText("Content differs.");
     await user.click(screen.getByRole("checkbox", { name: "Rename and upload every local variant" }));
     expect(screen.getAllByLabelText("New asset name")).toHaveLength(2);
@@ -299,10 +339,43 @@ describe("ResourcesView unified inventory", () => {
     expect(onSelect).toHaveBeenCalledWith("skill:new-resource");
     expect(screen.queryByRole("dialog", { name: "Add resource" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Resource type")).toHaveValue("all");
-    expect(screen.getByText("0 selected")).toBeVisible();
+    expect(screen.queryByRole("toolbar", { name: "Selected resource actions" })).not.toBeInTheDocument();
     expect(lpmAction).toHaveBeenCalledWith("collect", expect.objectContaining({
       github_url: "https://github.com/example/new-resource",
       push: true,
     }));
+  });
+
+  it("searches name, key, and description and exposes advanced filters with an active count", async () => {
+    const user = userEvent.setup();
+    const prompt = resource({
+      resource_key: "prompt:release-notes",
+      kind: "prompt",
+      name: "release-notes",
+      description: "Summarize a deployment",
+      local_status: "missing",
+      local_instances: [],
+      status: "remote-only",
+    });
+    renderView([resource(), prompt]);
+
+    await user.type(screen.getByRole("textbox", { name: "Search resources" }), "deployment");
+    expect(screen.getByRole("row", { name: /release-notes/ })).toBeVisible();
+    expect(screen.queryByRole("row", { name: /skill:demo/ })).not.toBeInTheDocument();
+
+    await user.clear(screen.getByRole("textbox", { name: "Search resources" }));
+    await user.click(screen.getByRole("button", { name: "More filters" }));
+    await user.selectOptions(screen.getByLabelText("Local state"), "missing");
+    await user.selectOptions(screen.getByLabelText("Resource status"), "remote-only");
+    await user.type(screen.getByRole("textbox", { name: "Search resources" }), "release");
+    expect(screen.getByRole("button", { name: /More filters/ })).toHaveTextContent("3");
+    expect(screen.getByRole("row", { name: /release-notes/ })).toBeVisible();
+    expect(screen.queryByRole("row", { name: /skill:demo/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(screen.getByRole("textbox", { name: "Search resources" })).toHaveValue("");
+    expect(screen.getByLabelText("Resource status")).toHaveValue("all");
+    expect(screen.getByLabelText("Local state")).toHaveValue("all");
+    expect(screen.getByRole("row", { name: /skill:demo/ })).toBeVisible();
   });
 });

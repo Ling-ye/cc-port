@@ -50,8 +50,12 @@ describe("ScanLocalDialog", () => {
       scan_local: true,
       scan_global: false,
       project_ids: ["project-demo"],
-      refresh_remote: true,
+      refresh_remote: false,
     });
+    expect(onScanned).toHaveBeenCalledWith(
+      expect.objectContaining({ resources: [] }),
+      { scan_global: false, project_ids: ["project-demo"] },
+    );
   });
 
   it("keeps project mappings unchanged when directory selection is cancelled", async () => {

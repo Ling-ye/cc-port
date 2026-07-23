@@ -2294,7 +2294,36 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
             transport,
             timeout_seconds=cfg.state.lock_timeout_seconds,
         ):
-            if not git_ops.is_repo(transport):
+            transport_is_repo = git_ops.is_repo(transport)
+            if not transport_is_repo and not refresh:
+                cached = _latest_cached_snapshot(state_root / REMOTE_SNAPSHOT_DIR / cache_key)
+                if cached is not None:
+                    cached_at = datetime.fromtimestamp(
+                        cached.stat().st_mtime,
+                        tz=timezone.utc,
+                    ).isoformat()
+                    return RemoteSnapshot(
+                        root=cached,
+                        registry=load_registry(cached / DEFAULT_REGISTRY_FILENAME),
+                        commit="" if cached.name == "unborn" else cached.name,
+                        branch=branch,
+                        repo_url=repo_url,
+                        available=False,
+                        warning=(
+                            "Remote refresh was skipped; showing the latest cached "
+                            f"snapshot from {cached_at}."
+                        ),
+                    )
+                return _local_compatibility_snapshot(
+                    cfg,
+                    repo_url=repo_url,
+                    warning=(
+                        "Remote refresh was skipped and no cached snapshot is "
+                        "available; showing the legacy local snapshot read-only."
+                    ),
+                )
+
+            if not transport_is_repo:
                 _remove_internal_path(transport, state_root)
                 try:
                     git_ops.clone(

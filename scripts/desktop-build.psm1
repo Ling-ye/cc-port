@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 
 $script:LpmExpectedTarget = "x86_64-pc-windows-msvc"
 $script:LpmWingetHelpUrl = "https://learn.microsoft.com/windows/package-manager/winget/"
+$script:LpmJsonCacheSchemaVersion = 1
 
 function Get-LpmRepoRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -637,6 +638,166 @@ function Remove-LpmSafePath {
     }
 }
 
+function Get-LpmStringHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Value
+    )
+
+    $bytes = [Text.Encoding]::UTF8.GetBytes([string]$Value)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $algorithm.ComputeHash($bytes)
+    } finally {
+        $algorithm.Dispose()
+    }
+    return ([BitConverter]::ToString($hash).Replace("-", "").ToLowerInvariant())
+}
+
+function ConvertTo-LpmFingerprintPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "Fingerprint path must not be empty."
+    }
+    return [IO.Path]::GetFullPath($Path).Replace("\", "/").ToLowerInvariant()
+}
+
+function Get-LpmDependencyInputFingerprint {
+    param(
+        [Parameter(Mandatory = $true)][string]$ContentFingerprint,
+        [Parameter(Mandatory = $true)][string]$PythonVersion,
+        [Parameter(Mandatory = $true)][string]$PythonPath,
+        [Parameter(Mandatory = $true)][string]$NodeVersion,
+        [Parameter(Mandatory = $true)][string]$NodePath,
+        [Parameter(Mandatory = $true)][string]$NpmVersion,
+        [Parameter(Mandatory = $true)][string]$NpmPath,
+        [Parameter(Mandatory = $true)][string]$Platform
+    )
+
+    $descriptor = @(
+        "dependencyPolicyVersion=1",
+        "content=$($ContentFingerprint.Trim())",
+        "pythonVersion=$($PythonVersion.Trim())",
+        "pythonPath=$(ConvertTo-LpmFingerprintPath -Path $PythonPath)",
+        "nodeVersion=$($NodeVersion.Trim())",
+        "nodePath=$(ConvertTo-LpmFingerprintPath -Path $NodePath)",
+        "npmVersion=$($NpmVersion.Trim())",
+        "npmPath=$(ConvertTo-LpmFingerprintPath -Path $NpmPath)",
+        "platform=$($Platform.Trim())"
+    ) -join "`n"
+    return Get-LpmStringHash -Value $descriptor
+}
+
+function Get-LpmFileHashValue {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::OpenRead($Path)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $algorithm.ComputeHash($stream)
+    } finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+    return ([BitConverter]::ToString($hash).Replace("-", "").ToLowerInvariant())
+}
+
+function Get-LpmContentFingerprint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$Paths
+    )
+
+    $entriesByPath = @{}
+    foreach ($path in $Paths) {
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            throw "Fingerprint path must not be empty."
+        }
+        $fullPath = [IO.Path]::GetFullPath($path)
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+            throw "Fingerprint input file does not exist: $fullPath"
+        }
+        $normalizedPath = ConvertTo-LpmFingerprintPath -Path $fullPath
+        $entriesByPath[$normalizedPath] = Get-LpmFileHashValue -Path $fullPath
+    }
+
+    $entries = New-Object System.Collections.Generic.List[string]
+    foreach ($normalizedPath in $entriesByPath.Keys) {
+        $entries.Add("$normalizedPath`0$($entriesByPath[$normalizedPath])")
+    }
+    $entries.Sort([StringComparer]::Ordinal)
+    return Get-LpmStringHash -Value ($entries -join "`n")
+}
+
+function Read-LpmJsonCache {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $raw = [IO.File]::ReadAllText($fullPath)
+        $document = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $document) {
+            return $null
+        }
+        $schemaProperty = $document.PSObject.Properties["schemaVersion"]
+        $valueProperty = $document.PSObject.Properties["value"]
+        if ($null -eq $schemaProperty -or $null -eq $valueProperty -or
+            [int]$schemaProperty.Value -ne $script:LpmJsonCacheSchemaVersion) {
+            return $null
+        }
+        return $valueProperty.Value
+    } catch {
+        return $null
+    }
+}
+
+function Write-LpmJsonCacheAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowNull()]$Value
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $parent = [IO.Path]::GetDirectoryName($fullPath)
+    if ([string]::IsNullOrWhiteSpace($parent)) {
+        throw "JSON cache path must have a parent directory: $fullPath"
+    }
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $temporaryPath = Join-Path $parent ("." + [IO.Path]::GetFileName($fullPath) + ".tmp-" + [guid]::NewGuid().ToString("N"))
+    $backupPath = Join-Path $parent ("." + [IO.Path]::GetFileName($fullPath) + ".backup-" + [guid]::NewGuid().ToString("N"))
+    $envelope = [ordered]@{
+        schemaVersion = $script:LpmJsonCacheSchemaVersion
+        value = $Value
+    }
+    $json = ($envelope | ConvertTo-Json -Depth 32) + [Environment]::NewLine
+    $encoding = New-Object Text.UTF8Encoding($false)
+    try {
+        [IO.File]::WriteAllText($temporaryPath, $json, $encoding)
+        if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            [IO.File]::Replace($temporaryPath, $fullPath, $backupPath)
+        } else {
+            [IO.File]::Move($temporaryPath, $fullPath)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Get-LpmWindowsPackageArtifacts {
     param([Parameter(Mandatory = $true)][string]$ReleaseDirectory)
 
@@ -674,20 +835,31 @@ function Publish-LpmStagingDirectory {
     $backup = Join-Path $ReleaseRoot ("." + [IO.Path]::GetFileName($final) + ".backup-" + [guid]::NewGuid().ToString("N"))
     Assert-LpmDirectChild -Path $backup -Parent $ReleaseRoot | Out-Null
     $movedOld = $false
+    $stage = "moving the previous release to its backup"
     try {
         if (Test-Path -LiteralPath $final) {
             & $MoveDirectory $final $backup | Out-Null
             $movedOld = $true
         }
+        $stage = "moving the verified staging directory into place"
         & $MoveDirectory $staging $final | Out-Null
     } catch {
+        $publishError = $_.Exception.Message
         if ($movedOld -and (Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $final)) {
-            & $MoveDirectory $backup $final | Out-Null
+            try {
+                & $MoveDirectory $backup $final | Out-Null
+            } catch {
+                throw "Verified release switch failed during ${stage}: $publishError; rollback also failed: $($_.Exception.Message); backup=$backup"
+            }
         }
-        throw
+        throw "Verified release switch failed during ${stage}: $publishError"
     }
     if (Test-Path -LiteralPath $backup) {
-        Remove-LpmSafePath -Path $backup -Parent $ReleaseRoot
+        try {
+            Remove-LpmSafePath -Path $backup -Parent $ReleaseRoot
+        } catch {
+            Write-Warning "Verified release is active, but the previous release backup could not be removed: $backup ($($_.Exception.Message))"
+        }
     }
 }
 
@@ -696,6 +868,8 @@ Export-ModuleMember -Function @(
     "Assert-LpmDirectChild",
     "Enable-LpmVisualStudioEnvironment",
     "Get-LpmExpectedTarget",
+    "Get-LpmContentFingerprint",
+    "Get-LpmDependencyInputFingerprint",
     "Get-LpmGit",
     "Get-LpmNode",
     "Get-LpmNpm",
@@ -706,6 +880,7 @@ Export-ModuleMember -Function @(
     "Get-LpmRustHostFromVerbose",
     "Get-LpmRustTarget",
     "Get-LpmRustTools",
+    "Get-LpmStringHash",
     "Get-LpmVisualStudioPath",
     "Get-LpmMinimalWindowsPath",
     "Get-LpmVisualStudioTransientVariableNames",
@@ -715,10 +890,12 @@ Export-ModuleMember -Function @(
     "Install-LpmWingetPackage",
     "Invoke-LpmNative",
     "Publish-LpmStagingDirectory",
+    "Read-LpmJsonCache",
     "Remove-LpmSafePath",
     "Resolve-LpmExecutable",
     "Test-LpmNodeVersion",
     "Test-LpmPythonVersion",
     "Update-LpmProcessPath",
+    "Write-LpmJsonCacheAtomically",
     "Write-LpmSection"
 )

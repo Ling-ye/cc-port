@@ -855,6 +855,30 @@ def test_remote_batch_applies_multiple_changes_in_one_commit(
     assert stored.get("demo-copy", "skill") is not None
 
 
+def test_inventory_without_remote_refresh_never_clones_missing_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path, repo_url="https://example.invalid/resources.git")
+    clone_calls: list[str] = []
+
+    def unexpected_clone(url: str, *_args, **_kwargs) -> None:
+        clone_calls.append(url)
+
+    monkeypatch.setattr(git_ops, "clone", unexpected_clone)
+
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=False,
+        refresh_remote=False,
+    )
+
+    assert clone_calls == []
+    assert inventory.remote_available is False
+    assert inventory.remote_warning is not None
+    assert "refresh was skipped" in inventory.remote_warning
+
+
 def test_remote_batch_excludes_invalid_source_and_commits_valid_items(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

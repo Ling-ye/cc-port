@@ -2,7 +2,7 @@
 
 ## 产品边界
 
-LPM 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置；用户自己的私有 Git 仓库是跨设备事实源，本机状态目录只保存备份、所有权和临时操作数据。
+LPM 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置；用户自己的远端资源仓库是跨设备事实源，本机状态目录保存可重建的受管远端镜像、commit 只读快照、备份、所有权和临时操作数据。AI 工具原生目录中的资源是本地实例，不通过本机镜像转发。
 
 当前采用模块化单体，不拆分独立服务：
 
@@ -25,9 +25,11 @@ flowchart LR
     SERVICES --> CORE["Core models and policies"]
     SERVICES --> INFRA["Git / GitHub infrastructure"]
     CORE --> ADAPTERS["Internal tool adapters"]
-    SERVICES --> REPO["Private resource Git repo"]
+    SERVICES --> REMOTE["Remote resource repository"]
+    SERVICES --> MIRROR["Managed remote mirror"]
+    MIRROR --> SNAPSHOT["Commit read-only snapshots"]
     SERVICES --> STATE["Machine-local state"]
-    SERVICES --> TOOLS["Local AI tool targets"]
+    SERVICES --> TOOLS["AI tool native targets"]
 ```
 
 ## Python 模块边界
@@ -39,8 +41,8 @@ flowchart LR
 | `core.resource_files` | 资源复制与同步共用的文件策略 | 排除真实 `.env`、构建产物、依赖目录和符号链接 |
 | `core.secret_scan` | 资源文本的凭据模式检查 | 只返回脱敏预览，不在日志中保存真实值 |
 | `core.ownership` | 目录与 MCP entry 的所有权 | 未管理目标不能被普通覆盖或卸载 |
-| `services.asset_sync` | 逻辑资源并集、远端快照、批量计划、哈希重验证、批量上传单提交与逐项下载事务 | 不信任前端路径或指纹；不强推；不隐式删除 |
-| `services.resource_sync` | 弃用兼容：旧 Git 分歧检测、worktree 合并与推送 | 仅保留一个发布版本，用于清理遗留工作区状态 |
+| `services.asset_sync` | 受管远端镜像刷新、commit 快照、逻辑资源并集、批量计划、哈希重验证、批量上传单提交与逐项安装事务 | 不信任前端路径或指纹；不强推；不隐式删除 |
+| `services.resource_sync` | 弃用兼容：旧 Git 分歧检测、worktree 合并与推送 | 仅保留一个发布版本，用于清理遗留工作区状态；新桌面流程不得调用 |
 | `services.resource_commit` | 资源级提交预览、管理路径限制和待推送内容扫描 | 不提供通用 Git 暂存区；非管理路径和敏感内容默认阻断 |
 | `services.resource_repo_lock` | 资源仓库进程内/跨进程写锁 | 同仓库写操作串行；嵌套服务调用可重入 |
 | `services.env_manager` | 资产扫描使用的只读工具、资源与 MCP 配置发现 | 不提供环境采集、仓库级环境差异、快照迁移或部署入口；MCP 占位符化由 `core.secrets` 统一处理 |
@@ -53,7 +55,7 @@ flowchart LR
 
 ## 数据位置
 
-### 私有资源 Git 仓库
+### 远端资源仓库
 
 ```text
 registry.yaml
@@ -70,7 +72,10 @@ resources/  # 兼容旧仓库布局
   mcp/
 ```
 
-该仓库只保存可跨设备同步的数据，不保存真实密钥、机器备份、临时 worktree 或操作日志。第三方 GitHub Skill/MCP 只在 `registry.yaml` 保存锁定到完整 commit SHA 的引用；本地导入才写入内容目录。具体收集、脱敏、恢复失败与旧 branch/tag 兼容语义见 [GitHub 引用收集与本地内容导入规格](specs/github-reference-collection.md)。
+该仓库是跨设备事实源，只保存可跨设备同步的数据，不保存真实密钥、机器备份、临时 worktree 或操作日志。第三方 GitHub Skill/MCP 只在 `registry.yaml` 保存锁定到完整 commit SHA 的引用；本地导入才写入内容目录。具体收集、脱敏、恢复失败与旧 branch/tag 兼容语义见 [GitHub 引用收集与本地内容导入规格](specs/github-reference-collection.md)。
+
+桌面主流程不为它创建用户需要维护的本地工作区。需要读取远端内容时，LPM 更新受管远端镜像并选择明确 commit 生成只读远端快照；需要写入时，只通过选中资源的上传计划产生普通提交与推送。
+这一取舍及被拒绝的可编辑中枢、逐次临时克隆方案见 [ADR 0001：使用受管远端镜像，而不是可编辑工作区](adr/0001-use-managed-remote-mirror.md)。
 
 ### 本机状态目录
 
@@ -91,9 +96,30 @@ asset-plans/<operation-id>/
 sync/<operation-id>/  # 弃用兼容
 ```
 
+`assets/remotes/` 保存隐藏的完整受管远端镜像，`assets/snapshots/` 保存以 commit 为边界的只读视图。两者都是可从远端重建的派生缓存，不允许用户编辑，不提供给 AI 工具作为资源目录，也不建立到工具目标的链接。远端不可用时最近成功的快照只能用于查看；依赖最新远端断言的写入仍然阻断。
+
 ### AI 工具目标
 
-工具目标路径来自 `PlatformProfile` 和内部 `ToolAdapter`。目录型资源写入 `.lpm-managed.json`；MCP 只拥有指定 server entry，不拥有整个 JSON 配置文件。
+工具目标路径来自 `PlatformProfile` 和内部 `ToolAdapter`。每个被发现或安装到这些原生目标的资源都是本地实例；同一逻辑资源可以在多个工具或项目范围内存在多个实例。目录型资源写入 `.lpm-managed.json`；MCP 只拥有指定 server entry，不拥有整个 JSON 配置文件。
+
+## 资源清单读取流
+
+```mermaid
+flowchart LR
+    REMOTE["Remote resource repository"] -->|refresh remote| MIRROR["Managed remote mirror"]
+    MIRROR --> SNAPSHOT["Commit read-only snapshot"]
+    TOOLS["AI tool native targets"] -->|scan local| INSTANCES["Local instances"]
+    SNAPSHOT --> INVENTORY["Unified asset inventory"]
+    INSTANCES --> INVENTORY
+    INVENTORY -->|selected upload plan| REMOTE
+    INVENTORY -->|selected install plan| TOOLS
+```
+
+桌面端只通过 `asset_inventory` 采集清单。应用启动静默刷新远端一次，用户也可手动刷新；两者都不轮询、不调用旧 `resource_pull`、不写 AI 工具目标。扫描本地只观察用户选择的全局与项目范围，不 fetch 或写远端。
+
+桌面会话保存最近一次 `{scan_global, project_ids}`。尚未扫描时，刷新远端只重建远端一侧；已经扫描时，刷新后立即复用完全相同的会话范围重扫本地，使清单继续保留远端独有、本地独有和两端共有资源。会话扫描范围不持久化，应用重启后恢复为“未扫描”。
+
+资源页不提供仓库级“一键更新全部”。远端写入只由选中资源的“上传到仓库”计划触发；本地写入只由选中资源和目标工具的“安装到工具”计划触发。
 
 ## 资产同步状态机
 
@@ -119,11 +145,11 @@ stateDiagram-v2
     Succeeded --> [*]
 ```
 
-清单从配置分支最新提交生成只读快照，不修改旧本地 Git 工作区。计划记录远端提交、目标资产存在性与指纹、本地源指纹、解析出的目标路径和用户选择；apply 时全部重新计算。
+清单从受管远端镜像中的配置分支最新提交生成只读快照，不创建或修改用户 Git 工作区。计划记录远端提交、目标资产存在性与指纹、本地源指纹、解析出的目标路径和用户选择；apply 时全部重新计算。
 
 若远端分支只发生无关变化，远端写操作会在最新提交上重放并普通推送。若目标资产新增、删除或改变，则返回 `stale-target`。推送竞态只自动重试一次，且每次远端写入只创建一个资产级提交。
 
-旧 `services.resource_sync` 状态机和 `sync/<operation-id>` worktree 仅作为一版兼容层存在。遗留工作区处于 dirty、ahead、diverged、wrong-branch 或有待处理旧计划时，资产清单仍可读取，但远端写入被阻断。
+旧 `services.resource_sync` 状态机和 `sync/<operation-id>` worktree 仅作为一版兼容层存在。新的资源页和 `asset_inventory` 流程不调用它们，也不向普通界面暴露 dirty、ahead、diverged、wrong-branch 或 worktree 概念；遗留写入阻断规则继续生效。
 
 ## 本地变更事务
 

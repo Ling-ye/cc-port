@@ -6,6 +6,11 @@ import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import type { AssetInventory, PluginProject } from "@/types/lpm";
 
+export interface ScanScope {
+  scan_global: boolean;
+  project_ids: string[];
+}
+
 export function ScanLocalDialog({
   t,
   onClose,
@@ -13,7 +18,7 @@ export function ScanLocalDialog({
 }: {
   t: TFunction;
   onClose: () => void;
-  onScanned: (inventory: AssetInventory) => void;
+  onScanned: (inventory: AssetInventory, scope: ScanScope) => void;
 }) {
   const { runTask } = useTaskCenter();
   const [scanGlobal, setScanGlobal] = useState(true);
@@ -26,7 +31,7 @@ export function ScanLocalDialog({
     void lpmAction<{ projects: PluginProject[] }>("plugin_projects_list")
       .then((result) => {
         setProjects(result.projects);
-        setSelectedIds(result.projects.map((item) => item.id));
+        setSelectedIds(result.projects.filter((item) => item.exists).map((item) => item.id));
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, []);
@@ -66,12 +71,12 @@ export function ScanLocalDialog({
           scan_local: true,
           scan_global: scanGlobal,
           project_ids: selectedIds,
-          refresh_remote: true,
+          refresh_remote: false,
         }),
         successMessage: t("assets.scanComplete"),
         retryPolicy: "safe-read",
       });
-      onScanned(inventory);
+      onScanned(inventory, { scan_global: scanGlobal, project_ids: [...selectedIds] });
     } catch {
       // Task center owns tracked failures.
     } finally {
@@ -83,15 +88,15 @@ export function ScanLocalDialog({
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busy) onClose();
     }}>
-      <div className="modal scan-local-modal" role="dialog" aria-modal="true" aria-labelledby="scan-local-title">
+      <div className="modal scan-local-modal" role="dialog" aria-modal="true" aria-labelledby="scan-local-title" aria-describedby="scan-local-description" aria-busy={busy}>
         <div className="modal-head">
           <RefreshCcw size={19} />
           <h2 id="scan-local-title">{t("scan.title")}</h2>
           <button className="icon-button" onClick={onClose} disabled={busy} aria-label={t("common.close")}><X size={17} /></button>
         </div>
-        <p>{t("scan.description")}</p>
+        <p id="scan-local-description">{t("scan.description")}</p>
         <label className="checkline scan-global-option">
-          <input type="checkbox" checked={scanGlobal} onChange={(event) => setScanGlobal(event.target.checked)} />
+          <input type="checkbox" checked={scanGlobal} disabled={busy} onChange={(event) => setScanGlobal(event.target.checked)} />
           <span>{t("scan.global")}</span>
         </label>
         <div className="scan-project-head">
@@ -100,21 +105,21 @@ export function ScanLocalDialog({
             <FolderOpen size={15} />{t("scan.addProject")}
           </button>
         </div>
-        <div className="scan-project-list">
+        <div className="scan-project-list" role="group" aria-label={t("scan.projects")}>
           {projects.map((project) => (
             <div className="scan-project-row" key={project.id}>
               <label className={!project.exists ? "disabled" : ""}>
                 <input
                   type="checkbox"
                   checked={selectedIds.includes(project.id)}
-                  disabled={!project.exists}
+                  disabled={busy || !project.exists}
                   onChange={() => setSelectedIds((current) => current.includes(project.id)
                     ? current.filter((item) => item !== project.id)
                     : [...current, project.id])}
                 />
                 <span><strong>{project.path}</strong><small>{project.portable ? `${project.repo}${project.subdir ? `/${project.subdir}` : ""}` : t("scan.observeOnly")}</small></span>
               </label>
-              <button className="icon-button" type="button" onClick={() => void removeProject(project.id)} aria-label={t("scan.removeProject")}><Trash2 size={15} /></button>
+              <button className="icon-button" type="button" onClick={() => void removeProject(project.id)} disabled={busy} aria-label={`${t("scan.removeProject")}: ${project.path}`}><Trash2 size={15} /></button>
             </div>
           ))}
           {!projects.length ? <small>{t("scan.noProjects")}</small> : null}

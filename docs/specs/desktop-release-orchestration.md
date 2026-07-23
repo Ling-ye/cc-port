@@ -15,13 +15,20 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1
 # 只检查，零写入
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -CheckOnly
 
+# 无条件重新同步 Python 与前端依赖
+Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -ForceSync
+
 # 自动准备环境并执行完整发布
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1
+
+# 强制依赖同步、sidecar clean build 与 Cargo 主程序重新链接
+Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1 -Clean
 ```
 
 - [KNOWN] 两个入口支持 `-NonInteractive`；默认模式汇总操作后只确认一次。置信度：HIGH。
 - [KNOWN] `-CheckOnly` 不安装系统包、不创建或修改 `.venv`、不运行 pip/npm 安装，并以退出码表示环境是否完整。置信度：HIGH。
 - [KNOWN] `release-desktop.ps1` 必须先调用 `setup.ps1`，不能复制第二套环境安装逻辑。置信度：HIGH。
+- [KNOWN] 默认入口必须复用验证通过的依赖、sidecar 与 Cargo 产物；`-ForceSync`/`-Clean` 是显式绕过路径，均不得执行 `cargo clean`。置信度：HIGH。
 
 ## 平台与工具链
 
@@ -43,17 +50,18 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 
 ## 发布门禁
 
-[KNOWN] 发布按以下顺序执行，任一步失败立即停止：置信度：HIGH。
+[KNOWN] 发布按以下顺序执行；质量门禁组最多四路并行并等待全部结束后统一报告，组内任一失败都禁止进入后续打包，其他阶段失败时立即停止：置信度：HIGH。
 
-1. 环境检查、系统工具补齐、`.venv` 与锁定 npm 依赖同步。
-2. 无外部测试框架的 PowerShell 构建逻辑自测。
-3. 完整 pytest 和 Ruff。
-4. Vitest、`npm audit --package-lock-only --audit-level=moderate` 与前端生产构建。
-5. 缺失图标生成和 PyInstaller sidecar 完整重建。
-6. 删除本次已知 Tauri 输出并执行 MSI/NSIS release build。
-7. 将桌面 exe、sidecar、MSI 和 NSIS 复制到同级临时发布目录。
-8. 在隔离状态目录运行临时 sidecar，并验证 JSON `ok` 响应。
-9. 验证成功后替换正式目录并输出绝对路径、大小和 SHA-256。
+1. 环境检查、系统工具补齐，并验证依赖缓存；输入、工具或完整环境探针失效时才同步 `.venv` 与锁定 npm 依赖。
+2. 最多四路并行执行 PowerShell 构建逻辑自测、完整 pytest、Ruff、Vitest 与 `npm audit --package-lock-only --audit-level=moderate`；每项保留独立日志和真实退出码，900 秒超时记为 `124`。
+3. 生成缺失图标，并验证 sidecar 的输入指纹、缓存产物哈希和隔离冒烟；未命中或冒烟失败时 clean 重建一次。
+4. 默认只删除 Tauri bundle 与目标 sidecar，保留 Cargo 管理的主程序；`-Clean` 额外删除顶层主程序以强制重新链接，但不清理依赖编译产物。
+5. 把验证通过的源 sidecar 显式复制到 Tauri `target/release/lpm-desktop-api.exe`，并在构建前校验源、目标 SHA-256 一致。
+6. 执行一次 Tauri release build；前端生产构建只由 `beforeBuildCommand` 触发一次，先在隔离目录生成 Vite 输出，内容未变化时保留现有 `desktop/dist` 及时间戳，内容变化时才事务式替换，再同时生成 MSI 与 NSIS。
+7. 构建后再次验证 Tauri 目标 sidecar 与源 sidecar 的 SHA-256 一致，再把桌面 exe、sidecar、MSI 和 NSIS 复制到同级临时发布目录。
+8. 在隔离状态目录运行临时 sidecar，验证 JSON `ok` 响应，并在临时目录计算四类产物 SHA-256。
+9. 全部验证成功后事务式切换正式目录。
+10. 在终端输出逐阶段耗时、缓存状态与总耗时，并原子写入本次 JSON 指标。
 
 ## 产物与失败语义
 
@@ -61,13 +69,20 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 - [KNOWN] 正式目录固定为 `release/desktop/x86_64-pc-windows-msvc/`。置信度：HIGH。
 - [KNOWN] Windows 发布必须同时存在 MSI 与名称以 `-setup.exe` 结尾的 NSIS。置信度：HIGH。
 - [KNOWN] 测试、构建、安装包验证或 sidecar 冒烟失败不得覆盖上一次已验证目录。置信度：HIGH。
-- [KNOWN] 正式目录替换失败时必须恢复旧目录。置信度：HIGH。
+- [KNOWN] 正式目录事务切换发生可捕获移动失败时必须先尝试恢复旧目录；回滚本身失败时必须报告保留的 backup 绝对路径，不得掩盖原始错误。置信度：HIGH。
+- [KNOWN] 同一仓库只允许一个发布入口持有 `build/cache/release.lock` 独占句柄；并发发布立即失败，独立执行的 `setup.ps1` 不受此锁保护。置信度：HIGH。
+- [KNOWN] 稳定 Vite 输出切换只由正式发布锁序列化；正式发布期间或多个终端之间不得并发执行独立 `npm run build`。置信度：HIGH。
+- [KNOWN] 依赖与 sidecar 缓存记录必须使用版本化 JSON envelope 和同目录原子写入；记录缺失、损坏、不完整、指纹或产物哈希不符时均按 miss 处理。置信度：HIGH。
+- [KNOWN] 非 CheckOnly 的依赖预检只验证输入指纹与缓存记录；必须在真正复用前重新计算输入并执行唯一一次完整环境探针。置信度：HIGH。
+- [KNOWN] 缓存 sidecar 冒烟失败只表示开始恢复；必须在 clean 重建、重建后冒烟与缓存刷新全部成功后才能把原失败阶段标记为已恢复。置信度：HIGH。
+- [KNOWN] 每次发布尝试必须在 `build/metrics/` 保存成功/失败、总耗时、逐阶段退出码/缓存状态/日志和成功产物哈希。置信度：HIGH。
 - [KNOWN] 删除和移动只能操作经过验证的预期父目录直接子项。置信度：HIGH。
 - [KNOWN] 发布脚本不得读取、写入或输出 Git 凭据，不执行安装、代码签名或上传。置信度：HIGH。
 
 ## 验收标准
 
 - [KNOWN] Windows PowerShell 5.1 解析两个入口、共享模块和自测文件时没有语法错误。置信度：HIGH。
-- [KNOWN] 自测覆盖版本规则、Rust 装饰输出、可执行文件 fallback、安全目录、MSI/NSIS 判断、staging 缺失预检以及发布替换与回滚。置信度：HIGH。
+- [KNOWN] 自测覆盖版本规则、稳定指纹、缓存损坏与原子写入、发布锁、门禁并行退出码与逐任务超时、Rust 装饰输出、可执行文件 fallback、安全目录、MSI/NSIS 判断、staging 缺失预检以及发布替换与回滚。置信度：HIGH。
 - [KNOWN] `setup.ps1 -CheckOnly` 在环境完整时返回 0，并保持 `.venv` 与 `node_modules` 不变。置信度：HIGH。
 - [KNOWN] 一条 `release-desktop.ps1` 命令完成所有门禁，生成并哈希桌面 exe、sidecar、MSI 和 NSIS，且 sidecar 冒烟通过。置信度：HIGH。
+- [KNOWN] 性能验收必须在同一提交、机器和工具版本下，对优化前与优化后分别执行三次成功的无修改默认暖构建，取 `value.durationMs` 中位数，并满足 `candidateMedian <= baselineMedian * 0.70`；`-Clean`、前端、Python 和 Rust 修改场景仅单独记录，不套用该硬门槛。置信度：HIGH。

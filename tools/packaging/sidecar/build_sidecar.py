@@ -108,19 +108,51 @@ def ensure_pyinstaller(python: str) -> None:
         sys.stderr.write(
             "PyInstaller is not installed in the current Python environment.\n"
             "Install it with one of:\n"
-            "  pip install -e \".[desktop]\"\n"
+            '  pip install -e ".[desktop]"\n'
             "  pip install pyinstaller\n"
         )
         raise SystemExit(1)
+
+
+def build_pyinstaller_command(python: str, work_root: Path, *, clean: bool) -> list[str]:
+    """Return the deterministic PyInstaller command for a sidecar build."""
+    command = [
+        python,
+        "-m",
+        "PyInstaller",
+        "--onefile",
+        "--noconfirm",
+    ]
+    if clean:
+        command.append("--clean")
+    command.extend(
+        [
+            "--console",
+            "--name",
+            SIDECAR_NAME,
+            "--distpath",
+            str(work_root / "dist"),
+            "--workpath",
+            str(work_root / "work"),
+            "--specpath",
+            str(work_root),
+            "--paths",
+            str(ROOT),
+            "--collect-submodules",
+            "lpm",
+        ]
+    )
+    for module in EXCLUDED_MODULES:
+        command.extend(["--exclude-module", module])
+    command.append(str(ENTRY_SCRIPT))
+    return command
 
 
 def build(target_triple: str, out_dir: Path, *, clean: bool) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     work_root = ROOT / "build" / "sidecar"
-    work_dir = work_root / "work"
     dist_dir = work_root / "dist"
-    spec_dir = work_root
 
     if clean and work_root.exists():
         shutil.rmtree(work_root, ignore_errors=True)
@@ -128,30 +160,7 @@ def build(target_triple: str, out_dir: Path, *, clean: bool) -> Path:
     python = sys.executable
     ensure_pyinstaller(python)
 
-    cmd = [
-        python,
-        "-m",
-        "PyInstaller",
-        "--onefile",
-        "--noconfirm",
-        "--clean",
-        "--console",
-        "--name",
-        SIDECAR_NAME,
-        "--distpath",
-        str(dist_dir),
-        "--workpath",
-        str(work_dir),
-        "--specpath",
-        str(spec_dir),
-        "--paths",
-        str(ROOT),
-        "--collect-submodules",
-        "lpm",
-        str(ENTRY_SCRIPT),
-    ]
-    for module in EXCLUDED_MODULES:
-        cmd[-1:-1] = ["--exclude-module", module]
+    cmd = build_pyinstaller_command(python, work_root, clean=clean)
 
     print(f"[build_sidecar] python: {python}")
     print(f"[build_sidecar] target: {target_triple}")

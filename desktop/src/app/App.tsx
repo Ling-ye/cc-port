@@ -1,5 +1,5 @@
-import { Activity, Languages, RefreshCcw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Activity, Languages } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { lpmAction } from "@/api/client";
 import {
   createTranslator,
@@ -15,30 +15,27 @@ import { Banner } from "@/components/Banner";
 import { TaskCenterPanel, ToastViewport } from "@/components/TaskFeedback";
 import { GuideView } from "@/features/guide/GuideView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
+import type { ScanScope } from "@/features/resources/ScanLocalDialog";
 import { SettingsView } from "@/features/settings/SettingsView";
-import type { AssetInventory, Summary } from "@/types/lpm";
+import type { AssetInventory } from "@/types/lpm";
 
 export default function App() {
   const { runTask, runningCount } = useTaskCenter();
   const [view, setView] = useState<View>("resources");
   const [language, setLanguage] = useState<Language>(() => readStoredLanguage());
-  const [summary, setSummary] = useState<Summary | null>(null);
   const [assetInventory, setAssetInventory] = useState<AssetInventory | null>(null);
+  const [scanScope, setScanScope] = useState<ScanScope | null>(null);
+  const [remoteCheckedAt, setRemoteCheckedAt] = useState<string | null>(null);
+  const [localScannedAt, setLocalScannedAt] = useState<string | null>(null);
   const [selectedResourceKey, setSelectedResourceKey] = useState<string>("");
-  const [busy, setBusy] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
   const [error, setError] = useState("");
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const startupRequestedRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
   const t = useMemo(() => createTranslator(language), [language]);
 
-  async function loadData(scanLocal = false) {
-    const [nextSummary, inventory] = await Promise.all([
-      lpmAction<Summary>("summary"),
-      lpmAction<AssetInventory>("asset_inventory", {
-        scan_local: scanLocal,
-        refresh_remote: true,
-      }),
-    ]);
-    setSummary(nextSummary);
+  function applyInventory(inventory: AssetInventory) {
     setAssetInventory(inventory);
     setSelectedResourceKey((current) => (
       inventory.resources.some((resource) => resource.resource_key === current)
@@ -49,30 +46,72 @@ export default function App() {
     ));
   }
 
-  async function refresh(track = true, scanLocal = false) {
-    setBusy(true);
+  async function loadInventory(scope: ScanScope | null) {
+    const inventory = await lpmAction<AssetInventory>("asset_inventory", {
+      scan_local: scope !== null,
+      ...(scope || {}),
+      refresh_remote: true,
+    });
+    applyInventory(inventory);
+    const completedAt = new Date().toISOString();
+    setRemoteCheckedAt(completedAt);
+    if (scope) setLocalScannedAt(completedAt);
+    return inventory;
+  }
+
+  async function refreshRemote(track = true, scope = scanScope) {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    setRefreshBusy(true);
     setError("");
+    const previousCommit = assetInventory?.remote_commit || "";
     try {
       if (track) {
         await runTask({
-          kind: "refresh",
-          title: t("common.refresh"),
-          action: () => loadData(scanLocal),
+          kind: "asset-refresh-remote",
+          title: t("assets.refreshRemote"),
+          action: () => loadInventory(scope),
+          successMessage: (inventory) => {
+            if (!inventory.remote_available) return t("assets.remoteCacheFallback");
+            return previousCommit && previousCommit === inventory.remote_commit
+              ? t("assets.remoteUpToDate")
+              : t("assets.remoteUpdated");
+          },
           retryPolicy: "safe-read",
         });
       } else {
-        await loadData(scanLocal);
+        await loadInventory(scope);
       }
     } catch (err) {
       if (!track) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      refreshInFlightRef.current = false;
+      setRefreshBusy(false);
     }
   }
 
   useEffect(() => {
-    void refresh(false);
+    if (startupRequestedRef.current) return;
+    startupRequestedRef.current = true;
+    void refreshRemote(false, null);
   }, []);
+
+  function handleLocalScanned(inventory: AssetInventory, scope: ScanScope) {
+    applyInventory(assetInventory ? {
+      ...inventory,
+      remote_available: assetInventory.remote_available,
+      remote_warning: assetInventory.remote_warning,
+    } : inventory);
+    setScanScope({
+      scan_global: scope.scan_global,
+      project_ids: [...scope.project_ids],
+    });
+    setLocalScannedAt(new Date().toISOString());
+  }
+
+  async function refreshAfterChange() {
+    await refreshRemote(false, scanScope);
+  }
 
   useEffect(() => {
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
@@ -116,13 +155,11 @@ export default function App() {
 
       <main className="workspace">
         <Topbar
-          summary={summary}
-          busy={busy}
+          view={view}
           language={language}
           runningCount={runningCount}
           t={t}
           taskPanelOpen={taskPanelOpen}
-          onRefresh={() => void refresh()}
           onTasks={() => setTaskPanelOpen((current) => !current)}
           onToggleLanguage={toggleLanguage}
         />
@@ -133,9 +170,13 @@ export default function App() {
             inventory={assetInventory}
             selectedKey={selectedResourceKey}
             t={t}
+            refreshBusy={refreshBusy}
+            remoteCheckedAt={remoteCheckedAt}
+            localScannedAt={localScannedAt}
             onSelect={setSelectedResourceKey}
-            onInventory={setAssetInventory}
-            onChanged={() => refresh(false, Boolean(assetInventory?.scanned_local))}
+            onRefreshRemote={() => refreshRemote(true)}
+            onLocalScanned={handleLocalScanned}
+            onChanged={refreshAfterChange}
             onError={setError}
             onOpenSettings={() => setView("settings")}
           />
@@ -144,7 +185,7 @@ export default function App() {
           <SettingsView
             t={t}
             onError={setError}
-            onChanged={() => refresh(false)}
+            onChanged={refreshAfterChange}
           />
         ) : null}
         {view === "guide" ? <GuideView t={t} /> : null}
@@ -156,33 +197,29 @@ export default function App() {
 }
 
 function Topbar({
-  summary,
-  busy,
+  view,
   language,
   runningCount,
   t,
   taskPanelOpen,
-  onRefresh,
   onTasks,
   onToggleLanguage,
 }: {
-  summary: Summary | null;
-  busy: boolean;
+  view: View;
   language: Language;
   runningCount: number;
   t: TFunction;
   taskPanelOpen: boolean;
-  onRefresh: () => void;
   onTasks: () => void;
   onToggleLanguage: () => void;
 }) {
   const languageTitle = language === "zh" ? t("topbar.switchToEnglish") : t("topbar.switchToChinese");
+  const activeItem = navItems.find((item) => item.id === view) || navItems[0];
 
   return (
     <header className="topbar">
       <div>
-        <h1>{summary?.resource_repo_display_name || t("settings.notConfigured")}</h1>
-        <p>{summary?.registry_path || t("topbar.loadingConfig")}</p>
+        <h1>{t(activeItem.labelKey)}</h1>
       </div>
       <div className="topbar-actions">
         <button
@@ -204,9 +241,6 @@ function Topbar({
         >
           <Activity size={17} />
           {runningCount ? <span className="task-running-badge">{runningCount}</span> : null}
-        </button>
-        <button className="icon-button" onClick={onRefresh} disabled={busy} title={t("common.refresh")}>
-          <RefreshCcw size={17} />
         </button>
       </div>
     </header>

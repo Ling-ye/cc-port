@@ -61,6 +61,53 @@ function Invoke-Test {
     Write-Host "  PASS $Name"
 }
 
+# Load only the pure/reusable function definitions from the release entry point.
+# Dot-sourcing the full file would execute a real release, so the AST is used to
+# isolate the functions that need behavioral coverage.
+$releaseScriptPath = Join-Path $RepoRoot "scripts\release-desktop.ps1"
+$releaseTokens = $null
+$releaseErrors = $null
+$releaseAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $releaseScriptPath,
+    [ref]$releaseTokens,
+    [ref]$releaseErrors
+)
+foreach ($functionName in @(
+    "Add-ReleasePhase",
+    "Start-ReleasePhaseRecovery",
+    "Complete-ReleasePhaseRecovery",
+    "Invoke-ParallelReleaseGates",
+    "Enter-ReleaseLock",
+    "Get-SidecarCacheStatus",
+    "Remove-KnownTauriOutputs"
+)) {
+    $definition = $releaseAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq $functionName
+    }, $true)
+    if ($null -eq $definition) {
+        throw "Release function was not found for testing: $functionName"
+    }
+    Invoke-Expression $definition.Extent.Text
+}
+$setupTokens = $null
+$setupErrors = $null
+$setupAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $RepoRoot "scripts\setup.ps1"),
+    [ref]$setupTokens,
+    [ref]$setupErrors
+)
+$dependencyDecisionDefinition = $setupAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq "Get-DependencyCacheDecision"
+}, $true)
+if ($null -eq $dependencyDecisionDefinition) {
+    throw "Setup function was not found for testing: Get-DependencyCacheDecision"
+}
+Invoke-Expression $dependencyDecisionDefinition.Extent.Text
+
 $tempParent = [IO.Path]::GetTempPath().TrimEnd("\")
 $tempRoot = Join-Path $tempParent ("lpm-desktop-build-tests-" + [guid]::NewGuid().ToString("N"))
 Assert-LpmDirectChild -Path $tempRoot -Parent $tempParent | Out-Null
@@ -95,6 +142,306 @@ try {
         Assert-True -Condition (-not (Test-LpmNodeVersion -Value "v22.11.0")) -Message "Node 22.11 should be rejected"
         Assert-True -Condition (Test-LpmNodeVersion -Value "v22.12.0") -Message "Node 22.12 should be accepted"
         Assert-True -Condition (Test-LpmNodeVersion -Value "v24.1.0") -Message "Node 24 should be accepted"
+    }
+
+    Invoke-Test "Stable string and content fingerprints" {
+        $fingerprintRoot = Join-Path $tempRoot "fingerprints-stable"
+        New-Item -ItemType Directory -Path $fingerprintRoot | Out-Null
+        $firstPath = Join-Path $fingerprintRoot "first.txt"
+        $secondPath = Join-Path $fingerprintRoot "second.txt"
+        [IO.File]::WriteAllText($firstPath, "alpha")
+        [IO.File]::WriteAllText($secondPath, "beta")
+
+        $stringHash = Get-LpmStringHash -Value "stable value"
+        Assert-Equal -Expected $stringHash -Actual (Get-LpmStringHash -Value "stable value") -Message "String hash must be stable"
+        Assert-True -Condition ($stringHash -match '^[0-9a-f]{64}$') -Message "String hash must be lowercase SHA-256"
+
+        $ordered = Get-LpmContentFingerprint -Paths @($firstPath, $secondPath)
+        $reversed = Get-LpmContentFingerprint -Paths @($secondPath, $firstPath)
+        Assert-Equal -Expected $ordered -Actual $reversed -Message "Content fingerprint must not depend on input order"
+        Assert-True -Condition (
+            (Get-LpmContentFingerprint -Paths @($firstPath)) -ne
+            (Get-LpmContentFingerprint -Paths @($secondPath))
+        ) -Message "Content fingerprint must include file identity as well as content"
+    }
+
+    Invoke-Test "Content fingerprint invalidates on file change" {
+        $path = Join-Path $tempRoot "fingerprint-change.txt"
+        [IO.File]::WriteAllText($path, "before")
+        $before = Get-LpmContentFingerprint -Paths @($path)
+        [IO.File]::WriteAllText($path, "after")
+        $after = Get-LpmContentFingerprint -Paths @($path)
+        Assert-True -Condition ($before -ne $after) -Message "Changed file content must invalidate the fingerprint"
+    }
+
+    Invoke-Test "Dependency fingerprint includes normalized tool paths" {
+        $pythonPath = Join-Path $tempRoot "tools\python.exe"
+        $nodePath = Join-Path $tempRoot "tools\node.exe"
+        $npmPath = Join-Path $tempRoot "tools\npm.cmd"
+        $base = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+            -PythonVersion "3.12.10" -PythonPath $pythonPath `
+            -NodeVersion "v22.23.1" -NodePath $nodePath `
+            -NpmVersion "10.9.8" -NpmPath $npmPath -Platform "windows-x64"
+        $same = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+            -PythonVersion "3.12.10" -PythonPath ($pythonPath.ToUpperInvariant()) `
+            -NodeVersion "v22.23.1" -NodePath ($nodePath.ToUpperInvariant()) `
+            -NpmVersion "10.9.8" -NpmPath ($npmPath.ToUpperInvariant()) -Platform "windows-x64"
+        Assert-Equal -Expected $base -Actual $same -Message "Windows path casing must not perturb dependency fingerprints"
+
+        $changedPython = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+            -PythonVersion "3.12.10" -PythonPath (Join-Path $tempRoot "alternate\python.exe") `
+            -NodeVersion "v22.23.1" -NodePath $nodePath `
+            -NpmVersion "10.9.8" -NpmPath $npmPath -Platform "windows-x64"
+        $changedNode = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+            -PythonVersion "3.12.10" -PythonPath $pythonPath `
+            -NodeVersion "v22.23.1" -NodePath (Join-Path $tempRoot "alternate\node.exe") `
+            -NpmVersion "10.9.8" -NpmPath $npmPath -Platform "windows-x64"
+        $changedNpm = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+            -PythonVersion "3.12.10" -PythonPath $pythonPath `
+            -NodeVersion "v22.23.1" -NodePath $nodePath `
+            -NpmVersion "10.9.8" -NpmPath (Join-Path $tempRoot "alternate\npm.cmd") -Platform "windows-x64"
+        Assert-True -Condition ($base -ne $changedPython) -Message "Changing Python path must invalidate dependency fingerprint"
+        Assert-True -Condition ($base -ne $changedNode) -Message "Changing Node path must invalidate dependency fingerprint"
+        Assert-True -Condition ($base -ne $changedNpm) -Message "Changing npm path must invalidate dependency fingerprint"
+        $changedContent = Get-LpmDependencyInputFingerprint -ContentFingerprint "changed-content" `
+            -PythonVersion "3.12.10" -PythonPath $pythonPath `
+            -NodeVersion "v22.23.1" -NodePath $nodePath `
+            -NpmVersion "10.9.8" -NpmPath $npmPath -Platform "windows-x64"
+        $changedVersions = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+            -PythonVersion "3.12.11" -PythonPath $pythonPath `
+            -NodeVersion "v22.23.2" -NodePath $nodePath `
+            -NpmVersion "10.9.9" -NpmPath $npmPath -Platform "windows-x64"
+        Assert-True -Condition ($base -ne $changedContent) -Message "Changing a manifest or lock content hash must invalidate the dependency fingerprint"
+        Assert-True -Condition ($base -ne $changedVersions) -Message "Changing tool versions must invalidate the dependency fingerprint"
+    }
+
+    Invoke-Test "Versioned JSON cache round trip and corruption handling" {
+        $cachePath = Join-Path $tempRoot "cache-round-trip.json"
+        $value = [pscustomobject]@{
+            InputFingerprint = "input-a"
+            ManifestHash = "manifest-a"
+        }
+        Write-LpmJsonCacheAtomically -Path $cachePath -Value $value
+        $loaded = Read-LpmJsonCache -Path $cachePath
+        Assert-True -Condition ($null -ne $loaded) -Message "Written cache must be readable"
+        Assert-Equal -Expected "input-a" -Actual $loaded.InputFingerprint -Message "Cache payload input fingerprint"
+        Assert-Equal -Expected "manifest-a" -Actual $loaded.ManifestHash -Message "Cache payload manifest hash"
+
+        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
+            InputFingerprint = "input-b"
+            ManifestHash = "manifest-b"
+        })
+        $replaced = Read-LpmJsonCache -Path $cachePath
+        Assert-Equal -Expected "input-b" -Actual $replaced.InputFingerprint -Message "Existing cache must be atomically replaced"
+        $replacementArtifacts = @(Get-ChildItem -LiteralPath $tempRoot -Force | Where-Object {
+            $_.Name -like ".cache-round-trip.json.tmp-*" -or $_.Name -like ".cache-round-trip.json.backup-*"
+        })
+        Assert-Equal -Expected 0 -Actual $replacementArtifacts.Count -Message "Successful replacement must clean temporary and backup files"
+
+        [IO.File]::WriteAllText($cachePath, '{not-json')
+        Assert-True -Condition ($null -eq (Read-LpmJsonCache -Path $cachePath)) -Message "Corrupt cache must be treated as a miss"
+
+        [IO.File]::WriteAllText($cachePath, '{"schemaVersion":999,"value":{"InputFingerprint":"stale"}}')
+        Assert-True -Condition ($null -eq (Read-LpmJsonCache -Path $cachePath)) -Message "Unknown cache schema must be treated as a miss"
+    }
+
+    Invoke-Test "JSON cache write is atomic on replacement failure" {
+        $cachePath = Join-Path $tempRoot "cache-atomic.json"
+        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{ Marker = "old" })
+        $lock = [IO.File]::Open($cachePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            Assert-Throws -Action {
+                Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{ Marker = "new" })
+            } -Pattern ".+" -Message "Locked destination must reject atomic replacement"
+        } finally {
+            $lock.Dispose()
+        }
+        $loaded = Read-LpmJsonCache -Path $cachePath
+        Assert-Equal -Expected "old" -Actual $loaded.Marker -Message "Failed replacement must preserve the prior cache"
+        $temporary = @(Get-ChildItem -LiteralPath $tempRoot -Force | Where-Object {
+            $_.Name -like ".cache-atomic.json.tmp-*" -or $_.Name -like ".cache-atomic.json.backup-*"
+        })
+        Assert-Equal -Expected 0 -Actual $temporary.Count -Message "Failed atomic writes must clean temporary and backup files"
+    }
+
+    Invoke-Test "Release lock is exclusive and reusable" {
+        $lockPath = Join-Path $tempRoot "release-lock\release.lock"
+        $first = Enter-ReleaseLock -Path $lockPath
+        try {
+            Assert-Throws -Action {
+                $second = Enter-ReleaseLock -Path $lockPath
+                $second.Dispose()
+            } -Pattern "Another desktop release" -Message "A concurrent release must be rejected"
+        } finally {
+            $first.Dispose()
+        }
+        $afterRelease = Enter-ReleaseLock -Path $lockPath
+        $afterRelease.Dispose()
+    }
+
+    Invoke-Test "Sidecar cache rejects incomplete, changed, and forced records" {
+        $cachePath = Join-Path $tempRoot "sidecar-cache\sidecar.json"
+        $artifactPath = Join-Path $tempRoot "sidecar-cache\sidecar.exe"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $artifactPath) -Force | Out-Null
+        [IO.File]::WriteAllText($artifactPath, "sidecar-v1")
+
+        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{})
+        $incomplete = Get-SidecarCacheStatus -CachePath $cachePath -Fingerprint "input-a" -ArtifactPath $artifactPath
+        Assert-True -Condition (-not $incomplete.Hit) -Message "An incomplete sidecar record must miss"
+        Assert-Equal -Expected "missing-or-invalid-record" -Actual $incomplete.Reason -Message "Incomplete record reason"
+
+        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
+            fingerprint = "input-a"
+            artifactSha256 = "not-the-artifact-hash"
+        })
+        $changed = Get-SidecarCacheStatus -CachePath $cachePath -Fingerprint "input-a" -ArtifactPath $artifactPath
+        Assert-Equal -Expected "artifact-hash-changed" -Actual $changed.Reason -Message "Changed artifact reason"
+
+        $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash
+        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
+            fingerprint = "input-a"
+            artifactSha256 = $actualHash
+        })
+        $hit = Get-SidecarCacheStatus -CachePath $cachePath -Fingerprint "input-a" -ArtifactPath $artifactPath
+        Assert-True -Condition $hit.Hit -Message "Matching sidecar inputs and hash must hit"
+        $forced = Get-SidecarCacheStatus -CachePath $cachePath -Fingerprint "input-a" -ArtifactPath $artifactPath -ForceClean
+        Assert-Equal -Expected "forced" -Actual $forced.Reason -Message "Clean mode must force a miss"
+    }
+
+    Invoke-Test "Sidecar recovery is complete only after an explicit success transition" {
+        $script:ReleasePhases = New-Object System.Collections.Generic.List[object]
+        Add-ReleasePhase -Name "Cached sidecar smoke" -StartedAtUtc ([DateTime]::UtcNow) `
+            -DurationMs 1 -ExitCode 1 -CacheStatus "hit" -LogPath $null
+
+        Start-ReleasePhaseRecovery -PhaseIndex 0 -CacheStatus "invalidated:smoke-failed" -Detail "invalid JSON"
+        Assert-True -Condition $script:ReleasePhases[0].recoveryAttempted -Message "Failed cache smoke must record a recovery attempt"
+        Assert-True -Condition (-not $script:ReleasePhases[0].recovered) -Message "Starting a rebuild must not claim recovery"
+        Assert-Equal -Expected "invalid JSON" -Actual $script:ReleasePhases[0].detail -Message "Original cache smoke failure must remain visible"
+
+        Complete-ReleasePhaseRecovery -PhaseIndex 0
+        Assert-True -Condition $script:ReleasePhases[0].recovered -Message "Successful rebuild path must complete recovery"
+    }
+
+    Invoke-Test "Warm cleanup preserves the Cargo app and Clean forces its relink" {
+        $targetRelease = Join-Path $tempRoot "tauri-cleanup\release"
+        $bundle = Join-Path $targetRelease "bundle"
+        New-Item -ItemType Directory -Path $bundle -Force | Out-Null
+        $app = Join-Path $targetRelease "lpm-desktop.exe"
+        $sidecar = Join-Path $targetRelease "lpm-desktop-api.exe"
+        [IO.File]::WriteAllText($app, "cargo-app")
+        [IO.File]::WriteAllText($sidecar, "sidecar")
+        [IO.File]::WriteAllText((Join-Path $bundle "old-installer.msi"), "old")
+
+        Remove-KnownTauriOutputs -TargetReleaseDirectory $targetRelease `
+            -DesktopName "lpm-desktop" -SidecarName "lpm-desktop-api"
+        Assert-True -Condition (Test-Path -LiteralPath $app -PathType Leaf) -Message "Warm cleanup must preserve the Cargo-managed app"
+        Assert-True -Condition (-not (Test-Path -LiteralPath $sidecar)) -Message "Warm cleanup must remove the staged sidecar"
+        Assert-True -Condition (-not (Test-Path -LiteralPath $bundle)) -Message "Warm cleanup must remove prior bundles"
+
+        New-Item -ItemType Directory -Path $bundle -Force | Out-Null
+        [IO.File]::WriteAllText($sidecar, "sidecar")
+        Remove-KnownTauriOutputs -TargetReleaseDirectory $targetRelease `
+            -DesktopName "lpm-desktop" -SidecarName "lpm-desktop-api" -Clean
+        Assert-True -Condition (-not (Test-Path -LiteralPath $app)) -Message "Clean must remove the app to force Cargo relinking"
+    }
+
+    Invoke-Test "Dependency cache honors forced, failed, changed, and passing probes" {
+        $cachePath = Join-Path $tempRoot "dependency-decision\dependencies.json"
+        $desktopPath = Join-Path $tempRoot "dependency-decision\desktop"
+        New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null
+        $inputState = [pscustomobject]@{ Fingerprint = "dependency-input-a" }
+        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
+            fingerprint = $inputState.Fingerprint
+            pythonManifestHash = "python-a"
+            npmTreeHash = "npm-a"
+            nodeModulesLockHash = "lock-a"
+        })
+
+        $forced = Get-DependencyCacheDecision -CachePath $cachePath -InputState $inputState `
+            -VenvPython "python.exe" -NpmPath "npm.cmd" -DesktopDirectory $desktopPath -ForceSync
+        Assert-Equal -Expected "forced" -Actual $forced.Status -Message "ForceSync must bypass an otherwise valid cache"
+
+        $script:DependencyProbeCalls = 0
+        function Get-DependencyProbeState {
+            param([string]$VenvPython, [string]$NpmPath, [string]$DesktopDirectory)
+            $script:DependencyProbeCalls++
+            throw "Deferred dependency decision must not run environment probes"
+        }
+        $candidate = Get-DependencyCacheDecision -CachePath $cachePath -InputState $inputState `
+            -VenvPython "python.exe" -NpmPath "npm.cmd" -DesktopDirectory $desktopPath -DeferProbe
+        Assert-Equal -Expected "candidate:inputs-match" -Actual $candidate.Status -Message "Matching inputs must remain a reuse candidate"
+        Assert-Equal -Expected 0 -Actual $script:DependencyProbeCalls -Message "Preflight must defer expensive dependency probes"
+
+        $script:DependencyProbeFixture = [pscustomobject]@{ Ready = $false; Reason = "pip-check" }
+        function Get-DependencyProbeState {
+            param([string]$VenvPython, [string]$NpmPath, [string]$DesktopDirectory)
+            return $script:DependencyProbeFixture
+        }
+        $probeFailure = Get-DependencyCacheDecision -CachePath $cachePath -InputState $inputState `
+            -VenvPython "python.exe" -NpmPath "npm.cmd" -DesktopDirectory $desktopPath
+        Assert-Equal -Expected "miss:pip-check" -Actual $probeFailure.Status -Message "A failed environment probe must force synchronization"
+
+        $script:DependencyProbeFixture = [pscustomobject]@{
+            Ready = $true
+            Reason = $null
+            PythonManifestHash = "python-a"
+            NpmTreeHash = "npm-a"
+            NodeModulesLockHash = "lock-b"
+        }
+        $manifestChanged = Get-DependencyCacheDecision -CachePath $cachePath -InputState $inputState `
+            -VenvPython "python.exe" -NpmPath "npm.cmd" -DesktopDirectory $desktopPath
+        Assert-Equal -Expected "miss:node-modules-lock-changed" -Actual $manifestChanged.Status -Message "A changed installed lock manifest must miss"
+
+        $script:DependencyProbeFixture.NodeModulesLockHash = "lock-a"
+        $hit = Get-DependencyCacheDecision -CachePath $cachePath -InputState $inputState `
+            -VenvPython "python.exe" -NpmPath "npm.cmd" -DesktopDirectory $desktopPath
+        Assert-True -Condition $hit.Hit -Message "Matching dependency inputs and probes must hit"
+    }
+
+    Invoke-Test "Parallel gates preserve every exit code and independent log" {
+        $script:ReleasePhases = New-Object System.Collections.Generic.List[object]
+        $gateLogs = Join-Path $tempRoot "parallel-gate-logs"
+        $windowsPowerShell = Join-Path $PSHOME "powershell.exe"
+        $gates = @(
+            [pscustomobject]@{
+                Name = "Gate exit three"
+                FilePath = $windowsPowerShell
+                ArgumentList = @("-NoProfile", "-Command", "exit 3")
+                WorkingDirectory = $RepoRoot
+            },
+            [pscustomobject]@{
+                Name = "Gate exit seven"
+                FilePath = $windowsPowerShell
+                ArgumentList = @("-NoProfile", "-Command", "exit 7")
+                WorkingDirectory = $RepoRoot
+            }
+        )
+        Assert-Throws -Action {
+            Invoke-ParallelReleaseGates -Gates $gates -LogDirectory $gateLogs -MaximumConcurrency 2 -GateTimeoutSeconds 30
+        } -Pattern "Release quality gates failed" -Message "Failed gates must be reported after all workers finish"
+        $exitCodes = @($script:ReleasePhases | ForEach-Object { $_.exitCode } | Sort-Object)
+        Assert-Equal -Expected "3 7" -Actual ($exitCodes -join " ") -Message "Native gate exit codes must be preserved"
+        Assert-Equal -Expected 2 -Actual @(Get-ChildItem -LiteralPath $gateLogs -Filter "*.log").Count -Message "Each gate must have an independent log"
+    }
+
+    Invoke-Test "Parallel gate timeout is enforced per worker" {
+        $script:ReleasePhases = New-Object System.Collections.Generic.List[object]
+        $gateLogs = Join-Path $tempRoot "timeout-gate-logs"
+        $windowsPowerShell = Join-Path $PSHOME "powershell.exe"
+        $gate = [pscustomobject]@{
+            Name = "Slow gate"
+            FilePath = $windowsPowerShell
+            ArgumentList = @("-NoProfile", "-Command", "Start-Sleep -Seconds 3; exit 0")
+            WorkingDirectory = $RepoRoot
+        }
+        Assert-Throws -Action {
+            Invoke-ParallelReleaseGates -Gates @($gate) -LogDirectory $gateLogs -MaximumConcurrency 1 -GateTimeoutSeconds 1
+        } -Pattern "Release quality gates failed" -Message "A timed out gate must fail the gate group"
+        Assert-Equal -Expected 124 -Actual $script:ReleasePhases[0].exitCode -Message "Timeout exit code"
+        Assert-True -Condition ($script:ReleasePhases[0].durationMs -ge 1000 -and $script:ReleasePhases[0].durationMs -lt 2500) -Message "Timeout duration must be calculated from the individual worker start"
+        Assert-True -Condition (Test-Path -LiteralPath $script:ReleasePhases[0].logPath -PathType Leaf) -Message "Timeout must have its own log"
+        $timeoutLog = [IO.File]::ReadAllText($script:ReleasePhases[0].logPath)
+        Assert-True -Condition ($timeoutLog -match "exceeded the 1 second") -Message "Timeout log must identify the configured limit"
     }
 
     Invoke-Test "Rust tuple parsing" {
@@ -178,7 +525,7 @@ try {
         }.GetNewClosure()
         Assert-Throws -Action {
             Publish-LpmStagingDirectory -StagingDirectory $staging -FinalDirectory $final -ReleaseRoot $publishRoot -MoveDirectory $moveDirectory
-        } -Pattern "^Simulated staging publish failure\." -Message "Replacement failure should propagate"
+        } -Pattern "moving the verified staging directory into place.*Simulated staging publish failure\." -Message "Replacement failure should identify the failed stage"
         Assert-Equal -Expected "old" -Actual ([IO.File]::ReadAllText((Join-Path $final "artifact.txt"))) -Message "Prior release restoration"
         Assert-Equal -Expected "new" -Actual ([IO.File]::ReadAllText((Join-Path $staging "artifact.txt"))) -Message "Failed staging preservation"
         Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $publishRoot -Force | Where-Object Name -like ".*.backup-*").Count -Message "Rollback backup cleanup"
@@ -188,6 +535,22 @@ try {
         $source = [IO.File]::ReadAllText((Join-Path $RepoRoot "scripts\setup.ps1"))
         Assert-True -Condition ($source -match 'Read-Host\s+"Continue with these actions') -Message "Interactive confirmation is missing"
         Assert-True -Condition ($source -match 'WinGet is required to install missing system tools') -Message "Missing WinGet guidance is missing"
+    }
+
+    Invoke-Test "Setup exposes dependency cache and ForceSync bypass" {
+        $source = [IO.File]::ReadAllText((Join-Path $RepoRoot "scripts\setup.ps1"))
+        Assert-True -Condition ($source -match '\[switch\]\$ForceSync') -Message "Setup must expose the ForceSync switch"
+        Assert-True -Condition ($source -match 'build[\\/]cache') -Message "Setup must store dependency cache below build/cache"
+        Assert-True -Condition ($source -match 'dependencies\.json') -Message "Setup must use the dependencies.json cache"
+        Assert-True -Condition ($source -match 'if\s*\(\$ForceSync\)') -Message "ForceSync must explicitly bypass cache reuse"
+        Assert-True -Condition ($source -match 'pip.+check') -Message "Dependency cache validation must run pip check"
+        Assert-True -Condition ($source -match 'pip.+list.+--format=json') -Message "Dependency cache validation must fingerprint pip list JSON"
+        Assert-True -Condition ($source -match 'npm.+ls.+--all') -Message "Dependency cache validation must probe the complete npm tree"
+        Assert-True -Condition ($source -match '\.package-lock\.json') -Message "Dependency cache validation must fingerprint node_modules/.package-lock.json"
+        Assert-True -Condition (($source | Select-String -Pattern 'Get-DependencyCacheDecision' -AllMatches).Matches.Count -ge 2) -Message "Setup must revalidate dependencies immediately before reuse"
+        Assert-True -Condition ($source -match 'invalidatedAtUtc') -Message "Setup must invalidate the prior cache before synchronizing dependencies"
+        $moduleSource = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\desktop-build.psm1") -Raw
+        Assert-True -Condition ($moduleSource -match 'dependencyPolicyVersion=\d+') -Message "Dependency fingerprint must include a policy version"
     }
 
     Invoke-Test "Release forwards non-interactive setup explicitly" {
@@ -211,7 +574,7 @@ try {
                 $savedTransient[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
             }
             try {
-                $pad = (1..80 | ForEach-Object {
+                $pad = (1..160 | ForEach-Object {
                     "C:\LpmPathPad\very\long\directory\name\segment$_\Scripts"
                 }) -join ";"
                 $env:PATH = $savedPath + ";" + $pad

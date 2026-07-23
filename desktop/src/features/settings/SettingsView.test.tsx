@@ -178,6 +178,8 @@ describe("SettingsView simplified settings", () => {
     await user.click(screen.getByRole("button", { name: "Bind repository" }));
 
     expect(await screen.findByText("Read and write credentials verified")).toBeVisible();
+    expect(screen.getByText("The remote repository is ready and will be used on the next remote refresh.")).toBeVisible();
+    expect(screen.queryByText(/first pull|explicit pull/i)).not.toBeInTheDocument();
     expect(vi.mocked(lpmAction)).toHaveBeenCalledWith("config_bind_repo", {
       repo_url: "https://github.com/example/resources",
       expected_current_repo_url: "",

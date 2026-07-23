@@ -1,14 +1,18 @@
 import {
+  Cloud,
   Download,
   ExternalLink,
   FolderOpen,
+  Monitor,
   PackagePlus,
   RefreshCcw,
+  Search,
+  SlidersHorizontal,
   Upload,
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { lpmAction, openPath } from "@/api/client";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
@@ -16,7 +20,7 @@ import { Banner } from "@/components/Banner";
 import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
 import { AddResourceDialog } from "@/features/resources/AddResourceDialog";
-import { ScanLocalDialog } from "@/features/resources/ScanLocalDialog";
+import { ScanLocalDialog, type ScanScope } from "@/features/resources/ScanLocalDialog";
 import { PluginDeleteDialog } from "@/features/resources/PluginDeleteDialog";
 import type {
   AssetBatchChoice,
@@ -65,7 +69,11 @@ export function ResourcesView({
   selectedKey,
   t,
   onSelect,
-  onInventory,
+  refreshBusy,
+  remoteCheckedAt,
+  localScannedAt,
+  onRefreshRemote,
+  onLocalScanned,
   onChanged,
   onError,
   onOpenSettings,
@@ -74,22 +82,27 @@ export function ResourcesView({
   selectedKey?: string;
   t: TFunction;
   onSelect: (rowId: string) => void;
-  onInventory: (inventory: AssetInventory) => void;
+  refreshBusy: boolean;
+  remoteCheckedAt: string | null;
+  localScannedAt: string | null;
+  onRefreshRemote: () => Promise<void> | void;
+  onLocalScanned: (inventory: AssetInventory, scope: ScanScope) => void;
   onChanged: () => Promise<void> | void;
   onError: (message: string) => void;
   onOpenSettings: () => void;
 }) {
-  const { runTask } = useTaskCenter();
   const [kindFilter, setKindFilter] = useState<(typeof kinds)[number]>("all");
   const [statusFilter, setStatusFilter] = useState<(typeof statuses)[number]>("all");
   const [localFilter, setLocalFilter] = useState<(typeof localStatuses)[number]>("all");
   const [remoteFilter, setRemoteFilter] = useState<(typeof remoteStatuses)[number]>("all");
   const [toolFilter, setToolFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
   const [batchDirection, setBatchDirection] = useState<"upload" | "download" | null>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
+  const selectVisibleRef = useRef<HTMLInputElement>(null);
 
   const resources = inventory?.resources ?? emptyResources;
   const tools = useMemo(
@@ -97,16 +110,32 @@ export function ResourcesView({
     [resources],
   );
   const visible = useMemo(
-    () => resources.filter((item) => (
-      (kindFilter === "all" || item.kind === kindFilter)
-      && (statusFilter === "all" || item.status === statusFilter)
-      && (localFilter === "all" || item.local_status === localFilter)
-      && (remoteFilter === "all" || item.remote_status === remoteFilter)
-      && (toolFilter === "all" || item.local_instances.some((instance) => instance.platform === toolFilter))
-    )),
-    [kindFilter, localFilter, remoteFilter, resources, statusFilter, toolFilter],
+    () => {
+      const normalizedQuery = query.trim().toLocaleLowerCase();
+      return resources.filter((item) => (
+        (!normalizedQuery || [item.name, item.resource_key, item.description]
+          .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
+        && (kindFilter === "all" || item.kind === kindFilter)
+        && (statusFilter === "all" || item.status === statusFilter)
+        && (localFilter === "all" || item.local_status === localFilter)
+        && (remoteFilter === "all" || item.remote_status === remoteFilter)
+        && (toolFilter === "all" || item.local_instances.some((instance) => instance.platform === toolFilter))
+      ));
+    },
+    [kindFilter, localFilter, query, remoteFilter, resources, statusFilter, toolFilter],
   );
   const selectedSet = useMemo(() => new Set(selectedKeys), [selectedKeys]);
+  const visibleKeySet = useMemo(() => new Set(visible.map((item) => item.resource_key)), [visible]);
+  const visibleSelectedCount = visible.reduce(
+    (count, item) => count + (selectedSet.has(item.resource_key) ? 1 : 0),
+    0,
+  );
+  const allVisibleSelected = visible.length > 0 && visibleSelectedCount === visible.length;
+  const hiddenSelectedCount = selectedKeys.length - visibleSelectedCount;
+  const activeFilterCount = [kindFilter, statusFilter, localFilter, remoteFilter, toolFilter]
+    .filter((value) => value !== "all").length + (query.trim() ? 1 : 0);
+  const localInstanceCount = resources.reduce((count, item) => count + item.local_instances.length, 0);
+  const repoConfigured = Boolean(inventory?.repo_url);
   const selectedResource = resources.find((item) => item.resource_key === selectedKey)
     ?? resources[0];
 
@@ -118,14 +147,23 @@ export function ResourcesView({
     });
   }, [resources]);
 
+  useEffect(() => {
+    if (selectVisibleRef.current) {
+      selectVisibleRef.current.indeterminate = visibleSelectedCount > 0 && !allVisibleSelected;
+    }
+  }, [allVisibleSelected, visibleSelectedCount]);
+
   function toggleSelected(resourceKey: string) {
     setSelectedKeys((current) => current.includes(resourceKey)
       ? current.filter((item) => item !== resourceKey)
       : [...current, resourceKey]);
   }
 
-  function selectVisible() {
-    setSelectedKeys((current) => Array.from(new Set([...current, ...visible.map((item) => item.resource_key)])));
+  function toggleVisibleSelection() {
+    setSelectedKeys((current) => {
+      if (allVisibleSelected) return current.filter((key) => !visibleKeySet.has(key));
+      return Array.from(new Set([...current, ...visible.map((item) => item.resource_key)]));
+    });
   }
 
   function selectResource(resource: AssetResourceRow) {
@@ -147,6 +185,8 @@ export function ResourcesView({
     setLocalFilter("all");
     setRemoteFilter("all");
     setToolFilter("all");
+    setQuery("");
+    setAdvancedOpen(false);
     setSelectedKeys([]);
     onSelect(resourceKey);
     await Promise.resolve(onChanged());
@@ -156,59 +196,147 @@ export function ResourcesView({
     <section className="asset-unified-view">
       <div className="panel asset-inventory-panel">
         <div className="asset-unified-head">
-          <div>
-            <h2>{t("assets.title")}</h2>
-            <small>{inventory?.branch || "-"} / {shortCommit(inventory?.remote_commit)}</small>
-          </div>
           <div className="asset-toolbar">
-            <button className="secondary" onClick={() => setAddDialogOpen(true)} disabled={busy}>
+            <button className="secondary" onClick={() => setAddDialogOpen(true)} disabled={refreshBusy}>
               <PackagePlus size={16} />{t("add.title")}
             </button>
-            <button className="secondary" onClick={() => setScanDialogOpen(true)} disabled={busy}>
-              <RefreshCcw size={16} />{t("assets.scanLocal")}
-            </button>
-            <button className="secondary" onClick={() => openBatch("upload")} disabled={busy || !selectedKeys.length}>
-              <Upload size={16} />{t("assets.uploadSelected")}
-            </button>
-            <button className="primary" onClick={() => openBatch("download")} disabled={busy || !selectedKeys.length}>
-              <Download size={16} />{t("assets.downloadSelected")}
-            </button>
           </div>
+        </div>
+
+        <div className="asset-source-strip" aria-label={t("assets.sourceStatus")}>
+          <section className="asset-source-card">
+            <div className="asset-source-card-head">
+              <span className="asset-source-title"><Cloud size={17} />{t("assets.remoteSource")}</span>
+              <span className={`asset-source-state state-${repoConfigured ? (inventory?.remote_available ? "online" : "cache") : "unconfigured"}`}>
+                {repoConfigured
+                  ? (inventory?.remote_available ? t("assets.remoteOnline") : t("assets.remoteCache"))
+                  : t("assets.remoteNotConfigured")}
+              </span>
+            </div>
+            <dl className="asset-source-metadata">
+              <div><dt>{t("assets.repository")}</dt><dd title={inventory?.repo_url || "-"}>{inventory?.repo_url || "-"}</dd></div>
+              <div><dt>{t("assets.branch")}</dt><dd>{inventory?.branch || "-"}</dd></div>
+              <div><dt>{t("assets.commit")}</dt><dd>{shortCommit(inventory?.remote_commit)}</dd></div>
+              <div><dt>{t("assets.lastChecked")}</dt><dd>{formatTimestamp(remoteCheckedAt, t)}</dd></div>
+            </dl>
+            {repoConfigured ? (
+              <button className="secondary" type="button" onClick={() => void Promise.resolve(onRefreshRemote())} disabled={refreshBusy}>
+                <RefreshCcw size={15} className={refreshBusy ? "spin" : undefined} />{t("assets.refreshRemote")}
+              </button>
+            ) : (
+              <button className="secondary" type="button" onClick={onOpenSettings} disabled={refreshBusy}>
+                {t("assets.configureRepository")}
+              </button>
+            )}
+          </section>
+          <section className="asset-source-card">
+            <div className="asset-source-card-head">
+              <span className="asset-source-title"><Monitor size={17} />{t("assets.localSource")}</span>
+              <span className={`asset-source-state state-${inventory?.scanned_local ? "online" : "unconfigured"}`}>
+                {inventory?.scanned_local ? t("assets.localScanned") : t("assets.localNotScanned")}
+              </span>
+            </div>
+            <div className="asset-local-summary">
+              {inventory?.scanned_local
+                ? t("assets.localSummary", { tools: tools.length, instances: localInstanceCount })
+                : t("assets.localScanHint")}
+            </div>
+            <div className="asset-source-time">
+              <span>{t("assets.lastScanned")}</span>
+              <span>{formatTimestamp(localScannedAt, t)}</span>
+            </div>
+            <button className="secondary" type="button" onClick={() => setScanDialogOpen(true)} disabled={refreshBusy}>
+              <RefreshCcw size={15} />{t("assets.scanLocal")}
+            </button>
+          </section>
         </div>
 
         {inventory?.remote_warning ? <Banner tone="danger" text={inventory.remote_warning} /> : null}
         {inventory?.legacy_write_blocker ? <Banner tone="danger" text={inventory.legacy_write_blocker} /> : null}
 
-        <div className="asset-filter-grid">
+        <div className="asset-filter-toolbar">
+          <label className="asset-search-field">
+            <span>{t("assets.searchLabel")}</span>
+            <div><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("assets.searchPlaceholder")} /></div>
+          </label>
           <Filter label={t("resources.filterKind")} value={kindFilter} onChange={setKindFilter}>
             {kinds.map((value) => <option key={value} value={value}>{resourceKindLabel(value, t)}</option>)}
           </Filter>
           <Filter label={t("resources.filterStatus")} value={statusFilter} onChange={setStatusFilter}>
             {statuses.map((value) => <option key={value} value={value}>{value === "all" ? t("assets.allValues") : assetStatusLabel(value, t)}</option>)}
           </Filter>
-          <Filter label={t("assets.filterLocal")} value={localFilter} onChange={setLocalFilter}>
-            {localStatuses.map((value) => <option key={value} value={value}>{value === "all" ? t("assets.allValues") : localStatusLabel(value, t)}</option>)}
-          </Filter>
-          <Filter label={t("assets.filterRemote")} value={remoteFilter} onChange={setRemoteFilter}>
-            {remoteStatuses.map((value) => <option key={value} value={value}>{value === "all" ? t("assets.allValues") : remoteStatusLabel(value, t)}</option>)}
-          </Filter>
-          <Filter label={t("assets.filterTool")} value={toolFilter} onChange={setToolFilter}>
-            <option value="all">{t("assets.allValues")}</option>
-            {tools.map((value) => <option key={value} value={value}>{value}</option>)}
-          </Filter>
+          <button
+            className="secondary asset-more-filters"
+            type="button"
+            aria-expanded={advancedOpen}
+            aria-controls="asset-advanced-filters"
+            onClick={() => setAdvancedOpen((current) => !current)}
+          >
+            <SlidersHorizontal size={15} />{t("assets.moreFilters")}
+            {activeFilterCount ? <span className="asset-filter-count">{activeFilterCount}</span> : null}
+          </button>
         </div>
 
-        <div className="asset-selection-bar">
-          <button className="secondary" onClick={selectVisible}>{t("assets.selectVisible")}</button>
-          <button className="secondary" onClick={() => setSelectedKeys([])}>{t("assets.clearSelection")}</button>
-          <span>{t("assets.selectedCount", { count: selectedKeys.length })}</span>
-        </div>
+        {advancedOpen ? (
+          <div className="asset-filter-grid" id="asset-advanced-filters">
+            <Filter label={t("assets.filterLocal")} value={localFilter} onChange={setLocalFilter}>
+              {localStatuses.map((value) => <option key={value} value={value}>{value === "all" ? t("assets.allValues") : localStatusLabel(value, t)}</option>)}
+            </Filter>
+            <Filter label={t("assets.filterRemote")} value={remoteFilter} onChange={setRemoteFilter}>
+              {remoteStatuses.map((value) => <option key={value} value={value}>{value === "all" ? t("assets.allValues") : remoteStatusLabel(value, t)}</option>)}
+            </Filter>
+            <Filter label={t("assets.filterTool")} value={toolFilter} onChange={setToolFilter}>
+              <option value="all">{t("assets.allValues")}</option>
+              {tools.map((value) => <option key={value} value={value}>{value}</option>)}
+            </Filter>
+            <button
+              className="secondary asset-clear-filters"
+              type="button"
+              disabled={!activeFilterCount}
+              onClick={() => {
+                setQuery("");
+                setKindFilter("all");
+                setStatusFilter("all");
+                setLocalFilter("all");
+                setRemoteFilter("all");
+                setToolFilter("all");
+              }}
+            >
+              {t("assets.clearFilters")}
+            </button>
+          </div>
+        ) : null}
+
+        {selectedKeys.length ? (
+          <div className="asset-selection-bar" role="toolbar" aria-label={t("assets.selectionActions")}>
+            <span>{t("assets.selectedCount", { count: selectedKeys.length })}</span>
+            {hiddenSelectedCount ? <span>{t("assets.hiddenSelected", { count: hiddenSelectedCount })}</span> : null}
+            <div className="asset-selection-actions">
+              <button className="secondary" onClick={() => openBatch("upload")} disabled={refreshBusy}>
+                <Upload size={16} />{t("assets.uploadToRepository")}
+              </button>
+              <button className="primary" onClick={() => openBatch("download")} disabled={refreshBusy}>
+                <Download size={16} />{t("assets.installToTools")}
+              </button>
+              <button className="secondary" onClick={() => setSelectedKeys([])} disabled={refreshBusy}>{t("assets.clearSelection")}</button>
+            </div>
+          </div>
+        ) : null}
 
         <div className="asset-table-wrap">
           <table className="asset-resource-table">
             <thead>
               <tr>
-                <th aria-label={t("assets.selectedCount", { count: selectedKeys.length })} />
+                <th>
+                  <input
+                    ref={selectVisibleRef}
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    disabled={!visible.length}
+                    onChange={toggleVisibleSelection}
+                    aria-label={t("assets.selectVisible")}
+                  />
+                </th>
                 <th>{t("assets.title")}</th>
                 <th>{t("assets.descriptionColumn")}</th>
                 <th>{t("assets.localColumn")}</th>
@@ -250,7 +378,13 @@ export function ResourcesView({
         </div>
       </div>
 
-      <ResourceDetail resource={selectedResource} t={t} onError={onError} onChanged={onChanged} />
+      <ResourceDetail
+        resource={selectedResource}
+        refreshBusy={refreshBusy}
+        t={t}
+        onError={onError}
+        onChanged={onChanged}
+      />
 
       {batchDirection ? (
         <BatchDialog
@@ -279,8 +413,8 @@ export function ResourcesView({
         <ScanLocalDialog
           t={t}
           onClose={() => setScanDialogOpen(false)}
-          onScanned={(next) => {
-            onInventory(next);
+          onScanned={(next, scope) => {
+            onLocalScanned(next, scope);
             setScanDialogOpen(false);
           }}
         />
@@ -298,7 +432,7 @@ function Filter<T extends string>({
   label: string;
   value: T;
   onChange: (value: T) => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <label><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value as T)}>{children}</select></label>
@@ -307,11 +441,13 @@ function Filter<T extends string>({
 
 function ResourceDetail({
   resource,
+  refreshBusy,
   t,
   onError,
   onChanged,
 }: {
   resource?: AssetResourceRow;
+  refreshBusy: boolean;
   t: TFunction;
   onError: (message: string) => void;
   onChanged: () => Promise<void> | void;
@@ -348,7 +484,7 @@ function ResourceDetail({
             <div><dt>{t("plugin.observedVersion")}</dt><dd>{resource.plugin_observed_version || "-"}</dd></div>
           </dl>
           {resource.remote.exists ? (
-            <button className="danger" type="button" onClick={() => setDeleteOpen(true)}>
+            <button className="danger" type="button" onClick={() => setDeleteOpen(true)} disabled={refreshBusy}>
               <Trash2 size={15} />{t("plugin.delete")}
             </button>
           ) : null}
@@ -530,7 +666,7 @@ function BatchDialog({
     try {
       const result = await runTask({
         kind: `asset-batch-${direction}`,
-        title: direction === "upload" ? t("assets.uploadSelected") : t("assets.downloadSelected"),
+        title: direction === "upload" ? t("assets.uploadToRepository") : t("assets.installToTools"),
         action: () => lpmAction<AssetBatchResult>("asset_batch_apply", {
           direction,
           resource_keys: resourceKeys,
@@ -575,7 +711,7 @@ function BatchDialog({
       <div className="modal asset-batch-modal" role="dialog" aria-modal="true">
         <div className="modal-head">
           {direction === "upload" ? <Upload size={19} /> : <Download size={19} />}
-          <h2>{direction === "upload" ? t("assets.uploadSelected") : t("assets.downloadSelected")}</h2>
+          <h2>{direction === "upload" ? t("assets.uploadToRepository") : t("assets.installToTools")}</h2>
           <button className="icon-button" onClick={onClose}><X size={17} /></button>
         </div>
 
@@ -874,6 +1010,12 @@ function safeNamePart(value: string): string {
 
 function shortCommit(commit?: string | null): string {
   return commit ? commit.slice(0, 12) : "-";
+}
+
+function formatTimestamp(value: string | null, t: TFunction): string {
+  if (!value) return t("assets.never");
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? value : timestamp.toLocaleString();
 }
 
 function assetStatusLabel(status: AssetStatus, t: TFunction): string {
