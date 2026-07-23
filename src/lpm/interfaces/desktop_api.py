@@ -16,7 +16,6 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -25,36 +24,21 @@ else:  # pragma: no cover - py310 fallback
 
 from .. import __version__
 from ..core.config import (
-    CONFIG_ENV_VAR,
-    DEFAULT_INSTALL_TARGET,
-    DEFAULT_KEEP_LATEST_OPERATIONS,
-    DEFAULT_LOCK_TIMEOUT_SECONDS,
-    DEFAULT_MAX_BACKUP_MB,
-    DEFAULT_REPO_PREFIX,
-    DEFAULT_RESOURCE_BRANCH,
-    DEFAULT_RESOURCE_CREDENTIAL_MODE,
-    DEFAULT_RESOURCE_REPO_NAME,
-    DEFAULT_RETENTION_DAYS,
     Config,
-    GitConfig,
-    GithubConfig,
-    InstallConfig,
-    ResourcesConfig,
-    StateConfig,
     default_config_path,
-    load_config,
     load_raw_config,
     new_default_config,
-    resource_repo_auth_token,
     write_config,
+)
+from ..core.config import (
+    load_config as load_application_config,
 )
 from ..core.models import ItemKind, RegistryItem
 from ..core.platforms import PLATFORM_PRESETS, PlatformProfile, PlatformsConfig, build_platform
 from ..core.registry import find_registry_path, load_registry
 from ..core.resource_detection import detect_local_resource_type, detect_remote_resource
 from ..infrastructure import git_ops
-from ..infrastructure.github_client import GithubAuthError, GithubClient
-from ..services import github_oauth, publisher
+from ..services import publisher
 from ..services.asset_sync import (
     AssetBatchChoice,
     add_plugin_reference,
@@ -80,7 +64,7 @@ from ..services.plugin_management import (
     list_plugin_projects,
     remove_plugin_project,
 )
-from ..services.resource_binding import bind_resource_repo, configured_github_owner
+from ..services.resource_binding import bind_resource_repo, parse_github_repo_url
 from ..services.resource_commit import build_resource_commit_plan
 from ..services.resource_discovery import (
     discover_resources,
@@ -98,12 +82,9 @@ from ..services.resource_manager import (
     uninstall_resource,
 )
 from ..services.resource_repo import (
-    init_resource_repo,
     inspect_resource_repo,
-    prepare_local_resource_repo,
     pull_resource_repo,
     push_resource_repo,
-    use_resource_repo,
 )
 from ..services.resource_sync import (
     apply_resource_sync_plan,
@@ -130,6 +111,19 @@ from ..services.ui_messages import UiMessageRef, ui_message
 JsonDict = dict[str, Any]
 Handler = Callable[[JsonDict], Any]
 DESKTOP_PAYLOAD_ENV_VAR = "LPM_DESKTOP_API_PAYLOAD"
+
+
+class DesktopRemoteRepositoryMutationError(RuntimeError):
+    """Raised when a desktop action would mutate a GitHub repository container."""
+
+
+def load_config() -> Config:
+    """Load a desktop-safe config copy that cannot use application-managed tokens."""
+    cfg = load_application_config()
+    cfg.github.token = ""
+    return cfg
+
+
 ITEM_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
 DEPRECATED_ACTIONS = {
     "resource_commit_plan",
@@ -229,16 +223,18 @@ def _platforms(_: JsonDict) -> JsonDict:
 
 
 def _doctor(_: JsonDict) -> JsonDict:
-    return {"checks": build_doctor_checks(load_config())}
+    checks = build_doctor_checks(load_config())
+    return {"checks": [check for check in checks if check.get("id") != "github_token"]}
 
 
 def _collect(payload: JsonDict) -> JsonDict:
     github_url = _required_str(payload, "github_url")
+    kind = _required_kind(payload)
     cfg = load_config()
     detected = detect_remote_resource(
         github_url,
-        explicit_type=_optional_str(payload.get("kind")),
-        token=cfg.github.token or None,
+        explicit_type=kind,
+        token=None,
     )
     raw_mcp_config = payload.get("mcp_config")
     if raw_mcp_config is not None and not isinstance(raw_mcp_config, dict):
@@ -258,7 +254,7 @@ def _collect(payload: JsonDict) -> JsonDict:
         kind=detected.kind,
         mcp_config=mcp_config,
         skip_verify=bool(payload.get("skip_verify", False)),
-        token=cfg.github.token or None,
+        token=None,
         tags=detected.tags,
         platforms=_str_list(payload.get("platforms")),
     )
@@ -549,7 +545,10 @@ def _resource_delete(payload: JsonDict) -> Any:
     name = _required_str(payload, "name")
     kind = _optional_str(payload.get("kind"))
     if resource_delete_requires_remote_scope(name, kind=kind):
-        github_oauth.require_authorization("remote_delete")
+        raise DesktopRemoteRepositoryMutationError(
+            "LPM Desktop does not delete GitHub repositories. "
+            "Delete the repository on GitHub, or remove only its local/indexed resource."
+        )
     deleted = delete_resource(
         name,
         config=cfg,
@@ -580,6 +579,11 @@ def _remove(payload: JsonDict) -> JsonDict:
     name = _required_str(payload, "name")
     kind = _optional_str(payload.get("kind"))
     cfg = load_config()
+    if resource_delete_requires_remote_scope(name, kind=kind):
+        raise DesktopRemoteRepositoryMutationError(
+            "LPM Desktop does not delete GitHub repositories. "
+            "Delete the repository on GitHub, or remove only its local/indexed resource."
+        )
     registry = load_registry()
     entry = registry.get(name, kind)
     uninstalled = False
@@ -592,14 +596,6 @@ def _remove(payload: JsonDict) -> JsonDict:
         confirm_name=_optional_str(payload.get("confirm_name")),
     )
     return {"removed": removed.entry, "delete": removed, "uninstalled": uninstalled}
-
-
-def _resource_init(payload: JsonDict) -> Any:
-    return init_resource_repo(name=_optional_str(payload.get("name")), config=load_config())
-
-
-def _resource_use(payload: JsonDict) -> Any:
-    return use_resource_repo(_required_str(payload, "target"), config=load_config())
 
 
 def _resource_pull(_: JsonDict) -> Any:
@@ -764,109 +760,24 @@ def _resource_sync_cleanup(payload: JsonDict) -> Any:
 
 def _config_get(_: JsonDict) -> JsonDict:
     raw_cfg = load_raw_config()
-    effective_cfg = load_config()
-    env_token = os.environ.get(CONFIG_ENV_VAR, "").strip()
     return {
         "path": str(raw_cfg.source_path or default_config_path()),
         "exists": bool(raw_cfg.source_path),
-        "token_source": "env" if env_token else ("config" if raw_cfg.github.token else "none"),
-        "token_preview": _mask_token(effective_cfg.github.token),
-        "config_token_preview": _mask_token(raw_cfg.github.token),
-        "env_token_active": bool(env_token),
         "config": _editable_config(raw_cfg),
     }
 
 
-def _config_check(payload: JsonDict) -> JsonDict:
-    raw_cfg = load_raw_config()
-    cfg = _config_from_draft(payload, raw_cfg)
-    cfg.github.token = _effective_token(cfg.github.token)
-    return _check_resource_target(cfg)
-
-
-def _config_branches(payload: JsonDict) -> JsonDict:
-    raw_cfg = load_raw_config()
-    cfg = _config_from_draft(payload, raw_cfg)
-    cfg.github.token = _effective_token(cfg.github.token)
-
-    selected_branch = cfg.resources.branch.strip() or DEFAULT_RESOURCE_BRANCH
-    default_branch = DEFAULT_RESOURCE_BRANCH
-
-    parsed = _parse_github_repo(cfg.resources.repo_url)
-    if cfg.resources.repo_url and parsed is None:
-        return _branch_options_response(
-            selected_branch=selected_branch,
-            default_branch=default_branch,
-            warning="Only github.com repositories can be checked from Settings.",
-        )
-
-    native_credentials = cfg.resources.credential_mode == "native"
-    if cfg.github.token.strip() and not native_credentials:
-        try:
-            client = GithubClient(cfg.github.token)
-            owner, name = _target_repo_owner_name(cfg, client)
-            result = client.list_repo_branches(owner, name)
-            if result is not None:
-                default_branch = result.default_branch or DEFAULT_RESOURCE_BRANCH
-                return {
-                    "branches": _branch_options(
-                        result.branches,
-                        selected_branch,
-                        default_branch,
-                    ),
-                    "default_branch": default_branch,
-                    "selected_branch": selected_branch,
-                    "warning": "",
-                }
-            label = "/".join(part for part in (owner, name) if part) or cfg.resources.repo_url
-            api_warning = f"Repository {label} is not accessible or does not exist."
-        except GithubAuthError as exc:
-            api_warning = str(exc)
-        except Exception as exc:  # noqa: BLE001 - branch loading is optional in Settings
-            api_warning = f"GitHub API branch lookup failed: {exc}"
-    elif not native_credentials:
-        api_warning = f"No API token is configured in config or {CONFIG_ENV_VAR}."
-    else:
-        api_warning = ""
-
-    if cfg.resources.repo_url:
-        try:
-            git_default, git_branches = git_ops.remote_branches(
-                cfg.resources.repo_url,
-                token=resource_repo_auth_token(cfg),
-            )
-            default_branch = git_default or DEFAULT_RESOURCE_BRANCH
-            return {
-                "branches": _branch_options(
-                    git_branches,
-                    selected_branch,
-                    default_branch,
-                ),
-                "default_branch": default_branch,
-                "selected_branch": selected_branch,
-                "warning": (
-                    f"{api_warning} Branches were loaded using local Git/SSH credentials."
-                    if api_warning
-                    else ""
-                ),
-            }
-        except (git_ops.GitError, ValueError) as exc:
-            return _branch_options_response(
-                selected_branch=selected_branch,
-                default_branch=default_branch,
-                warning=f"{api_warning} Git fallback also failed: {exc}",
-            )
-
-    return _branch_options_response(
-        selected_branch=selected_branch,
-        default_branch=default_branch,
-        warning=api_warning,
-    )
-
-
 def _config_bind_repo(payload: JsonDict) -> JsonDict:
+    repo_url = _required_str(payload, "repo_url")
+    parsed = parse_github_repo_url(repo_url)
+    if parsed.transport != "https":
+        raise ValueError(
+            "LPM Desktop only accepts a complete HTTPS GitHub repository URL, "
+            "for example https://github.com/owner/repository."
+        )
+    git_ops.require_git_credential_manager()
     result = bind_resource_repo(
-        _required_str(payload, "repo_url"),
+        repo_url,
         expected_current_repo_url=str(payload.get("expected_current_repo_url") or ""),
     )
     return {
@@ -875,48 +786,8 @@ def _config_bind_repo(payload: JsonDict) -> JsonDict:
     }
 
 
-def _github_auth_status(_: JsonDict) -> JsonDict:
-    return github_oauth.auth_status()
-
-
-def _github_auth_start(payload: JsonDict) -> JsonDict:
-    return github_oauth.start_authorization(_required_str(payload, "purpose"))
-
-
-def _github_auth_poll(payload: JsonDict) -> JsonDict:
-    return github_oauth.poll_authorization(_required_str(payload, "session_id"))
-
-
-def _github_auth_cancel(payload: JsonDict) -> JsonDict:
-    return github_oauth.cancel_authorization(_required_str(payload, "session_id"))
-
-
-def _github_web_auth_start(payload: JsonDict) -> JsonDict:
-    return github_oauth.start_web_authorization(_required_str(payload, "purpose"))
-
-
-def _github_web_auth_poll(payload: JsonDict) -> JsonDict:
-    return github_oauth.poll_web_authorization(
-        _required_str(payload, "session_id"),
-        immediate=bool(payload.get("immediate", False)),
-    )
-
-
-def _github_web_auth_cancel(payload: JsonDict) -> JsonDict:
-    return github_oauth.cancel_web_authorization(_required_str(payload, "session_id"))
-
-
-def _github_token_reveal(_: JsonDict) -> JsonDict:
-    return github_oauth.reveal_config_token()
-
-
-def _github_token_clear(_: JsonDict) -> JsonDict:
-    return github_oauth.clear_config_token()
-
-
-def _github_owner_set(payload: JsonDict) -> JsonDict:
-    owner = github_oauth.set_github_owner(_required_str(payload, "owner"))
-    return {**owner, "settings": _config_get({})}
+def _git_credential_status(_: JsonDict) -> Any:
+    return git_ops.git_credential_status()
 
 
 def _platform_set_enabled(payload: JsonDict) -> JsonDict:
@@ -938,28 +809,6 @@ def _platform_set_enabled(payload: JsonDict) -> JsonDict:
     return _config_get({})
 
 
-def _config_save(payload: JsonDict) -> JsonDict:
-    raw_cfg = load_raw_config()
-    cfg = _config_from_draft(payload, raw_cfg)
-    config_path = raw_cfg.source_path or default_config_path()
-    if cfg.resources.credential_mode == "token" and not _effective_token(cfg.github.token):
-        raise ValueError(
-            "Resource repository credential mode is token, but no GitHub token is configured."
-        )
-
-    resource_result = None
-    if bool(payload.get("prepare_resource_repo", False)):
-        resource_result = _prepare_resource_target(cfg, _effective_token(cfg.github.token))
-
-    written = write_config(cfg, config_path)
-    data = _config_get({})
-    data["saved"] = True
-    data["path"] = str(written)
-    if resource_result is not None:
-        data["resource_repo"] = resource_result
-    return data
-
-
 def _write_default_config(payload: JsonDict) -> JsonDict:
     force = bool(payload.get("force", False))
     path = default_config_path()
@@ -972,11 +821,6 @@ def _write_default_config(payload: JsonDict) -> JsonDict:
 
 def _editable_config(cfg: Config) -> JsonDict:
     return {
-        "github": {
-            "owner": cfg.github.owner,
-            "repo_prefix": cfg.github.repo_prefix,
-            "default_private": cfg.github.default_private,
-        },
         "install": {"target": cfg.install.target},
         "git": {"executable": cfg.git.executable},
         "resources": {
@@ -1031,417 +875,6 @@ def _platform_to_json(profile: PlatformProfile) -> JsonDict:
     }
 
 
-def _config_from_draft(payload: JsonDict, base: Config) -> Config:
-    draft = payload.get("draft")
-    if not isinstance(draft, dict):
-        raise ValueError("Missing required field: draft")
-
-    github_data = _dict_field(draft, "github")
-    git_data = _dict_field(draft, "git")
-    install_data = _dict_field(draft, "install")
-    resources_data = _dict_field(draft, "resources")
-    state_data = _dict_field(draft, "state")
-
-    return Config(
-        github=GithubConfig(
-            token=_token_for_write(base.github.token, payload),
-            owner=_field_str(github_data, "owner", base.github.owner),
-            repo_prefix=_field_str(
-                github_data, "repo_prefix", base.github.repo_prefix or DEFAULT_REPO_PREFIX
-            ),
-            default_private=_field_bool(
-                github_data, "default_private", base.github.default_private
-            ),
-        ),
-        install=InstallConfig(
-            target=_field_str(
-                install_data, "target", base.install.target or DEFAULT_INSTALL_TARGET
-            ),
-        ),
-        resources=ResourcesConfig(
-            repo_name=_field_str(
-                resources_data,
-                "repo_name",
-                base.resources.repo_name or DEFAULT_RESOURCE_REPO_NAME,
-            )
-            or DEFAULT_RESOURCE_REPO_NAME,
-            repo_url=_field_str(resources_data, "repo_url", base.resources.repo_url),
-            local_path=_field_str(resources_data, "local_path", base.resources.local_path),
-            branch=_field_str(
-                resources_data,
-                "branch",
-                base.resources.branch or DEFAULT_RESOURCE_BRANCH,
-            )
-            or DEFAULT_RESOURCE_BRANCH,
-            credential_mode=_field_choice(
-                resources_data,
-                "credential_mode",
-                base.resources.credential_mode or DEFAULT_RESOURCE_CREDENTIAL_MODE,
-                {"auto", "native", "token"},
-            ),
-        ),
-        git=GitConfig(
-            executable=_field_str(git_data, "executable", base.git.executable),
-        ),
-        state=StateConfig(
-            lock_timeout_seconds=_field_positive_float(
-                state_data,
-                "lock_timeout_seconds",
-                base.state.lock_timeout_seconds or DEFAULT_LOCK_TIMEOUT_SECONDS,
-            ),
-            retention_days=_field_non_negative_int(
-                state_data,
-                "retention_days",
-                base.state.retention_days
-                if base.state.retention_days >= 0
-                else DEFAULT_RETENTION_DAYS,
-            ),
-            keep_latest_operations=_field_non_negative_int(
-                state_data,
-                "keep_latest_operations",
-                base.state.keep_latest_operations
-                if base.state.keep_latest_operations >= 0
-                else DEFAULT_KEEP_LATEST_OPERATIONS,
-            ),
-            max_backup_mb=_field_non_negative_int(
-                state_data,
-                "max_backup_mb",
-                base.state.max_backup_mb
-                if base.state.max_backup_mb >= 0
-                else DEFAULT_MAX_BACKUP_MB,
-            ),
-        ),
-        platforms=PlatformsConfig(
-            profiles=_platforms_from_payload(draft.get("platforms"), base.platforms.profiles),
-        ),
-        source_path=base.source_path,
-    )
-
-
-def _token_for_write(current: str, payload: JsonDict) -> str:
-    action = str(payload.get("token_action") or "preserve").strip().lower()
-    if action == "clear":
-        return ""
-    if action == "replace":
-        token = str(payload.get("new_token") or "").strip()
-        return token or current
-    return current
-
-
-def _effective_token(config_token: str) -> str:
-    return os.environ.get(CONFIG_ENV_VAR, "").strip() or config_token
-
-
-def _platforms_from_payload(value: Any, existing: list[PlatformProfile]) -> list[PlatformProfile]:
-    if not isinstance(value, list):
-        return _platforms_with_presets(existing)
-
-    out: list[PlatformProfile] = []
-    seen: set[str] = set()
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()
-        if not name or name in seen:
-            continue
-        out.append(
-            PlatformProfile(
-                name=name,
-                enabled=bool(item.get("enabled", False)),
-                skills_dir=str(item.get("skills_dir") or ""),
-                mcp_json=str(item.get("mcp_json") or ""),
-                rules_dir=str(item.get("rules_dir") or ""),
-                plugins_dir=str(item.get("plugins_dir") or ""),
-            )
-        )
-        seen.add(name)
-    return out or _platforms_with_presets(existing)
-
-
-def _dict_field(data: JsonDict, key: str) -> JsonDict:
-    value = data.get(key)
-    return value if isinstance(value, dict) else {}
-
-
-def _field_str(data: JsonDict, key: str, default: str = "") -> str:
-    if key not in data:
-        return default
-    return str(data.get(key) or "").strip()
-
-
-def _field_bool(data: JsonDict, key: str, default: bool = False) -> bool:
-    if key not in data:
-        return default
-    value = data.get(key)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
-def _field_choice(data: JsonDict, key: str, default: str, choices: set[str]) -> str:
-    value = _field_str(data, key, default).lower()
-    if value not in choices:
-        allowed = ", ".join(sorted(choices))
-        raise ValueError(f"{key} must be one of: {allowed}.")
-    return value
-
-
-def _field_non_negative_int(data: JsonDict, key: str, default: int) -> int:
-    if key not in data:
-        return default
-    try:
-        value = int(data[key])
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{key} must be a non-negative integer.") from exc
-    if value < 0:
-        raise ValueError(f"{key} must be a non-negative integer.")
-    return value
-
-
-def _field_positive_float(data: JsonDict, key: str, default: float) -> float:
-    if key not in data:
-        return default
-    try:
-        value = float(data[key])
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{key} must be greater than zero.") from exc
-    if value <= 0:
-        raise ValueError(f"{key} must be greater than zero.")
-    return value
-
-
-def _mask_token(token: str) -> str:
-    if not token:
-        return ""
-    if len(token) <= 8:
-        return "*" * len(token)
-    return f"{token[:4]}{'*' * max(4, len(token) - 8)}{token[-4:]}"
-
-
-def _check_resource_target(cfg: Config) -> JsonDict:
-    missing: list[JsonDict] = []
-    warnings: list[JsonDict] = []
-    token = cfg.github.token.strip()
-    local_path = cfg.resources.local_path_value.expanduser()
-    local_exists = local_path.exists()
-    local_is_git = git_ops.is_repo(local_path) if local_exists else False
-    local_remote_url = git_ops.current_remote_url(local_path) if local_is_git else None
-    local_dirty = bool(git_ops.status_short(local_path)) if local_is_git else False
-
-    if not local_exists:
-        missing.append(
-            {
-                "id": "local_path",
-                "label": "Local resource directory",
-                "detail": f"{local_path} does not exist.",
-            }
-        )
-    elif not local_is_git:
-        missing.append(
-            {
-                "id": "local_git",
-                "label": "Local git repository",
-                "detail": f"{local_path} exists but is not a git repository.",
-            }
-        )
-    elif cfg.resources.repo_url.strip():
-        expected = _normalize_git_url(cfg.resources.repo_url)
-        actual = _normalize_git_url(local_remote_url or "")
-        if not local_remote_url:
-            missing.append(
-                {
-                    "id": "local_remote",
-                    "label": "Local git remote",
-                    "detail": f"{local_path} is a git repository but has no origin remote.",
-                }
-            )
-        elif expected and actual != expected:
-            missing.append(
-                {
-                    "id": "local_remote_mismatch",
-                    "label": "Local git remote",
-                    "detail": f"{local_path} points to {local_remote_url}, not {cfg.resources.repo_url}.",
-                }
-            )
-
-    if local_dirty:
-        warnings.append(
-            {
-                "id": "local_dirty",
-                "label": "Local resource directory",
-                "detail": f"{local_path} has local changes. Commit or clean them before pulling remote data.",
-            }
-        )
-
-    remote = _check_remote_repo(cfg, token, missing, warnings)
-    has_blocking_warning = any(
-        item["id"] in {"github_token", "remote_unsupported"} for item in warnings
-    )
-    return {
-        "missing": missing,
-        "warnings": warnings,
-        "can_prepare": bool(missing) and not has_blocking_warning,
-        "local": {
-            "path": str(local_path),
-            "exists": local_exists,
-            "is_git_repo": local_is_git,
-        },
-        "remote": remote,
-    }
-
-
-def _check_remote_repo(
-    cfg: Config,
-    token: str,
-    missing: list[JsonDict],
-    warnings: list[JsonDict],
-) -> JsonDict:
-    parsed = _parse_github_repo(cfg.resources.repo_url)
-    if cfg.resources.repo_url and parsed is None:
-        warnings.append(
-            {
-                "id": "remote_unsupported",
-                "label": "Remote repository",
-                "detail": "Only github.com repositories can be checked or created from Settings.",
-            }
-        )
-        return {"checked": False, "exists": False, "repo": cfg.resources.repo_url}
-
-    if not token:
-        warnings.append(
-            {
-                "id": "github_token",
-                "label": "GitHub token",
-                "detail": f"Set a token in config or {CONFIG_ENV_VAR} before checking private repositories.",
-            }
-        )
-        return {"checked": False, "exists": False, "repo": cfg.resources.repo_url}
-
-    try:
-        client = GithubClient(token)
-        owner, name = _target_repo_owner_name(cfg, client)
-        repo = client.get_repo(owner, name)
-    except Exception as exc:  # noqa: BLE001 - surfaced as a desktop warning
-        warnings.append(
-            {
-                "id": "remote_check",
-                "label": "Remote repository",
-                "detail": str(exc),
-            }
-        )
-        return {"checked": False, "exists": False, "repo": cfg.resources.repo_url}
-
-    label = f"{owner}/{name}"
-    if repo is None:
-        missing.append(
-            {
-                "id": "remote_repo",
-                "label": "GitHub repository",
-                "detail": f"{label} is not accessible or does not exist.",
-            }
-        )
-        return {"checked": True, "exists": False, "repo": label}
-
-    return {"checked": True, "exists": True, "repo": label}
-
-
-def _prepare_resource_target(cfg: Config, token: str) -> JsonDict:
-    if not token:
-        raise ValueError(
-            f"Set a GitHub token in config or {CONFIG_ENV_VAR} before creating a resource repository."
-        )
-    if cfg.resources.repo_url and _parse_github_repo(cfg.resources.repo_url) is None:
-        raise ValueError(
-            "Only github.com resource repositories can be created or connected from Settings."
-        )
-
-    client = GithubClient(token)
-    owner, name = _target_repo_owner_name(cfg, client)
-    repo, created = client.ensure_repo(
-        owner=owner,
-        name=name,
-        description="Private LPM AI resources repository.",
-        private=True,
-    )
-    branch = cfg.resources.branch or DEFAULT_RESOURCE_BRANCH
-    local_path = cfg.resources.local_path_value.expanduser().resolve()
-
-    prepare_local_resource_repo(
-        local_path,
-        repo_url=repo.https_url,
-        branch=branch,
-        token=token,
-        config=cfg,
-    )
-
-    cfg.resources.repo_name = name
-    cfg.resources.repo_url = repo.https_url
-    cfg.resources.local_path = str(local_path)
-    cfg.resources.branch = branch
-
-    return {
-        "created": created,
-        "repo_url": repo.https_url,
-        "local_path": str(local_path),
-        "info": inspect_resource_repo(cfg),
-    }
-
-
-def _target_repo_owner_name(cfg: Config, client: GithubClient) -> tuple[str, str]:
-    parsed = _parse_github_repo(cfg.resources.repo_url)
-    if parsed is not None:
-        return parsed
-    owner = configured_github_owner(cfg) or client.authenticated_login()
-    name = cfg.resources.repo_name.strip() or DEFAULT_RESOURCE_REPO_NAME
-    return owner, name
-
-
-def _parse_github_repo(value: str) -> tuple[str, str] | None:
-    raw = value.strip().rstrip("/")
-    if not raw:
-        return None
-    if raw.startswith("git@github.com:"):
-        path = raw.split(":", 1)[1]
-    else:
-        parsed = urlparse(raw)
-        if parsed.netloc.lower() != "github.com":
-            return None
-        path = parsed.path.lstrip("/")
-    parts = [part for part in path.split("/") if part]
-    if len(parts) < 2:
-        return None
-    return parts[0], parts[1].removesuffix(".git")
-
-
-def _normalize_git_url(value: str) -> str:
-    return value.strip().removesuffix(".git").rstrip("/")
-
-
-def _branch_options_response(
-    *,
-    selected_branch: str,
-    default_branch: str,
-    warning: str,
-) -> JsonDict:
-    return {
-        "branches": _branch_options([], selected_branch, default_branch),
-        "default_branch": default_branch,
-        "selected_branch": selected_branch,
-        "warning": warning,
-    }
-
-
-def _branch_options(branches: list[str], selected_branch: str, default_branch: str) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for branch in [DEFAULT_RESOURCE_BRANCH, default_branch, selected_branch, *branches]:
-        value = branch.strip()
-        if value and value not in seen:
-            out.append(value)
-            seen.add(value)
-    return out
-
-
 def _maybe_push(cfg: Config, payload: JsonDict) -> Any:
     if not bool(payload.get("push", False)):
         return None
@@ -1473,12 +906,6 @@ def _config_summary(cfg: Config) -> JsonDict:
     return {
         "path": str(cfg.source_path or default_config_path()),
         "exists": bool(cfg.source_path),
-        "github": {
-            "token_configured": bool(cfg.github.token),
-            "owner": cfg.github.owner,
-            "repo_prefix": cfg.github.repo_prefix,
-            "default_private": cfg.github.default_private,
-        },
         "resources": cfg.resources,
         "git": cfg.git,
         "install": cfg.install,
@@ -1525,21 +952,19 @@ def _error(
 
 def _exception_message_ref(exc: Exception) -> UiMessageRef | None:
     message_codes = {
-        "OAuthConfigurationError": "api.github.oauth_not_configured",
-        "GithubApiError": "api.github.request_failed",
-        "OAuthSessionError": "api.github.session_failed",
-        "GithubAuthError": "api.github.authentication_failed",
-        "GithubOwnerScopeRequired": "api.github.owner_scope_required",
-        "GithubDeleteScopeRequired": "api.github.delete_scope_required",
+        "GitMissingError": "api.git.missing",
+        "GitCredentialManagerMissingError": "api.git.gcm_missing",
+        "GitCredentialManagerNotConfiguredError": "api.git.gcm_not_configured",
+        "GitCredentialInteractionCancelled": "api.git.login_cancelled",
+        "GitAuthenticationRequired": "api.git.login_required",
+        "GitWriteAccessDenied": "api.git.write_denied",
+        "GitOperationTimeout": "api.git.timeout",
+        "DesktopRemoteRepositoryMutationError": "api.github.desktop_repo_admin_forbidden",
     }
     code = message_codes.get(exc.__class__.__name__)
     if code is None:
         return None
-    return ui_message(
-        code,
-        str(exc),
-        **({"detail": str(exc)} if code == "api.github.authentication_failed" else {}),
-    )
+    return ui_message(code, str(exc))
 
 
 def _write_json_response(result: JsonDict) -> None:
@@ -1695,8 +1120,6 @@ ACTIONS: dict[str, Handler] = {
     "resource_delete": _resource_delete,
     "check": _check,
     "remove": _remove,
-    "resource_init": _resource_init,
-    "resource_use": _resource_use,
     "resource_pull": _resource_pull,
     "resource_push": _resource_push,
     "resource_commit_plan": _resource_commit_plan,
@@ -1723,20 +1146,8 @@ ACTIONS: dict[str, Handler] = {
     "maintenance_audits": _maintenance_audits,
     "maintenance_audit": _maintenance_audit,
     "config_get": _config_get,
-    "config_check": _config_check,
-    "config_branches": _config_branches,
     "config_bind_repo": _config_bind_repo,
-    "config_save": _config_save,
-    "github_auth_status": _github_auth_status,
-    "github_auth_start": _github_auth_start,
-    "github_auth_poll": _github_auth_poll,
-    "github_auth_cancel": _github_auth_cancel,
-    "github_web_auth_start": _github_web_auth_start,
-    "github_web_auth_poll": _github_web_auth_poll,
-    "github_web_auth_cancel": _github_web_auth_cancel,
-    "github_token_reveal": _github_token_reveal,
-    "github_token_clear": _github_token_clear,
-    "github_owner_set": _github_owner_set,
+    "git_credential_status": _git_credential_status,
     "platform_set_enabled": _platform_set_enabled,
     "write_default_config": _write_default_config,
 }

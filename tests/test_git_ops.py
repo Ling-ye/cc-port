@@ -545,6 +545,20 @@ def test_git_error_redacts_url_userinfo(monkeypatch, tmp_path) -> None:
     assert "https://***@example.test/repo.git" in str(error.value)
 
 
+def test_background_git_auth_failure_requests_explicit_relogin(monkeypatch, tmp_path) -> None:
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(
+            1,
+            ["git"],
+            stderr="fatal: Authentication failed for 'https://github.com/example/repo.git'",
+        )
+
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_run)
+
+    with pytest.raises(git_ops.GitAuthenticationRequired, match="Open Settings"):
+        git_ops._run(["fetch", "origin"], cwd=tmp_path)
+
+
 def test_git_runtime_uses_configured_path_before_path_lookup(
     tmp_path,
     monkeypatch,
@@ -566,3 +580,145 @@ def test_git_runtime_reports_missing_configured_path(monkeypatch) -> None:
 
     assert runtime.path is None
     assert runtime.source == "configured-missing"
+
+
+def test_git_credential_status_reports_ready_gcm_without_reading_credentials(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(args)
+        if args[1:] == ["--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="git version 2.50.0\n", stderr="")
+        if args[1:] == ["config", "--system", "--get-all", "credential.helper"]:
+            return subprocess.CompletedProcess(args, 0, stdout="manager\n", stderr="")
+        if args[1:] == ["config", "--global", "--get-all", "credential.helper"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+        if args[1:] == ["credential-manager", "--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="2.6.1\n", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(
+        git_ops,
+        "discover_git_executable",
+        lambda configured=None: git_ops.GitRuntime(executable, "configured", str(executable)),
+    )
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_run)
+
+    status = git_ops.git_credential_status()
+
+    assert status.ready is True
+    assert status.state == "ready"
+    assert status.git_version == "git version 2.50.0"
+    assert status.gcm_version == "2.6.1"
+    assert status.credential_helpers == ["manager"]
+    assert not any("credential fill" in " ".join(call) for call in calls)
+    assert not any("configure" in call for call in calls)
+
+
+def test_git_credential_status_distinguishes_missing_git_gcm_and_helper(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        git_ops,
+        "discover_git_executable",
+        lambda configured=None: git_ops.GitRuntime(None, "missing"),
+    )
+    missing_git = git_ops.git_credential_status()
+    assert missing_git.state == "git_missing"
+    assert missing_git.ready is False
+
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"")
+    monkeypatch.setattr(
+        git_ops,
+        "discover_git_executable",
+        lambda configured=None: git_ops.GitRuntime(executable, "configured", str(executable)),
+    )
+
+    def missing_gcm(args, **_kwargs):
+        if args[1:] == ["--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="git version 2.50.0\n", stderr="")
+        if args[1:3] == ["config", "--system"]:
+            return subprocess.CompletedProcess(args, 0, stdout="manager\n", stderr="")
+        if args[1:3] == ["config", "--global"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="not found")
+
+    monkeypatch.setattr(git_ops.subprocess, "run", missing_gcm)
+    assert git_ops.git_credential_status().state == "gcm_missing"
+
+    def unconfigured_gcm(args, **_kwargs):
+        if args[1:] == ["--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="git version 2.50.0\n", stderr="")
+        if args[1:3] == ["config", "--system"]:
+            return subprocess.CompletedProcess(args, 0, stdout="wincred\n", stderr="")
+        if args[1:3] == ["config", "--global"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+        if args[1:] == ["credential-manager", "--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="2.6.1\n", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(git_ops.subprocess, "run", unconfigured_gcm)
+    assert git_ops.git_credential_status().state == "gcm_not_configured"
+
+
+def test_git_credential_status_redacts_custom_helper_commands(monkeypatch, tmp_path) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"")
+
+    def fake_run(args, **_kwargs):
+        if args[1:] == ["--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="git version 2.50.0\n", stderr="")
+        if args[1:3] == ["config", "--system"]:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="!echo username=user password=super-secret\n",
+                stderr="",
+            )
+        if args[1:3] == ["config", "--global"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+        if args[1:] == ["credential-manager", "--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="2.6.1\n", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(
+        git_ops,
+        "discover_git_executable",
+        lambda configured=None: git_ops.GitRuntime(executable, "configured", str(executable)),
+    )
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_run)
+
+    status = git_ops.git_credential_status()
+
+    assert status.credential_helpers == ["<custom-shell-helper>"]
+    assert "super-secret" not in repr(status)
+
+
+@pytest.mark.parametrize(
+    ("detail", "action", "error_type"),
+    [
+        ("fatal: User cancelled authentication.", "read", git_ops.GitCredentialInteractionCancelled),
+        ("fatal: Authentication failed for 'https://github.com/x/y.git'", "read", git_ops.GitAuthenticationRequired),
+        ("remote: Write access to repository not granted.", "write", git_ops.GitWriteAccessDenied),
+    ],
+)
+def test_binding_failures_are_actionable_and_redacted(
+    detail: str,
+    action: str,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type) as error:
+        git_ops.raise_binding_error(
+            detail.replace("https://github.com", "https://user:secret@github.com"),
+            "https",
+            action=action,
+        )
+
+    assert "secret" not in str(error.value)

@@ -23,6 +23,42 @@ class GitError(RuntimeError):
     """Raised when a git command exits non-zero."""
 
 
+class GitCredentialPrerequisiteError(GitError):
+    """Raised when desktop-native Git credentials are not ready."""
+
+
+class GitMissingError(GitCredentialPrerequisiteError):
+    """Raised when Git cannot be executed."""
+
+
+class GitCredentialManagerMissingError(GitCredentialPrerequisiteError):
+    """Raised when Git Credential Manager cannot be executed."""
+
+
+class GitCredentialManagerNotConfiguredError(GitCredentialPrerequisiteError):
+    """Raised when credential.helper does not select Git Credential Manager."""
+
+
+class GitBindingError(GitError):
+    """Raised when an explicit repository binding probe fails."""
+
+
+class GitCredentialInteractionCancelled(GitBindingError):
+    """Raised when the user cancels the interactive GCM flow."""
+
+
+class GitAuthenticationRequired(GitBindingError):
+    """Raised when stored Git credentials are missing or rejected."""
+
+
+class GitWriteAccessDenied(GitBindingError):
+    """Raised when read access succeeds but the dry-run push is rejected."""
+
+
+class GitOperationTimeout(GitBindingError):
+    """Raised when an explicit binding probe times out."""
+
+
 @dataclass(frozen=True)
 class GitDivergence:
     local_commit: str | None
@@ -83,8 +119,46 @@ class RemoteBindingProbe:
     remote_empty: bool
 
 
+@dataclass(frozen=True)
+class GitCredentialStatus:
+    state: str
+    ready: bool
+    git_available: bool
+    git_path: str
+    git_source: str
+    git_version: str
+    gcm_available: bool
+    gcm_configured: bool
+    gcm_version: str
+    credential_helpers: list[str]
+    detail: str
+    install_url: str
+
+    @classmethod
+    def ready_for_use(cls) -> GitCredentialStatus:
+        """Return a compact ready status for callers and tests."""
+        return cls(
+            state="ready",
+            ready=True,
+            git_available=True,
+            git_path="git",
+            git_source="PATH",
+            git_version="",
+            gcm_available=True,
+            gcm_configured=True,
+            gcm_version="",
+            credential_helpers=["manager"],
+            detail="Git and Git Credential Manager are ready.",
+            install_url=GCM_INSTALL_URL,
+        )
+
+
 _CONFIGURED_GIT_EXECUTABLE = ""
 _FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+GIT_FOR_WINDOWS_INSTALL_URL = "https://git-scm.com/download/win"
+GCM_INSTALL_URL = (
+    "https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/install.md"
+)
 
 
 def is_full_commit_sha(ref: str | None) -> bool:
@@ -119,6 +193,198 @@ def discover_git_executable(configured: str | None = None) -> GitRuntime:
         if candidate.is_file():
             return GitRuntime(path=candidate.resolve(), source="auto-detected")
     return GitRuntime(path=None, source="missing")
+
+
+def git_credential_status(configured: str | None = None) -> GitCredentialStatus:
+    """Inspect Git/GCM prerequisites without reading credentials or changing config."""
+    runtime = discover_git_executable(configured)
+    if runtime.path is None:
+        requested = f" at {runtime.requested}" if runtime.requested else ""
+        return GitCredentialStatus(
+            state="git_missing",
+            ready=False,
+            git_available=False,
+            git_path="",
+            git_source=runtime.source,
+            git_version="",
+            gcm_available=False,
+            gcm_configured=False,
+            gcm_version="",
+            credential_helpers=[],
+            detail=f"Git was not found{requested}. Install Git for Windows, then reopen LPM.",
+            install_url=GIT_FOR_WINDOWS_INSTALL_URL,
+        )
+
+    executable = str(runtime.path)
+    try:
+        version_result = _run_git_inspection(executable, ["--version"])
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return GitCredentialStatus(
+            state="git_missing",
+            ready=False,
+            git_available=False,
+            git_path=executable,
+            git_source=runtime.source,
+            git_version="",
+            gcm_available=False,
+            gcm_configured=False,
+            gcm_version="",
+            credential_helpers=[],
+            detail="Git was found but could not be executed. Repair Git for Windows, then reopen LPM.",
+            install_url=GIT_FOR_WINDOWS_INSTALL_URL,
+        )
+    if version_result.returncode != 0:
+        return GitCredentialStatus(
+            state="git_missing",
+            ready=False,
+            git_available=False,
+            git_path=executable,
+            git_source=runtime.source,
+            git_version="",
+            gcm_available=False,
+            gcm_configured=False,
+            gcm_version="",
+            credential_helpers=[],
+            detail="Git was found but did not run successfully. Repair Git for Windows, then reopen LPM.",
+            install_url=GIT_FOR_WINDOWS_INSTALL_URL,
+        )
+
+    git_version = _first_safe_line(version_result.stdout or version_result.stderr)
+    configured_helpers = _configured_credential_helpers(executable)
+    helpers = [_safe_credential_helper(helper) for helper in configured_helpers]
+    gcm_result: subprocess.CompletedProcess[str] | None = None
+    for command in ("credential-manager", "credential-manager-core"):
+        try:
+            candidate = _run_git_inspection(executable, [command, "--version"])
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+        if candidate.returncode == 0:
+            gcm_result = candidate
+            break
+
+    if gcm_result is None:
+        return GitCredentialStatus(
+            state="gcm_missing",
+            ready=False,
+            git_available=True,
+            git_path=executable,
+            git_source=runtime.source,
+            git_version=git_version,
+            gcm_available=False,
+            gcm_configured=_uses_gcm_helper(configured_helpers),
+            gcm_version="",
+            credential_helpers=helpers,
+            detail=(
+                "Git Credential Manager was not found. Install or repair Git for Windows "
+                "with Git Credential Manager enabled."
+            ),
+            install_url=GCM_INSTALL_URL,
+        )
+
+    gcm_version = _first_safe_line(gcm_result.stdout or gcm_result.stderr)
+    if not _uses_gcm_helper(configured_helpers):
+        return GitCredentialStatus(
+            state="gcm_not_configured",
+            ready=False,
+            git_available=True,
+            git_path=executable,
+            git_source=runtime.source,
+            git_version=git_version,
+            gcm_available=True,
+            gcm_configured=False,
+            gcm_version=gcm_version,
+            credential_helpers=helpers,
+            detail=(
+                "Git Credential Manager is installed but credential.helper is not configured "
+                "to use it. Configure GCM outside LPM, then retry."
+            ),
+            install_url=GCM_INSTALL_URL,
+        )
+
+    return GitCredentialStatus(
+        state="ready",
+        ready=True,
+        git_available=True,
+        git_path=executable,
+        git_source=runtime.source,
+        git_version=git_version,
+        gcm_available=True,
+        gcm_configured=True,
+        gcm_version=gcm_version,
+        credential_helpers=helpers,
+        detail="Git and Git Credential Manager are ready.",
+        install_url=GCM_INSTALL_URL,
+    )
+
+
+def require_git_credential_manager(configured: str | None = None) -> GitCredentialStatus:
+    """Require the desktop HTTPS credential prerequisites without changing them."""
+    status = git_credential_status(configured)
+    if status.state == "git_missing":
+        raise GitMissingError(status.detail)
+    if status.state == "gcm_missing":
+        raise GitCredentialManagerMissingError(status.detail)
+    if status.state == "gcm_not_configured":
+        raise GitCredentialManagerNotConfiguredError(status.detail)
+    return status
+
+
+def _run_git_inspection(executable: str, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [executable, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env={**os.environ, **_NO_PROMPT_ENV},
+    )
+
+
+def _configured_credential_helpers(executable: str) -> list[str]:
+    helpers: list[str] = []
+    for scope in ("--system", "--global"):
+        try:
+            result = _run_git_inspection(
+                executable,
+                ["config", scope, "--get-all", "credential.helper"],
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode not in {0, 1}:
+            continue
+        for raw in result.stdout.splitlines():
+            helper = raw.strip()
+            if not helper:
+                helpers.clear()
+            else:
+                helpers.append(helper)
+    return helpers
+
+
+def _uses_gcm_helper(helpers: list[str]) -> bool:
+    for helper in helpers:
+        normalized = helper.lower().replace("\\", "/")
+        if normalized in {"manager", "manager-core"} or "credential-manager" in normalized:
+            return True
+    return False
+
+
+def _safe_credential_helper(helper: str) -> str:
+    normalized = helper.strip()
+    if _uses_gcm_helper([normalized]):
+        return "manager-core" if "manager-core" in normalized.lower() else "manager"
+    if normalized.startswith("!"):
+        return "<custom-shell-helper>"
+    if any(char.isspace() for char in normalized) or len(normalized) > 80:
+        return "<custom-helper>"
+    if "/" in normalized or "\\" in normalized:
+        return Path(normalized).name or "<custom-helper>"
+    return redact_git_text(normalized)
+
+
+def _first_safe_line(value: str | None) -> str:
+    lines = redact_git_text(value or "").splitlines()
+    return lines[0].strip() if lines else ""
 
 
 def _git_executable() -> str:
@@ -239,6 +505,11 @@ def _run(
     except subprocess.CalledProcessError as exc:
         stderr = redact_git_text((exc.stderr or "").strip())
         safe_args = " ".join(redact_git_text(item) for item in args)
+        if _looks_like_auth_failure(stderr):
+            raise GitAuthenticationRequired(
+                "GitHub credentials are missing or expired. "
+                "Open Settings and click Connect and verify repository to sign in again."
+            ) from exc
         raise GitError(f"git {safe_args} failed: {stderr or exc.__class__.__name__}") from exc
 
 
@@ -264,6 +535,21 @@ def redact_git_text(value: str) -> str:
     """Redact URL userinfo that Git may echo in diagnostics."""
     without_userinfo = _URL_USERINFO_RE.sub(r"\g<scheme>***@\g<host>", value)
     return _AUTH_HEADER_RE.sub("Authorization: ***", without_userinfo)
+
+
+def _looks_like_auth_failure(value: str) -> bool:
+    lower = value.lower()
+    return any(
+        pattern in lower
+        for pattern in (
+            "authentication failed",
+            "could not read username",
+            "terminal prompts disabled",
+            "credential manager",
+            "the requested url returned error: 401",
+            "the requested url returned error: 403",
+        )
+    )
 
 
 def _validate_argument(value: str, label: str) -> str:
@@ -868,11 +1154,13 @@ def probe_remote_binding(
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
-        raise GitError("Timed out while authenticating with the GitHub repository.") from exc
+        raise GitOperationTimeout(
+            "Timed out while reading the GitHub repository. Check the network and retry."
+        ) from exc
     except FileNotFoundError as exc:
         raise GitError("`git` executable not found on PATH.") from exc
     if read_result.returncode != 0:
-        raise GitError(_binding_error(read_result.stderr, transport, action="read"))
+        raise_binding_error(read_result.stderr, transport, action="read")
 
     default_branch, branches = _parse_remote_branches(read_result.stdout)
     branch = default_branch or "main"
@@ -913,12 +1201,14 @@ def probe_remote_binding(
                 env=env,
             )
     except subprocess.TimeoutExpired as exc:
-        raise GitError("Timed out while verifying GitHub write access.") from exc
+        raise GitOperationTimeout(
+            "Timed out while verifying GitHub write access. Check the network and retry."
+        ) from exc
     except FileNotFoundError as exc:
         raise GitError("`git` executable not found on PATH.") from exc
     if write_result.returncode != 0:
         detail = write_result.stderr or write_result.stdout
-        raise GitError(_binding_error(detail, transport, action="write"))
+        raise_binding_error(detail, transport, action="write")
 
     return RemoteBindingProbe(
         default_branch=branch,
@@ -937,17 +1227,62 @@ def _binding_env(transport: str) -> dict[str, str]:
     }
 
 
-def _binding_error(detail: str | None, transport: str, *, action: str) -> str:
+def raise_binding_error(detail: str | None, transport: str, *, action: str) -> None:
+    """Raise a typed, redacted binding error with actionable recovery."""
     safe_detail = redact_git_text((detail or "").strip())
+    lower = safe_detail.lower()
     if transport == "https":
-        guidance = (
-            "Configure Git Credential Manager, use an SSH URL, or select token authentication "
-            "in Advanced settings."
-        )
+        if any(
+            pattern in lower
+            for pattern in (
+                "user cancelled",
+                "user canceled",
+                "authentication cancelled",
+                "authentication canceled",
+                "operation was cancelled",
+                "operation was canceled",
+            )
+        ):
+            raise GitCredentialInteractionCancelled(
+                "GitHub sign-in was cancelled. Click Connect and verify repository to try again."
+            )
+        if action == "write" and any(
+            pattern in lower
+            for pattern in (
+                "write access",
+                "permission denied",
+                "permission to ",
+                "not allowed to push",
+                "protected branch",
+                "the requested url returned error: 403",
+            )
+        ):
+            reason = safe_detail or "GitHub rejected the dry-run push."
+            raise GitWriteAccessDenied(
+                f"Read access succeeded, but write access was denied. {reason} "
+                "Grant this account write access to the repository, then retry."
+            )
+        if any(
+            pattern in lower
+            for pattern in (
+                "authentication failed",
+                "could not read username",
+                "terminal prompts disabled",
+                "credential",
+                "the requested url returned error: 401",
+                "the requested url returned error: 403",
+            )
+        ):
+            reason = safe_detail or "GitHub rejected the stored credentials."
+            raise GitAuthenticationRequired(
+                f"GitHub sign-in is required. {reason} "
+                "Click Connect and verify repository to sign in again with Git Credential Manager."
+            )
+        guidance = "Check the repository URL, network, and Git Credential Manager, then retry."
     else:
         guidance = "Load a GitHub SSH key into your agent or bind the HTTPS URL instead."
     reason = safe_detail or "Authentication or repository policy rejected the request."
-    return f"Unable to {action} the GitHub repository. {reason} {guidance}"
+    raise GitBindingError(f"Unable to {action} the GitHub repository. {reason} {guidance}")
 
 
 def _parse_remote_branches(output: str) -> tuple[str, list[str]]:

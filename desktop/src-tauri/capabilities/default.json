@@ -1,18 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Minimum desktop permissions for LPM OAuth and copy actions.",
+  "description": "Minimum desktop permissions for LPM external documentation and copy actions.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:event:default",
-    "deep-link:default",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
-        { "url": "https://github.com/login/oauth/authorize*" },
-        { "url": "https://github.com/login/device" },
-        { "url": "https://github.com/Ling-ye/LingyePluginMarketplace" }
+        { "url": "https://github.com/Ling-ye/LingyePluginMarketplace" },
+        { "url": "https://github.com/git-ecosystem/git-credential-manager*" },
+        { "url": "https://git-scm.com/download/win" }
       ]
     },
     "clipboard-manager:allow-write-text",

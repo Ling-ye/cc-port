@@ -2,20 +2,15 @@ import {
   AlertTriangle,
   BadgeCheck,
   CheckCircle2,
-  Github,
+  ExternalLink,
   Link2,
   RefreshCcw,
   ShieldCheck,
   TerminalSquare,
-  Trash2,
   XCircle,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import {
-  listenForOAuthDeepLinks,
-  lpmAction,
-  openExternalUrl,
-} from "@/api/client";
+import { lpmAction, openExternalUrl } from "@/api/client";
 import { displayError, translateMessage, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
@@ -23,9 +18,7 @@ import type {
   ConfigSettings,
   DoctorCheck,
   DoctorStatus,
-  GithubAuthPollResult,
-  GithubAuthStatus,
-  GithubWebAuthSession,
+  GitCredentialStatus,
 } from "@/types/lpm";
 
 const SIMPLE_PLATFORM_NAMES = new Set(["codex", "claude-code", "cursor", "windsurf", "opencode"]);
@@ -43,43 +36,28 @@ export function SettingsView({
 }) {
   const { runTask } = useTaskCenter();
   const [settings, setSettings] = useState<ConfigSettings | null>(null);
-  const [auth, setAuth] = useState<GithubAuthStatus | null>(null);
+  const [credentialStatus, setCredentialStatus] = useState<GitCredentialStatus | null>(null);
   const [bindUrl, setBindUrl] = useState("");
   const [lastBinding, setLastBinding] = useState<ConfigBindRepoResult["binding"] | null>(null);
   const [bindError, setBindError] = useState("");
   const [pendingRebindUrl, setPendingRebindUrl] = useState("");
-  const [authSession, setAuthSession] = useState<GithubWebAuthSession | null>(null);
-  const [authRetry, setAuthRetry] = useState(false);
   const [loading, setLoading] = useState(false);
   const [binding, setBinding] = useState(false);
-  const [authStarting, setAuthStarting] = useState(false);
   const [platformSaving, setPlatformSaving] = useState("");
   const [diagnosticChecks, setDiagnosticChecks] = useState<DoctorCheck[] | null>(null);
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
-  const authSessionRef = useRef<GithubWebAuthSession | null>(null);
-  const authPollRef = useRef<(immediate?: boolean) => void>(() => undefined);
   const settingsRequestRef = useRef(0);
 
-  const actionBusy = binding || authStarting || Boolean(platformSaving);
+  const actionBusy = binding || Boolean(platformSaving);
   const anyBusy = loading || actionBusy;
-
-  useEffect(() => {
-    authSessionRef.current = authSession;
-  }, [authSession]);
 
   useEffect(() => () => {
     settingsRequestRef.current += 1;
-    const sessionId = authSessionRef.current?.session_id;
-    if (sessionId) {
-      void lpmAction("github_web_auth_cancel", { session_id: sessionId }).catch(() => undefined);
-    }
   }, []);
 
   function applySettings(data: ConfigSettings, resetInputs = true) {
     setSettings(data);
-    if (resetInputs) {
-      setBindUrl(data.config.resources.repo_url);
-    }
+    if (resetInputs) setBindUrl(data.config.resources.repo_url);
   }
 
   async function loadSettings() {
@@ -89,109 +67,23 @@ export function SettingsView({
     try {
       const [data, status] = await Promise.all([
         lpmAction<ConfigSettings>("config_get"),
-        lpmAction<GithubAuthStatus>("github_auth_status"),
+        lpmAction<GitCredentialStatus>("git_credential_status"),
       ]);
       if (requestId !== settingsRequestRef.current) return;
       applySettings(data);
-      setAuth(status);
+      setCredentialStatus(status);
       setLastBinding(null);
       setBindError("");
     } catch (err) {
-      if (requestId === settingsRequestRef.current) {
-        onError(displayError(err, t));
-      }
+      if (requestId === settingsRequestRef.current) onError(displayError(err, t));
     } finally {
-      if (requestId === settingsRequestRef.current) {
-        setLoading(false);
-      }
+      if (requestId === settingsRequestRef.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     void loadSettings();
   }, [refreshVersion]);
-
-  useEffect(() => {
-    if (!authSession) {
-      authPollRef.current = () => undefined;
-      return;
-    }
-    let stopped = false;
-    let timer = 0;
-    let polling = false;
-
-    const schedule = (delaySeconds: number) => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => void poll(false), Math.max(1, delaySeconds) * 1000);
-    };
-
-    const poll = async (immediate: boolean) => {
-      if (stopped || polling) return;
-      polling = true;
-      try {
-        const result = await lpmAction<GithubAuthPollResult>("github_web_auth_poll", {
-          session_id: authSession.session_id,
-          immediate,
-        });
-        if (stopped) return;
-        if (result.state === "pending" || result.state === "slow_down") {
-          schedule(result.retry_after || authSession.interval);
-          return;
-        }
-        if (result.state === "authorized") {
-          setAuthSession(null);
-          setAuthRetry(false);
-          const status = await lpmAction<GithubAuthStatus>("github_auth_status");
-          if (!stopped) setAuth(status);
-          void onChanged();
-          return;
-        }
-        setAuthSession(null);
-        setAuthRetry(true);
-        onError(result.state === "denied" ? t("settings.authDenied") : t("settings.authExpired"));
-      } catch (err) {
-        if (!stopped) {
-          setAuthSession(null);
-          setAuthRetry(true);
-          void lpmAction("github_web_auth_cancel", {
-            session_id: authSession.session_id,
-          }).catch(() => undefined);
-          onError(displayError(err, t));
-        }
-      } finally {
-        polling = false;
-      }
-    };
-
-    authPollRef.current = (immediate = false) => void poll(immediate);
-    schedule(authSession.interval);
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-      authPollRef.current = () => undefined;
-    };
-  }, [authSession]);
-
-  useEffect(() => {
-    let stopped = false;
-    let unlisten: (() => void) | undefined;
-    void listenForOAuthDeepLinks((urls) => {
-      const session = authSessionRef.current;
-      if (!session) return;
-      if (urls.some((url) => matchesGithubOAuthDeepLink(url, session.session_id))) {
-        authPollRef.current(true);
-      }
-    }).then((dispose) => {
-      if (stopped) dispose();
-      else unlisten = dispose;
-    }).catch((err) => {
-      if (!stopped) onError(displayError(err, t));
-    });
-    return () => {
-      stopped = true;
-      unlisten?.();
-    };
-  }, []);
 
   function requestBind() {
     if (!settings) return;
@@ -237,53 +129,10 @@ export function SettingsView({
     }
   }
 
-  async function startAuth() {
-    setAuthStarting(true);
-    setAuthRetry(false);
+  async function openCredentialGuide() {
+    if (!credentialStatus?.install_url) return;
     try {
-      const session = await lpmAction<GithubWebAuthSession>("github_web_auth_start", {
-        purpose: "standard",
-      });
-      setAuthSession(session);
-      try {
-        await openExternalUrl(session.authorization_url);
-      } catch (err) {
-        onError(t("settings.browserOpenFailed"));
-      }
-    } catch (err) {
-      setAuthRetry(true);
-      onError(displayError(err, t));
-    } finally {
-      setAuthStarting(false);
-    }
-  }
-
-  async function reopenAuthorization() {
-    if (!authSession) return;
-    try {
-      await openExternalUrl(authSession.authorization_url);
-    } catch {
-      onError(t("settings.browserOpenFailed"));
-    }
-  }
-
-  async function cancelAuth() {
-    if (!authSession) return;
-    const sessionId = authSession.session_id;
-    setAuthSession(null);
-    try {
-      await lpmAction("github_web_auth_cancel", { session_id: sessionId });
-    } catch (err) {
-      onError(displayError(err, t));
-    }
-  }
-
-  async function clearAuthorization() {
-    if (!window.confirm(t("settings.clearAuthorizationConfirm"))) return;
-    try {
-      const status = await lpmAction<GithubAuthStatus>("github_token_clear");
-      setAuth(status);
-      void onChanged();
+      await openExternalUrl(credentialStatus.install_url);
     } catch (err) {
       onError(displayError(err, t));
     }
@@ -325,25 +174,15 @@ export function SettingsView({
     }
   }
 
-  if (!settings || !auth) {
+  if (!settings || !credentialStatus) {
     return (
       <section className="panel">
-        <div className="panel-head">
-          <h2>{t("settings.title")}</h2>
-        </div>
+        <div className="panel-head"><h2>{t("settings.title")}</h2></div>
       </section>
     );
   }
 
   const currentUrl = settings.config.resources.repo_url.trim();
-  const isSameUrl = Boolean(currentUrl) && bindUrl.trim() === currentUrl;
-  const bindButtonLabel = binding
-    ? t("settings.binding")
-    : isSameUrl
-      ? t("settings.reverify")
-      : currentUrl
-        ? t("settings.rebind")
-        : t("settings.bind");
   return (
     <section className="settings-view">
       <div className="panel settings-panel">
@@ -369,6 +208,12 @@ export function SettingsView({
             </span>
           </div>
 
+          <CredentialStatusPanel
+            status={credentialStatus}
+            t={t}
+            onOpenGuide={() => void openCredentialGuide()}
+          />
+
           <div className="repo-bind-control">
             <label>
               <span>{t("settings.repoUrl")}</span>
@@ -389,7 +234,7 @@ export function SettingsView({
             </label>
             <button className="primary" type="button" onClick={requestBind} disabled={anyBusy || !bindUrl.trim()}>
               {binding ? <RefreshCcw className="spin" size={17} /> : <Link2 size={17} />}
-              {bindButtonLabel}
+              {binding ? t("settings.binding") : t("settings.connectAndVerify")}
             </button>
           </div>
 
@@ -411,61 +256,6 @@ export function SettingsView({
                 <span>{lastBinding.remote_empty ? t("settings.remoteEmpty") : t("settings.remoteReady")}</span>
               </div>
             </div>
-          ) : null}
-        </section>
-
-        <section className="settings-section github-access-card" aria-labelledby="github-access-title">
-          <div className="simple-section-head">
-            <div>
-              <h3 id="github-access-title"><Github size={18} />{t("settings.githubAccess")}</h3>
-              <p>{t("settings.githubAccessDescription")}</p>
-            </div>
-            <span className={auth.state === "connected" ? "connection-pill connected" : "connection-pill"}>
-              {auth.state === "connected" ? <BadgeCheck size={15} /> : null}
-              {t(`settings.authState.${auth.state}`)}
-            </span>
-          </div>
-
-          {!auth.oauth_configured ? (
-            <div className="inline-warning"><AlertTriangle size={17} /><span>{t("settings.oauthNotConfigured")}</span></div>
-          ) : null}
-          {auth.env_override ? (
-            <div className="inline-warning"><AlertTriangle size={17} /><span>{t("settings.envTokenOverride")}</span></div>
-          ) : null}
-          {auth.error ? <div className="repo-bind-error" role="alert">{auth.error}</div> : null}
-
-          <dl className="compact-status-list">
-            <div><dt>{t("settings.authorizedAccount")}</dt><dd>{auth.login || t("settings.notConfigured")}</dd></div>
-          </dl>
-
-          {authSession ? (
-            <div className="oauth-device-panel" role="status" aria-live="polite">
-              <span><RefreshCcw className="spin" size={16} />{t("settings.authWaiting")}</span>
-              <small>{t("settings.authWaitingHint")}</small>
-              <div>
-                <button className="secondary" type="button" onClick={() => void reopenAuthorization()}><Github size={16} />{t("settings.reopenGithub")}</button>
-                <button className="secondary" type="button" onClick={() => void cancelAuth()}>{t("common.cancel")}</button>
-              </div>
-            </div>
-          ) : (
-            <div className="simple-actions">
-              <button className="primary" type="button" onClick={() => void startAuth()} disabled={anyBusy || !auth.oauth_configured || auth.env_override}>
-                {authStarting ? <RefreshCcw className="spin" size={17} /> : <Github size={17} />}
-                {auth.state === "connected"
-                  ? t("settings.reauthorizeGithub")
-                  : authRetry
-                    ? t("settings.retryGithub")
-                    : t("settings.connectGithub")}
-              </button>
-              {auth.can_clear && !auth.env_override ? (
-                <button className="danger-ghost" type="button" onClick={() => void clearAuthorization()} disabled={anyBusy}>
-                  <Trash2 size={16} />{t("settings.removeLocalAuthorization")}
-                </button>
-              ) : null}
-            </div>
-          )}
-          {auth.can_clear && !auth.env_override ? (
-            <small className="field-note">{t("settings.localAuthorizationOnlyNote")}</small>
           ) : null}
         </section>
 
@@ -529,16 +319,36 @@ export function SettingsView({
   );
 }
 
-export function matchesGithubOAuthDeepLink(value: string, sessionId: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "lingye-lpm:"
-      && url.hostname === "oauth"
-      && url.pathname === "/complete"
-      && url.searchParams.get("session_id") === sessionId;
-  } catch {
-    return false;
-  }
+function CredentialStatusPanel({
+  status,
+  t,
+  onOpenGuide,
+}: {
+  status: GitCredentialStatus;
+  t: TFunction;
+  onOpenGuide: () => void;
+}) {
+  return (
+    <div className={`git-credential-status ${status.ready ? "is-ready" : "needs-action"}`} role="status">
+      {status.ready ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+      <div>
+        <strong>{t(`settings.gitCredentialState.${status.state}`)}</strong>
+        <span>{t(`settings.gitCredentialDetail.${status.state}`)}</span>
+        {status.ready ? (
+          <small>
+            {status.git_version || t("settings.gitReady")}
+            {" · "}
+            {status.gcm_version ? `GCM ${status.gcm_version}` : t("settings.gcmReady")}
+          </small>
+        ) : null}
+      </div>
+      {!status.ready ? (
+        <button className="secondary" type="button" onClick={onOpenGuide}>
+          <ExternalLink size={15} />{t("settings.openCredentialGuide")}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function DiagnosticsResults({ checks, t }: { checks: DoctorCheck[]; t: TFunction }) {
@@ -590,7 +400,6 @@ function doctorLabel(check: DoctorCheck, t: TFunction): string {
   const labels: Record<string, string> = {
     git: t("settings.diagnostics.check.git"),
     config: t("settings.diagnostics.check.config"),
-    github_token: t("settings.diagnostics.check.githubToken"),
     resource_repo: t("settings.diagnostics.check.resourceRepo"),
     install_target: t("settings.diagnostics.check.installTarget"),
   };

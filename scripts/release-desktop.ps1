@@ -26,7 +26,6 @@ $script:ReleaseMetricsPath = $null
 $script:ReleaseSucceeded = $false
 $script:ReleaseError = $null
 $script:ReleaseLock = $null
-$script:GithubOAuthBrokerStatus = $null
 $script:HadPriorDependencyCacheStatus = Test-Path Env:LPM_DEPENDENCY_CACHE_STATUS
 $script:PriorDependencyCacheStatus = $env:LPM_DEPENDENCY_CACHE_STATUS
 
@@ -461,55 +460,6 @@ function Assert-SidecarHashesMatch {
     }
 }
 
-function Get-GithubOAuthBrokerBuildStatus {
-    param([Parameter(Mandatory = $true)][string]$RepoRoot)
-
-    $oauthSourcePath = Join-Path $RepoRoot "src\lpm\services\github_oauth.py"
-    if (-not (Test-Path -LiteralPath $oauthSourcePath -PathType Leaf)) {
-        return [pscustomobject][ordered]@{
-            Enabled = $false
-            Url     = ""
-            Reason  = "source-missing"
-        }
-    }
-    $source = [IO.File]::ReadAllText($oauthSourcePath)
-    $match = [regex]::Match(
-        $source,
-        'BUILTIN_GITHUB_OAUTH_BROKER_URL\s*=\s*"(?<url>[^"]*)"'
-    )
-    if (-not $match.Success -or [string]::IsNullOrWhiteSpace($match.Groups["url"].Value)) {
-        return [pscustomobject][ordered]@{
-            Enabled = $false
-            Url     = ""
-            Reason  = "not-configured"
-        }
-    }
-
-    $value = $match.Groups["url"].Value.Trim()
-    $brokerUrl = $null
-    if (-not [Uri]::TryCreate($value, [UriKind]::Absolute, [ref]$brokerUrl) -or
-        $brokerUrl.Scheme -ne "https" -or
-        [string]::IsNullOrWhiteSpace($brokerUrl.Host) -or
-        -not [string]::IsNullOrEmpty($brokerUrl.UserInfo) -or
-        $brokerUrl.AbsolutePath -ne "/" -or
-        -not [string]::IsNullOrEmpty($brokerUrl.Query) -or
-        -not [string]::IsNullOrEmpty($brokerUrl.Fragment) -or
-        $value.Contains("<") -or
-        $value.Contains(">")) {
-        return [pscustomobject][ordered]@{
-            Enabled = $false
-            Url     = $value
-            Reason  = "invalid"
-        }
-    }
-
-    return [pscustomobject][ordered]@{
-        Enabled = $true
-        Url     = $brokerUrl.GetLeftPart([UriPartial]::Authority)
-        Reason  = "configured"
-    }
-}
-
 function Remove-KnownTauriOutputs {
     param(
         [Parameter(Mandatory = $true)][string]$TargetReleaseDirectory,
@@ -625,15 +575,6 @@ try {
     $sourceSidecar = Join-Path $tauriDirectory "binaries\$sidecarName-$expectedTarget.exe"
     $targetSidecar = Join-Path $targetReleaseDirectory "$sidecarName.exe"
 
-    Invoke-ReleaseAction -Description "Checking optional GitHub OAuth broker" -CacheStatus $null -Action {
-        $script:GithubOAuthBrokerStatus = Get-GithubOAuthBrokerBuildStatus -RepoRoot $repoRoot
-        if ($script:GithubOAuthBrokerStatus.Enabled) {
-            Write-Host "  GitHub browser sign-in default: $($script:GithubOAuthBrokerStatus.Url)"
-        } else {
-            Write-Warning "GitHub browser sign-in is not enabled by default ($($script:GithubOAuthBrokerStatus.Reason)). Packaging will continue; users can still use resource repositories and other desktop features."
-        }
-    }
-
     $env:LPM_DEPENDENCY_CACHE_STATUS = $null
     $setupPhaseIndex = $script:ReleasePhases.Count
     try {
@@ -695,7 +636,7 @@ try {
     Write-Host "  target : $($rust.Target)"
     Write-Host "  msvc   : $visualStudio"
     Write-Host "  mode   : $(if ($Clean) { 'clean' } else { 'verified cache reuse' })"
-    Write-Host "  oauth  : $(if ($script:GithubOAuthBrokerStatus.Enabled) { 'shared broker enabled' } else { 'disabled by default; runtime override supported' })"
+    Write-Host "  runtime: external Git for Windows with Git Credential Manager required at runtime"
 
     $windowsPowerShell = Join-Path $PSHOME "powershell.exe"
     if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {

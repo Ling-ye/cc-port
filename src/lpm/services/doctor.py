@@ -130,6 +130,13 @@ def _github_token_check(cfg: Config, resource_configured: bool) -> DoctorCheck:
             "ok",
             f"Configured via {CONFIG_ENV_VAR} or config",
         )
+    if resource_configured and cfg.resources.credential_mode == "native":
+        return _check(
+            "github_token",
+            "GitHub token",
+            "skipped",
+            "Not configured; the resource repository uses native Git credentials",
+        )
     if resource_configured:
         detail = (
             f"Not configured; private GitHub resource repo actions need "

@@ -45,6 +45,7 @@ describe("CollectGithubDialog", () => {
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith("skill:demo"));
     expect(lpmAction).toHaveBeenCalledWith("collect", {
       github_url: "https://github.com/example/demo",
+      kind: "skill",
       name: "",
       push: true,
     });

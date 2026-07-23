@@ -111,6 +111,7 @@ export function ResourceDialogFrame({
 export function ResourceAdvancedFields({
   name,
   kind,
+  allowAuto = true,
   open,
   t,
   onNameChange,
@@ -119,6 +120,7 @@ export function ResourceAdvancedFields({
 }: {
   name: string;
   kind: AddKind;
+  allowAuto?: boolean;
   open: boolean;
   t: TFunction;
   onNameChange: (value: string) => void;
@@ -144,7 +146,7 @@ export function ResourceAdvancedFields({
         <label>
           <span>{t("add.type")}</span>
           <select value={kind} onChange={(event) => onKindChange(event.target.value as AddKind)}>
-            <option value="auto">{t("kind.auto")}</option>
+            {allowAuto ? <option value="auto">{t("kind.auto")}</option> : null}
             {resourceKinds.map((item) => (
               <option key={item} value={item}>{resourceKindLabel(item, t)}</option>
             ))}

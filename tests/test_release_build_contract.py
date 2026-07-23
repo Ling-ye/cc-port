@@ -89,12 +89,10 @@ def test_artifacts_are_hashed_before_the_verified_release_is_published() -> None
     assert hash_position < publish_position
 
 
-def test_release_treats_oauth_broker_as_an_optional_runtime_feature() -> None:
+def test_release_declares_external_git_and_has_no_oauth_broker_gate() -> None:
     source = _source()
 
-    assert "Get-GithubOAuthBrokerBuildStatus" in source
-    assert "Assert-GithubOAuthBrokerConfigured" not in source
-    assert "BUILTIN_GITHUB_OAUTH_BROKER_URL" in source
-    assert 'Description "Checking optional GitHub OAuth broker"' in source
-    assert "Packaging will continue" in source
-    assert "disabled by default; runtime override supported" in source
+    assert "Git Credential Manager required at runtime" in source
+    assert "Get-GithubOAuthBrokerBuildStatus" not in source
+    assert "BUILTIN_GITHUB_OAUTH_BROKER_URL" not in source
+    assert "GitHub OAuth broker" not in source

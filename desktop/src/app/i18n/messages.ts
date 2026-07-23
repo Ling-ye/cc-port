@@ -7,12 +7,14 @@ export type { UiMessageRef } from "@/types/lpm";
 type MessageI18nKey = Extract<I18nKey, `message.${string}`>;
 
 const legacyErrorCodes: Record<string, string> = {
-  OAuthConfigurationError: "api.github.oauth_not_configured",
-  GithubApiError: "api.github.request_failed",
-  OAuthSessionError: "api.github.session_failed",
-  GithubAuthError: "api.github.authentication_failed",
-  GithubOwnerScopeRequired: "api.github.owner_scope_required",
-  GithubDeleteScopeRequired: "api.github.delete_scope_required",
+  GitMissingError: "api.git.missing",
+  GitCredentialManagerMissingError: "api.git.gcm_missing",
+  GitCredentialManagerNotConfiguredError: "api.git.gcm_not_configured",
+  GitCredentialInteractionCancelled: "api.git.login_cancelled",
+  GitAuthenticationRequired: "api.git.login_required",
+  GitWriteAccessDenied: "api.git.write_denied",
+  GitOperationTimeout: "api.git.timeout",
+  DesktopRemoteRepositoryMutationError: "api.github.desktop_repo_admin_forbidden",
 };
 
 export function translateMessage(
@@ -50,16 +52,7 @@ export function displayError(error: unknown, t: TFunction): string {
     const legacyMessageCode = legacyErrorCodes[code];
     if (legacyMessageCode) {
       const fallback = typeof error.message === "string" ? error.message : detail;
-      return translateMessage(
-        {
-          code: legacyMessageCode,
-          fallback,
-          params: legacyMessageCode === "api.github.authentication_failed"
-            ? { detail: fallback }
-            : undefined,
-        },
-        t,
-      );
+      return translateMessage({ code: legacyMessageCode, fallback }, t);
     }
     if (code.startsWith("bridge.")) {
       return translateMessage({ code, fallback: detail, params: { detail } }, t);

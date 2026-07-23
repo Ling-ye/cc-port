@@ -29,7 +29,7 @@ export type PortableMcpConfig = PortableMcpStdioConfig | PortableMcpHttpConfig;
 
 export interface CollectResourcePayload extends Record<string, unknown> {
   github_url: string;
-  kind?: ResourceKind;
+  kind: ResourceKind;
   name: string;
   push: boolean;
   mcp_config?: PortableMcpConfig;
@@ -274,15 +274,9 @@ export interface PlatformProfile {
   plugins_dir: string;
 }
 
-export type TokenSource = "env" | "config" | "none";
 export type ResourceCredentialMode = "auto" | "native" | "token";
 
 export interface EditableConfig {
-  github: {
-    owner: string;
-    repo_prefix: string;
-    default_private: boolean;
-  };
   git: {
     executable: string;
   };
@@ -541,91 +535,22 @@ export interface AssetActionResult {
 export interface ConfigSettings {
   path: string;
   exists: boolean;
-  token_source: TokenSource;
-  token_preview: string;
-  config_token_preview: string;
-  env_token_active: boolean;
   config: EditableConfig;
 }
 
-export interface ConfigCheckItem {
-  id: string;
-  label: string;
+export interface GitCredentialStatus {
+  state: "ready" | "git_missing" | "gcm_missing" | "gcm_not_configured";
+  ready: boolean;
+  git_available: boolean;
+  git_path: string;
+  git_source: string;
+  git_version: string;
+  gcm_available: boolean;
+  gcm_configured: boolean;
+  gcm_version: string;
+  credential_helpers: string[];
   detail: string;
-  detail_ref?: UiMessageRef | null;
-}
-
-export interface ConfigCheckResult {
-  missing: ConfigCheckItem[];
-  warnings: ConfigCheckItem[];
-  can_prepare: boolean;
-  local: {
-    path: string;
-    exists: boolean;
-    is_git_repo: boolean;
-  };
-  remote: {
-    checked: boolean;
-    exists: boolean;
-    repo: string;
-  };
-}
-
-export interface ConfigBranchOptions {
-  branches: string[];
-  default_branch: string;
-  selected_branch: string;
-  warning: string;
-}
-
-export interface GithubAuthStatus {
-  state: "connected" | "missing" | "invalid";
-  source: TokenSource;
-  login: string;
-  scopes: string[];
-  token_preview: string;
-  config_token_preview: string;
-  can_reveal: boolean;
-  can_clear: boolean;
-  env_override: boolean;
-  oauth_configured: boolean;
-  error: string;
-}
-
-export type GithubAuthPurpose = "standard" | "organization_owner" | "remote_delete";
-
-export interface GithubAuthSession {
-  session_id: string;
-  user_code: string;
-  verification_uri: string;
-  expires_in: number;
-  interval: number;
-  purpose: GithubAuthPurpose;
-  scopes: string[];
-}
-
-export interface GithubWebAuthSession {
-  session_id: string;
-  authorization_url: string;
-  expires_in: number;
-  interval: number;
-  purpose: GithubAuthPurpose;
-  scopes: string[];
-}
-
-export interface GithubAuthPollResult {
-  state: "pending" | "slow_down" | "authorized" | "denied" | "expired";
-  retry_after?: number;
-  login?: string;
-  scopes?: string[];
-  token_preview?: string;
-}
-
-export interface GithubOwnerSetResult {
-  owner: string;
-  owner_type: "user" | "organization";
-  authorized_login: string;
-  settings: ConfigSettings;
+  install_url: string;
 }
 
 export interface ResourceRepoBinding {
@@ -634,7 +559,7 @@ export interface ResourceRepoBinding {
   repo_url: string;
   branch: string;
   branches: string[];
-  transport: "https" | "ssh";
+  transport: "https";
   credential_mode: "native";
   read_verified: boolean;
   write_verified: boolean;
@@ -660,15 +585,9 @@ export interface Summary {
   };
   updates: number;
   installed: number;
-  config: {
+  config: Omit<EditableConfig, "platforms"> & {
     path: string;
     exists: boolean;
-    github: {
-      token_configured: boolean;
-      owner: string;
-      repo_prefix: string;
-      default_private: boolean;
-    };
   };
 }
 

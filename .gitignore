@@ -217,9 +217,6 @@ desktop/*.tsbuildinfo
 desktop/src-tauri/target/
 desktop/src-tauri/binaries/
 desktop/src-tauri/gen/
-services/github-oauth-worker/node_modules/
-services/github-oauth-worker/.dev.vars
-services/github-oauth-worker/.wrangler/
 build_sidecar/
 /release/
 

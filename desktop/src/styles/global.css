@@ -1195,11 +1195,6 @@ button {
   font-size: 12px;
 }
 
-.github-access-card {
-  margin-top: 18px;
-}
-
-.github-access-card,
 .platform-toggle-section {
   border: 1px solid #e0e7ec;
   border-radius: 10px;
@@ -1254,68 +1249,51 @@ button {
   overflow-wrap: anywhere;
 }
 
-.simple-actions button,
-.oauth-device-panel button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-}
-
-.simple-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-.danger-ghost {
-  border: 1px solid #d9a6a6;
-  border-radius: 8px;
-  padding: 8px 12px;
-  background: #fff8f8;
-  color: #9c2525;
-  cursor: pointer;
-}
-
-.danger-ghost:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.oauth-device-panel {
+.git-credential-status {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
   gap: 10px;
-  margin-top: 14px;
   border: 1px solid #b8d9d3;
   border-radius: 9px;
   padding: 12px;
   background: #f2fbf8;
+  color: #176c55;
 }
 
-.oauth-device-panel > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  color: #234c41;
-  font-weight: 650;
+.git-credential-status.needs-action {
+  border-color: #e7c37a;
+  background: #fff9eb;
+  color: #8a5a08;
 }
 
-.oauth-device-panel > small {
-  color: #375950;
+.git-credential-status > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.git-credential-status strong {
   font-size: 13px;
 }
 
-.oauth-device-panel > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.git-credential-status span,
+.git-credential-status small {
+  color: #526f67;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
-.delete-auth-success {
-  color: #176c55 !important;
-  font-weight: 600;
+.git-credential-status.needs-action span {
+  color: #765a26;
+}
+
+.git-credential-status button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  white-space: nowrap;
 }
 
 .rebind-modal > p {
@@ -2116,20 +2094,24 @@ button {
     color: #e2bd72;
   }
 
-  .oauth-device-panel {
+  .git-credential-status {
     background: #17362e;
     border-color: #276754;
   }
 
-  .oauth-device-panel > span,
-  .oauth-device-panel > small {
+  .git-credential-status span,
+  .git-credential-status small {
     color: #b7e5d2;
   }
 
-  .danger-ghost {
-    background: #2b1f1f;
-    border-color: #6a3e3a;
-    color: #efb2ad;
+  .git-credential-status.needs-action {
+    background: #322917;
+    border-color: #6f5521;
+    color: #e2bd72;
+  }
+
+  .git-credential-status.needs-action span {
+    color: #d6bd8a;
   }
 
   .confirm-name-field input,

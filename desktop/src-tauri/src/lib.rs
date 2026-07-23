@@ -8,9 +8,6 @@ use tauri::Manager;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-#[cfg(all(debug_assertions, windows))]
-use tauri_plugin_deep_link::DeepLinkExt;
-
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -257,15 +254,9 @@ pub fn run() {
     }
 
     builder
-        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|_app| {
-            #[cfg(all(debug_assertions, windows))]
-            _app.deep_link().register_all()?;
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![lpm_action, open_path])
         .run(tauri::generate_context!())
         .expect("error while running LPM Desktop");

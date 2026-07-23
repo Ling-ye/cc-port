@@ -17,7 +17,7 @@ from lpm.core.config import (
 from lpm.core.models import RegistryItem
 from lpm.core.platforms import PlatformProfile, PlatformsConfig
 from lpm.core.resource_detection import DetectedRemoteResource
-from lpm.infrastructure.github_client import GithubAuthError
+from lpm.infrastructure import git_ops
 from lpm.interfaces import desktop_api
 from lpm.services.asset_sync import (
     AssetActionPlan,
@@ -108,26 +108,6 @@ def test_desktop_unknown_action_returns_message_reference(monkeypatch) -> None:
     }
 
 
-def test_desktop_auth_error_keeps_original_text_and_adds_semantic_reference(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(desktop_api, "load_config", Config)
-    monkeypatch.setitem(
-        desktop_api.ACTIONS,
-        "auth_failure_test",
-        lambda _payload: (_ for _ in ()).throw(GithubAuthError("Token rejected.")),
-    )
-
-    result = desktop_api.run_action("auth_failure_test")
-
-    assert result["error"]["message"] == "Token rejected."
-    assert result["error"]["message_ref"] == {
-        "code": "api.github.authentication_failed",
-        "fallback": "Token rejected.",
-        "params": {"detail": "Token rejected."},
-    }
-
-
 def test_desktop_upload_pushes_resource_repo_by_default(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "demo"
     stored = tmp_path / "resources" / "skills" / "demo"
@@ -215,8 +195,15 @@ def test_desktop_collect_mcp_requires_and_forwards_portable_config(monkeypatch) 
             mcp_config=kwargs["mcp_config"],
         )
 
+    detection: dict = {}
+
+    def fake_detect_remote_resource(url: str, **kwargs) -> DetectedRemoteResource:
+        detection["url"] = url
+        detection.update(kwargs)
+        return detected
+
     monkeypatch.setattr(desktop_api, "load_config", Config)
-    monkeypatch.setattr(desktop_api, "detect_remote_resource", lambda *_args, **_kwargs: detected)
+    monkeypatch.setattr(desktop_api, "detect_remote_resource", fake_detect_remote_resource)
     monkeypatch.setattr(desktop_api.publisher, "add_external_skill", fake_add_external_skill)
 
     config = {
@@ -232,6 +219,12 @@ def test_desktop_collect_mcp_requires_and_forwards_portable_config(monkeypatch) 
     assert result["ok"] is True
     assert captured["repo"] == detected.repo_url
     assert captured["mcp_config"] == config
+    assert captured["token"] is None
+    assert detection == {
+        "url": detected.repo_url,
+        "explicit_type": "mcp",
+        "token": None,
+    }
 
 
 def test_desktop_collect_rejects_mcp_without_portable_config(monkeypatch) -> None:
@@ -253,10 +246,32 @@ def test_desktop_collect_rejects_mcp_without_portable_config(monkeypatch) -> Non
         ),
     )
 
-    result = desktop_api.run_action("collect", {"github_url": detected.repo_url})
+    result = desktop_api.run_action(
+        "collect",
+        {"github_url": detected.repo_url, "kind": "mcp"},
+    )
 
     assert result["ok"] is False
     assert "require a portable mcp_config" in result["error"]["message"]
+
+
+def test_desktop_collect_requires_explicit_type_before_remote_detection(monkeypatch) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(
+        desktop_api,
+        "detect_remote_resource",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("desktop collection must not call the GitHub API for type detection")
+        ),
+    )
+
+    result = desktop_api.run_action(
+        "collect",
+        {"github_url": "https://github.com/example/demo"},
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["message"] == "Missing required field: kind"
 
 
 def test_desktop_resource_delete_pushes_resource_repo_by_default(
@@ -305,19 +320,12 @@ def test_desktop_resource_delete_pushes_resource_repo_by_default(
     assert result["data"]["push"]["local_path"].endswith("resources")
 
 
-def test_desktop_owned_remote_delete_enforces_scope_before_side_effects(monkeypatch) -> None:
+def test_desktop_owned_remote_delete_is_rejected_before_side_effects(monkeypatch) -> None:
     monkeypatch.setattr(desktop_api, "load_config", Config)
     monkeypatch.setattr(
         desktop_api,
         "resource_delete_requires_remote_scope",
         lambda *_args, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        desktop_api.github_oauth,
-        "require_authorization",
-        lambda _purpose: (_ for _ in ()).throw(
-            desktop_api.github_oauth.GithubDeleteScopeRequired("delete_repo required")
-        ),
     )
     monkeypatch.setattr(
         desktop_api,
@@ -330,7 +338,7 @@ def test_desktop_owned_remote_delete_enforces_scope_before_side_effects(monkeypa
     result = desktop_api.run_action("resource_delete", {"name": "demo", "kind": "skill"})
 
     assert result["ok"] is False
-    assert result["error"]["code"] == "GithubDeleteScopeRequired"
+    assert result["error"]["code"] == "DesktopRemoteRepositoryMutationError"
 
 
 def test_platform_toggle_preserves_hidden_and_custom_configuration(
@@ -775,82 +783,6 @@ def test_desktop_lists_and_cleans_stale_sync_worktrees(
     assert cleaned["data"]["status"] == "abandoned"
 
 
-def test_config_branches_falls_back_to_git_credentials_when_token_is_rejected(
-    monkeypatch,
-) -> None:
-    cfg = Config(
-        github=GithubConfig(token="expired-token"),
-        resources=ResourcesConfig(
-            repo_name="LingyeAIResources",
-            repo_url="https://github.com/Ling-ye/LingyeAIResources.git",
-            branch="main",
-            credential_mode="auto",
-        ),
-    )
-
-    class RejectedGithubClient:
-        def __init__(self, token: str):
-            assert token == "expired-token"
-
-        def list_repo_branches(self, owner: str, name: str):
-            assert (owner, name) == ("Ling-ye", "LingyeAIResources")
-            raise GithubAuthError("GitHub token rejected.")
-
-    monkeypatch.setattr(desktop_api, "load_raw_config", lambda: cfg)
-    monkeypatch.setattr(desktop_api, "GithubClient", RejectedGithubClient)
-    monkeypatch.setattr(
-        desktop_api.git_ops,
-        "remote_branches",
-        lambda url, **_kwargs: ("main", ["dev", "main"]),
-    )
-
-    result = desktop_api._config_branches(
-        {
-            "draft": {
-                "github": {},
-                "install": {},
-                "resources": {},
-            }
-        }
-    )
-
-    assert result["branches"] == ["main", "dev"]
-    assert result["default_branch"] == "main"
-    assert "GitHub token rejected" in result["warning"]
-    assert "local Git/SSH credentials" in result["warning"]
-
-
-def test_config_branches_uses_git_credentials_without_api_token(monkeypatch) -> None:
-    cfg = Config(
-        resources=ResourcesConfig(
-            repo_name="LingyeAIResources",
-            repo_url="https://github.com/Ling-ye/LingyeAIResources.git",
-            branch="release",
-            credential_mode="auto",
-        )
-    )
-    monkeypatch.setattr(desktop_api, "load_raw_config", lambda: cfg)
-    monkeypatch.setattr(
-        desktop_api.git_ops,
-        "remote_branches",
-        lambda url, **_kwargs: ("main", ["main", "release"]),
-    )
-
-    result = desktop_api._config_branches(
-        {
-            "draft": {
-                "github": {},
-                "install": {},
-                "resources": {},
-            }
-        }
-    )
-
-    assert result["branches"] == ["main", "release"]
-    assert result["selected_branch"] == "release"
-    assert "No API token is configured" in result["warning"]
-
-
 def test_config_bind_repo_exposes_binding_and_updated_settings(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
@@ -863,6 +795,11 @@ def test_config_bind_repo_exposes_binding_and_updated_settings(monkeypatch) -> N
         }
 
     monkeypatch.setattr(desktop_api, "bind_resource_repo", fake_bind)
+    monkeypatch.setattr(
+        desktop_api.git_ops,
+        "require_git_credential_manager",
+        lambda: git_ops.GitCredentialStatus.ready_for_use(),
+    )
     monkeypatch.setattr(
         desktop_api,
         "_config_get",
@@ -883,20 +820,100 @@ def test_config_bind_repo_exposes_binding_and_updated_settings(monkeypatch) -> N
     assert result["data"]["settings"]["config"]["resources"]["repo_name"] == "resources"
 
 
-def test_config_save_rejects_token_mode_without_a_token(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "repo_url",
+    [
+        "https://github.com/Ling-ye",
+        "https://github.com/Ling-ye/resources/tree/main",
+        "https://user:secret@github.com/Ling-ye/resources",
+        "git@github.com:Ling-ye/resources.git",
+    ],
+)
+def test_desktop_binding_rejects_non_root_or_non_https_urls_before_git(
+    repo_url: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        desktop_api,
+        "bind_resource_repo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid desktop URL must not reach binding")
+        ),
+    )
+
+    result = desktop_api.run_action(
+        "config_bind_repo",
+        {"repo_url": repo_url, "expected_current_repo_url": ""},
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ValueError"
+
+
+def test_git_credential_status_is_exposed_without_oauth_or_repo_admin_actions(
+    monkeypatch,
+) -> None:
+    status = git_ops.GitCredentialStatus.ready_for_use()
+    monkeypatch.setattr(desktop_api.git_ops, "git_credential_status", lambda: status)
+
+    result = desktop_api.run_action("git_credential_status")
+
+    assert result["ok"] is True
+    assert result["data"]["state"] == "ready"
+    assert result["data"]["ready"] is True
+    for removed in (
+        "github_auth_status",
+        "github_auth_start",
+        "github_auth_poll",
+        "github_auth_cancel",
+        "github_web_auth_start",
+        "github_web_auth_poll",
+        "github_web_auth_cancel",
+        "github_token_reveal",
+        "github_token_clear",
+        "github_owner_set",
+        "config_check",
+        "config_branches",
+        "config_save",
+        "resource_init",
+        "resource_use",
+    ):
+        assert removed not in desktop_api.ACTIONS
+
+
+def test_desktop_config_get_does_not_expose_token_metadata(monkeypatch) -> None:
     monkeypatch.setattr(desktop_api, "load_raw_config", Config)
 
-    with pytest.raises(ValueError, match="no GitHub token"):
-        desktop_api._config_save(
-            {
-                "draft": {
-                    "github": {},
-                    "git": {},
-                    "install": {},
-                    "resources": {"credential_mode": "token"},
-                    "state": {},
-                    "platforms": [],
-                },
-                "token_action": "preserve",
-            }
-        )
+    result = desktop_api._config_get({})
+
+    assert "token_source" not in result
+    assert "token_preview" not in result
+    assert "config_token_preview" not in result
+    assert "env_token_active" not in result
+    assert "github" not in result["config"]
+
+
+def test_desktop_runtime_config_drops_cli_token(monkeypatch) -> None:
+    cfg = Config(github=GithubConfig(token="cli-only-secret"))
+    monkeypatch.setattr(desktop_api, "load_application_config", lambda: cfg)
+
+    desktop_cfg = desktop_api.load_config()
+
+    assert desktop_cfg.github.token == ""
+
+
+def test_desktop_doctor_drops_cli_only_token_check(monkeypatch) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(
+        desktop_api,
+        "build_doctor_checks",
+        lambda _config: [
+            {"id": "git", "status": "ok"},
+            {"id": "github_token", "status": "warning"},
+        ],
+    )
+
+    result = desktop_api.run_action("doctor")
+
+    assert result["ok"] is True
+    assert result["data"]["checks"] == [{"id": "git", "status": "ok"}]

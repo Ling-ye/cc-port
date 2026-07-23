@@ -62,31 +62,6 @@ jobs:
       - name: Test frontend
         run: npm test
 
-  oauth-worker:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: services/github-oauth-worker
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Enable pnpm
-        run: corepack enable && corepack prepare pnpm@11.7.0 --activate
-
-      - name: Install locked Worker dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Type-check Worker
-        run: pnpm run typecheck
-
-      - name: Test Worker
-        run: pnpm test
-
   tauri:
     runs-on: windows-latest
     steps:

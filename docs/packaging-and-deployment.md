@@ -53,15 +53,11 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -ForceSy
 
 ## 一键打包
 
-[KNOWN] 桌面应用打包不依赖 GitHub OAuth broker；未部署 broker 时仍会生成 MSI、NSIS 与便携产物，只有“GitHub 访问”登录入口在运行时被禁用，资源仓库及其他功能保持可用。置信度：HIGH。
+[KNOWN] 桌面应用不依赖 GitHub App、OAuth App、broker、Worker、自有 OAuth 域名或应用侧 Token 存储。置信度：HIGH。
 
-[KNOWN] 要为官方分发包启用无输入 GitHub 登录，项目维护者只需部署一次共享 broker：运行 `scripts/deploy-oauth-worker.ps1`，把输出的 `/oauth/callback` 地址登记为 GitHub OAuth App callback，并将输出的 origin 写入 `src/lpm/services/github_oauth.py` 的 `BUILTIN_GITHUB_OAUTH_BROKER_URL`。普通用户和源码构建默认共同使用该服务，不需要部署 Worker。置信度：HIGH。
+[KNOWN] 正式发布目标仍为 Windows x64；Git for Windows 与 Git Credential Manager 是目标机运行前提，不嵌入安装包。设置页在运行时只读检查 Git、GCM 与 `credential.helper`，不会修改用户全局 Git 配置。置信度：HIGH。
 
-[KNOWN] Worker 部署脚本从维护者进程的 `LPM_GITHUB_OAUTH_CLIENT_ID` 与 `LPM_GITHUB_OAUTH_CLIENT_SECRET` 读取凭据，经标准输入交给 Wrangler Secret；不会写入仓库或命令行参数。置信度：HIGH。
-
-[KNOWN] 开发调试可设置 `LPM_GITHUB_OAUTH_BROKER_URL` 覆盖内置值；HTTP 只允许本机 `127.0.0.1` 或 `localhost`。旧 `LPM_GITHUB_OAUTH_CLIENT_ID` 仅保留设备流兼容。置信度：HIGH。
-
-[KNOWN] `release-desktop.ps1` 会在构建前检查内置 broker；为空或无效时输出醒目警告并继续，配置有效 HTTPS origin 时记录共享登录已启用。运行时仍会重新验证 broker URL。置信度：HIGH。
+[KNOWN] Git for Windows 默认包含 GCM；如果目标机缺失或安装不完整，设置页提供 [Git for Windows](https://git-scm.com/download/win) 与 [GCM](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/install.md) 官方安装入口。置信度：HIGH。
 
 [KNOWN] 更新代码后只执行：置信度：HIGH。
 
@@ -220,18 +216,13 @@ Pop-Location
 
 基础安装包：
 
-- [ ] 未配置 broker 时，发布脚本只警告且继续，设置页禁用 GitHub 登录，资源仓库与其他功能可用。
 - [ ] PowerShell 自测、pytest、Ruff、Vitest、npm audit 和 Vite build 全部通过。
 - [ ] sidecar 缓存已按当前源码、Python/PyInstaller 环境、依赖清单、target triple 与产物哈希验证；缓存未命中时已 clean 重建。
 - [ ] MSI 与 NSIS 同时存在。
 - [ ] 收集后的 sidecar JSON 冒烟通过。
-
-启用官方共享 GitHub 登录时追加：
-
-- [ ] 已注册项目官方 GitHub OAuth App，并将 Worker 的 `/oauth/callback` 登记为 callback URL。
-- [ ] 已通过 `scripts/deploy-oauth-worker.ps1` 配置 Secret、运行 Worker 测试并部署。
-- [ ] 已把真实 HTTPS broker origin 写入 `BUILTIN_GITHUB_OAUTH_BROKER_URL`。
-- [ ] 已验证首次授权只申请 `repo`，组织 Owner 与远端删除分别按需升级 `read:org`、`delete_repo`。
+- [ ] 已在干净 Windows x64 目标机安装 Git for Windows/GCM，设置页显示 Git/GCM 已就绪。
+- [ ] 已用无缓存凭据的私有 HTTPS 仓库完成 GCM 登录、读写验证和绑定；后续刷新与 pull/push 不重复登录。
+- [ ] 已验证只有读取权限的账号绑定失败，且原绑定不变。
 - [ ] 正式目录打印了四类产物的 SHA-256。
 - [ ] `build/metrics/` 中存在本次运行的 JSON，终端摘要与其成功/失败状态一致。
 - [ ] 已在干净 Windows x64 目标机完成安装、启动和升级验证。

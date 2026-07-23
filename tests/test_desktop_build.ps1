@@ -78,7 +78,6 @@ foreach ($functionName in @(
     "Complete-ReleasePhaseRecovery",
     "Invoke-ParallelReleaseGates",
     "Enter-ReleaseLock",
-    "Get-GithubOAuthBrokerBuildStatus",
     "Get-SidecarCacheStatus",
     "Remove-KnownTauriOutputs"
 )) {
@@ -128,28 +127,6 @@ try {
             [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null
             Assert-Equal -Expected 0 -Actual @($errors).Count -Message "Parser errors in $file"
         }
-    }
-
-    Invoke-Test "GitHub OAuth broker is optional at package time" {
-        $oauthRoot = Join-Path $tempRoot "optional-oauth-broker"
-        $oauthDirectory = Join-Path $oauthRoot "src\lpm\services"
-        New-Item -ItemType Directory -Path $oauthDirectory -Force | Out-Null
-        $oauthSource = Join-Path $oauthDirectory "github_oauth.py"
-
-        [IO.File]::WriteAllText($oauthSource, 'BUILTIN_GITHUB_OAUTH_BROKER_URL = ""')
-        $missing = Get-GithubOAuthBrokerBuildStatus -RepoRoot $oauthRoot
-        Assert-True -Condition (-not $missing.Enabled) -Message "Missing broker must disable only the optional login feature"
-        Assert-Equal -Expected "not-configured" -Actual $missing.Reason -Message "Missing broker reason"
-
-        [IO.File]::WriteAllText($oauthSource, 'BUILTIN_GITHUB_OAUTH_BROKER_URL = "http://oauth.example.test"')
-        $invalid = Get-GithubOAuthBrokerBuildStatus -RepoRoot $oauthRoot
-        Assert-True -Condition (-not $invalid.Enabled) -Message "Invalid broker must disable only the optional login feature"
-        Assert-Equal -Expected "invalid" -Actual $invalid.Reason -Message "Invalid broker reason"
-
-        [IO.File]::WriteAllText($oauthSource, 'BUILTIN_GITHUB_OAUTH_BROKER_URL = "https://oauth.example.workers.dev"')
-        $configured = Get-GithubOAuthBrokerBuildStatus -RepoRoot $oauthRoot
-        Assert-True -Condition $configured.Enabled -Message "Valid HTTPS broker must enable browser login"
-        Assert-Equal -Expected "https://oauth.example.workers.dev" -Actual $configured.Url -Message "Configured broker origin"
     }
 
     Invoke-Test "Python version policy" {

@@ -25,7 +25,7 @@ def test_tauri_response_has_no_raw_field() -> None:
     assert "raw" not in response_block
 
 
-def test_tauri_registers_narrow_oauth_deep_link_and_single_instance() -> None:
+def test_tauri_keeps_single_instance_without_oauth_deep_link_permissions() -> None:
     root = Path(__file__).parents[1]
     source = (root / "desktop" / "src-tauri" / "src" / "lib.rs").read_text(
         encoding="utf-8"
@@ -37,9 +37,10 @@ def test_tauri_registers_narrow_oauth_deep_link_and_single_instance() -> None:
         root / "desktop" / "src-tauri" / "capabilities" / "default.json"
     ).read_text(encoding="utf-8")
 
-    assert source.index("tauri_plugin_single_instance::init") < source.index(
-        "tauri_plugin_deep_link::init"
-    )
-    assert '"schemes": ["lingye-lpm"]' in config
-    assert '"deep-link:default"' in capability
-    assert "https://github.com/login/oauth/authorize*" in capability
+    assert "tauri_plugin_single_instance::init" in source
+    assert "tauri_plugin_deep_link" not in source
+    assert '"deep-link"' not in config
+    assert '"deep-link:default"' not in capability
+    assert "https://github.com/login/oauth/authorize*" not in capability
+    assert "https://git-scm.com/download/win" in capability
+    assert "https://github.com/git-ecosystem/git-credential-manager*" in capability

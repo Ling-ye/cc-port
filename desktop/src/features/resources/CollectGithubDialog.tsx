@@ -7,19 +7,19 @@ import { Banner } from "@/components/Banner";
 import {
   ResourceAdvancedFields,
   ResourceDialogFrame,
-  type AddKind,
 } from "@/features/resources/ResourceDialogFrame";
 import type {
   AddResourceResult,
   CollectResourcePayload,
   McpTransport,
   PortableMcpConfig,
+  ResourceKind,
 } from "@/types/lpm";
 
 interface CollectDraft {
   githubUrl: string;
   name: string;
-  kind: AddKind;
+  kind: ResourceKind;
   mcpTransport: McpTransport;
   mcpCommand: string;
   mcpArgs: string;
@@ -30,7 +30,7 @@ interface CollectDraft {
 const emptyDraft: CollectDraft = {
   githubUrl: "",
   name: "",
-  kind: "auto",
+  kind: "skill",
   mcpTransport: "stdio",
   mcpCommand: "",
   mcpArgs: "",
@@ -100,7 +100,7 @@ export function CollectGithubDialog({
     !pushAfterCompletion
     || Boolean(draft.githubUrl.trim())
     || Boolean(draft.name.trim())
-    || draft.kind !== "auto"
+    || draft.kind !== "skill"
     || draft.mcpTransport !== "stdio"
     || Boolean(draft.mcpCommand.trim())
     || Boolean(draft.mcpArgs.trim())
@@ -126,7 +126,7 @@ export function CollectGithubDialog({
     }
     const payload: CollectResourcePayload = {
       github_url: draft.githubUrl,
-      ...(draft.kind === "auto" ? {} : { kind: draft.kind }),
+      kind: draft.kind,
       name: draft.name,
       push: pushAfterCompletion,
       ...(mcpConfig ? { mcp_config: mcpConfig } : {}),
@@ -178,19 +178,16 @@ export function CollectGithubDialog({
           <ResourceAdvancedFields
             name={draft.name}
             kind={draft.kind}
+            allowAuto={false}
             open={advancedOpen}
             t={t}
             onNameChange={(name) => updateDraft({ name })}
             onKindChange={(kind) => {
               setFormError("");
-              updateDraft({ kind });
+              if (kind !== "auto") updateDraft({ kind });
             }}
             onOpenChange={setAdvancedOpen}
           />
-
-          {draft.kind === "auto" ? (
-            <p className="field-note add-mcp-auto-note">{t("add.mcpAutoWarning")}</p>
-          ) : null}
 
           {draft.kind === "mcp" ? (
             <fieldset className="add-mcp-config">

@@ -3,13 +3,12 @@
 # On Windows it lives at %USERPROFILE%\.config\lpm\config.toml.
 
 [github]
-# The desktop OAuth device flow stores its token here in plaintext after
-# authorization. LPM_GITHUB_TOKEN may be used instead and takes precedence.
+# Optional GitHub API token for CLI/MCP publishing and repository management.
+# LPM_GITHUB_TOKEN may be used instead and takes precedence.
+# The desktop app neither reads nor writes this field for repository binding.
 token = ""
 
-# Required user or organization under which new repositories are created.
-# Personal owners must match the authorized account. The desktop app never
-# fills this value automatically.
+# User or organization under which CLI/MCP repository creation occurs.
 owner = ""
 
 # Optional prefix prepended to every newly created repo, e.g.

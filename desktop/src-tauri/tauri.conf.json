@@ -20,13 +20,6 @@
       }
     ]
   },
-  "plugins": {
-    "deep-link": {
-      "desktop": {
-        "schemes": ["lingye-lpm"]
-      }
-    }
-  },
   "bundle": {
     "active": true,
     "targets": "all",

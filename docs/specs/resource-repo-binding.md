@@ -4,14 +4,14 @@
 
 桌面设置允许用户只提供一个 `github.com` 根仓库链接，通过一次显式操作验证 Git 读取和写入链路并保存绑定。绑定不是同步操作，不得下载仓库内容、创建远端仓库、更新远端引用或初始化本地资源目录。
 
-GitHub 访问组件改用浏览器 OAuth broker 不改变本规格：仓库仍由用户输入 URL，绑定继续使用 Git Credential Manager、系统凭据或 SSH Key，不注入 GitHub API OAuth Token。
+桌面端不提供 GitHub OAuth 或 Token 管理。仓库由用户输入 URL，绑定使用 Git Credential Manager 与系统凭据库，不注入 GitHub API Token。
 
 远端资源仓库是跨设备事实源。绑定只建立地址、分支和凭据关系；绑定成功后的设置文案必须说明“下一次远端刷新生效”，不得暗示会创建用户需要维护的完整本地仓库。
 
 ## 输入与规范化
 
-- 接受 `https://github.com/<owner>/<repo>[.git]`、`git@github.com:<owner>/<repo>[.git]` 和 `ssh://git@github.com/<owner>/<repo>[.git]`。
-- HTTPS 保存为带 `.git` 的规范地址；SSH 保存为 scp 形式，并保留用户选择的协议。
+- 桌面 API 只接受 `https://github.com/<owner>/<repo>[.git]`，并保存为带 `.git` 的规范地址。
+- 共享服务解析器继续接受 `git@github.com:<owner>/<repo>[.git]` 和 `ssh://git@github.com/<owner>/<repo>[.git]`，供 CLI/MCP 兼容路径使用；桌面 API 必须在进入探测前拒绝它们。
 - 拒绝 HTTP、非 `github.com` 主机、自定义端口、查询参数、片段、内嵌凭据及仓库根目录之外的路径。
 - 请求必须携带页面加载时看到的 `expected_current_repo_url`；实际配置已变化时拒绝保存。
 
@@ -22,11 +22,11 @@ GitHub 访问组件改用浏览器 OAuth broker 不改变本规格：仓库仍�
 3. 只有读取和写入探测都成功时才写配置；任何错误、超时或用户取消都保持原配置。
 4. 临时仓库始终清理，探测分支不得出现在远端。
 
-HTTPS 绑定允许 Git Credential Manager 在这次用户触发的操作中打开图形登录，同时保持终端提示关闭。SSH 始终使用 `BatchMode` 和连接超时；失败时提示用户加载 SSH Key 或改用 HTTPS。
+HTTPS 绑定允许 Git Credential Manager 在这次用户触发的操作中打开图形登录，同时保持终端提示关闭。桌面绑定前必须通过只读状态检查确认 Git、GCM 与 `credential.helper` 已就绪；不得自动修改 Git 配置。
 
 ## 配置语义
 
-- 一键绑定设置 `resources.credential_mode = "native"`，资源仓库的 Git 传输使用 GCM/系统凭据或 SSH Key，不注入全局 GitHub API Token。
+- 一键绑定设置 `resources.credential_mode = "native"`，桌面资源仓库的 Git 传输使用 GCM/系统凭据，不注入全局 GitHub API Token。
 - 简化设置页不再暴露 `credential_mode`、`branch` 或 `local_path`；这些字段仍可通过 `config.toml` 与 CLI 管理。
 - 旧配置缺少该字段时视为 `auto`，继续使用 Token 优先的兼容行为；`token` 强制要求有效 Token。
 - 成功绑定更新 `repo_name`、`repo_url` 和默认 `branch`。

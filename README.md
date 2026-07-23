@@ -149,14 +149,14 @@ sync/<operation-id>/           # 弃用兼容：旧 Git 同步计划与临时 wo
 
 用户机器需要：
 
-- Git 可用；LPM 会搜索配置路径、系统 PATH 和常见安装目录。
+- Git for Windows 与 Git Credential Manager 可用；LPM 会搜索配置路径、系统 PATH 和常见安装目录。
 - LPM 运行时配置可用。
-- 如果使用 GitHub 私有资源仓库，需要 Git Credential Manager、SSH Key 或 GitHub token 中的一种可用凭据。
+- 桌面仓库绑定要求 GCM 已配置为 `credential.helper`；CLI/MCP 仍可使用 SSH Key 或 GitHub Token。
 
 安装后：
 
-1. 安装 Git；通常无需手工配置 PATH，非标准位置通过 `config.toml` 的 `[git].executable` 或 `LPM_GIT_EXECUTABLE` 指定。
-2. 启动桌面应用，在设置页绑定资源仓库；需要 GitHub API 能力时，点击“登录 GitHub”并在系统浏览器完成授权。
+1. 安装包含 GCM 的 Git for Windows；通常无需手工配置 PATH，非标准位置通过 `config.toml` 的 `[git].executable` 或 `LPM_GIT_EXECUTABLE` 指定。
+2. 用户先在 GitHub 创建仓库，再启动桌面应用，在设置页粘贴完整 HTTPS 仓库地址并点击“连接并验证仓库”；首次需要凭据时由 GCM 打开登录。
 3. 高级值需要时直接编辑 `~/.config/lpm/config.toml`；可参考 `config/config.example.toml`。
 4. 需要排障时，在桌面设置页展开“诊断”并运行检查，确认配置、Git、资源仓库和平台目录正常。
 
@@ -321,42 +321,39 @@ Windows 下等价路径通常是：
 
 资源仓库地址格式：
 
-- 推荐填写 GitHub HTTPS 仓库地址：`https://github.com/<owner>/<repo>`。
-- 也可以填写：`https://github.com/<owner>/<repo>.git` 或 `git@github.com:<owner>/<repo>.git`。
-- 桌面设置页的一键绑定目前只支持 `github.com` 根仓库链接，不接受 tree、issue 或文件子路径。
+- 桌面端必须填写完整 GitHub HTTPS 仓库根地址：`https://github.com/<owner>/<repo>`；`.git` 后缀可选。
+- `https://github.com/<owner>` 用户/组织主页、SSH 地址、tree/issue/文件子路径和带凭据地址会被桌面端拒绝。
+- CLI/MCP 继续兼容 HTTPS、SSH 与环境 Token。
 
-桌面端推荐直接在“设置 -> 连接资源仓库”粘贴链接并点击“绑定仓库”：
+桌面端直接在“设置 -> 连接资源仓库”粘贴链接并点击“连接并验证仓库”：
 
-- HTTPS 缺少凭据时，Git Credential Manager 可以打开一次 GitHub 浏览器登录；SSH 链接复用现有 SSH Key。
+- 设置页会先检查 Git、Git Credential Manager（GCM）和 `credential.helper`；缺失时显示原因与 [Git for Windows](https://git-scm.com/download/win) / [GCM 安装说明](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/install.md)入口，不修改全局 Git 配置。
+- HTTPS 缺少凭据时，GCM 可以打开一次 GitHub 浏览器登录，并把凭据保存到系统凭据库。
 - 绑定只执行远端引用读取和 `push --dry-run` 权限探测，不 clone、pull、fetch、commit 或实际 push。
 - 绑定成功后显示“下一次远端刷新生效”；绑定本身不下载资源，也不创建用户需要维护的本地仓库。
 - 后续“刷新远端”只更新 LPM 隐藏维护的受管镜像和 commit 只读快照，不调用旧 `resource_pull`，也不写 AI 工具目录。
 - `[resources].credential_mode` 可选 `native`、`auto` 或 `token`；一键绑定使用 `native`，旧配置默认按 `auto` 兼容。
 
-设置页只编辑资源仓库绑定、精简 GitHub 授权和五个目标工具开关；Owner、分支、凭据模式、Git 可执行文件、仓库前缀与状态保留策略继续由内部规则、`config.toml` 和 CLI 管理。资源仓库 URL 中的 Owner 在绑定后优先于旧 `[github].owner`；未绑定时旧字段继续兼容。旧 `local_path` 与用户工作区只保留兼容，不会因设置页保存而被重置，也不进入新的桌面资源流程。
+设置页只编辑资源仓库绑定和五个目标工具开关；不显示 GitHub 账号、OAuth、Token、仓库创建、整仓删除或可见性修改。Owner、分支、凭据模式、Git 可执行文件、仓库前缀与状态保留策略继续由内部规则、`config.toml` 和 CLI 管理。资源仓库 URL 中的 Owner 在绑定后优先于旧 `[github].owner`；未绑定时旧字段继续兼容。旧 `local_path` 与用户工作区只保留兼容，不会因设置页保存而被重置，也不进入新的桌面资源流程。
 
 桌面侧栏将资源类型、桌面功能和项目信息统一放在单一“说明”页，不再提供独立“关于”页。
 
-GitHub 访问使用系统浏览器 OAuth Web Flow：
+桌面端的 GitHub 边界：
 
-- 普通连接只申请 `repo`；旧组织 Owner 验证按需追加 `read:org`；删除 `source=owned` 的远端仓库时才追加 `delete_repo`。
-- 设置页只显示授权账号与连接状态，不展示 Token、Token 来源或 scope；点击登录或重新授权后在系统浏览器批准，应用会自动接收结果，不需要设备码或 Token 输入。
-- GitHub OAuth `client_secret` 只存在于项目部署的 Cloudflare Worker；桌面端使用 PKCE 和 `lingye-lpm://oauth/complete` 深链，定时轮询作为深链被拦截时的兜底。
-- 官方无输入登录由项目维护的共享 Worker 提供；内置官方 origin 后，普通安装用户和拉取源码自行构建的用户会默认直接使用它，不需要自行部署或填写 OAuth 字符串。
-- 打包不以 Worker 为前置条件；未配置有效 broker 的构建仍可正常安装和使用资源仓库等功能，但“登录 GitHub”会显示服务未配置并保持禁用。
-- “移除本机授权”只清空 `config.toml` 中的 Token，不会撤销 GitHub 上对 OAuth App 的授权。
-- `LPM_GITHUB_TOKEN` 始终优先于配置 Token；环境变量 Token 不能在 GUI 中替换或清除。
+- 用户自行在 GitHub 创建仓库、删除仓库和修改可见性。
+- 应用只提交和同步仓库内容，不调用 GitHub 仓库管理 API，也不保存 GCM 凭据。
+- 首次绑定允许 GCM 交互；后台刷新与 pull/push 禁止突然弹出登录窗口。
+- 凭据失效时后台操作返回需要重新登录；回到设置页再次点击“连接并验证仓库”即可重新触发 GCM。
+- 用户取消登录、无写权限、Git/GCM 缺失或未配置以及网络超时都会显示独立错误，且失败不会保存绑定。
 
-全新配置默认创建私有仓库，使用 `lpm-` 前缀、`main` 分支、本机 Git/GCM 或 SSH 凭据，并启用 Codex、Claude Code、Cursor、Windsurf、opencode 五个完整平台预设。绑定后以资源仓库 URL 中的 Owner 为准；未绑定的现有配置继续保留原 Owner、平台开关、目录和高级值。Cline 与 Gemini CLI 目前不提供完整可写平台预设。
+桌面端不创建仓库；用户应先在 GitHub 创建仓库，再粘贴完整 HTTPS 地址。全新配置使用 `main` 分支、本机 Git/GCM 凭据，并启用 Codex、Claude Code、Cursor、Windsurf、opencode 五个完整平台预设。绑定后以资源仓库 URL 中的 Owner 为准；未绑定的现有配置继续保留原 Owner、平台开关、目录和高级值。Cline 与 Gemini CLI 目前不提供完整可写平台预设。
 
 常用环境变量：
 
 - `LPM_CONFIG`：指定配置文件路径。
 - `LPM_GITHUB_TOKEN`：覆盖配置文件中的 GitHub token。
-- `LPM_GITHUB_OAUTH_BROKER_URL`：开发、自托管或企业环境在运行时覆盖桌面包内置的官方共享 OAuth broker URL；只允许 HTTPS，或本机开发用的 `http://127.0.0.1` / `http://localhost`。
-- `LPM_GITHUB_OAUTH_CLIENT_ID`：只供旧设备流兼容接口使用，新设置页不读取。
 - `LPM_GIT_EXECUTABLE`：覆盖 `[git].executable`，指定 Git 可执行文件。
-- 后台分支刷新优先复用已绑定协议的非交互凭据；HTTPS 失败后可兼容回退到本机 GitHub SSH Key。只有用户显式点击绑定时允许浏览器登录。
+- 桌面后台 Git 操作复用已缓存的 GCM 凭据并保持非交互；只有用户显式点击绑定时允许浏览器登录。
 - `LPM_RESOURCE_HOME`：覆盖旧兼容工作区路径；新的桌面资源流程不把该路径作为资源中枢。
 - `LPM_DESKTOP_API_BIN`：指定桌面 GUI 使用的 `lpm-desktop-api` 可执行文件，主要用于调试。
 
@@ -629,7 +626,7 @@ Tauri 再把该 sidecar 打进最终安装包，使普通用户可以直接使�
 - 不要提交真实 `registry.yaml`。
 - 不要提交私有资源目录。
 - 私有资源仓库可能包含个人资源、内部路径、MCP 配置或敏感 metadata，默认应保持私有。
-- 除显式 Token 查看接口外，OAuth Token 不应进入 Tauri 普通响应、进程参数、任务中心、错误或日志。
+- 桌面端不提供 Token 查看或 OAuth 接口；Git 凭据不应进入 Tauri 响应、进程参数、任务中心、错误或日志。
 
 ## License
 

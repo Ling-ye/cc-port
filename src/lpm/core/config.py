@@ -253,7 +253,7 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         "# LPM (LingyePluginMarketplace) config -- edit this file, then run `lpm doctor` to verify.",
         "",
         "[github]",
-        "# GitHub OAuth or personal access token (repo scope). You can also set the",
+        "# Optional GitHub API personal access token for CLI/MCP operations. Set the",
         f"# {CONFIG_ENV_VAR} environment variable instead (takes precedence).",
         f'token = "{_escape(cfg.github.token)}"',
         "",

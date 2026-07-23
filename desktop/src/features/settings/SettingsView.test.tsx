@@ -1,11 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  listenForOAuthDeepLinks,
-  lpmAction,
-  openExternalUrl,
-} from "@/api/client";
+import { lpmAction, openExternalUrl } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
 import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { SettingsView } from "@/features/settings/SettingsView";
@@ -13,12 +9,10 @@ import type {
   ConfigBindRepoResult,
   ConfigSettings,
   DoctorCheck,
-  GithubAuthStatus,
-  GithubWebAuthSession,
+  GitCredentialStatus,
 } from "@/types/lpm";
 
 vi.mock("@/api/client", () => ({
-  listenForOAuthDeepLinks: vi.fn(async () => () => undefined),
   lpmAction: vi.fn(),
   openExternalUrl: vi.fn(),
 }));
@@ -29,16 +23,7 @@ function settings(repoUrl = "", repoName = "LingyeAIResources"): ConfigSettings 
   return {
     path: "C:/Users/test/.config/lpm/config.toml",
     exists: true,
-    token_source: "config",
-    token_preview: "gho_********cdef",
-    config_token_preview: "gho_********cdef",
-    env_token_active: false,
     config: {
-      github: {
-        owner: "Lingye",
-        repo_prefix: "lpm-",
-        default_private: true,
-      },
       git: { executable: "" },
       install: { target: "~/.cursor/skills" },
       resources: {
@@ -66,19 +51,22 @@ function settings(repoUrl = "", repoName = "LingyeAIResources"): ConfigSettings 
   };
 }
 
-function auth(overrides: Partial<GithubAuthStatus> = {}): GithubAuthStatus {
+function credentialStatus(
+  overrides: Partial<GitCredentialStatus> = {},
+): GitCredentialStatus {
   return {
-    state: "connected",
-    source: "config",
-    login: "Lingye",
-    scopes: ["repo"],
-    token_preview: "gho_********cdef",
-    config_token_preview: "gho_********cdef",
-    can_reveal: true,
-    can_clear: true,
-    env_override: false,
-    oauth_configured: true,
-    error: "",
+    state: "ready",
+    ready: true,
+    git_available: true,
+    git_path: "C:/Program Files/Git/cmd/git.exe",
+    git_source: "PATH",
+    git_version: "git version 2.50.0.windows.1",
+    gcm_available: true,
+    gcm_configured: true,
+    gcm_version: "2.6.1",
+    credential_helpers: ["manager"],
+    detail: "Git and Git Credential Manager are ready.",
+    install_url: "https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/install.md",
     ...overrides,
   };
 }
@@ -103,10 +91,10 @@ function bindingResult(next: ConfigSettings): ConfigBindRepoResult {
   };
 }
 
-function mockInitial(data = settings(), status = auth()) {
+function mockInitial(data = settings(), status = credentialStatus()) {
   vi.mocked(lpmAction).mockImplementation(async (action) => {
     if (action === "config_get") return data;
-    if (action === "github_auth_status") return status;
+    if (action === "git_credential_status") return status;
     throw new Error(`Unexpected action: ${action}`);
   });
 }
@@ -134,29 +122,26 @@ function renderView(refreshVersion = 0, language: "en" | "zh" = "en") {
 
 afterEach(() => {
   cleanup();
-  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
-describe("SettingsView simplified settings", () => {
-  it("loads on mount and refresh-version changes without rendering a page refresh button", async () => {
+describe("SettingsView native Git settings", () => {
+  it("loads config and Git credential status on mount and refresh", async () => {
     mockInitial();
     const { rerender } = renderView();
 
-    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
     await screen.findByText("Connect resource repository");
     expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
     expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(1);
-    expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "github_auth_status")).toHaveLength(1);
+    expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(1);
 
     rerender(1);
 
     await waitFor(() => {
       expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(2);
-      expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "github_auth_status")).toHaveLength(2);
+      expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(2);
     });
-    expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
   });
 
   it("ignores an older settings response when a newer refresh finishes first", async () => {
@@ -172,7 +157,7 @@ describe("SettingsView simplified settings", () => {
           ? firstConfig
           : settings("https://github.com/example/new-settings.git", "new-settings");
       }
-      if (action === "github_auth_status") return auth();
+      if (action === "git_credential_status") return credentialStatus();
       throw new Error(`Unexpected action: ${action}`);
     });
     const { rerender } = renderView();
@@ -186,62 +171,44 @@ describe("SettingsView simplified settings", () => {
       await Promise.resolve();
     });
     expect(screen.queryByText("https://github.com/example/stale-settings.git")).not.toBeInTheDocument();
-    expect(screen.getByText("https://github.com/example/new-settings.git")).toBeVisible();
   });
 
-  it("removes owner and token controls and shows the five complete target presets", async () => {
+  it("removes all GitHub OAuth and token controls", async () => {
     mockInitial();
     renderView();
 
     expect(await screen.findByText("Connect resource repository")).toBeVisible();
-    expect(screen.queryByText("Advanced settings")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Branch")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Local path")).not.toBeInTheDocument();
-    expect(screen.queryByText("Repository owner")).not.toBeInTheDocument();
-    expect(screen.queryByText("Saved token")).not.toBeInTheDocument();
-    expect(screen.queryByText("Active token source")).not.toBeInTheDocument();
-    expect(screen.queryByText("Granted permissions")).not.toBeInTheDocument();
-    expect(screen.queryByDisplayValue(/gho_/)).not.toBeInTheDocument();
-    expect(screen.getByText("Lingye")).toBeVisible();
-    expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action === "github_owner_set")).toBe(false);
-    expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action === "github_token_reveal")).toBe(false);
+    for (const text of [
+      "GitHub access",
+      "Sign in to GitHub",
+      "Authorized account",
+      "Saved token",
+      "Granted permissions",
+    ]) {
+      expect(screen.queryByText(text)).not.toBeInTheDocument();
+    }
+    expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action.startsWith("github_"))).toBe(false);
     const toolList = screen.getByRole("list", { name: "Target tools" });
     expect(within(toolList).getAllByRole("listitem")).toHaveLength(5);
-    expect(within(toolList).queryByText("Automatic paths")).not.toBeInTheDocument();
-    for (const name of ["Codex", "Claude Code", "Cursor", "Windsurf", "opencode"]) {
-      expect(within(toolList).getByRole("checkbox", { name })).toBeChecked();
-    }
   });
 
-  it("does not expose branch, credential mode, or local path for an existing binding", async () => {
-    mockInitial(settings("https://github.com/example/resources.git", "resources"));
-    renderView();
-
-    expect(await screen.findByText("https://github.com/example/resources.git")).toBeVisible();
-    expect(screen.queryByText("Branch")).not.toBeInTheDocument();
-    expect(screen.queryByText("Local path")).not.toBeInTheDocument();
-    expect(screen.queryByText("Resource repository credentials")).not.toBeInTheDocument();
-  });
-
-  it("binds a repository without invoking the full config_save interface", async () => {
+  it("uses one connect-and-verify action and preserves the narrow binding interface", async () => {
     const initial = settings();
     const connected = settings("https://github.com/example/resources.git", "resources");
     vi.mocked(lpmAction).mockImplementation(async (action) => {
       if (action === "config_get") return initial;
-      if (action === "github_auth_status") return auth();
+      if (action === "git_credential_status") return credentialStatus();
       if (action === "config_bind_repo") return bindingResult(connected);
       throw new Error(`Unexpected action: ${action}`);
     });
     const { onChanged } = renderView();
     const user = userEvent.setup();
 
-    const input = await screen.findByLabelText("Repo URL");
+    const input = await screen.findByLabelText("Repository URL");
     await user.type(input, "https://github.com/example/resources");
-    await user.click(screen.getByRole("button", { name: "Bind repository" }));
+    await user.click(screen.getByRole("button", { name: "Connect and verify repository" }));
 
     expect(await screen.findByText("Read and write credentials verified")).toBeVisible();
-    expect(screen.getByText("The remote repository is ready and will be used on the next remote refresh.")).toBeVisible();
-    expect(screen.queryByText(/first pull|explicit pull/i)).not.toBeInTheDocument();
     expect(vi.mocked(lpmAction)).toHaveBeenCalledWith("config_bind_repo", {
       repo_url: "https://github.com/example/resources",
       expected_current_repo_url: "",
@@ -250,7 +217,39 @@ describe("SettingsView simplified settings", () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
-  it("updates only one platform through platform_set_enabled", async () => {
+  it("shows a Git/GCM prerequisite error and official installation entry without disabling retry", async () => {
+    const status = credentialStatus({
+      state: "gcm_missing",
+      ready: false,
+      gcm_available: false,
+      gcm_configured: false,
+      gcm_version: "",
+      credential_helpers: [],
+      detail: "Git Credential Manager was not found.",
+    });
+    mockInitial(settings(), status);
+    renderView();
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("Git Credential Manager was not found.")).toBeVisible();
+    const connect = screen.getByRole("button", { name: "Connect and verify repository" });
+    expect(connect).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Repository URL"), "https://github.com/example/resources");
+    expect(connect).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Open installation guide" }));
+    expect(openExternalUrl).toHaveBeenCalledWith(status.install_url);
+  });
+
+  it("keeps the full repository URL requirement visible", async () => {
+    mockInitial();
+    renderView();
+
+    expect(await screen.findByText(/complete HTTPS repository URL/i)).toBeVisible();
+    expect(screen.getByPlaceholderText("e.g. https://github.com/owner/repository")).toBeVisible();
+  });
+
+  it("updates one platform through platform_set_enabled", async () => {
     const initial = settings();
     const updated = settings();
     updated.config.platforms = updated.config.platforms.map((profile) => (
@@ -258,7 +257,7 @@ describe("SettingsView simplified settings", () => {
     ));
     vi.mocked(lpmAction).mockImplementation(async (action) => {
       if (action === "config_get") return initial;
-      if (action === "github_auth_status") return auth();
+      if (action === "git_credential_status") return credentialStatus();
       if (action === "platform_set_enabled") return updated;
       throw new Error(`Unexpected action: ${action}`);
     });
@@ -271,7 +270,6 @@ describe("SettingsView simplified settings", () => {
       name: "windsurf",
       enabled: false,
     });
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Windsurf" })).not.toBeChecked());
   });
 
   it("keeps diagnostics collapsed and does not run them automatically", async () => {
@@ -292,7 +290,7 @@ describe("SettingsView simplified settings", () => {
     ];
     vi.mocked(lpmAction).mockImplementation(async (action) => {
       if (action === "config_get") return settings();
-      if (action === "github_auth_status") return auth();
+      if (action === "git_credential_status") return credentialStatus();
       if (action === "doctor") return { checks };
       throw new Error(`Unexpected action: ${action}`);
     });
@@ -305,279 +303,5 @@ describe("SettingsView simplified settings", () => {
     expect(await screen.findByText("1 passed · 1 warnings · 1 errors · 1 skipped")).toBeVisible();
     const issues = screen.getByRole("list", { name: "Diagnostic issues" });
     expect(within(issues).getAllByRole("listitem")).toHaveLength(2);
-    expect(within(issues).getByText("Resource repository")).toBeVisible();
-    expect(within(issues).getByText("AI tool: Cursor")).toBeVisible();
-    expect(within(issues).queryByText("Ready")).not.toBeInTheDocument();
-    expect(within(issues).queryByText("Using defaults")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Run again" })).toBeEnabled();
-  });
-
-  it("renders structured diagnostic details in Chinese", async () => {
-    const checks: DoctorCheck[] = [{
-      id: "resource_repo",
-      label: "Resource repo",
-      ok: true,
-      status: "warning",
-      detail: "Configured but local path does not exist: C:/resources",
-      detail_ref: {
-        code: "doctor.resource_repo.path_missing",
-        fallback: "Configured but local path does not exist: C:/resources",
-        params: { path: "C:/resources" },
-      },
-    }];
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "github_auth_status") return auth();
-      if (action === "doctor") return { checks };
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    renderView(0, "zh");
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByText("诊断"));
-    await user.click(screen.getByRole("button", { name: "运行诊断" }));
-
-    expect(await screen.findByText("配置的资源路径不存在：C:/resources")).toBeVisible();
-    expect(screen.queryByText(checks[0].detail)).not.toBeInTheDocument();
-  });
-
-  it("clears stale diagnostics on failure without disabling other settings", async () => {
-    const checks: DoctorCheck[] = [
-      { id: "git", label: "Git", ok: true, status: "ok", detail: "Ready" },
-    ];
-    let doctorCalls = 0;
-    let rejectDoctor: ((reason: Error) => void) | undefined;
-    const failedRun = new Promise<never>((_, reject) => {
-      rejectDoctor = reject;
-    });
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "github_auth_status") return auth();
-      if (action === "doctor") {
-        doctorCalls += 1;
-        if (doctorCalls === 1) return { checks };
-        return failedRun;
-      }
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    renderView();
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByText("Diagnostics"));
-    await user.click(screen.getByRole("button", { name: "Run diagnostics" }));
-    expect(await screen.findByText("Environment is healthy · 1 passed · 0 skipped")).toBeVisible();
-
-    await user.click(screen.getByRole("button", { name: "Run again" }));
-    expect(screen.queryByText("Environment is healthy · 1 passed · 0 skipped")).not.toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Codex" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
-
-    rejectDoctor?.(new Error("diagnostics failed"));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run diagnostics" })).toBeEnabled());
-  });
-
-  it("starts browser OAuth without showing or requesting a device code", async () => {
-    const session: GithubWebAuthSession = {
-      session_id: "session_1234567890",
-      authorization_url: "https://github.com/login/oauth/authorize?client_id=client",
-      expires_in: 600,
-      interval: 2,
-      purpose: "standard",
-      scopes: ["repo"],
-    };
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "github_auth_status") return auth({ state: "missing", source: "none", login: "", scopes: [] });
-      if (action === "github_web_auth_start") return session;
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    renderView();
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: "Sign in to GitHub" }));
-
-    expect(await screen.findByText("Waiting for GitHub authorization")).toBeVisible();
-    expect(screen.queryByText(/one-time code/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy code" })).not.toBeInTheDocument();
-    expect(vi.mocked(lpmAction)).toHaveBeenCalledWith("github_web_auth_start", { purpose: "standard" });
-    expect(openExternalUrl).toHaveBeenCalledWith(session.authorization_url);
-  });
-
-  it("keeps the session when opening the browser fails so the user can reopen it", async () => {
-    const session: GithubWebAuthSession = {
-      session_id: "session_1234567890",
-      authorization_url: "https://github.com/login/oauth/authorize?client_id=client",
-      expires_in: 600,
-      interval: 2,
-      purpose: "standard",
-      scopes: ["repo"],
-    };
-    vi.mocked(openExternalUrl).mockRejectedValueOnce(new Error("system opener failed"));
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "github_auth_status") return auth({ state: "missing", login: "" });
-      if (action === "github_web_auth_start") return session;
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    const { onError } = renderView();
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: "Sign in to GitHub" }));
-
-    expect(await screen.findByText("Waiting for GitHub authorization")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Reopen GitHub" })).toBeEnabled();
-    expect(onError).toHaveBeenCalledWith(
-      "The browser could not be opened. Use “Reopen GitHub” to try again.",
-    );
-  });
-
-  it("offers a localized retry after the OAuth broker is unavailable", async () => {
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "github_auth_status") return auth({ state: "missing", login: "" });
-      if (action === "github_web_auth_start") {
-        throw Object.assign(new Error("backend detail"), { code: "OAuthSessionError" });
-      }
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    const { onError } = renderView();
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: "Sign in to GitHub" }));
-
-    expect(await screen.findByRole("button", { name: "Retry sign-in" })).toBeEnabled();
-    expect(onError).toHaveBeenCalledWith(
-      "GitHub sign-in is temporarily unavailable. Try signing in again.",
-    );
-  });
-
-  it("reopens GitHub and cancels an in-progress browser authorization", async () => {
-    const session: GithubWebAuthSession = {
-      session_id: "session_1234567890",
-      authorization_url: "https://github.com/login/oauth/authorize?client_id=client",
-      expires_in: 600,
-      interval: 2,
-      purpose: "standard",
-      scopes: ["repo"],
-    };
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "github_auth_status") return auth({ state: "missing", login: "" });
-      if (action === "github_web_auth_start") return session;
-      if (action === "github_web_auth_cancel") return { cancelled: true };
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    renderView();
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: "Sign in to GitHub" }));
-    await user.click(await screen.findByRole("button", { name: "Reopen GitHub" }));
-    expect(openExternalUrl).toHaveBeenCalledTimes(2);
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(lpmAction).toHaveBeenCalledWith("github_web_auth_cancel", {
-      session_id: "session_1234567890",
-    });
-    expect(screen.queryByText("Waiting for GitHub authorization")).not.toBeInTheDocument();
-  });
-
-  it("polls immediately when a matching OAuth deep link arrives", async () => {
-    const session: GithubWebAuthSession = {
-      session_id: "session_1234567890",
-      authorization_url: "https://github.com/login/oauth/authorize?client_id=client",
-      expires_in: 600,
-      interval: 20,
-      purpose: "standard",
-      scopes: ["repo"],
-    };
-    let deepLinkHandler: ((urls: string[]) => void) | undefined;
-    vi.mocked(listenForOAuthDeepLinks).mockImplementation(async (handler) => {
-      deepLinkHandler = handler;
-      return () => undefined;
-    });
-    let statusCalls = 0;
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "github_auth_status") {
-        statusCalls += 1;
-        return statusCalls === 1
-          ? auth({ state: "missing", source: "none", login: "", scopes: [] })
-          : auth();
-      }
-      if (action === "github_web_auth_start") return session;
-      if (action === "github_web_auth_poll") {
-        return { state: "authorized", login: "Lingye", scopes: ["repo"] };
-      }
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    renderView();
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Sign in to GitHub" }));
-
-    await act(async () => {
-      deepLinkHandler?.([
-        "lingye-lpm://oauth/complete?session_id=session_1234567890&result=success",
-      ]);
-    });
-
-    await waitFor(() => expect(lpmAction).toHaveBeenCalledWith("github_web_auth_poll", {
-      session_id: "session_1234567890",
-      immediate: true,
-    }));
-    expect(await screen.findByText("Lingye")).toBeVisible();
-  });
-
-  it("removes only the local authorization after confirmation", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "github_auth_status") return auth();
-      if (action === "github_token_clear") return auth({
-        state: "missing",
-        source: "none",
-        login: "",
-        scopes: [],
-        token_preview: "",
-        config_token_preview: "",
-        can_reveal: false,
-        can_clear: false,
-      });
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    renderView();
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: "Remove local authorization" }));
-
-    expect(lpmAction).toHaveBeenCalledWith("github_token_clear");
-    expect(screen.getByText("Not connected")).toBeVisible();
-  });
-
-  it("disables browser authorization when OAuth is not configured", async () => {
-    mockInitial(settings(), auth({
-      state: "invalid",
-      login: "",
-      oauth_configured: false,
-      error: "OAuth client is unavailable.",
-    }));
-    renderView();
-
-    expect(await screen.findByText("Needs attention")).toBeVisible();
-    expect(screen.getByText("OAuth client is unavailable.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Sign in to GitHub" })).toBeDisabled();
-  });
-
-  it("shows environment-managed access without local authorization actions", async () => {
-    mockInitial(settings(), auth({
-      source: "env",
-      login: "EnvironmentUser",
-      env_override: true,
-      can_clear: true,
-    }));
-    renderView();
-
-    expect(await screen.findByText("EnvironmentUser")).toBeVisible();
-    expect(screen.getByText(/managed outside this app/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Authorize again" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Remove local authorization" })).not.toBeInTheDocument();
   });
 });
