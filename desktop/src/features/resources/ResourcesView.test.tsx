@@ -76,7 +76,8 @@ function renderView(
   resources = [resource()],
   options: {
     inventory?: AssetInventory | null;
-    refreshBusy?: boolean;
+    remoteRefreshBusy?: boolean;
+    localScanBusy?: boolean;
     language?: "en" | "zh";
   } = {},
 ) {
@@ -85,26 +86,27 @@ function renderView(
   const onOpenSettings = vi.fn();
   const onSelect = vi.fn();
   const onRefreshRemote = vi.fn(async () => undefined);
-  const onLocalScanned = vi.fn();
+  const onScanLocal = vi.fn(async () => undefined);
   render(
     <TaskCenterProvider>
       <ResourcesView
         inventory={data}
         selectedKey={data?.resources[0]?.resource_key}
-        t={createTranslator(options.language ?? "en")}
-        onSelect={onSelect}
-        refreshBusy={options.refreshBusy ?? false}
-        remoteCheckedAt="2026-07-17T01:00:00Z"
-        localScannedAt="2026-07-17T02:00:00Z"
-        onRefreshRemote={onRefreshRemote}
-        onLocalScanned={onLocalScanned}
+         t={createTranslator(options.language ?? "en")}
+         onSelect={onSelect}
+         remoteRefreshBusy={options.remoteRefreshBusy ?? false}
+         localScanBusy={options.localScanBusy ?? false}
+         remoteCheckedAt="2026-07-17T01:00:00Z"
+         localScannedAt="2026-07-17T02:00:00Z"
+         onRefreshRemote={onRefreshRemote}
+         onScanLocal={onScanLocal}
         onChanged={onChanged}
         onError={vi.fn()}
         onOpenSettings={onOpenSettings}
       />
     </TaskCenterProvider>,
   );
-  return { onChanged, onLocalScanned, onOpenSettings, onRefreshRemote, onSelect };
+  return { onChanged, onOpenSettings, onRefreshRemote, onScanLocal, onSelect };
 }
 
 function batchPlan(direction: "upload" | "download", disposition: "create" | "update" | "blocked" = "update"): AssetBatchPlan {
@@ -231,12 +233,25 @@ describe("ResourcesView unified inventory", () => {
     expect(screen.getByRole("button", { name: "Import local folder" })).toBeDisabled();
 
     cleanup();
-    renderView([resource({ kind: "plugin", resource_key: "plugin:demo" })], { refreshBusy: true });
+    renderView(
+      [resource({ kind: "plugin", resource_key: "plugin:demo" })],
+      { remoteRefreshBusy: true },
+    );
     expect(screen.getByRole("button", { name: "Refresh remote" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Scan local" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Scan local" })).toBeEnabled();
     expect(screen.getByText("Wait for the resource inventory refresh to finish.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Collect from GitHub" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Import local folder" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete plugin" })).toBeDisabled();
+
+    cleanup();
+    renderView(
+      [resource({ kind: "plugin", resource_key: "plugin:demo" })],
+      { localScanBusy: true },
+    );
+    expect(screen.getByRole("button", { name: "Refresh remote" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Scan local" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Collect from GitHub" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Delete plugin" })).toBeDisabled();
 
     cleanup();

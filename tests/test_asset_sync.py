@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -269,6 +270,34 @@ def test_logical_inventory_preserves_unknown_local_and_unavailable_remote_snapsh
     assert logical.status == "uncomparable"
     assert logical.diff_summary == ["Local assets have not been scanned yet."]
     assert inventory.remote_warning == "Using cached remote snapshot."
+
+
+def test_inventory_refreshes_remote_and_scans_local_in_parallel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _snapshot(tmp_path / "remote", Registry(items=[]))
+    rendezvous = threading.Barrier(2, timeout=2)
+
+    def refresh_remote(*_args: object, **_kwargs: object) -> RemoteSnapshot:
+        rendezvous.wait()
+        return snapshot
+
+    def scan_local(*_args: object, **_kwargs: object) -> EnvDiscoveryResult:
+        rendezvous.wait()
+        return _empty_discovery()
+
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", refresh_remote)
+    monkeypatch.setattr(asset_sync, "discover_environment", scan_local)
+
+    inventory = asset_sync.build_asset_inventory(
+        config=_config(tmp_path),
+        scan_local=True,
+        refresh_remote=True,
+    )
+
+    assert inventory.scanned_local is True
+    assert inventory.remote_commit == "abc123"
 
 
 def test_logical_inventory_merges_remote_and_discovered_local_union(

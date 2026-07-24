@@ -1296,6 +1296,53 @@ button {
   white-space: nowrap;
 }
 
+.settings-load-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #bfd7dc;
+  border-radius: 9px;
+  padding: 12px;
+  background: #f2f8fa;
+  color: #3f6872;
+}
+
+.settings-load-state.is-error {
+  border-color: #e4b5b5;
+  background: #fff6f6;
+  color: #9c2525;
+}
+
+.settings-load-state > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-load-state strong {
+  font-size: 13px;
+}
+
+.settings-load-state span {
+  color: #65757d;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.settings-load-state.is-error span {
+  color: #8b4545;
+}
+
+.settings-load-state button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
 .rebind-modal > p {
   margin: 0 0 14px;
   color: #5e6c75;
@@ -1469,6 +1516,27 @@ button {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.platform-toggle-placeholder {
+  position: relative;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background: #dce4e8;
+}
+
+.platform-toggle-placeholder::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #f7fafb;
+  box-shadow: 0 1px 2px rgba(28, 43, 51, 0.16);
 }
 
 .settings-diagnostics {
@@ -2112,6 +2180,34 @@ button {
 
   .git-credential-status.needs-action span {
     color: #d6bd8a;
+  }
+
+  .settings-load-state {
+    background: #172b31;
+    border-color: #31505a;
+    color: #b8d8df;
+  }
+
+  .settings-load-state span {
+    color: #9cafb8;
+  }
+
+  .settings-load-state.is-error {
+    background: #321f22;
+    border-color: #754147;
+    color: #f0b5bb;
+  }
+
+  .settings-load-state.is-error span {
+    color: #d99aa1;
+  }
+
+  .platform-toggle-placeholder {
+    background: #33474f;
+  }
+
+  .platform-toggle-placeholder::after {
+    background: #9cafb8;
   }
 
   .confirm-name-field input,

@@ -127,6 +127,26 @@ afterEach(() => {
 });
 
 describe("SettingsView native Git settings", () => {
+  it("renders the complete disabled settings shell before initial reads finish", () => {
+    vi.mocked(lpmAction).mockImplementation(() => new Promise(() => undefined));
+
+    renderView();
+
+    expect(screen.getByText("Connect resource repository")).toBeVisible();
+    expect(screen.getByText("Target tools")).toBeVisible();
+    expect(screen.getByText("Diagnostics")).toBeVisible();
+    expect(within(screen.getByRole("status")).getByText(
+      "Reading settings and Git credential status",
+    )).toBeVisible();
+    expect(screen.getByLabelText("Repository URL")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Connect and verify repository" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run diagnostics" })).toBeDisabled();
+
+    const toolList = screen.getByRole("list", { name: "Target tools" });
+    expect(within(toolList).getAllByRole("listitem")).toHaveLength(5);
+    expect(within(toolList).queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
   it("loads config and Git credential status on mount and refresh", async () => {
     mockInitial();
     const { rerender } = renderView();
@@ -142,6 +162,37 @@ describe("SettingsView native Git settings", () => {
       expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(2);
       expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(2);
     });
+  });
+
+  it("keeps the settings shell disabled after a load failure and retries both reads", async () => {
+    let attempt = 0;
+    vi.mocked(lpmAction).mockImplementation(async (action) => {
+      if (action === "config_get") {
+        attempt += 1;
+        if (attempt === 1) throw new Error("Unable to read settings.");
+        return settings();
+      }
+      if (action === "git_credential_status") return credentialStatus();
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    const { onError } = renderView();
+    const user = userEvent.setup();
+
+    const loadAlert = await screen.findByRole("alert");
+    expect(within(loadAlert).getByText("Settings could not be loaded")).toBeVisible();
+    expect(within(loadAlert).getByText("Unable to read settings.")).toBeVisible();
+    expect(loadAlert.closest(".settings-view")).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByLabelText("Repository URL")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run diagnostics" })).toBeDisabled();
+    expect(onError).toHaveBeenCalledWith("Unable to read settings.");
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("checkbox", { name: "Codex" })).toBeEnabled();
+    expect(screen.getByLabelText("Repository URL")).toBeEnabled();
+    expect(screen.queryAllByText("Settings could not be loaded")).toHaveLength(0);
+    expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(2);
+    expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(2);
   });
 
   it("ignores an older settings response when a newer refresh finishes first", async () => {

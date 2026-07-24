@@ -21,7 +21,8 @@ import type {
   GitCredentialStatus,
 } from "@/types/lpm";
 
-const SIMPLE_PLATFORM_NAMES = new Set(["codex", "claude-code", "cursor", "windsurf", "opencode"]);
+const SIMPLE_PLATFORM_NAMES = ["codex", "claude-code", "cursor", "windsurf", "opencode"] as const;
+const SIMPLE_PLATFORM_NAME_SET = new Set<string>(SIMPLE_PLATFORM_NAMES);
 
 export function SettingsView({
   t,
@@ -46,10 +47,13 @@ export function SettingsView({
   const [platformSaving, setPlatformSaving] = useState("");
   const [diagnosticChecks, setDiagnosticChecks] = useState<DoctorCheck[] | null>(null);
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const settingsRequestRef = useRef(0);
 
   const actionBusy = binding || Boolean(platformSaving);
   const anyBusy = loading || actionBusy;
+  const settingsReady = Boolean(settings && credentialStatus && !loadError);
+  const controlsDisabled = anyBusy || !settingsReady;
 
   useEffect(() => () => {
     settingsRequestRef.current += 1;
@@ -64,6 +68,7 @@ export function SettingsView({
     const requestId = settingsRequestRef.current + 1;
     settingsRequestRef.current = requestId;
     setLoading(true);
+    setLoadError("");
     try {
       const [data, status] = await Promise.all([
         lpmAction<ConfigSettings>("config_get"),
@@ -75,7 +80,11 @@ export function SettingsView({
       setLastBinding(null);
       setBindError("");
     } catch (err) {
-      if (requestId === settingsRequestRef.current) onError(displayError(err, t));
+      if (requestId === settingsRequestRef.current) {
+        const message = displayError(err, t);
+        setLoadError(message);
+        onError(message);
+      }
     } finally {
       if (requestId === settingsRequestRef.current) setLoading(false);
     }
@@ -174,17 +183,15 @@ export function SettingsView({
     }
   }
 
-  if (!settings || !credentialStatus) {
-    return (
-      <section className="panel">
-        <div className="panel-head"><h2>{t("settings.title")}</h2></div>
-      </section>
-    );
-  }
-
-  const currentUrl = settings.config.resources.repo_url.trim();
+  const currentUrl = settings?.config.resources.repo_url.trim() || "";
+  const currentRepoName = settings?.config.resources.repo_name || "";
+  const visiblePlatforms = settings?.config.platforms.filter(
+    (platform) => SIMPLE_PLATFORM_NAME_SET.has(platform.name),
+  );
+  const initialLoading = !settings || !credentialStatus;
+  const settingsPending = loading || (initialLoading && !loadError);
   return (
-    <section className="settings-view">
+    <section className="settings-view" aria-busy={settingsPending}>
       <div className="panel settings-panel">
         <div className="panel-head">
           <div>
@@ -193,7 +200,11 @@ export function SettingsView({
           </div>
         </div>
 
-        <section className="repo-binding-card" aria-labelledby="repo-binding-title">
+        <section
+          className="repo-binding-card"
+          aria-labelledby="repo-binding-title"
+          aria-busy={settingsPending}
+        >
           <div className="repo-binding-head">
             <div>
               <span className="repo-binding-icon"><Link2 size={20} /></span>
@@ -202,17 +213,31 @@ export function SettingsView({
                 <p>{t("settings.quickBindDescription")}</p>
               </div>
             </div>
-            <span className={currentUrl ? "connection-pill connected" : "connection-pill"}>
-              {currentUrl ? <BadgeCheck size={15} /> : null}
-              {currentUrl ? t("settings.bound") : t("settings.unbound")}
+            <span
+              className={!loading && !loadError && currentUrl ? "connection-pill connected" : "connection-pill"}
+              aria-live="polite"
+            >
+              {settingsPending ? (
+                <><RefreshCcw className="spin" size={15} />{t("settings.loading")}</>
+              ) : loadError ? (
+                <><AlertTriangle size={15} />{t("settings.loadFailed")}</>
+              ) : (
+                <>{currentUrl ? <BadgeCheck size={15} /> : null}{currentUrl ? t("settings.bound") : t("settings.unbound")}</>
+              )}
             </span>
           </div>
 
-          <CredentialStatusPanel
-            status={credentialStatus}
-            t={t}
-            onOpenGuide={() => void openCredentialGuide()}
-          />
+          {loadError ? (
+            <SettingsLoadState error={loadError} t={t} onRetry={() => void loadSettings()} />
+          ) : credentialStatus ? (
+            <CredentialStatusPanel
+              status={credentialStatus}
+              t={t}
+              onOpenGuide={() => void openCredentialGuide()}
+            />
+          ) : (
+            <SettingsLoadState error="" t={t} onRetry={() => void loadSettings()} />
+          )}
 
           <div className="repo-bind-control">
             <label>
@@ -230,9 +255,15 @@ export function SettingsView({
                 }}
                 aria-invalid={Boolean(bindError)}
                 autoComplete="url"
+                disabled={controlsDisabled}
               />
             </label>
-            <button className="primary" type="button" onClick={requestBind} disabled={anyBusy || !bindUrl.trim()}>
+            <button
+              className="primary"
+              type="button"
+              onClick={requestBind}
+              disabled={controlsDisabled || !bindUrl.trim()}
+            >
               {binding ? <RefreshCcw className="spin" size={17} /> : <Link2 size={17} />}
               {binding ? t("settings.binding") : t("settings.connectAndVerify")}
             </button>
@@ -243,7 +274,7 @@ export function SettingsView({
             <div className="repo-binding-status" aria-live="polite">
               <div>
                 <span>{t("settings.boundRepository")}</span>
-                <strong>{settings.config.resources.repo_name}</strong>
+                <strong>{currentRepoName}</strong>
                 <small>{currentUrl}</small>
               </div>
             </div>
@@ -266,24 +297,37 @@ export function SettingsView({
               <p>{t("settings.targetToolsDescription")}</p>
             </div>
           </div>
-          <ul className="platform-toggle-list" aria-label={t("settings.targetTools")}>
-            {settings.config.platforms.filter((platform) => SIMPLE_PLATFORM_NAMES.has(platform.name)).map((platform) => (
-              <li className="platform-toggle-item" key={platform.name}>
-                <label className={`platform-toggle${anyBusy ? " is-disabled" : ""}`}>
-                  <strong>{platformDisplayName(platform.name)}</strong>
-                  <span className="platform-toggle-control">
-                    {platformSaving === platform.name ? <RefreshCcw className="spin" size={15} /> : null}
-                    <input
-                      type="checkbox"
-                      checked={platform.enabled}
-                      disabled={anyBusy}
-                      onChange={(event) => void setPlatformEnabled(platform.name, event.target.checked)}
-                      aria-label={platformDisplayName(platform.name)}
-                    />
-                  </span>
-                </label>
-              </li>
-            ))}
+          <ul
+            className="platform-toggle-list"
+            aria-label={t("settings.targetTools")}
+            aria-busy={settingsPending}
+          >
+            {visiblePlatforms
+              ? visiblePlatforms.map((platform) => (
+                <li className="platform-toggle-item" key={platform.name}>
+                  <label className={`platform-toggle${controlsDisabled ? " is-disabled" : ""}`}>
+                    <strong>{platformDisplayName(platform.name)}</strong>
+                    <span className="platform-toggle-control">
+                      {platformSaving === platform.name ? <RefreshCcw className="spin" size={15} /> : null}
+                      <input
+                        type="checkbox"
+                        checked={platform.enabled}
+                        disabled={controlsDisabled}
+                        onChange={(event) => void setPlatformEnabled(platform.name, event.target.checked)}
+                        aria-label={platformDisplayName(platform.name)}
+                      />
+                    </span>
+                  </label>
+                </li>
+              ))
+              : SIMPLE_PLATFORM_NAMES.map((name) => (
+                <li className="platform-toggle-item" key={name}>
+                  <div className="platform-toggle is-disabled">
+                    <strong>{platformDisplayName(name)}</strong>
+                    <span className="platform-toggle-placeholder" aria-hidden="true" />
+                  </div>
+                </li>
+              ))}
           </ul>
           <small className="field-note">{t("settings.toolDirectoryWarning")}</small>
         </section>
@@ -296,7 +340,12 @@ export function SettingsView({
             </span>
           </summary>
           <div className="settings-diagnostics-body">
-            <button className="secondary" type="button" onClick={() => void runDiagnostics()} disabled={diagnosticsBusy}>
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => void runDiagnostics()}
+              disabled={diagnosticsBusy || loading || !settingsReady}
+            >
               {diagnosticsBusy ? <RefreshCcw className="spin" size={17} /> : <TerminalSquare size={17} />}
               {diagnosticChecks === null ? t("settings.diagnostics.run") : t("settings.diagnostics.rerun")}
             </button>
@@ -316,6 +365,34 @@ export function SettingsView({
         />
       ) : null}
     </section>
+  );
+}
+
+function SettingsLoadState({
+  error,
+  t,
+  onRetry,
+}: {
+  error: string;
+  t: TFunction;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className={`settings-load-state ${error ? "is-error" : "is-loading"}`}
+      role={error ? "alert" : "status"}
+    >
+      {error ? <AlertTriangle size={18} /> : <RefreshCcw className="spin" size={18} />}
+      <div>
+        <strong>{error ? t("settings.loadFailed") : t("settings.loading")}</strong>
+        {error ? <span>{error}</span> : null}
+      </div>
+      {error ? (
+        <button className="secondary" type="button" onClick={onRetry}>
+          <RefreshCcw size={15} />{t("common.retry")}
+        </button>
+      ) : null}
+    </div>
   );
 }
 

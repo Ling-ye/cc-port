@@ -21,19 +21,21 @@ vi.mock("@/api/client", () => ({
 vi.mock("@/features/resources/ResourcesView", () => ({
   ResourcesView: ({
     inventory,
-    refreshBusy,
+    remoteRefreshBusy,
+    localScanBusy,
     remoteCheckedAt,
     localScannedAt,
     onRefreshRemote,
-    onLocalScanned,
+    onScanLocal,
     onChanged,
   }: {
     inventory: AssetInventory | null;
-    refreshBusy: boolean;
+    remoteRefreshBusy: boolean;
+    localScanBusy: boolean;
     remoteCheckedAt: string | null;
     localScannedAt: string | null;
     onRefreshRemote: () => Promise<void> | void;
-    onLocalScanned: (inventory: AssetInventory, scope: ScanScope) => void;
+    onScanLocal: (scope: ScanScope) => Promise<void> | void;
     onChanged: () => Promise<void> | void;
   }) => (
     <section aria-label="Resources test view">
@@ -42,27 +44,26 @@ vi.mock("@/features/resources/ResourcesView", () => ({
       <span data-testid="remote-warning">{inventory?.remote_warning || ""}</span>
       <span data-testid="remote-checked-at">{remoteCheckedAt || ""}</span>
       <span data-testid="local-scanned-at">{localScannedAt || ""}</span>
+      <span data-testid="inventory-generated-at">{inventory?.generated_at || ""}</span>
       {inventory?.resources.map((resource) => (
         <span key={resource.resource_key} data-testid={`resource-${resource.resource_key}`}>
           {resource.resource_key}
         </span>
       ))}
-      <button type="button" disabled={refreshBusy} onClick={() => void onRefreshRemote()}>
+      <button type="button" disabled={remoteRefreshBusy} onClick={() => void onRefreshRemote()}>
         Refresh remote
       </button>
       <button
         type="button"
-        onClick={() => onLocalScanned(makeInventory({
-          scanned_local: true,
-          resources: [makeLocalOnlyResource()],
-        }), {
+        disabled={localScanBusy}
+        onClick={() => void onScanLocal({
           scan_global: false,
           project_ids: ["project-a"],
         })}
       >
-        Complete local scan
+        Scan local
       </button>
-      <button type="button" disabled={refreshBusy} onClick={() => void onChanged()}>
+      <button type="button" disabled={remoteRefreshBusy || localScanBusy} onClick={() => void onChanged()}>
         Resource changed
       </button>
     </section>
@@ -70,9 +71,16 @@ vi.mock("@/features/resources/ResourcesView", () => ({
 }));
 
 vi.mock("@/features/settings/SettingsView", () => ({
-  SettingsView: ({ refreshVersion }: { refreshVersion: number }) => (
+  SettingsView: ({
+    refreshVersion,
+    onChanged,
+  }: {
+    refreshVersion: number;
+    onChanged: () => Promise<void> | void;
+  }) => (
     <section aria-label="Settings test view">
       <span data-testid="settings-refresh-version">{refreshVersion}</span>
+      <button type="button" onClick={() => void onChanged()}>Settings changed</button>
     </section>
   ),
 }));
@@ -141,6 +149,16 @@ function renderApp(strict = false) {
     </TaskCenterProvider>
   );
   return render(strict ? <StrictMode>{content}</StrictMode> : content);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 async function waitForStartup() {
@@ -228,12 +246,12 @@ describe("App inventory orchestration", () => {
     renderApp();
     await waitForStartup();
 
-    await user.click(screen.getByRole("button", { name: "Complete local scan" }));
-    expect(screen.getByTestId("local-scanned-at")).not.toHaveTextContent(/^$/);
+    await user.click(screen.getByRole("button", { name: "Scan local" }));
+    await waitFor(() => expect(screen.getByTestId("local-scanned-at")).not.toHaveTextContent(/^$/));
     expect(screen.getByTestId("resource-skill:local-only")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Refresh remote" }));
-    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(3));
     expect(clientMocks.lpmAction).toHaveBeenLastCalledWith("asset_inventory", {
       scan_local: true,
       scan_global: false,
@@ -244,13 +262,223 @@ describe("App inventory orchestration", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Resource changed" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Resource changed" }));
-    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(4));
     expect(clientMocks.lpmAction).toHaveBeenLastCalledWith("asset_inventory", {
       scan_local: true,
       scan_global: false,
       project_ids: ["project-a"],
       refresh_remote: true,
     });
+  });
+
+  it("runs remote refresh and local scan concurrently and publishes both completions", async () => {
+    const user = userEvent.setup();
+    const remoteResult = deferred<AssetInventory>();
+    const localResult = deferred<AssetInventory>();
+    clientMocks.lpmAction
+      .mockResolvedValueOnce(makeInventory({ generated_at: "startup" }))
+      .mockImplementationOnce(() => remoteResult.promise)
+      .mockImplementationOnce(() => localResult.promise);
+    renderApp();
+    await waitForStartup();
+
+    const refreshButton = screen.getByRole("button", { name: "Refresh remote" });
+    const scanButton = screen.getByRole("button", { name: "Scan local" });
+    await user.click(refreshButton);
+    await waitFor(() => expect(refreshButton).toBeDisabled());
+    expect(scanButton).toBeEnabled();
+
+    await user.click(scanButton);
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(3));
+    expect(refreshButton).toBeDisabled();
+    expect(scanButton).toBeDisabled();
+    expect(clientMocks.lpmAction).toHaveBeenNthCalledWith(2, "asset_inventory", {
+      scan_local: false,
+      refresh_remote: true,
+    });
+    expect(clientMocks.lpmAction).toHaveBeenNthCalledWith(3, "asset_inventory", {
+      scan_local: true,
+      scan_global: false,
+      project_ids: ["project-a"],
+      refresh_remote: false,
+    });
+
+    remoteResult.resolve(makeInventory({
+      generated_at: "remote-complete",
+      remote_commit: "def456",
+    }));
+    await waitFor(() => expect(screen.getByTestId("inventory-generated-at"))
+      .toHaveTextContent("remote-complete"));
+    expect(scanButton).toBeDisabled();
+
+    localResult.resolve(makeInventory({
+      generated_at: "local-complete",
+      remote_commit: "def456",
+      scanned_local: true,
+      resources: [makeLocalOnlyResource()],
+    }));
+    await waitFor(() => expect(screen.getByTestId("inventory-generated-at"))
+      .toHaveTextContent("local-complete"));
+    expect(refreshButton).toBeEnabled();
+    expect(scanButton).toBeEnabled();
+  });
+
+  it("reconciles a remote result when a newer local scan completes first", async () => {
+    const user = userEvent.setup();
+    const remoteResult = deferred<AssetInventory>();
+    const localResult = deferred<AssetInventory>();
+    clientMocks.lpmAction
+      .mockResolvedValueOnce(makeInventory({ generated_at: "startup" }))
+      .mockResolvedValueOnce(makeInventory({
+        generated_at: "initial-local",
+        scanned_local: true,
+        resources: [makeLocalOnlyResource()],
+      }))
+      .mockImplementationOnce(() => remoteResult.promise)
+      .mockImplementationOnce(() => localResult.promise)
+      .mockResolvedValueOnce(makeInventory({
+        generated_at: "reconciled",
+        remote_commit: "def456",
+        scanned_local: true,
+        resources: [makeLocalOnlyResource()],
+      }));
+    renderApp();
+    await waitForStartup();
+
+    await user.click(screen.getByRole("button", { name: "Scan local" }));
+    await waitFor(() => expect(screen.getByTestId("inventory-generated-at"))
+      .toHaveTextContent("initial-local"));
+
+    await user.click(screen.getByRole("button", { name: "Refresh remote" }));
+    await user.click(screen.getByRole("button", { name: "Scan local" }));
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(4));
+
+    localResult.resolve(makeInventory({
+      generated_at: "new-local",
+      scanned_local: true,
+      resources: [makeLocalOnlyResource()],
+    }));
+    await waitFor(() => expect(screen.getByTestId("inventory-generated-at"))
+      .toHaveTextContent("new-local"));
+
+    remoteResult.resolve(makeInventory({
+      generated_at: "stale-remote",
+      remote_commit: "def456",
+      scanned_local: true,
+      resources: [makeLocalOnlyResource()],
+    }));
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(5));
+    expect(clientMocks.lpmAction).toHaveBeenLastCalledWith("asset_inventory", {
+      scan_local: true,
+      scan_global: false,
+      project_ids: ["project-a"],
+      refresh_remote: false,
+    });
+    await waitFor(() => expect(screen.getByTestId("inventory-generated-at"))
+      .toHaveTextContent("reconciled"));
+  });
+
+  it("joins a retried local scan to the active scan without clearing busy or publishing twice", async () => {
+    const user = userEvent.setup();
+    const activeScan = deferred<AssetInventory>();
+    clientMocks.lpmAction
+      .mockResolvedValueOnce(makeInventory({ generated_at: "startup" }))
+      .mockRejectedValueOnce(new Error("scan failed"))
+      .mockImplementationOnce(() => activeScan.promise);
+    renderApp();
+    await waitForStartup();
+
+    const scanButton = screen.getByRole("button", { name: "Scan local" });
+    await user.click(scanButton);
+    await waitFor(() => expect(scanButton).toBeEnabled());
+
+    await user.click(scanButton);
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(3));
+    expect(scanButton).toBeDisabled();
+
+    const generatedAt = screen.getByTestId("inventory-generated-at");
+    const publishedValues: string[] = [];
+    const observer = new MutationObserver(() => {
+      const value = generatedAt.textContent || "";
+      if (publishedValues[publishedValues.length - 1] !== value) publishedValues.push(value);
+    });
+    observer.observe(generatedAt, { childList: true, characterData: true, subtree: true });
+
+    await user.click(screen.getByRole("button", { name: "Task center" }));
+    await user.click(await screen.findByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
+
+    expect(clientMocks.lpmAction).toHaveBeenCalledTimes(3);
+    expect(scanButton).toBeDisabled();
+
+    activeScan.resolve(makeInventory({
+      generated_at: "shared-local-result",
+      scanned_local: true,
+      resources: [makeLocalOnlyResource()],
+    }));
+    await waitFor(() => expect(generatedAt).toHaveTextContent("shared-local-result"));
+    await waitFor(() => expect(scanButton).toBeEnabled());
+    observer.disconnect();
+
+    expect(clientMocks.lpmAction).toHaveBeenCalledTimes(3);
+    expect(publishedValues.filter((value) => value === "shared-local-result")).toHaveLength(1);
+  });
+
+  it("coalesces pending refreshes and schedules another when changes happen during the follow-up", async () => {
+    const user = userEvent.setup();
+    const activeRefresh = deferred<AssetInventory>();
+    const firstFollowUp = deferred<AssetInventory>();
+    const secondFollowUp = deferred<AssetInventory>();
+    clientMocks.lpmAction
+      .mockResolvedValueOnce(makeInventory({ generated_at: "startup" }))
+      .mockImplementationOnce(() => activeRefresh.promise)
+      .mockImplementationOnce(() => firstFollowUp.promise)
+      .mockImplementationOnce(() => secondFollowUp.promise);
+    renderApp();
+    await waitForStartup();
+
+    await user.click(screen.getByRole("button", { name: "Refresh remote" }));
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    const settingsChanged = screen.getByRole("button", { name: "Settings changed" });
+    await user.click(settingsChanged);
+    await user.click(settingsChanged);
+    await user.click(settingsChanged);
+    expect(clientMocks.lpmAction).toHaveBeenCalledTimes(2);
+
+    activeRefresh.resolve(makeInventory({
+      generated_at: "active-refresh-result",
+      remote_commit: "def456",
+    }));
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(3));
+    expect(clientMocks.lpmAction).toHaveBeenNthCalledWith(3, "asset_inventory", {
+      scan_local: false,
+      refresh_remote: true,
+    });
+
+    await user.click(settingsChanged);
+    await user.click(settingsChanged);
+    expect(clientMocks.lpmAction).toHaveBeenCalledTimes(3);
+
+    firstFollowUp.resolve(makeInventory({
+      generated_at: "first-follow-up-result",
+      remote_commit: "ghi789",
+    }));
+    await waitFor(() => expect(clientMocks.lpmAction).toHaveBeenCalledTimes(4));
+    expect(clientMocks.lpmAction).toHaveBeenNthCalledWith(4, "asset_inventory", {
+      scan_local: false,
+      refresh_remote: true,
+    });
+
+    secondFollowUp.resolve(makeInventory({
+      generated_at: "second-follow-up-result",
+      remote_commit: "jkl012",
+    }));
+    await user.click(screen.getByRole("button", { name: "Resources" }));
+    await waitFor(() => expect(screen.getByTestId("inventory-generated-at"))
+      .toHaveTextContent("second-follow-up-result"));
+    expect(clientMocks.lpmAction).toHaveBeenCalledTimes(4);
   });
 
   it("preserves a cached remote state when a local-only scan completes", async () => {
@@ -263,8 +491,9 @@ describe("App inventory orchestration", () => {
     await waitForStartup();
 
     expect(screen.getByTestId("remote-available")).toHaveTextContent("false");
-    await user.click(screen.getByRole("button", { name: "Complete local scan" }));
+    await user.click(screen.getByRole("button", { name: "Scan local" }));
 
+    await waitFor(() => expect(screen.getByTestId("local-scanned-at")).not.toHaveTextContent(/^$/));
     expect(screen.getByTestId("remote-available")).toHaveTextContent("false");
     expect(screen.getByTestId("remote-warning")).toHaveTextContent("Remote unavailable; showing cache");
   });

@@ -20,24 +20,48 @@ import type { ScanScope } from "@/features/resources/ScanLocalDialog";
 import { SettingsView } from "@/features/settings/SettingsView";
 import type { AssetInventory } from "@/types/lpm";
 
+type RemoteInventoryStatus = Pick<
+  AssetInventory,
+  "remote_available" | "remote_warning" | "remote_warning_ref"
+>;
+
+interface RemoteRefreshOutcome {
+  inventory: AssetInventory;
+  previousCommit: string;
+}
+
+function copyScanScope(scope: ScanScope | null): ScanScope | null {
+  return scope ? {
+    scan_global: scope.scan_global,
+    project_ids: [...scope.project_ids],
+  } : null;
+}
+
 export default function App() {
   const { runTask, runningCount } = useTaskCenter();
   const [view, setView] = useState<View>("resources");
   const [language, setLanguage] = useState<Language>(() => readStoredLanguage());
   const [assetInventory, setAssetInventory] = useState<AssetInventory | null>(null);
-  const [scanScope, setScanScope] = useState<ScanScope | null>(null);
   const [remoteCheckedAt, setRemoteCheckedAt] = useState<string | null>(null);
   const [localScannedAt, setLocalScannedAt] = useState<string | null>(null);
   const [selectedResourceKey, setSelectedResourceKey] = useState<string>("");
-  const [refreshBusy, setRefreshBusy] = useState(false);
+  const [remoteRefreshBusy, setRemoteRefreshBusy] = useState(false);
+  const [localScanBusy, setLocalScanBusy] = useState(false);
   const [error, setError] = useState("");
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [settingsRefreshVersion, setSettingsRefreshVersion] = useState(0);
   const startupRequestedRef = useRef(false);
-  const refreshInFlightRef = useRef(false);
+  const assetInventoryRef = useRef<AssetInventory | null>(null);
+  const scanScopeRef = useRef<ScanScope | null>(null);
+  const remoteStatusRef = useRef<RemoteInventoryStatus | null>(null);
+  const localCompletionVersionRef = useRef(0);
+  const remoteRefreshPromiseRef = useRef<Promise<RemoteRefreshOutcome> | null>(null);
+  const localScanPromiseRef = useRef<Promise<AssetInventory> | null>(null);
+  const pendingRemoteRefreshRef = useRef(false);
   const t = useMemo(() => createTranslator(language), [language]);
 
   function applyInventory(inventory: AssetInventory) {
+    assetInventoryRef.current = inventory;
     setAssetInventory(inventory);
     setSelectedResourceKey((current) => (
       inventory.resources.some((resource) => resource.resource_key === current)
@@ -48,32 +72,86 @@ export default function App() {
     ));
   }
 
-  async function loadInventory(scope: ScanScope | null) {
-    const inventory = await lpmAction<AssetInventory>("asset_inventory", {
-      scan_local: scope !== null,
-      ...(scope || {}),
-      refresh_remote: true,
-    });
-    applyInventory(inventory);
-    const completedAt = new Date().toISOString();
-    setRemoteCheckedAt(completedAt);
-    if (scope) setLocalScannedAt(completedAt);
-    return inventory;
+  function rememberRemoteStatus(inventory: AssetInventory) {
+    remoteStatusRef.current = {
+      remote_available: inventory.remote_available,
+      remote_warning: inventory.remote_warning,
+      remote_warning_ref: inventory.remote_warning_ref,
+    };
   }
 
-  async function refreshRemote(track = true, scope = scanScope) {
-    if (refreshInFlightRef.current) return;
-    refreshInFlightRef.current = true;
-    setRefreshBusy(true);
+  function withLatestRemoteStatus(inventory: AssetInventory): AssetInventory {
+    return remoteStatusRef.current
+      ? { ...inventory, ...remoteStatusRef.current }
+      : inventory;
+  }
+
+  async function requestInventory(scope: ScanScope | null, refreshRemote: boolean) {
+    return lpmAction<AssetInventory>("asset_inventory", {
+      scan_local: scope !== null,
+      ...(scope || {}),
+      refresh_remote: refreshRemote,
+    });
+  }
+
+  async function reconcileLatestLocal(
+    remoteInventory: AssetInventory,
+    expectedLocalVersion: number,
+  ): Promise<AssetInventory> {
+    let version = expectedLocalVersion;
+    let scope = copyScanScope(scanScopeRef.current);
+    let inventory = remoteInventory;
+
+    while (version !== localCompletionVersionRef.current) {
+      version = localCompletionVersionRef.current;
+      scope = copyScanScope(scanScopeRef.current);
+      inventory = scope
+        ? await requestInventory(scope, false)
+        : remoteInventory;
+    }
+    return withLatestRemoteStatus(inventory);
+  }
+
+  function performRemoteRefresh(): Promise<RemoteRefreshOutcome> {
+    const inFlight = remoteRefreshPromiseRef.current;
+    if (inFlight) return inFlight;
+
+    setRemoteRefreshBusy(true);
     setError("");
-    const previousCommit = assetInventory?.remote_commit || "";
-    try {
-      if (track) {
+    const operation = (async () => {
+      const previousCommit = assetInventoryRef.current?.remote_commit || "";
+      const localVersion = localCompletionVersionRef.current;
+      const scope = copyScanScope(scanScopeRef.current);
+      const remoteInventory = await requestInventory(scope, true);
+      rememberRemoteStatus(remoteInventory);
+      const inventory = await reconcileLatestLocal(remoteInventory, localVersion);
+      applyInventory(inventory);
+      setRemoteCheckedAt(new Date().toISOString());
+      return { inventory, previousCommit };
+    })();
+    remoteRefreshPromiseRef.current = operation;
+    void operation.finally(() => {
+      if (remoteRefreshPromiseRef.current !== operation) return;
+      remoteRefreshPromiseRef.current = null;
+      setRemoteRefreshBusy(false);
+      if (pendingRemoteRefreshRef.current) {
+        pendingRemoteRefreshRef.current = false;
+        void refreshRemote(false);
+      }
+    }).catch(() => {
+      // The original caller owns error handling; this only handles the finalizer chain.
+    });
+    return operation;
+  }
+
+  async function refreshRemote(track = true) {
+    if (track) {
+      try {
         await runTask({
           kind: "asset-refresh-remote",
           title: t("assets.refreshRemote"),
-          action: () => loadInventory(scope),
-          successMessage: (inventory) => {
+          action: performRemoteRefresh,
+          successMessage: ({ inventory, previousCommit }) => {
             if (!inventory.remote_available) return t("assets.remoteCacheFallback");
             return previousCommit && previousCommit === inventory.remote_commit
               ? t("assets.remoteUpToDate")
@@ -82,39 +160,72 @@ export default function App() {
           failureMessage: (error) => displayError(error, t),
           retryPolicy: "safe-read",
         });
-      } else {
-        await loadInventory(scope);
+      } catch {
+        // Task center owns tracked failures.
       }
+      return;
+    }
+    try {
+      await performRemoteRefresh();
     } catch (err) {
-      if (!track) setError(displayError(err, t));
-    } finally {
-      refreshInFlightRef.current = false;
-      setRefreshBusy(false);
+      setError(displayError(err, t));
     }
   }
 
   useEffect(() => {
     if (startupRequestedRef.current) return;
     startupRequestedRef.current = true;
-    void refreshRemote(false, null);
+    void refreshRemote(false);
   }, []);
 
-  function handleLocalScanned(inventory: AssetInventory, scope: ScanScope) {
-    applyInventory(assetInventory ? {
-      ...inventory,
-      remote_available: assetInventory.remote_available,
-      remote_warning: assetInventory.remote_warning,
-      remote_warning_ref: assetInventory.remote_warning_ref,
-    } : inventory);
-    setScanScope({
-      scan_global: scope.scan_global,
-      project_ids: [...scope.project_ids],
+  function performLocalScan(scope: ScanScope): Promise<AssetInventory> {
+    const inFlight = localScanPromiseRef.current;
+    if (inFlight) return inFlight;
+
+    setLocalScanBusy(true);
+    setError("");
+    const operation = (async () => {
+      const inventory = await requestInventory(scope, false);
+      scanScopeRef.current = copyScanScope(scope);
+      localCompletionVersionRef.current += 1;
+      const integrated = withLatestRemoteStatus(inventory);
+      applyInventory(integrated);
+      setLocalScannedAt(new Date().toISOString());
+      return integrated;
+    })();
+    localScanPromiseRef.current = operation;
+    void operation.finally(() => {
+      if (localScanPromiseRef.current !== operation) return;
+      localScanPromiseRef.current = null;
+      setLocalScanBusy(false);
+    }).catch(() => {
+      // The original caller owns error handling; this only handles the finalizer chain.
     });
-    setLocalScannedAt(new Date().toISOString());
+    return operation;
+  }
+
+  async function scanLocal(scope: ScanScope) {
+    const requestedScope = copyScanScope(scope) as ScanScope;
+    try {
+      await runTask({
+        kind: "asset-scan-local",
+        title: t("assets.scanLocal"),
+        action: () => performLocalScan(requestedScope),
+        successMessage: t("assets.scanComplete"),
+        failureMessage: (scanError) => displayError(scanError, t),
+        retryPolicy: "safe-read",
+      });
+    } catch {
+      // Task center owns tracked failures.
+    }
   }
 
   async function refreshAfterChange() {
-    await refreshRemote(false, scanScope);
+    if (remoteRefreshPromiseRef.current) {
+      pendingRemoteRefreshRef.current = true;
+      return;
+    }
+    await refreshRemote(false);
   }
 
   useEffect(() => {
@@ -181,12 +292,13 @@ export default function App() {
             inventory={assetInventory}
             selectedKey={selectedResourceKey}
             t={t}
-            refreshBusy={refreshBusy}
+            remoteRefreshBusy={remoteRefreshBusy}
+            localScanBusy={localScanBusy}
             remoteCheckedAt={remoteCheckedAt}
             localScannedAt={localScannedAt}
             onSelect={setSelectedResourceKey}
             onRefreshRemote={() => refreshRemote(true)}
-            onLocalScanned={handleLocalScanned}
+            onScanLocal={scanLocal}
             onChanged={refreshAfterChange}
             onError={setError}
             onOpenSettings={() => setView("settings")}

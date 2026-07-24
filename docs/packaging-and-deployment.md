@@ -132,8 +132,19 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 
 - [KNOWN] 优化前基线与优化后候选必须使用同一提交、同一机器和同一组 Python、Node、npm、Rust、PyInstaller 工具版本；测试前必须关闭正在运行的便携桌面程序，确保正式目录切换可以成功。置信度：HIGH。
 - [KNOWN] 基线与候选各连续执行三次无源码修改的默认暖构建，且纳入统计的指标必须满足 `value.success = true`；分别取 `value.durationMs` 的中位数。置信度：HIGH。
-- [KNOWN] 30% 提速门槛的判定公式为 `candidateMedian <= baselineMedian * 0.70`；依赖与 sidecar 缓存状态必须记录并在两组样本间保持可比。置信度：HIGH。
+- [KNOWN] 第一阶段按子目标验收，不以总体 30% 作为本阶段硬门槛；总体 30% 仍是后续优化目标。依赖与 sidecar 缓存状态必须记录并在两组样本间保持可比。置信度：HIGH。
+- [KNOWN] Rust 脏构建基线与候选各执行三次“清理本包 release 产物后执行 `tauri build --no-bundle`”，取 Rust 构建阶段中位数，并要求 `candidateMedian <= baselineMedian * 0.80`。置信度：HIGH。
+- [KNOWN] 质量门禁基线与候选各执行三次默认暖发布，按第一项门禁最早开始至 pytest 结束计算墙钟中位数，并要求 `candidateMedian <= baselineMedian * 0.80`。置信度：HIGH。
+- [KNOWN] 候选完整暖发布中位数不得超过基线的 105%；若某项未达到对应 20% 子目标、破坏产物或引入行为回归，只回退该项优化，不自动加入 bundle 缓存、pytest 进程并行或并行安装器。置信度：HIGH。
 - [KNOWN] `-Clean`、前端修改、Python 修改和 Rust 修改场景分别记录耗时与缓存状态，但不套用无修改暖构建的 30% 硬门槛。置信度：HIGH。
+
+### 第一阶段实测结果（2026-07-24）
+
+- [COMPUTED] Rust 脏构建基线为 47.96、48.70、49.66 秒，中位数 48.70 秒；仅生成 `rlib` 的候选为 89.00、52.62、54.49 秒，中位数 54.49 秒，比基线慢 11.89%，未达到不高于 38.96 秒的门槛。该候选已回退，`Cargo.toml` 继续保留 `staticlib`、`cdylib` 与 `rlib`。置信度：HIGH。
+- [COMPUTED] 原调度的三次质量门禁墙钟为 51.285、51.368、51.034 秒，中位数 51.285 秒；“四项并行后 pytest 独占”的候选为 62.350、62.660、60.367 秒，中位数 62.350 秒，比原调度慢 21.58%，未达到不高于 41.028 秒的门槛。该候选已回退，五项门禁继续使用最多四路并行。置信度：HIGH。
+- [COMPUTED] 原调度的三次完整暖发布为 102.814、102.882、102.256 秒，中位数 102.814 秒；两波候选为 116.561、115.701、111.597 秒，中位数 115.701 秒，比原调度慢 12.53%，同时超过 5% 非回退上限。置信度：HIGH。
+- [KNOWN] 六次 A/B 暖发布均通过完整 pytest、Vitest、Ruff、锁文件审计、PowerShell 自测、sidecar 冒烟与哈希校验，并生成应用 EXE、sidecar EXE、MSI 和 NSIS。候选指标文件为 `release-20260724-074239-adcf6a2f.json`、`release-20260724-074441-31415d8f.json`、`release-20260724-074639-73f00440.json`；回退后基线复测为 `release-20260724-075018-b99a47b1.json`、`release-20260724-075204-5fe11bbd.json`、`release-20260724-075354-21ffb321.json`。置信度：HIGH。
+- [KNOWN] 因两个候选都已触发各自的强制回退条件，本轮未继续执行不会影响保留决策的 `-Clean`、前端修改和 Python 修改附加场景；Rust 修改场景已由三次 crate-type 候选脏构建覆盖。置信度：HIGH。
 
 ## Rust 目标检测
 

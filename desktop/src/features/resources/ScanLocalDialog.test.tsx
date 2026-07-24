@@ -1,9 +1,8 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { lpmAction, selectDirectory } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
-import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { ScanLocalDialog } from "@/features/resources/ScanLocalDialog";
 
 vi.mock("@/api/client", () => ({
@@ -29,44 +28,31 @@ afterEach(() => {
 describe("ScanLocalDialog", () => {
   it("scans only the selected global and saved project roots", async () => {
     const user = userEvent.setup();
-    const onScanned = vi.fn();
+    const onScan = vi.fn();
+    const onClose = vi.fn();
     vi.mocked(lpmAction).mockImplementation(async (action) => {
       if (action === "plugin_projects_list") return { projects: [project] } as never;
-      if (action === "asset_inventory") return { resources: [] } as never;
       throw new Error(`unexpected ${action}`);
     });
-    render(
-      <TaskCenterProvider>
-        <ScanLocalDialog t={t} onClose={vi.fn()} onScanned={onScanned} />
-      </TaskCenterProvider>,
-    );
+    render(<ScanLocalDialog t={t} onClose={onClose} onScan={onScan} />);
 
     expect(await screen.findByText("D:/code/demo")).toBeVisible();
     await user.click(screen.getByRole("checkbox", { name: "Scan global plugin locations" }));
     await user.click(screen.getByRole("button", { name: "Scan local" }));
 
-    await waitFor(() => expect(onScanned).toHaveBeenCalled());
-    expect(lpmAction).toHaveBeenCalledWith("asset_inventory", {
-      scan_local: true,
+    expect(onScan).toHaveBeenCalledWith({
       scan_global: false,
       project_ids: ["project-demo"],
-      refresh_remote: false,
     });
-    expect(onScanned).toHaveBeenCalledWith(
-      expect.objectContaining({ resources: [] }),
-      { scan_global: false, project_ids: ["project-demo"] },
-    );
+    expect(onClose).not.toHaveBeenCalled();
+    expect(lpmAction).toHaveBeenCalledTimes(1);
   });
 
   it("keeps project mappings unchanged when directory selection is cancelled", async () => {
     const user = userEvent.setup();
     vi.mocked(selectDirectory).mockResolvedValue(null);
     vi.mocked(lpmAction).mockResolvedValue({ projects: [project] } as never);
-    render(
-      <TaskCenterProvider>
-        <ScanLocalDialog t={t} onClose={vi.fn()} onScanned={vi.fn()} />
-      </TaskCenterProvider>,
-    );
+    render(<ScanLocalDialog t={t} onClose={vi.fn()} onScan={vi.fn()} />);
 
     await screen.findByText("D:/code/demo");
     await user.click(screen.getByRole("button", { name: "Add project" }));

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -443,19 +444,30 @@ def build_asset_inventory(
     cfg = config or load_config()
     git_ops.configure_git_executable(cfg.git.executable)
     _cleanup_expired_asset_plans(cfg)
-    snapshot = remote_snapshot or _refresh_remote_snapshot(cfg, refresh=refresh_remote)
-    discovery = None
-    if scan_local:
-        if cfg.plugin_projects or not scan_global or project_ids is not None:
-            discovery = discover_environment(
-                config=cfg,
+    discovery: EnvDiscoveryResult | None = None
+    if scan_local and remote_snapshot is None:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="lpm-inventory") as executor:
+            remote_future = executor.submit(
+                _refresh_remote_snapshot,
+                cfg,
+                refresh=refresh_remote,
+            )
+            local_future = executor.submit(
+                _discover_inventory_environment,
+                cfg,
                 scan_global=scan_global,
                 project_ids=project_ids,
             )
-        else:
-            # Preserve the public zero-argument discovery seam used by existing
-            # integrations while v7 scan filters remain opt-in.
-            discovery = discover_environment()
+            snapshot = remote_future.result()
+            discovery = local_future.result()
+    else:
+        snapshot = remote_snapshot or _refresh_remote_snapshot(cfg, refresh=refresh_remote)
+        if scan_local:
+            discovery = _discover_inventory_environment(
+                cfg,
+                scan_global=scan_global,
+                project_ids=project_ids,
+            )
     contexts = _platform_contexts(cfg, discovery)
     reference_commits: dict[tuple[str, str], str] = {}
     rows: list[AssetPlatformRow] = []
@@ -540,6 +552,23 @@ def build_asset_inventory(
     )
     inventory.resources = _aggregate_resource_rows(inventory)
     return inventory
+
+
+def _discover_inventory_environment(
+    cfg: Config,
+    *,
+    scan_global: bool,
+    project_ids: list[str] | None,
+) -> EnvDiscoveryResult:
+    if cfg.plugin_projects or not scan_global or project_ids is not None:
+        return discover_environment(
+            config=cfg,
+            scan_global=scan_global,
+            project_ids=project_ids,
+        )
+    # Preserve the public zero-argument discovery seam used by existing
+    # integrations while v7 scan filters remain opt-in.
+    return discover_environment()
 
 
 def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow]:

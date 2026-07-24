@@ -78,11 +78,12 @@ export function ResourcesView({
   selectedKey,
   t,
   onSelect,
-  refreshBusy,
+  remoteRefreshBusy,
+  localScanBusy,
   remoteCheckedAt,
   localScannedAt,
   onRefreshRemote,
-  onLocalScanned,
+  onScanLocal,
   onChanged,
   onError,
   onOpenSettings,
@@ -91,11 +92,12 @@ export function ResourcesView({
   selectedKey?: string;
   t: TFunction;
   onSelect: (rowId: string) => void;
-  refreshBusy: boolean;
+  remoteRefreshBusy: boolean;
+  localScanBusy: boolean;
   remoteCheckedAt: string | null;
   localScannedAt: string | null;
   onRefreshRemote: () => Promise<void> | void;
-  onLocalScanned: (inventory: AssetInventory, scope: ScanScope) => void;
+  onScanLocal: (scope: ScanScope) => Promise<void> | void;
   onChanged: () => Promise<void> | void;
   onError: (message: string) => void;
   onOpenSettings: () => void;
@@ -145,6 +147,7 @@ export function ResourcesView({
     .filter((value) => value !== "all").length + (query.trim() ? 1 : 0);
   const localInstanceCount = resources.reduce((count, item) => count + item.local_instances.length, 0);
   const repoConfigured = Boolean(inventory?.repo_url);
+  const inventoryBusy = remoteRefreshBusy || localScanBusy;
   const legacyWriteBlocker = translateMessage(
     inventory?.legacy_write_blocker_ref,
     t,
@@ -155,7 +158,7 @@ export function ResourcesView({
     t,
     inventory?.remote_warning || "",
   );
-  const entryBlocker = refreshBusy
+  const entryBlocker = inventoryBusy
     ? t("add.refreshInProgress")
     : !inventory
       ? t("add.repositoryLoading")
@@ -242,11 +245,11 @@ export function ResourcesView({
               <div><dt>{t("assets.lastChecked")}</dt><dd>{formatTimestamp(remoteCheckedAt, t)}</dd></div>
             </dl>
             {repoConfigured ? (
-              <button className="secondary" type="button" onClick={() => void Promise.resolve(onRefreshRemote())} disabled={refreshBusy}>
-                <RefreshCcw size={15} className={refreshBusy ? "spin" : undefined} />{t("assets.refreshRemote")}
+              <button className="secondary" type="button" onClick={() => void Promise.resolve(onRefreshRemote())} disabled={remoteRefreshBusy}>
+                <RefreshCcw size={15} className={remoteRefreshBusy ? "spin" : undefined} />{t("assets.refreshRemote")}
               </button>
             ) : (
-              <button className="secondary" type="button" onClick={onOpenSettings} disabled={refreshBusy}>
+              <button className="secondary" type="button" onClick={onOpenSettings} disabled={inventoryBusy}>
                 {t("assets.configureRepository")}
               </button>
             )}
@@ -267,8 +270,8 @@ export function ResourcesView({
               <span>{t("assets.lastScanned")}</span>
               <span>{formatTimestamp(localScannedAt, t)}</span>
             </div>
-            <button className="secondary" type="button" onClick={() => setScanDialogOpen(true)} disabled={refreshBusy}>
-              <RefreshCcw size={15} />{t("assets.scanLocal")}
+            <button className="secondary" type="button" onClick={() => setScanDialogOpen(true)} disabled={localScanBusy}>
+              <RefreshCcw size={15} className={localScanBusy ? "spin" : undefined} />{t("assets.scanLocal")}
             </button>
           </section>
         </div>
@@ -301,12 +304,12 @@ export function ResourcesView({
             >
               <FolderInput size={16} />{t("add.modeImport")}
             </button>
-            {!refreshBusy && inventory && !repoConfigured ? (
+            {!inventoryBusy && inventory && !repoConfigured ? (
               <button className="secondary asset-entry-recovery" type="button" onClick={onOpenSettings}>
                 {t("assets.configureRepository")}
               </button>
             ) : null}
-            {!refreshBusy && inventory && repoConfigured && !inventory.remote_available ? (
+            {!remoteRefreshBusy && inventory && repoConfigured && !inventory.remote_available ? (
               <button
                 className="secondary asset-entry-recovery"
                 type="button"
@@ -379,13 +382,13 @@ export function ResourcesView({
             <span>{t("assets.selectedCount", { count: selectedKeys.length })}</span>
             {hiddenSelectedCount ? <span>{t("assets.hiddenSelected", { count: hiddenSelectedCount })}</span> : null}
             <div className="asset-selection-actions">
-              <button className="secondary" onClick={() => openBatch("upload")} disabled={refreshBusy}>
+              <button className="secondary" onClick={() => openBatch("upload")} disabled={inventoryBusy}>
                 <Upload size={16} />{t("assets.uploadToRepository")}
               </button>
-              <button className="primary" onClick={() => openBatch("download")} disabled={refreshBusy}>
+              <button className="primary" onClick={() => openBatch("download")} disabled={inventoryBusy}>
                 <Download size={16} />{t("assets.installToTools")}
               </button>
-              <button className="secondary" onClick={() => setSelectedKeys([])} disabled={refreshBusy}>{t("assets.clearSelection")}</button>
+              <button className="secondary" onClick={() => setSelectedKeys([])} disabled={inventoryBusy}>{t("assets.clearSelection")}</button>
             </div>
           </div>
         ) : null}
@@ -451,7 +454,7 @@ export function ResourcesView({
 
       <ResourceDetail
         resource={selectedResource}
-        refreshBusy={refreshBusy}
+        refreshBusy={inventoryBusy}
         t={t}
         onError={onError}
         onChanged={onChanged}
@@ -492,9 +495,9 @@ export function ResourcesView({
         <ScanLocalDialog
           t={t}
           onClose={() => setScanDialogOpen(false)}
-          onScanned={(next, scope) => {
-            onLocalScanned(next, scope);
+          onScan={(scope) => {
             setScanDialogOpen(false);
+            void Promise.resolve(onScanLocal(scope));
           }}
         />
       ) : null}
