@@ -76,6 +76,7 @@ foreach ($functionName in @(
     "Add-ReleasePhase",
     "Start-ReleasePhaseRecovery",
     "Complete-ReleasePhaseRecovery",
+    "Get-ReleasePytestWorkerCount",
     "Invoke-ParallelReleaseGates",
     "Enter-ReleaseLock",
     "Get-SidecarCacheStatus",
@@ -422,6 +423,14 @@ try {
         $exitCodes = @($script:ReleasePhases | ForEach-Object { $_.exitCode } | Sort-Object)
         Assert-Equal -Expected "3 7" -Actual ($exitCodes -join " ") -Message "Native gate exit codes must be preserved"
         Assert-Equal -Expected 2 -Actual @(Get-ChildItem -LiteralPath $gateLogs -Filter "*.log").Count -Message "Each gate must have an independent log"
+    }
+
+    Invoke-Test "Pytest worker count is bounded by the host and four-worker cap" {
+        Assert-Equal -Expected 1 -Actual (Get-ReleasePytestWorkerCount -ProcessorCount 0) -Message "Zero processors must still use one worker"
+        Assert-Equal -Expected 1 -Actual (Get-ReleasePytestWorkerCount -ProcessorCount 1) -Message "One processor must use one worker"
+        Assert-Equal -Expected 2 -Actual (Get-ReleasePytestWorkerCount -ProcessorCount 2) -Message "Two processors must use two workers"
+        Assert-Equal -Expected 4 -Actual (Get-ReleasePytestWorkerCount -ProcessorCount 4) -Message "Four processors must use four workers"
+        Assert-Equal -Expected 4 -Actual (Get-ReleasePytestWorkerCount -ProcessorCount 16) -Message "Large hosts must remain capped at four workers"
     }
 
     Invoke-Test "Parallel gate timeout is enforced per worker" {

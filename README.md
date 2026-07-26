@@ -292,7 +292,7 @@ build/metrics/release-<UTC时间>-<8位runId>.json
 
 [KNOWN] 发布指标 JSON 的顶层结构为 `{ "schemaVersion": 1, "value": { ... } }`；发布状态、错误、阶段和产物字段路径分别为 `value.success`、`value.error`、`value.phases` 和 `value.artifacts`。置信度：HIGH。
 
-[KNOWN] 打包优化按阶段验收：第一阶段要求 Rust 脏构建与质量门禁各自至少提速 20%，完整暖发布不得回退超过 5%，总体 30% 提速保留为后续目标。2026-07-24 实测中，仅生成 `rlib` 和“两波门禁”候选都未达到门槛且已回退；当前继续保留原 crate types 与最多四路并行门禁。完整样本见 [桌面打包与部署](docs/packaging-and-deployment.md#第一阶段实测结果2026-07-24)。置信度：HIGH。
+[KNOWN] 打包优化按阶段验收：第一阶段的仅生成 `rlib` 和“两波门禁”候选未达到门槛并已回退；第二阶段为 Windows 正式发布固定 `pytest-xdist==3.8.0`，按逻辑处理器数动态使用最多 4 worker。2026-07-24 三次暖发布实测中，质量门禁中位数从 51.285 秒降至 27.377 秒，完整发布中位数从 102.814 秒降至 75.565 秒；当前继续保留原 Cargo crate types、最多四路门禁以及 xdist 并行 pytest。完整样本见 [桌面打包与部署](docs/packaging-and-deployment.md#第二阶段实测结果2026-07-24)。置信度：HIGH。
 
 [KNOWN] `desktop/package.json` 中的 npm 命令和 `tools/packaging/` 下的 Python 文件都是内部构建步骤；完整发布不要手工拼接这些命令。置信度：HIGH。
 

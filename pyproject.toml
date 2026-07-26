@@ -34,6 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-xdist==3.8.0",
     "ruff>=0.5",
 ]
 # Tooling needed only when building the Tauri desktop app from source.

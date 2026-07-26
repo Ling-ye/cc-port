@@ -3,8 +3,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
+
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_SCRIPT = ROOT / "scripts" / "release-desktop.ps1"
+SETUP_SCRIPT = ROOT / "scripts" / "setup.ps1"
+PYPROJECT = ROOT / "pyproject.toml"
 
 
 def _source() -> str:
@@ -30,6 +37,24 @@ def test_frontend_production_build_has_one_owner() -> None:
 
     assert 'Description "Building frontend"' not in source
     assert '"run", "tauri", "--", "build"' in source
+
+
+def test_release_python_environment_pins_and_probes_xdist() -> None:
+    manifest = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    setup_source = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "pytest-xdist==3.8.0" in manifest["project"]["optional-dependencies"]["dev"]
+    assert "import PIL, PyInstaller, lpm, pytest, xdist" in setup_source
+
+
+def test_release_runs_pytest_with_dynamic_xdist_workers() -> None:
+    source = _source()
+
+    assert "$pytestWorkerCount = Get-ReleasePytestWorkerCount" in source
+    assert (
+        '"-m", "pytest", "-q", "-s", "-n", [string]$pytestWorkerCount, '
+        '"--dist", "load"'
+    ) in source
 
 
 def test_verified_sidecar_is_staged_even_when_tauri_cache_skips_its_copy() -> None:

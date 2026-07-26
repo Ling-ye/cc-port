@@ -58,7 +58,7 @@ function Test-VenvReady {
         return $false
     }
     $imports = Invoke-LpmNative -FilePath $PythonPath -ArgumentList @(
-        "-c", "import PIL, PyInstaller, lpm, pytest"
+        "-c", "import PIL, PyInstaller, lpm, pytest, xdist"
     ) -Capture -AllowFailure -Description "Python build dependency probe"
     if ($imports.ExitCode -ne 0) {
         return $false

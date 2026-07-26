@@ -146,6 +146,24 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 - [KNOWN] 六次 A/B 暖发布均通过完整 pytest、Vitest、Ruff、锁文件审计、PowerShell 自测、sidecar 冒烟与哈希校验，并生成应用 EXE、sidecar EXE、MSI 和 NSIS。候选指标文件为 `release-20260724-074239-adcf6a2f.json`、`release-20260724-074441-31415d8f.json`、`release-20260724-074639-73f00440.json`；回退后基线复测为 `release-20260724-075018-b99a47b1.json`、`release-20260724-075204-5fe11bbd.json`、`release-20260724-075354-21ffb321.json`。置信度：HIGH。
 - [KNOWN] 因两个候选都已触发各自的强制回退条件，本轮未继续执行不会影响保留决策的 `-Clean`、前端修改和 Python 修改附加场景；Rust 修改场景已由三次 crate-type 候选脏构建覆盖。置信度：HIGH。
 
+### 第二阶段 pytest-xdist 规格
+
+- [KNOWN] 第二阶段只为 Windows 正式发布的完整 pytest 门禁增加 `pytest-xdist==3.8.0`，不修改测试集合、其他门禁的顺序与并发上限、Tauri、Cargo、安装器或运行时接口；CI 继续串行运行 pytest。置信度：HIGH。
+- [KNOWN] 正式发布使用 `pytest -q -s -n <workers> --dist load`，其中 `workers = max(1, min(4, [Environment]::ProcessorCount))`；当前 8 核、16 逻辑处理器的验收机使用 4 worker。置信度：HIGH。
+- [KNOWN] `pyproject.toml` 仍参与依赖缓存指纹，增加 xdist 后旧依赖缓存必须失效并重新同步；环境完整性探针必须显式导入 `xdist`。插件缺失或并行测试失败时发布直接失败，不得静默退回串行。置信度：HIGH。
+- [KNOWN] 保留 Python 门禁的阶段名称、独立日志、900 秒超时、退出码与指标 JSON schema；五项质量门禁继续由现有执行器最多四路并行。置信度：HIGH。
+- [COMPUTED] 第二阶段质量门禁基线中位数为 51.285 秒，候选三次暖发布的门禁墙钟中位数必须不高于 41.028 秒。置信度：HIGH。
+- [COMPUTED] 第二阶段完整暖发布基线中位数为 102.814 秒，候选三次暖发布的总耗时中位数必须不高于 87.392 秒，即至少减少 15%。置信度：HIGH。
+- [KNOWN] 实现后先执行一次不计样本的暖机发布，使依赖与 sidecar 缓存稳定；随后连续执行三次依赖和 sidecar 缓存均命中的默认暖发布。任一功能失败、并行不稳定或性能门槛未满足时，回退本阶段全部 xdist 改动。置信度：HIGH。
+
+### 第二阶段实测结果（2026-07-24）
+
+- [COMPUTED] 完整串行 pytest 为 42.28 秒，4-worker `--dist load` 为 20.25 秒；两次均为 257 passed、1 skipped，单独运行的测试墙钟减少 52.1%。置信度：HIGH。
+- [COMPUTED] 三次正式候选的质量门禁墙钟为 27.163、27.377、28.470 秒，中位数 27.377 秒；相对 51.285 秒基线减少 46.62%，低于 41.028 秒门槛。置信度：HIGH。
+- [COMPUTED] 三次正式候选的完整暖发布为 75.565、74.927、76.653 秒，中位数 75.565 秒；相对 102.814 秒基线减少 26.50%，低于 87.392 秒门槛。置信度：HIGH。
+- [KNOWN] 三次候选的依赖与 sidecar 缓存均命中，完整 pytest、Vitest、Ruff、锁文件审计、PowerShell 自测、sidecar 冒烟与哈希校验全部通过，并生成应用 EXE、sidecar EXE、MSI 和 NSIS；指标文件为 `release-20260724-131755-7b2a837f.json`、`release-20260724-131916-b4089575.json` 和 `release-20260724-132036-7de24734.json`。置信度：HIGH。
+- [KNOWN] 第二阶段通过功能与性能验收，保留 `pytest-xdist==3.8.0`、动态最多 4 worker 和 `--dist load`；安装器、Cargo、门禁执行器、指标 schema 与运行时接口未改变。置信度：HIGH。
+
 ## Rust 目标检测
 
 - [KNOWN] 发布流程先解析 Cargo，再优先选择与 Cargo 同目录的 `rustc.exe` 或 `rustup which rustc`，避免 Conda 等 PATH shim 抢占。置信度：HIGH。

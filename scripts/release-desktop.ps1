@@ -132,6 +132,12 @@ function Invoke-ReleaseStep {
     }
 }
 
+function Get-ReleasePytestWorkerCount {
+    param([int]$ProcessorCount = [Environment]::ProcessorCount)
+
+    return [Math]::Max(1, [Math]::Min(4, $ProcessorCount))
+}
+
 function Invoke-ParallelReleaseGates {
     param(
         [Parameter(Mandatory = $true)][object[]]$Gates,
@@ -642,6 +648,8 @@ try {
     if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
         throw "Windows PowerShell executable was not found: $windowsPowerShell"
     }
+    $pytestWorkerCount = Get-ReleasePytestWorkerCount
+    Write-Host "  pytest workers: $pytestWorkerCount"
     $gates = @(
         [pscustomobject]@{
             Name = "PowerShell build self-tests"
@@ -652,7 +660,7 @@ try {
         [pscustomobject]@{
             Name = "Python tests"
             FilePath = $venvPython
-            ArgumentList = @("-m", "pytest", "-q", "-s")
+            ArgumentList = @("-m", "pytest", "-q", "-s", "-n", [string]$pytestWorkerCount, "--dist", "load")
             WorkingDirectory = $repoRoot
         },
         [pscustomobject]@{
