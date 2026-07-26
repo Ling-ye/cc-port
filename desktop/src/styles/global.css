@@ -804,12 +804,25 @@ button {
   color: #9b2f2f;
 }
 
+.asset-pill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  inline-size: max-content;
+  max-width: none;
+  max-inline-size: none;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
+}
+
 .kind {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 54px;
   height: 24px;
+  padding-inline: 10px;
   border-radius: 999px;
   color: #ffffff;
   font-size: 12px;
@@ -2348,8 +2361,10 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  min-width: 0;
   color: #24313a;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .asset-source-state {
@@ -2600,7 +2615,7 @@ button {
 
 .asset-resource-table {
   width: 100%;
-  table-layout: fixed;
+  table-layout: auto;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -2614,7 +2629,7 @@ button {
 }
 
 .asset-status-column {
-  width: 144px;
+  width: 1%;
 }
 
 .asset-resource-table th,
@@ -2661,6 +2676,12 @@ button {
   overflow-wrap: anywhere;
 }
 
+.asset-instance-card > div > strong,
+.asset-batch-choice-card > div:first-child > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .asset-resource-name small {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2669,19 +2690,21 @@ button {
 
 .asset-description-cell {
   color: #52606b;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .asset-description-cell > span {
   display: -webkit-box;
   overflow: hidden;
   line-height: 1.4;
+  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
 .asset-resource-table .asset-status {
-  max-width: 100%;
-  white-space: nowrap;
+  max-width: none;
 }
 
 .asset-unified-detail {

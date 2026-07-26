@@ -232,7 +232,7 @@ export function ResourcesView({
           <section className="asset-source-card asset-remote-source-card">
             <div className="asset-source-card-head">
               <span className="asset-source-title"><Cloud size={17} />{t("assets.remoteSource")}</span>
-              <span className={`asset-source-state state-${repoConfigured ? (inventory?.remote_available ? "online" : "cache") : "unconfigured"}`}>
+              <span className={`asset-pill asset-source-state state-${repoConfigured ? (inventory?.remote_available ? "online" : "cache") : "unconfigured"}`}>
                 {repoConfigured
                   ? (inventory?.remote_available ? t("assets.remoteOnline") : t("assets.remoteCache"))
                   : t("assets.remoteNotConfigured")}
@@ -257,7 +257,7 @@ export function ResourcesView({
           <section className="asset-source-card asset-local-source-card">
             <div className="asset-source-card-head">
               <span className="asset-source-title"><Monitor size={17} />{t("assets.localSource")}</span>
-              <span className={`asset-source-state state-${inventory?.scanned_local ? "online" : "unconfigured"}`}>
+              <span className={`asset-pill asset-source-state state-${inventory?.scanned_local ? "online" : "unconfigured"}`}>
                 {inventory?.scanned_local ? t("assets.localScanned") : t("assets.localNotScanned")}
               </span>
             </div>
@@ -1079,7 +1079,7 @@ function BatchChoiceEditor({
 }
 
 function StatusPill({ value, label }: { value: string; label: string }) {
-  return <span className={`asset-status status-${value}`}>{label}</span>;
+  return <span className={`asset-pill asset-status status-${value}`}>{label}</span>;
 }
 
 function referenceOriginValue(choice: AssetBatchChoice): string {

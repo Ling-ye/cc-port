@@ -142,6 +142,52 @@ afterEach(() => {
 });
 
 describe("ResourcesView unified inventory", () => {
+  it("uses the shared full-width pill contract for Chinese and English asset labels", async () => {
+    const user = userEvent.setup();
+    const longStatus = resource({
+      resource_key: "prompt:demo",
+      kind: "prompt",
+      status: "uncomparable",
+      local_instances: [{
+        ...resource().local_instances[0],
+        status: "uncomparable",
+      }],
+    });
+
+    renderView([longStatus], { language: "zh" });
+
+    expect(screen.getAllByText("提示词").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("无法安全比较").length).toBeGreaterThan(0);
+    expect(screen.getByText("在线", { selector: ".asset-source-state" })).toHaveClass("asset-pill");
+    expect(screen.getByText("已扫描", { selector: ".asset-source-state" })).toHaveClass("asset-pill");
+    for (const label of document.querySelectorAll(".kind, .asset-status, .asset-source-state")) {
+      expect(label).toHaveClass("asset-pill");
+    }
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "上传到仓库" }));
+    expect(within(screen.getByRole("dialog")).getByText("提示词")).toHaveClass("asset-pill");
+
+    cleanup();
+    renderView([longStatus], {
+      language: "en",
+      inventory: {
+        ...inventory([longStatus]),
+        repo_url: "",
+        remote_available: false,
+        scanned_local: false,
+      },
+    });
+
+    expect(screen.getAllByText("prompt").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("cannot compare safely").length).toBeGreaterThan(0);
+    expect(screen.getByText("Not configured", { selector: ".asset-source-state" })).toHaveClass("asset-pill");
+    expect(screen.getByText("Not scanned", { selector: ".asset-source-state" })).toHaveClass("asset-pill");
+    for (const label of document.querySelectorAll(".kind, .asset-status, .asset-source-state")) {
+      expect(label).toHaveClass("asset-pill");
+    }
+  });
+
   it("renders structured resource messages in Chinese and English", () => {
     const localOnly = resource({
       status: "local-only",
