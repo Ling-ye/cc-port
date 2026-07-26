@@ -63,6 +63,13 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 9. 全部验证成功后事务式切换正式目录。
 10. 在终端输出逐阶段耗时、缓存状态与总耗时，并原子写入本次 JSON 指标。
 
+### 锁定前端依赖安全性
+
+- [KNOWN] `desktop/package-lock.json` 是桌面前端发布使用的锁定依赖图；根目录的空锁文件不参与桌面依赖审计。置信度：HIGH。
+- [KNOWN] `npm audit --package-lock-only --audit-level=moderate` 必须返回 0；任何中危、高危或严重漏洞都阻止发布。置信度：HIGH。
+- [KNOWN] 当存在满足上游语义版本范围的首个安全补丁时，只更新对应的传递依赖锁定项，不修改直接依赖声明，也不增加 `overrides`。置信度：HIGH。
+- [KNOWN] GHSA-r28c-9q8g-f849 的修复必须使 `postcss` 锁定版本不低于 `8.5.18`。置信度：HIGH。
+
 ## 产物与失败语义
 
 - [KNOWN] staging 目录必须在移动现有正式产物前通过安全路径检查并确认为真实目录；缺失时抛出与操作系统语言无关的项目错误，正式产物保持不变。置信度：HIGH。
@@ -85,5 +92,6 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 - [KNOWN] 自测覆盖版本规则、稳定指纹、缓存损坏与原子写入、发布锁、门禁并行退出码与逐任务超时、Rust 装饰输出、可执行文件 fallback、安全目录、MSI/NSIS 判断、staging 缺失预检以及发布替换与回滚。置信度：HIGH。
 - [KNOWN] `setup.ps1 -CheckOnly` 在环境完整时返回 0，并保持 `.venv` 与 `node_modules` 不变。置信度：HIGH。
 - [KNOWN] 默认 `release-desktop.ps1` 和 `release-desktop.ps1 -Clean` 都必须把 `-NonInteractive` 显式传给 `setup.ps1`，且发布脚本不得包含未携带该开关的环境准备调用。置信度：HIGH。
+- [KNOWN] 锁定前端依赖图必须同时通过 `npm audit --package-lock-only --audit-level=moderate`、`npm test` 和 `npm run build`。置信度：HIGH。
 - [KNOWN] 一条 `release-desktop.ps1` 命令完成所有门禁，生成并哈希桌面 exe、sidecar、MSI 和 NSIS，且 sidecar 冒烟通过。置信度：HIGH。
 - [KNOWN] 性能验收必须在同一提交、机器和工具版本下，对优化前与优化后分别执行三次成功的无修改默认暖构建，取 `value.durationMs` 中位数，并满足 `candidateMedian <= baselineMedian * 0.70`；`-Clean`、前端、Python 和 Rust 修改场景仅单独记录，不套用该硬门槛。置信度：HIGH。

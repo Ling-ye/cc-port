@@ -208,6 +208,12 @@ Pop-Location
 
 ## 常见失败
 
+### `Locked frontend dependency audit` 失败
+
+- [KNOWN] 在 `desktop/` 运行 `npm explain <包名>` 确认直接或传递依赖来源，再根据公告中的首个修复版本更新 `desktop/package-lock.json`。置信度：HIGH。
+- [KNOWN] 如果首个修复版本已满足上游依赖的语义版本范围，只更新锁文件，不升级无关直接依赖，也不增加 `overrides`。置信度：HIGH。
+- [KNOWN] GHSA-r28c-9q8g-f849 要求 `postcss >= 8.5.18`；更新后必须依次通过 `npm audit --package-lock-only --audit-level=moderate`、`npm test` 和 `npm run build`。置信度：HIGH。
+
 ### WinGet 不存在
 
 - [KNOWN] 安装或修复 App Installer 后，重新执行原命令；脚本不会自行下载或旁路安装 WinGet。置信度：HIGH。
