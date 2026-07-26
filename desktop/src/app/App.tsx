@@ -18,7 +18,7 @@ import { GuideView } from "@/features/guide/GuideView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
 import type { ScanScope } from "@/features/resources/ScanLocalDialog";
 import { SettingsView } from "@/features/settings/SettingsView";
-import type { AssetInventory } from "@/types/lpm";
+import type { AssetInventory, DiagnosticsState, DoctorCheck } from "@/types/lpm";
 
 type RemoteInventoryStatus = Pick<
   AssetInventory,
@@ -50,6 +50,11 @@ export default function App() {
   const [error, setError] = useState("");
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [settingsRefreshVersion, setSettingsRefreshVersion] = useState(0);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsState>({
+    phase: "idle",
+    checks: null,
+    error: "",
+  });
   const startupRequestedRef = useRef(false);
   const assetInventoryRef = useRef<AssetInventory | null>(null);
   const scanScopeRef = useRef<ScanScope | null>(null);
@@ -57,6 +62,7 @@ export default function App() {
   const localCompletionVersionRef = useRef(0);
   const remoteRefreshPromiseRef = useRef<Promise<RemoteRefreshOutcome> | null>(null);
   const localScanPromiseRef = useRef<Promise<AssetInventory> | null>(null);
+  const diagnosticsPromiseRef = useRef<Promise<void> | null>(null);
   const pendingRemoteRefreshRef = useRef(false);
   const t = useMemo(() => createTranslator(language), [language]);
 
@@ -172,10 +178,44 @@ export default function App() {
     }
   }
 
+  function runDiagnostics(): Promise<void> {
+    const inFlight = diagnosticsPromiseRef.current;
+    if (inFlight) return inFlight;
+
+    setDiagnostics({ phase: "running", checks: null, error: "" });
+    const operation = (async () => {
+      try {
+        const result = await lpmAction<{ checks: DoctorCheck[] }>("doctor");
+        const hasIssues = result.checks.some(
+          (check) => check.status === "warning" || check.status === "error",
+        );
+        setDiagnostics({
+          phase: hasIssues ? "issues" : "healthy",
+          checks: result.checks,
+          error: "",
+        });
+      } catch (diagnosticsError) {
+        setDiagnostics({
+          phase: "failed",
+          checks: null,
+          error: displayError(diagnosticsError, t),
+        });
+      }
+    })();
+    diagnosticsPromiseRef.current = operation;
+    void operation.finally(() => {
+      if (diagnosticsPromiseRef.current === operation) {
+        diagnosticsPromiseRef.current = null;
+      }
+    });
+    return operation;
+  }
+
   useEffect(() => {
     if (startupRequestedRef.current) return;
     startupRequestedRef.current = true;
     void refreshRemote(false);
+    void runDiagnostics();
   }, []);
 
   function performLocalScan(scope: ScanScope): Promise<AssetInventory> {
@@ -308,8 +348,10 @@ export default function App() {
           <SettingsView
             t={t}
             refreshVersion={settingsRefreshVersion}
+            diagnostics={diagnostics}
             onError={setError}
             onChanged={refreshAfterChange}
+            onRunDiagnostics={runDiagnostics}
           />
         ) : null}
         {view === "guide" ? <GuideView t={t} /> : null}

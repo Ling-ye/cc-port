@@ -604,6 +604,14 @@ export interface DoctorCheck {
   profile?: PlatformProfile;
 }
 
+export type DiagnosticsPhase = "idle" | "running" | "healthy" | "issues" | "failed";
+
+export interface DiagnosticsState {
+  phase: DiagnosticsPhase;
+  checks: DoctorCheck[] | null;
+  error: string;
+}
+
 export interface DiscoveredResource {
   id: string;
   tool: string;

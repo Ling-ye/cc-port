@@ -8,6 +8,7 @@ import { SettingsView } from "@/features/settings/SettingsView";
 import type {
   ConfigBindRepoResult,
   ConfigSettings,
+  DiagnosticsState,
   DoctorCheck,
   GitCredentialStatus,
 } from "@/types/lpm";
@@ -99,24 +100,41 @@ function mockInitial(data = settings(), status = credentialStatus()) {
   });
 }
 
-function renderView(refreshVersion = 0, language: "en" | "zh" = "en") {
+function renderView(
+  refreshVersion = 0,
+  language: "en" | "zh" = "en",
+  initialDiagnostics: DiagnosticsState = { phase: "idle", checks: null, error: "" },
+  onRunDiagnostics = vi.fn(async () => undefined),
+) {
   const onChanged = vi.fn(async () => undefined);
   const onError = vi.fn();
-  const view = (version: number) => (
+  let currentVersion = refreshVersion;
+  let diagnostics = initialDiagnostics;
+  const view = () => (
     <TaskCenterProvider>
       <SettingsView
         t={createTranslator(language)}
-        refreshVersion={version}
+        refreshVersion={currentVersion}
         onError={onError}
         onChanged={onChanged}
+        diagnostics={diagnostics}
+        onRunDiagnostics={onRunDiagnostics}
       />
     </TaskCenterProvider>
   );
-  const rendered = render(view(refreshVersion));
+  const rendered = render(view());
   return {
     onChanged,
     onError,
-    rerender: (version: number) => rendered.rerender(view(version)),
+    onRunDiagnostics,
+    rerender: (version: number) => {
+      currentVersion = version;
+      rendered.rerender(view());
+    },
+    rerenderDiagnostics: (next: DiagnosticsState) => {
+      diagnostics = next;
+      rendered.rerender(view());
+    },
   };
 }
 
@@ -135,12 +153,13 @@ describe("SettingsView native Git settings", () => {
     expect(screen.getByText("Connect resource repository")).toBeVisible();
     expect(screen.getByText("Target tools")).toBeVisible();
     expect(screen.getByText("Diagnostics")).toBeVisible();
-    expect(within(screen.getByRole("status")).getByText(
+    expect(screen.getByText(
       "Reading settings and Git credential status",
+      { selector: ".settings-load-state strong" },
     )).toBeVisible();
     expect(screen.getByLabelText("Repository URL")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Connect and verify repository" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Run diagnostics" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Diagnostics" })).toBeDisabled();
 
     const toolList = screen.getByRole("list", { name: "Target tools" });
     expect(within(toolList).getAllByRole("listitem")).toHaveLength(5);
@@ -183,7 +202,7 @@ describe("SettingsView native Git settings", () => {
     expect(within(loadAlert).getByText("Unable to read settings.")).toBeVisible();
     expect(loadAlert.closest(".settings-view")).toHaveAttribute("aria-busy", "false");
     expect(screen.getByLabelText("Repository URL")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Run diagnostics" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Diagnostics" })).toBeDisabled();
     expect(onError).toHaveBeenCalledWith("Unable to read settings.");
 
     await user.click(screen.getByRole("button", { name: "Retry" }));
@@ -323,36 +342,85 @@ describe("SettingsView native Git settings", () => {
     });
   });
 
-  it("keeps diagnostics collapsed and does not run them automatically", async () => {
+  it("renders diagnostics as a button and status line without expandable content", async () => {
     mockInitial();
     renderView();
 
-    const title = await screen.findByText("Diagnostics");
-    expect(title.closest("details")).not.toHaveAttribute("open");
+    expect(await screen.findByRole("button", { name: "Diagnostics" })).toBeEnabled();
+    expect(screen.getByText("Not checked yet")).toBeVisible();
+    expect(document.querySelector("details")).not.toBeInTheDocument();
+    expect(document.querySelector("summary")).not.toBeInTheDocument();
     expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action === "doctor")).toBe(false);
   });
 
-  it("summarizes diagnostics and lists only warnings and errors", async () => {
+  it("opens a loading dialog and delegates diagnostics without disabling the running button", async () => {
+    mockInitial();
+    const onRunDiagnostics = vi.fn(async () => undefined);
+    const { rerenderDiagnostics } = renderView(
+      0,
+      "en",
+      { phase: "running", checks: null, error: "" },
+      onRunDiagnostics,
+    );
+    const user = userEvent.setup();
+
+    const button = await screen.findByRole("button", { name: "Diagnostics" });
+    expect(button).toBeEnabled();
+    expect(screen.getByText("Checking...")).toBeVisible();
+    await user.click(button);
+
+    const dialog = screen.getByRole("dialog", { name: "Diagnostics" });
+    expect(within(dialog).getByText(
+      "Checking the environment. Results will appear here when complete.",
+    )).toBeVisible();
+    expect(onRunDiagnostics).toHaveBeenCalledTimes(1);
+
+    rerenderDiagnostics({
+      phase: "healthy",
+      checks: [
+        { id: "git", label: "Git", ok: true, status: "ok", detail: "Ready" },
+      ],
+      error: "",
+    });
+    expect(within(dialog).getByText("Environment is healthy · 1 passed · 0 skipped")).toBeVisible();
+
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("summarizes diagnostic results and lists only warnings and errors", async () => {
     const checks: DoctorCheck[] = [
       { id: "git", label: "Git", ok: true, status: "ok", detail: "Ready" },
       { id: "config", label: "Config", ok: true, status: "skipped", detail: "Using defaults" },
       { id: "resource_repo", label: "Resource repo", ok: true, status: "warning", detail: "Remote differs" },
       { id: "platform:cursor", label: "Platform: cursor", ok: false, status: "error", detail: "Directory is not writable" },
     ];
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
-      if (action === "config_get") return settings();
-      if (action === "git_credential_status") return credentialStatus();
-      if (action === "doctor") return { checks };
-      throw new Error(`Unexpected action: ${action}`);
-    });
-    renderView();
+    mockInitial();
+    renderView(0, "en", { phase: "issues", checks, error: "" });
     const user = userEvent.setup();
 
-    await user.click(await screen.findByText("Diagnostics"));
-    await user.click(screen.getByRole("button", { name: "Run diagnostics" }));
+    expect(await screen.findByText("Issues found")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Diagnostics" }));
 
     expect(await screen.findByText("1 passed · 1 warnings · 1 errors · 1 skipped")).toBeVisible();
     const issues = screen.getByRole("list", { name: "Diagnostic issues" });
     expect(within(issues).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("shows a diagnostic failure inside the dialog", async () => {
+    mockInitial();
+    renderView(0, "en", {
+      phase: "failed",
+      checks: null,
+      error: "Sidecar unavailable",
+    });
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("Check failed")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Diagnostics" }));
+
+    expect(within(screen.getByRole("dialog")).getByRole("alert")).toHaveTextContent(
+      "Diagnostics could not be completed: Sidecar unavailable",
+    );
   });
 });

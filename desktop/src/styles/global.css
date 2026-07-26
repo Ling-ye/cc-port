@@ -1541,41 +1541,71 @@ button {
 
 .settings-diagnostics {
   margin-top: 18px;
-  border: 1px solid #e0e7ec;
-  border-radius: 10px;
-  background: #f8fafb;
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
-.settings-diagnostics > summary {
-  padding: 14px 16px;
-  cursor: pointer;
+.settings-diagnostics > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.settings-diagnostics > summary > span {
-  display: inline-grid;
-  gap: 3px;
-  margin-left: 6px;
-  vertical-align: middle;
+.settings-diagnostics-status {
+  color: #65727c;
+  font-size: 13px;
 }
 
-.settings-diagnostics > summary small {
-  color: #6c7882;
+.settings-diagnostics-status.status-healthy {
+  color: #167f72;
 }
 
-.settings-diagnostics[open] > summary {
-  border-bottom: 1px solid #e0e7ec;
+.settings-diagnostics-status.status-issues,
+.settings-diagnostics-status.status-failed {
+  color: #b8322b;
 }
 
-.settings-diagnostics-body,
+.diagnostics-modal {
+  width: min(620px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.diagnostics-modal-body,
 .diagnostics-results {
   display: grid;
   gap: 12px;
 }
 
-.settings-diagnostics-body {
-  justify-items: start;
-  padding: 14px 16px 16px;
+.diagnostics-modal-body {
+  margin: 16px 0;
+}
+
+.diagnostics-loading,
+.diagnostics-failure {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid #dce4e9;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.diagnostics-loading {
+  color: #65727c;
+  background: #f8fafb;
+}
+
+.diagnostics-failure {
+  color: #b8322b;
+  border-color: #e4b6b1;
+  background: #fff1ef;
+}
+
+.diagnostics-modal .modal-actions {
+  justify-content: flex-end;
 }
 
 .diagnostics-results {
@@ -2029,19 +2059,34 @@ button {
     border-color: #253842;
   }
 
-  .settings-diagnostics {
-    background: #172228;
-    border-color: #2b3d46;
-  }
-
-  .settings-diagnostics[open] > summary,
   .diagnostics-issue {
     border-color: #2b3d46;
   }
 
-  .settings-diagnostics > summary small,
+  .settings-diagnostics-status,
   .diagnostics-issue p {
     color: #9cafb8;
+  }
+
+  .settings-diagnostics-status.status-healthy {
+    color: #b7e5d2;
+  }
+
+  .settings-diagnostics-status.status-issues,
+  .settings-diagnostics-status.status-failed {
+    color: #efb2ad;
+  }
+
+  .diagnostics-loading {
+    color: #9cafb8;
+    background: #111b21;
+    border-color: #2b3d46;
+  }
+
+  .diagnostics-failure {
+    color: #efb2ad;
+    background: #2b1f1f;
+    border-color: #6a3e3a;
   }
 
   .diagnostics-issue {

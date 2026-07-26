@@ -16,6 +16,7 @@ import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
   ConfigBindRepoResult,
   ConfigSettings,
+  DiagnosticsState,
   DoctorCheck,
   DoctorStatus,
   GitCredentialStatus,
@@ -29,11 +30,15 @@ export function SettingsView({
   refreshVersion,
   onError,
   onChanged,
+  diagnostics,
+  onRunDiagnostics,
 }: {
   t: TFunction;
   refreshVersion: number;
   onError: (message: string) => void;
   onChanged: () => Promise<void> | void;
+  diagnostics: DiagnosticsState;
+  onRunDiagnostics: () => Promise<void>;
 }) {
   const { runTask } = useTaskCenter();
   const [settings, setSettings] = useState<ConfigSettings | null>(null);
@@ -45,8 +50,7 @@ export function SettingsView({
   const [loading, setLoading] = useState(false);
   const [binding, setBinding] = useState(false);
   const [platformSaving, setPlatformSaving] = useState("");
-  const [diagnosticChecks, setDiagnosticChecks] = useState<DoctorCheck[] | null>(null);
-  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [loadError, setLoadError] = useState("");
   const settingsRequestRef = useRef(0);
 
@@ -157,29 +161,6 @@ export function SettingsView({
       onError(displayError(err, t));
     } finally {
       setPlatformSaving("");
-    }
-  }
-
-  async function runDiagnostics() {
-    setDiagnosticChecks(null);
-    setDiagnosticsBusy(true);
-    try {
-      await runTask({
-        kind: "settings-diagnostics",
-        title: t("settings.diagnostics.run"),
-        action: async () => {
-          const result = await lpmAction<{ checks: DoctorCheck[] }>("doctor");
-          setDiagnosticChecks(result.checks);
-          return result;
-        },
-        successMessage: (result) => t("settings.diagnostics.completed", { count: result.checks.length }),
-        failureMessage: (error) => displayError(error, t),
-        retryPolicy: "safe-read",
-      });
-    } catch {
-      // TaskCenter owns feedback for tracked operations.
-    } finally {
-      setDiagnosticsBusy(false);
     }
   }
 
@@ -332,26 +313,29 @@ export function SettingsView({
           <small className="field-note">{t("settings.toolDirectoryWarning")}</small>
         </section>
 
-        <details className="settings-diagnostics">
-          <summary>
-            <span>
-              <strong>{t("settings.diagnostics.title")}</strong>
-              <small>{t("settings.diagnostics.description")}</small>
-            </span>
-          </summary>
-          <div className="settings-diagnostics-body">
-            <button
-              className="secondary"
-              type="button"
-              onClick={() => void runDiagnostics()}
-              disabled={diagnosticsBusy || loading || !settingsReady}
-            >
-              {diagnosticsBusy ? <RefreshCcw className="spin" size={17} /> : <TerminalSquare size={17} />}
-              {diagnosticChecks === null ? t("settings.diagnostics.run") : t("settings.diagnostics.rerun")}
-            </button>
-            {diagnosticChecks !== null ? <DiagnosticsResults checks={diagnosticChecks} t={t} /> : null}
-          </div>
-        </details>
+        <div className="settings-diagnostics">
+          <button
+            className="secondary"
+            type="button"
+            onClick={() => {
+              setDiagnosticsOpen(true);
+              void onRunDiagnostics();
+            }}
+            disabled={loading || !settingsReady}
+          >
+            {diagnostics.phase === "running"
+              ? <RefreshCcw className="spin" size={17} />
+              : <TerminalSquare size={17} />}
+            {t("settings.diagnostics.run")}
+          </button>
+          <span
+            className={`settings-diagnostics-status status-${diagnostics.phase}`}
+            role="status"
+            aria-live="polite"
+          >
+            {diagnosticsStatusLabel(diagnostics.phase, t)}
+          </span>
+        </div>
       </div>
 
       {pendingRebindUrl ? (
@@ -362,6 +346,13 @@ export function SettingsView({
           t={t}
           onCancel={() => setPendingRebindUrl("")}
           onConfirm={() => void bindRepository(pendingRebindUrl)}
+        />
+      ) : null}
+      {diagnosticsOpen ? (
+        <DiagnosticsModal
+          diagnostics={diagnostics}
+          t={t}
+          onClose={() => setDiagnosticsOpen(false)}
         />
       ) : null}
     </section>
@@ -465,6 +456,68 @@ function DiagnosticsResults({ checks, t }: { checks: DoctorCheck[]; t: TFunction
           })}
         </ul>
       ) : null}
+    </div>
+  );
+}
+
+function diagnosticsStatusLabel(phase: DiagnosticsState["phase"], t: TFunction): string {
+  switch (phase) {
+    case "running":
+      return t("settings.diagnostics.statusRunning");
+    case "healthy":
+      return t("settings.diagnostics.statusHealthy");
+    case "issues":
+      return t("settings.diagnostics.statusIssues");
+    case "failed":
+      return t("settings.diagnostics.statusFailed");
+    default:
+      return t("settings.diagnostics.statusIdle");
+  }
+}
+
+function DiagnosticsModal({
+  diagnostics,
+  t,
+  onClose,
+}: {
+  diagnostics: DiagnosticsState;
+  t: TFunction;
+  onClose: () => void;
+}) {
+  const loading = diagnostics.phase === "idle" || diagnostics.phase === "running";
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div
+        className="modal diagnostics-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="diagnostics-modal-title"
+      >
+        <div className="modal-head">
+          <TerminalSquare size={20} />
+          <h2 id="diagnostics-modal-title">{t("settings.diagnostics.title")}</h2>
+        </div>
+        <div className="diagnostics-modal-body">
+          {loading ? (
+            <div className="diagnostics-loading" role="status">
+              <RefreshCcw className="spin" size={18} />
+              <span>{t("settings.diagnostics.loading")}</span>
+            </div>
+          ) : diagnostics.phase === "failed" ? (
+            <div className="diagnostics-failure" role="alert">
+              <AlertTriangle size={18} />
+              <span>{t("settings.diagnostics.failure", { detail: diagnostics.error })}</span>
+            </div>
+          ) : (
+            <DiagnosticsResults checks={diagnostics.checks ?? []} t={t} />
+          )}
+        </div>
+        <div className="modal-actions">
+          <button className="secondary" type="button" onClick={onClose}>
+            {t("common.close")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
