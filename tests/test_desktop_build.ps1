@@ -7,6 +7,15 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Import-Module (Join-Path $RepoRoot "scripts\desktop-build.psm1") -Force -ErrorAction Stop
 
+$originalPathExt = [Environment]::GetEnvironmentVariable("PATHEXT", "Process")
+$nativeExecutableExtensions = @(".COM", ".EXE", ".BAT", ".CMD", ".VBS", ".VBE", ".JS", ".JSE", ".WSF", ".WSH", ".MSC", ".CPL")
+if (@($env:PATHEXT -split ";" | ForEach-Object { $_.ToUpperInvariant() }) -notcontains ".EXE") {
+    # WSL can launch Windows PowerShell with PATHEXT reduced to ".CPL". In that
+    # host state, Windows PowerShell silently skips even absolute .exe invocations
+    # and leaves LASTEXITCODE unset, invalidating every native-process fixture.
+    $env:PATHEXT = $nativeExecutableExtensions -join ";"
+}
+
 $script:Passed = 0
 
 function Assert-Equal {
@@ -110,8 +119,8 @@ if ($null -eq $dependencyDecisionDefinition) {
 Invoke-Expression $dependencyDecisionDefinition.Extent.Text
 
 $tempParent = [IO.Path]::GetTempPath().TrimEnd("\")
-$tempRoot = Join-Path $tempParent ("lpm-desktop-build-tests-" + [guid]::NewGuid().ToString("N"))
-Assert-LpmDirectChild -Path $tempRoot -Parent $tempParent | Out-Null
+$tempRoot = Join-Path $tempParent ("cc-port-desktop-build-tests-" + [guid]::NewGuid().ToString("N"))
+Assert-CcPortDirectChild -Path $tempRoot -Parent $tempParent | Out-Null
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
 
 try {
@@ -131,18 +140,18 @@ try {
     }
 
     Invoke-Test "Python version policy" {
-        Assert-True -Condition (Test-LpmPythonVersion -Version ([version]"3.10.0")) -Message "Python 3.10 should be accepted"
-        Assert-True -Condition (Test-LpmPythonVersion -Version ([version]"3.12.9")) -Message "Python 3.12 should be accepted"
-        Assert-True -Condition (-not (Test-LpmPythonVersion -Version ([version]"3.9.19"))) -Message "Python 3.9 should be rejected"
-        Assert-True -Condition (-not (Test-LpmPythonVersion -Version ([version]"3.13.0"))) -Message "Python 3.13 should be rejected"
+        Assert-True -Condition (Test-CcPortPythonVersion -Version ([version]"3.10.0")) -Message "Python 3.10 should be accepted"
+        Assert-True -Condition (Test-CcPortPythonVersion -Version ([version]"3.12.9")) -Message "Python 3.12 should be accepted"
+        Assert-True -Condition (-not (Test-CcPortPythonVersion -Version ([version]"3.9.19"))) -Message "Python 3.9 should be rejected"
+        Assert-True -Condition (-not (Test-CcPortPythonVersion -Version ([version]"3.13.0"))) -Message "Python 3.13 should be rejected"
     }
 
     Invoke-Test "Node.js version policy" {
-        Assert-True -Condition (-not (Test-LpmNodeVersion -Value "v20.18.1")) -Message "Node 20.18 should be rejected"
-        Assert-True -Condition (Test-LpmNodeVersion -Value "v20.19.0") -Message "Node 20.19 should be accepted"
-        Assert-True -Condition (-not (Test-LpmNodeVersion -Value "v22.11.0")) -Message "Node 22.11 should be rejected"
-        Assert-True -Condition (Test-LpmNodeVersion -Value "v22.12.0") -Message "Node 22.12 should be accepted"
-        Assert-True -Condition (Test-LpmNodeVersion -Value "v24.1.0") -Message "Node 24 should be accepted"
+        Assert-True -Condition (-not (Test-CcPortNodeVersion -Value "v20.18.1")) -Message "Node 20.18 should be rejected"
+        Assert-True -Condition (Test-CcPortNodeVersion -Value "v20.19.0") -Message "Node 20.19 should be accepted"
+        Assert-True -Condition (-not (Test-CcPortNodeVersion -Value "v22.11.0")) -Message "Node 22.11 should be rejected"
+        Assert-True -Condition (Test-CcPortNodeVersion -Value "v22.12.0") -Message "Node 22.12 should be accepted"
+        Assert-True -Condition (Test-CcPortNodeVersion -Value "v24.1.0") -Message "Node 24 should be accepted"
     }
 
     Invoke-Test "Stable string and content fingerprints" {
@@ -153,25 +162,25 @@ try {
         [IO.File]::WriteAllText($firstPath, "alpha")
         [IO.File]::WriteAllText($secondPath, "beta")
 
-        $stringHash = Get-LpmStringHash -Value "stable value"
-        Assert-Equal -Expected $stringHash -Actual (Get-LpmStringHash -Value "stable value") -Message "String hash must be stable"
+        $stringHash = Get-CcPortStringHash -Value "stable value"
+        Assert-Equal -Expected $stringHash -Actual (Get-CcPortStringHash -Value "stable value") -Message "String hash must be stable"
         Assert-True -Condition ($stringHash -match '^[0-9a-f]{64}$') -Message "String hash must be lowercase SHA-256"
 
-        $ordered = Get-LpmContentFingerprint -Paths @($firstPath, $secondPath)
-        $reversed = Get-LpmContentFingerprint -Paths @($secondPath, $firstPath)
+        $ordered = Get-CcPortContentFingerprint -Paths @($firstPath, $secondPath)
+        $reversed = Get-CcPortContentFingerprint -Paths @($secondPath, $firstPath)
         Assert-Equal -Expected $ordered -Actual $reversed -Message "Content fingerprint must not depend on input order"
         Assert-True -Condition (
-            (Get-LpmContentFingerprint -Paths @($firstPath)) -ne
-            (Get-LpmContentFingerprint -Paths @($secondPath))
+            (Get-CcPortContentFingerprint -Paths @($firstPath)) -ne
+            (Get-CcPortContentFingerprint -Paths @($secondPath))
         ) -Message "Content fingerprint must include file identity as well as content"
     }
 
     Invoke-Test "Content fingerprint invalidates on file change" {
         $path = Join-Path $tempRoot "fingerprint-change.txt"
         [IO.File]::WriteAllText($path, "before")
-        $before = Get-LpmContentFingerprint -Paths @($path)
+        $before = Get-CcPortContentFingerprint -Paths @($path)
         [IO.File]::WriteAllText($path, "after")
-        $after = Get-LpmContentFingerprint -Paths @($path)
+        $after = Get-CcPortContentFingerprint -Paths @($path)
         Assert-True -Condition ($before -ne $after) -Message "Changed file content must invalidate the fingerprint"
     }
 
@@ -179,36 +188,36 @@ try {
         $pythonPath = Join-Path $tempRoot "tools\python.exe"
         $nodePath = Join-Path $tempRoot "tools\node.exe"
         $npmPath = Join-Path $tempRoot "tools\npm.cmd"
-        $base = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+        $base = Get-CcPortDependencyInputFingerprint -ContentFingerprint "content" `
             -PythonVersion "3.12.10" -PythonPath $pythonPath `
             -NodeVersion "v22.23.1" -NodePath $nodePath `
             -NpmVersion "10.9.8" -NpmPath $npmPath -Platform "windows-x64"
-        $same = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+        $same = Get-CcPortDependencyInputFingerprint -ContentFingerprint "content" `
             -PythonVersion "3.12.10" -PythonPath ($pythonPath.ToUpperInvariant()) `
             -NodeVersion "v22.23.1" -NodePath ($nodePath.ToUpperInvariant()) `
             -NpmVersion "10.9.8" -NpmPath ($npmPath.ToUpperInvariant()) -Platform "windows-x64"
         Assert-Equal -Expected $base -Actual $same -Message "Windows path casing must not perturb dependency fingerprints"
 
-        $changedPython = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+        $changedPython = Get-CcPortDependencyInputFingerprint -ContentFingerprint "content" `
             -PythonVersion "3.12.10" -PythonPath (Join-Path $tempRoot "alternate\python.exe") `
             -NodeVersion "v22.23.1" -NodePath $nodePath `
             -NpmVersion "10.9.8" -NpmPath $npmPath -Platform "windows-x64"
-        $changedNode = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+        $changedNode = Get-CcPortDependencyInputFingerprint -ContentFingerprint "content" `
             -PythonVersion "3.12.10" -PythonPath $pythonPath `
             -NodeVersion "v22.23.1" -NodePath (Join-Path $tempRoot "alternate\node.exe") `
             -NpmVersion "10.9.8" -NpmPath $npmPath -Platform "windows-x64"
-        $changedNpm = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+        $changedNpm = Get-CcPortDependencyInputFingerprint -ContentFingerprint "content" `
             -PythonVersion "3.12.10" -PythonPath $pythonPath `
             -NodeVersion "v22.23.1" -NodePath $nodePath `
             -NpmVersion "10.9.8" -NpmPath (Join-Path $tempRoot "alternate\npm.cmd") -Platform "windows-x64"
         Assert-True -Condition ($base -ne $changedPython) -Message "Changing Python path must invalidate dependency fingerprint"
         Assert-True -Condition ($base -ne $changedNode) -Message "Changing Node path must invalidate dependency fingerprint"
         Assert-True -Condition ($base -ne $changedNpm) -Message "Changing npm path must invalidate dependency fingerprint"
-        $changedContent = Get-LpmDependencyInputFingerprint -ContentFingerprint "changed-content" `
+        $changedContent = Get-CcPortDependencyInputFingerprint -ContentFingerprint "changed-content" `
             -PythonVersion "3.12.10" -PythonPath $pythonPath `
             -NodeVersion "v22.23.1" -NodePath $nodePath `
             -NpmVersion "10.9.8" -NpmPath $npmPath -Platform "windows-x64"
-        $changedVersions = Get-LpmDependencyInputFingerprint -ContentFingerprint "content" `
+        $changedVersions = Get-CcPortDependencyInputFingerprint -ContentFingerprint "content" `
             -PythonVersion "3.12.11" -PythonPath $pythonPath `
             -NodeVersion "v22.23.2" -NodePath $nodePath `
             -NpmVersion "10.9.9" -NpmPath $npmPath -Platform "windows-x64"
@@ -222,17 +231,17 @@ try {
             InputFingerprint = "input-a"
             ManifestHash = "manifest-a"
         }
-        Write-LpmJsonCacheAtomically -Path $cachePath -Value $value
-        $loaded = Read-LpmJsonCache -Path $cachePath
+        Write-CcPortJsonCacheAtomically -Path $cachePath -Value $value
+        $loaded = Read-CcPortJsonCache -Path $cachePath
         Assert-True -Condition ($null -ne $loaded) -Message "Written cache must be readable"
         Assert-Equal -Expected "input-a" -Actual $loaded.InputFingerprint -Message "Cache payload input fingerprint"
         Assert-Equal -Expected "manifest-a" -Actual $loaded.ManifestHash -Message "Cache payload manifest hash"
 
-        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
+        Write-CcPortJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
             InputFingerprint = "input-b"
             ManifestHash = "manifest-b"
         })
-        $replaced = Read-LpmJsonCache -Path $cachePath
+        $replaced = Read-CcPortJsonCache -Path $cachePath
         Assert-Equal -Expected "input-b" -Actual $replaced.InputFingerprint -Message "Existing cache must be atomically replaced"
         $replacementArtifacts = @(Get-ChildItem -LiteralPath $tempRoot -Force | Where-Object {
             $_.Name -like ".cache-round-trip.json.tmp-*" -or $_.Name -like ".cache-round-trip.json.backup-*"
@@ -240,24 +249,24 @@ try {
         Assert-Equal -Expected 0 -Actual $replacementArtifacts.Count -Message "Successful replacement must clean temporary and backup files"
 
         [IO.File]::WriteAllText($cachePath, '{not-json')
-        Assert-True -Condition ($null -eq (Read-LpmJsonCache -Path $cachePath)) -Message "Corrupt cache must be treated as a miss"
+        Assert-True -Condition ($null -eq (Read-CcPortJsonCache -Path $cachePath)) -Message "Corrupt cache must be treated as a miss"
 
         [IO.File]::WriteAllText($cachePath, '{"schemaVersion":999,"value":{"InputFingerprint":"stale"}}')
-        Assert-True -Condition ($null -eq (Read-LpmJsonCache -Path $cachePath)) -Message "Unknown cache schema must be treated as a miss"
+        Assert-True -Condition ($null -eq (Read-CcPortJsonCache -Path $cachePath)) -Message "Unknown cache schema must be treated as a miss"
     }
 
     Invoke-Test "JSON cache write is atomic on replacement failure" {
         $cachePath = Join-Path $tempRoot "cache-atomic.json"
-        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{ Marker = "old" })
+        Write-CcPortJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{ Marker = "old" })
         $lock = [IO.File]::Open($cachePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
             Assert-Throws -Action {
-                Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{ Marker = "new" })
+                Write-CcPortJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{ Marker = "new" })
             } -Pattern ".+" -Message "Locked destination must reject atomic replacement"
         } finally {
             $lock.Dispose()
         }
-        $loaded = Read-LpmJsonCache -Path $cachePath
+        $loaded = Read-CcPortJsonCache -Path $cachePath
         Assert-Equal -Expected "old" -Actual $loaded.Marker -Message "Failed replacement must preserve the prior cache"
         $temporary = @(Get-ChildItem -LiteralPath $tempRoot -Force | Where-Object {
             $_.Name -like ".cache-atomic.json.tmp-*" -or $_.Name -like ".cache-atomic.json.backup-*"
@@ -286,12 +295,12 @@ try {
         New-Item -ItemType Directory -Path (Split-Path -Parent $artifactPath) -Force | Out-Null
         [IO.File]::WriteAllText($artifactPath, "sidecar-v1")
 
-        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{})
+        Write-CcPortJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{})
         $incomplete = Get-SidecarCacheStatus -CachePath $cachePath -Fingerprint "input-a" -ArtifactPath $artifactPath
         Assert-True -Condition (-not $incomplete.Hit) -Message "An incomplete sidecar record must miss"
         Assert-Equal -Expected "missing-or-invalid-record" -Actual $incomplete.Reason -Message "Incomplete record reason"
 
-        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
+        Write-CcPortJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
             fingerprint = "input-a"
             artifactSha256 = "not-the-artifact-hash"
         })
@@ -299,7 +308,7 @@ try {
         Assert-Equal -Expected "artifact-hash-changed" -Actual $changed.Reason -Message "Changed artifact reason"
 
         $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash
-        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
+        Write-CcPortJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
             fingerprint = "input-a"
             artifactSha256 = $actualHash
         })
@@ -327,14 +336,14 @@ try {
         $targetRelease = Join-Path $tempRoot "tauri-cleanup\release"
         $bundle = Join-Path $targetRelease "bundle"
         New-Item -ItemType Directory -Path $bundle -Force | Out-Null
-        $app = Join-Path $targetRelease "lpm-desktop.exe"
-        $sidecar = Join-Path $targetRelease "lpm-desktop-api.exe"
+        $app = Join-Path $targetRelease "cc-port-desktop.exe"
+        $sidecar = Join-Path $targetRelease "cc-port-desktop-api.exe"
         [IO.File]::WriteAllText($app, "cargo-app")
         [IO.File]::WriteAllText($sidecar, "sidecar")
         [IO.File]::WriteAllText((Join-Path $bundle "old-installer.msi"), "old")
 
         Remove-KnownTauriOutputs -TargetReleaseDirectory $targetRelease `
-            -DesktopName "lpm-desktop" -SidecarName "lpm-desktop-api"
+            -DesktopName "cc-port-desktop" -SidecarName "cc-port-desktop-api"
         Assert-True -Condition (Test-Path -LiteralPath $app -PathType Leaf) -Message "Warm cleanup must preserve the Cargo-managed app"
         Assert-True -Condition (-not (Test-Path -LiteralPath $sidecar)) -Message "Warm cleanup must remove the staged sidecar"
         Assert-True -Condition (-not (Test-Path -LiteralPath $bundle)) -Message "Warm cleanup must remove prior bundles"
@@ -342,7 +351,7 @@ try {
         New-Item -ItemType Directory -Path $bundle -Force | Out-Null
         [IO.File]::WriteAllText($sidecar, "sidecar")
         Remove-KnownTauriOutputs -TargetReleaseDirectory $targetRelease `
-            -DesktopName "lpm-desktop" -SidecarName "lpm-desktop-api" -Clean
+            -DesktopName "cc-port-desktop" -SidecarName "cc-port-desktop-api" -Clean
         Assert-True -Condition (-not (Test-Path -LiteralPath $app)) -Message "Clean must remove the app to force Cargo relinking"
     }
 
@@ -351,7 +360,7 @@ try {
         $desktopPath = Join-Path $tempRoot "dependency-decision\desktop"
         New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null
         $inputState = [pscustomobject]@{ Fingerprint = "dependency-input-a" }
-        Write-LpmJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
+        Write-CcPortJsonCacheAtomically -Path $cachePath -Value ([pscustomobject]@{
             fingerprint = $inputState.Fingerprint
             pythonManifestHash = "python-a"
             npmTreeHash = "npm-a"
@@ -457,28 +466,28 @@ try {
         $escape = [string][char]27
         $bom = [string][char]0xFEFF
         $output = $bom + $escape + "[32m  x86_64-pc-windows-msvc  " + $escape + "[0m"
-        Assert-Equal -Expected "x86_64-pc-windows-msvc" -Actual (Get-LpmRustHostFromTuple -Output $output) -Message "Rust tuple parser"
+        Assert-Equal -Expected "x86_64-pc-windows-msvc" -Actual (Get-CcPortRustHostFromTuple -Output $output) -Message "Rust tuple parser"
     }
 
     Invoke-Test "Rust verbose parsing tolerates decorated output" {
         $escape = [string][char]27
         $bom = [string][char]0xFEFF
         $output = "rustc 1.90.0`r`n" + $bom + $escape + "[36m   HOST : x86_64-pc-windows-msvc   " + $escape + "[0m`r`n"
-        Assert-Equal -Expected "x86_64-pc-windows-msvc" -Actual (Get-LpmRustHostFromVerbose -Output $output) -Message "Rust verbose parser"
+        Assert-Equal -Expected "x86_64-pc-windows-msvc" -Actual (Get-CcPortRustHostFromVerbose -Output $output) -Message "Rust verbose parser"
     }
 
     Invoke-Test "Explicit executable fallback" {
         $fake = Join-Path $tempRoot "fallback-tool.exe"
         [IO.File]::WriteAllText($fake, "fixture")
-        $resolved = Resolve-LpmExecutable -Names @("lpm-command-that-does-not-exist.exe") -Fallbacks @($fake)
+        $resolved = Resolve-CcPortExecutable -Names @("cc-port-command-that-does-not-exist.exe") -Fallbacks @($fake)
         Assert-Equal -Expected ([IO.Path]::GetFullPath($fake)) -Actual $resolved -Message "Executable fallback"
     }
 
     Invoke-Test "Safe path guard" {
         $direct = Join-Path $tempRoot "direct-child"
-        Assert-Equal -Expected ([IO.Path]::GetFullPath($direct)) -Actual (Assert-LpmDirectChild -Path $direct -Parent $tempRoot) -Message "Direct child should pass"
+        Assert-Equal -Expected ([IO.Path]::GetFullPath($direct)) -Actual (Assert-CcPortDirectChild -Path $direct -Parent $tempRoot) -Message "Direct child should pass"
         $nested = Join-Path (Join-Path $tempRoot "nested") "child"
-        Assert-Throws -Action { Assert-LpmDirectChild -Path $nested -Parent $tempRoot | Out-Null } -Pattern "outside the expected parent" -Message "Nested path should be rejected"
+        Assert-Throws -Action { Assert-CcPortDirectChild -Path $nested -Parent $tempRoot | Out-Null } -Pattern "outside the expected parent" -Message "Nested path should be rejected"
     }
 
     Invoke-Test "Windows package detection" {
@@ -486,10 +495,10 @@ try {
         $msiDirectory = Join-Path $packages "msi"
         $nsisDirectory = Join-Path $packages "nsis"
         New-Item -ItemType Directory -Path $msiDirectory, $nsisDirectory | Out-Null
-        [IO.File]::WriteAllText((Join-Path $msiDirectory "LPM.msi"), "msi")
-        Assert-Throws -Action { Get-LpmWindowsPackageArtifacts -ReleaseDirectory $packages | Out-Null } -Pattern "NSIS" -Message "Missing NSIS should fail"
-        [IO.File]::WriteAllText((Join-Path $nsisDirectory "LPM-setup.exe"), "nsis")
-        Assert-Equal -Expected 2 -Actual @(Get-LpmWindowsPackageArtifacts -ReleaseDirectory $packages).Count -Message "MSI and NSIS should pass"
+        [IO.File]::WriteAllText((Join-Path $msiDirectory "CC Port.msi"), "msi")
+        Assert-Throws -Action { Get-CcPortWindowsPackageArtifacts -ReleaseDirectory $packages | Out-Null } -Pattern "NSIS" -Message "Missing NSIS should fail"
+        [IO.File]::WriteAllText((Join-Path $nsisDirectory "CC Port-setup.exe"), "nsis")
+        Assert-Equal -Expected 2 -Actual @(Get-CcPortWindowsPackageArtifacts -ReleaseDirectory $packages).Count -Message "MSI and NSIS should pass"
     }
 
     Invoke-Test "Verified release replacement" {
@@ -499,7 +508,7 @@ try {
         New-Item -ItemType Directory -Path $final, $staging | Out-Null
         [IO.File]::WriteAllText((Join-Path $final "artifact.txt"), "old")
         [IO.File]::WriteAllText((Join-Path $staging "artifact.txt"), "new")
-        Publish-LpmStagingDirectory -StagingDirectory $staging -FinalDirectory $final -ReleaseRoot $publishRoot
+        Publish-CcPortStagingDirectory -StagingDirectory $staging -FinalDirectory $final -ReleaseRoot $publishRoot
         Assert-Equal -Expected "new" -Actual ([IO.File]::ReadAllText((Join-Path $final "artifact.txt"))) -Message "Published artifact"
         Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $publishRoot -Force | Where-Object Name -like ".*.backup-*").Count -Message "Backup cleanup"
     }
@@ -511,7 +520,7 @@ try {
         New-Item -ItemType Directory -Path $final | Out-Null
         [IO.File]::WriteAllText((Join-Path $final "artifact.txt"), "old")
         Assert-Throws -Action {
-            Publish-LpmStagingDirectory -StagingDirectory $missingStaging -FinalDirectory $final -ReleaseRoot $publishRoot
+            Publish-CcPortStagingDirectory -StagingDirectory $missingStaging -FinalDirectory $final -ReleaseRoot $publishRoot
         } -Pattern "^Staging directory does not exist or is not a directory:" -Message "Missing staging should fail"
         Assert-Equal -Expected "old" -Actual ([IO.File]::ReadAllText((Join-Path $final "artifact.txt"))) -Message "Prior release preservation"
         Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $publishRoot -Force | Where-Object Name -like ".*.backup-*").Count -Message "Missing staging must not create a backup"
@@ -533,7 +542,7 @@ try {
             Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
         }.GetNewClosure()
         Assert-Throws -Action {
-            Publish-LpmStagingDirectory -StagingDirectory $staging -FinalDirectory $final -ReleaseRoot $publishRoot -MoveDirectory $moveDirectory
+            Publish-CcPortStagingDirectory -StagingDirectory $staging -FinalDirectory $final -ReleaseRoot $publishRoot -MoveDirectory $moveDirectory
         } -Pattern "moving the verified staging directory into place.*Simulated staging publish failure\." -Message "Replacement failure should identify the failed stage"
         Assert-Equal -Expected "old" -Actual ([IO.File]::ReadAllText((Join-Path $final "artifact.txt"))) -Message "Prior release restoration"
         Assert-Equal -Expected "new" -Actual ([IO.File]::ReadAllText((Join-Path $staging "artifact.txt"))) -Message "Failed staging preservation"
@@ -578,33 +587,33 @@ try {
     }
 
     Invoke-Test "Minimal Windows PATH stays short" {
-        $minimal = Get-LpmMinimalWindowsPath
+        $minimal = Get-CcPortMinimalWindowsPath
         Assert-True -Condition ($minimal.Length -lt 512) -Message "Minimal PATH must stay well under the cmd.exe limit"
         Assert-True -Condition ($minimal -match 'System32') -Message "Minimal PATH must include System32"
     }
 
-    $visualStudioForPathTest = Get-LpmVisualStudioPath
+    $visualStudioForPathTest = Get-CcPortVisualStudioPath
     if ($visualStudioForPathTest) {
         Invoke-Test "VsDevCmd import tolerates oversized PATH" {
             $savedPath = $env:PATH
             $savedTransient = @{}
-            foreach ($name in Get-LpmVisualStudioTransientVariableNames) {
+            foreach ($name in Get-CcPortVisualStudioTransientVariableNames) {
                 $savedTransient[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
             }
             try {
                 $pad = (1..160 | ForEach-Object {
-                    "C:\LpmPathPad\very\long\directory\name\segment$_\Scripts"
+                    "C:\CcPortPathPad\very\long\directory\name\segment$_\Scripts"
                 }) -join ";"
                 $env:PATH = $savedPath + ";" + $pad
                 Assert-True -Condition ($env:PATH.Length -gt 7000) -Message "Test PATH must exceed the historical failure threshold"
-                Enable-LpmVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
-                $link = Resolve-LpmExecutable -Names @("link.exe")
+                Enable-CcPortVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
+                $link = Resolve-CcPortExecutable -Names @("link.exe")
                 Assert-True -Condition ($null -ne $link) -Message "link.exe must resolve after fat-PATH VsDevCmd import"
-                Assert-True -Condition ($env:PATH -like "*LpmPathPad*") -Message "Caller PATH entries must be preserved"
+                Assert-True -Condition ($env:PATH -like "*CcPortPathPad*") -Message "Caller PATH entries must be preserved"
                 Assert-True -Condition ([string]::IsNullOrEmpty($env:__VSCMD_PREINIT_PATH)) -Message "__VSCMD_PREINIT_PATH must not pollute the parent process"
             } finally {
                 $env:PATH = $savedPath
-                foreach ($name in @(Get-LpmVisualStudioTransientVariableNames) + @($savedTransient.Keys)) {
+                foreach ($name in @(Get-CcPortVisualStudioTransientVariableNames) + @($savedTransient.Keys)) {
                     if ($savedTransient.ContainsKey($name)) {
                         [Environment]::SetEnvironmentVariable($name, $savedTransient[$name], "Process")
                     } else {
@@ -617,28 +626,28 @@ try {
         Invoke-Test "VsDevCmd re-entry survives leftover EXTERNAL_INCLUDE" {
             $savedPath = $env:PATH
             $savedTransient = @{}
-            foreach ($name in Get-LpmVisualStudioTransientVariableNames) {
+            foreach ($name in Get-CcPortVisualStudioTransientVariableNames) {
                 $savedTransient[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
             }
             try {
-                Enable-LpmVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
+                Enable-CcPortVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
                 # Poison the process the way a previous broken import did: keep a
                 # huge EXTERNAL_INCLUDE and __VSCMD_PREINIT_PATH, then re-enter.
                 $env:EXTERNAL_INCLUDE = ((1..120 | ForEach-Object {
-                    "C:\LpmExtInclude\very\long\include\path\segment$_"
+                    "C:\CcPortExtInclude\very\long\include\path\segment$_"
                 }) -join ";")
                 $env:__VSCMD_PREINIT_PATH = $env:PATH
                 $env:LIBPATH = ((1..80 | ForEach-Object {
-                    "C:\LpmLibPath\very\long\lib\path\segment$_"
+                    "C:\CcPortLibPath\very\long\lib\path\segment$_"
                 }) -join ";")
                 Assert-True -Condition ($env:EXTERNAL_INCLUDE.Length -gt 4000) -Message "EXTERNAL_INCLUDE poison must be large"
-                Enable-LpmVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
-                $link = Resolve-LpmExecutable -Names @("link.exe")
+                Enable-CcPortVisualStudioEnvironment -InstallationPath $visualStudioForPathTest
+                $link = Resolve-CcPortExecutable -Names @("link.exe")
                 Assert-True -Condition ($null -ne $link) -Message "link.exe must resolve after poisoned re-entry"
                 Assert-True -Condition ([string]::IsNullOrEmpty($env:__VSCMD_PREINIT_PATH)) -Message "re-entry must not leave __VSCMD_PREINIT_PATH"
             } finally {
                 $env:PATH = $savedPath
-                foreach ($name in @(Get-LpmVisualStudioTransientVariableNames) + @($savedTransient.Keys) + @("EXTERNAL_INCLUDE", "__VSCMD_PREINIT_PATH", "LIBPATH")) {
+                foreach ($name in @(Get-CcPortVisualStudioTransientVariableNames) + @($savedTransient.Keys) + @("EXTERNAL_INCLUDE", "__VSCMD_PREINIT_PATH", "LIBPATH")) {
                     if ($savedTransient.ContainsKey($name)) {
                         [Environment]::SetEnvironmentVariable($name, $savedTransient[$name], "Process")
                     } else {
@@ -653,8 +662,9 @@ try {
     }
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
-        Remove-LpmSafePath -Path $tempRoot -Parent $tempParent
+        Remove-CcPortSafePath -Path $tempRoot -Parent $tempParent
     }
+    [Environment]::SetEnvironmentVariable("PATHEXT", $originalPathExt, "Process")
 }
 
 Write-Host ""

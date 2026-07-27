@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LpmApiError } from "@/api/client";
+import { CcPortApiError } from "@/api/client";
 import {
   createTranslator,
   displayError,
@@ -47,7 +47,7 @@ describe("desktop semantic messages", () => {
   });
 
   it("renders API and bridge failures through the same resolver", () => {
-    const apiError = new LpmApiError(
+    const apiError = new CcPortApiError(
       "invalid_payload",
       "legacy payload error",
       {

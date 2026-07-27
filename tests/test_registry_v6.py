@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.models import (
+from cc_port.core.models import (
     AmbiguousResourceNameError,
     PluginInstallation,
     PluginOrigin,
@@ -13,8 +13,8 @@ from lpm.core.models import (
     RegistryItem,
     ResourceKey,
 )
-from lpm.core.ownership import is_lpm_managed, write_managed_marker
-from lpm.core.registry import load_registry, save_registry
+from cc_port.core.ownership import is_cc_port_managed, write_managed_marker
+from cc_port.core.registry import load_registry, save_registry
 
 
 def test_v5_migrates_without_losing_items_or_install_dir(tmp_path: Path) -> None:
@@ -113,8 +113,8 @@ def test_managed_marker_prefers_composite_resource_key(tmp_path: Path) -> None:
     entry = RegistryItem(name="demo", kind="skill", source="local", path="skills/demo")
     write_managed_marker(target, entry, platform="cursor")
 
-    assert is_lpm_managed(target, resource_key="skill:demo")
-    assert not is_lpm_managed(target, resource_key="prompt:demo")
+    assert is_cc_port_managed(target, resource_key="skill:demo")
+    assert not is_cc_port_managed(target, resource_key="prompt:demo")
 
 
 def test_v7_plugin_reference_can_omit_github_repo_and_round_trip(tmp_path: Path) -> None:

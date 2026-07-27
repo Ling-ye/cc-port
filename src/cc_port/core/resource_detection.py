@@ -24,11 +24,11 @@ TYPE_ALIASES: dict[str, ItemKind] = {
     "plugin": "plugin",
     "plugins": "plugin",
 }
-MANIFEST_FILENAMES = {"lpm.resource.json", "lpm-resource.json"}
+MANIFEST_FILENAMES = {"cc-port.resource.json", "cc-port-resource.json"}
 
 
 class ResourceDetectionError(RuntimeError):
-    """Raised when LPM cannot safely infer a resource."""
+    """Raised when CC Port cannot safely infer a resource."""
 
 
 class MultipleResourceCandidatesError(ResourceDetectionError):
@@ -258,7 +258,7 @@ def _github_contents(parsed: ParsedGithubUrl, path: str, *, token: str | None) -
     url += f"?ref={quote(parsed.ref)}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "LPM",
+        "User-Agent": "CC Port",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"

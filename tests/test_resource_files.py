@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.resource_files import (
+from cc_port.core.resource_files import (
     is_resource_path_excluded,
     resource_copy_ignore,
 )

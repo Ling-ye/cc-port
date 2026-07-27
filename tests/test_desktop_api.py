@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import (
+from cc_port.core.config import (
     Config,
     GitConfig,
     GithubConfig,
@@ -14,26 +14,26 @@ from lpm.core.config import (
     load_raw_config,
     write_config,
 )
-from lpm.core.models import RegistryItem
-from lpm.core.platforms import PlatformProfile, PlatformsConfig
-from lpm.core.resource_detection import DetectedRemoteResource
-from lpm.infrastructure import git_ops
-from lpm.interfaces import desktop_api
-from lpm.services.asset_sync import (
+from cc_port.core.models import RegistryItem
+from cc_port.core.platforms import PlatformProfile, PlatformsConfig
+from cc_port.core.resource_detection import DetectedRemoteResource
+from cc_port.infrastructure import git_ops
+from cc_port.interfaces import desktop_api
+from cc_port.services.asset_sync import (
     AssetActionPlan,
     AssetActionResult,
     AssetBatchPlan,
     AssetBatchResult,
     AssetInventory,
 )
-from lpm.services.local_resources import ImportLocalResult
-from lpm.services.resource_commit import (
+from cc_port.services.local_resources import ImportLocalResult
+from cc_port.services.resource_commit import (
     ResourceCommitChange,
     ResourceCommitIssue,
     ResourceCommitPlan,
 )
-from lpm.services.resource_manager import ResourceDeleteResult
-from lpm.services.resource_sync import ResourceSyncPlan, SyncConflict
+from cc_port.services.resource_manager import ResourceDeleteResult
+from cc_port.services.resource_sync import ResourceSyncPlan, SyncConflict
 
 
 def test_desktop_main_reads_bom_tolerant_json_from_stdin(monkeypatch) -> None:
@@ -314,7 +314,7 @@ def test_desktop_resource_delete_pushes_resource_repo_by_default(
     result = desktop_api.run_action("resource_delete", {"name": "demo"})
 
     assert result["ok"] is True
-    assert calls == [("delete", "demo"), ("push", "lpm: delete resource demo")]
+    assert calls == [("delete", "demo"), ("push", "cc-port: delete resource demo")]
     assert result["data"]["name"] == "demo"
     assert result["data"]["deleted_local_files"] is True
     assert result["data"]["push"]["local_path"].endswith("resources")
@@ -371,7 +371,7 @@ def test_platform_toggle_preserves_hidden_and_custom_configuration(
         ),
     )
     write_config(cfg, config_path)
-    monkeypatch.setenv("LPM_CONFIG", str(config_path))
+    monkeypatch.setenv("CC_PORT_CONFIG", str(config_path))
 
     result = desktop_api.run_action("platform_set_enabled", {"name": "cursor", "enabled": False})
     updated = load_raw_config(config_path)
@@ -597,7 +597,7 @@ def test_desktop_resource_commit_plan_serializes_resource_blockers(
                 )
             ],
             secret_findings=[],
-            suggested_message="lpm: update resource metadata",
+            suggested_message="cc-port: update resource metadata",
         ),
     )
 

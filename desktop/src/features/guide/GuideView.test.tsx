@@ -35,9 +35,9 @@ describe("GuideView merged project information", () => {
     expect(screen.getByText(/Collects GitHub references, imports local folders/)).toBeVisible();
     expect(screen.getByText("Open source under the MIT License.")).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: /github.com\/Ling-ye\/LingyePluginMarketplace/ }));
+    await user.click(screen.getByRole("button", { name: /github.com\/Ling-ye\/cc-port/ }));
     expect(openExternalUrl).toHaveBeenCalledWith(
-      "https://github.com/Ling-ye/LingyePluginMarketplace",
+      "https://github.com/Ling-ye/cc-port",
     );
   });
 });

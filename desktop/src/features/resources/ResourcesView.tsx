@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { lpmAction, openPath } from "@/api/client";
+import { ccPortAction, openPath } from "@/api/client";
 import {
   displayError,
   resourceKindLabel,
@@ -43,7 +43,7 @@ import type {
   ConfigSettings,
   PlatformProfile,
   ResourceKind,
-} from "@/types/lpm";
+} from "@/types/cc-port";
 
 const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
 const statuses: Array<"all" | AssetStatus> = [
@@ -681,7 +681,7 @@ function BatchDialog({
 
   useEffect(() => {
     if (direction === "download") {
-      void lpmAction<ConfigSettings>("config_get")
+      void ccPortAction<ConfigSettings>("config_get")
         .then((settings) => setPlatforms(settings.config.platforms))
       .catch((reason) => setError(displayError(reason, t)));
     } else {
@@ -743,7 +743,7 @@ function BatchDialog({
       const next = await runTask({
         kind: `asset-batch-${direction}-plan`,
         title: t("assets.batchPlan"),
-        action: () => lpmAction<AssetBatchPlan>("asset_batch_plan", {
+        action: () => ccPortAction<AssetBatchPlan>("asset_batch_plan", {
           direction,
           resource_keys: resourceKeys,
           target_platforms: targetPlatforms,
@@ -774,7 +774,7 @@ function BatchDialog({
       const result = await runTask({
         kind: `asset-batch-${direction}`,
         title: direction === "upload" ? t("assets.uploadToRepository") : t("assets.installToTools"),
-        action: () => lpmAction<AssetBatchResult>("asset_batch_apply", {
+        action: () => ccPortAction<AssetBatchResult>("asset_batch_apply", {
           direction,
           resource_keys: resourceKeys,
           target_platforms: targetPlatforms,

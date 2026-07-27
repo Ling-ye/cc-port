@@ -9,7 +9,7 @@ import pytest
 MODULE_PATH = (
     Path(__file__).resolve().parents[1] / "tools" / "packaging" / "sidecar" / "build_sidecar.py"
 )
-MODULE_SPEC = importlib.util.spec_from_file_location("lpm_build_sidecar", MODULE_PATH)
+MODULE_SPEC = importlib.util.spec_from_file_location("cc_port_build_sidecar", MODULE_PATH)
 assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None
 build_sidecar = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(build_sidecar)
@@ -40,7 +40,7 @@ def test_build_pyinstaller_command_clean_has_stable_parameters(tmp_path: Path) -
         "--paths",
         str(build_sidecar.ROOT),
         "--collect-submodules",
-        "lpm",
+        "cc_port",
     ]
     for module in build_sidecar.EXCLUDED_MODULES:
         expected.extend(["--exclude-module", module])
@@ -100,5 +100,5 @@ def test_build_applies_clean_policy_and_copies_target_output(
 
     assert sentinel.exists() is sentinel_should_survive
     assert ("--clean" in commands[0]) is clean
-    assert result == out_dir / "lpm-desktop-api-x86_64-pc-windows-msvc.exe"
+    assert result == out_dir / "cc-port-desktop-api-x86_64-pc-windows-msvc.exe"
     assert result.read_bytes() == b"sidecar"

@@ -749,7 +749,7 @@ def _assert_safe_delete_target(path: Path, operation_id: str) -> None:
     sync_root = _canonical_path(default_state_dir() / SYNC_STATE_DIR)
     target = _canonical_path(path)
     if operation_dir.parent != sync_root:
-        raise ValueError("Sync operation directory is outside the LPM state directory.")
+        raise ValueError("Sync operation directory is outside the CC Port state directory.")
     if target != operation_dir / "worktree" or target.parent != operation_dir:
         raise ValueError("Refusing to remove a path outside the sync operation directory.")
     if path.is_symlink() or operation_dir.is_symlink():

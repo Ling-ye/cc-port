@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, GithubConfig, ResourcesConfig
-from lpm.core.registry import load_registry
-from lpm.infrastructure.github_client import CreatedRepo
-from lpm.services import publisher
+from cc_port.core.config import Config, GithubConfig, ResourcesConfig
+from cc_port.core.registry import load_registry
+from cc_port.infrastructure.github_client import CreatedRepo
+from cc_port.services import publisher
 
 
 def test_add_external_skill_resolves_branch_to_commit_and_stores_reference_only(

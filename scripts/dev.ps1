@@ -1,10 +1,10 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Run the LPM Desktop app in development mode.
+    Run the CC Port desktop app in development mode.
 
 .DESCRIPTION
-    Builds the lpm-desktop-api sidecar binary first (so the bundled app works
+    Builds the cc-port-desktop-api sidecar binary first (so the bundled app works
     end-to-end), then uses `npm run tauri dev` as an internal step to start
     Vite, compile the Tauri shell with Cargo, and open the desktop window.
 
@@ -55,7 +55,7 @@ function Stop-ExistingDesktopDevServer {
             throw "Port 1420 is already in use by PID $($Listener.OwningProcess): $CommandLine"
         }
 
-        Write-Host "Stopping existing LPM Vite dev server on port 1420 (PID $($Listener.OwningProcess))" -ForegroundColor Yellow
+        Write-Host "Stopping existing CC Port Vite dev server on port 1420 (PID $($Listener.OwningProcess))" -ForegroundColor Yellow
         Stop-Process -Id $Listener.OwningProcess -Force
         Start-Sleep -Milliseconds 500
     }
@@ -69,7 +69,7 @@ if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue)) {
 }
 
 if (-not $SkipSidecar) {
-    Write-Host "==> Building lpm-desktop-api sidecar" -ForegroundColor Cyan
+    Write-Host "==> Building cc-port-desktop-api sidecar" -ForegroundColor Cyan
     Invoke-Step "sidecar build" {
         & python "$RepoRoot/tools/packaging/sidecar/build_sidecar.py"
     }

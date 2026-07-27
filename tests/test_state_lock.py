@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from lpm.services.local_transaction import ChangeTarget, LocalChangeTransaction
-from lpm.services.resource_repo_lock import resource_repo_write_lock
-from lpm.services.state_lock import TargetLockTimeout, acquire_target_locks
+from cc_port.services.local_transaction import ChangeTarget, LocalChangeTransaction
+from cc_port.services.resource_repo_lock import resource_repo_write_lock
+from cc_port.services.state_lock import TargetLockTimeout, acquire_target_locks
 
 
 def test_target_lock_blocks_another_process_and_releases(
@@ -19,7 +19,7 @@ def test_target_lock_blocks_another_process_and_releases(
     script = """
 import sys
 from pathlib import Path
-from lpm.services.state_lock import TargetLockTimeout, acquire_target_locks
+from cc_port.services.state_lock import TargetLockTimeout, acquire_target_locks
 
 try:
     locks = acquire_target_locks([Path(sys.argv[1])], timeout_seconds=0.2)
@@ -101,7 +101,7 @@ def test_transaction_lock_timeout_does_not_create_operation_record(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "target"
-    operations = Path(os.environ["LPM_STATE_HOME"]) / "operations"
+    operations = Path(os.environ["CC_PORT_STATE_HOME"]) / "operations"
 
     with acquire_target_locks([target], timeout_seconds=1):
         with pytest.raises(TargetLockTimeout):
@@ -121,8 +121,8 @@ def test_resource_repo_lock_is_reentrant_and_blocks_another_process(
     script = """
 import sys
 from pathlib import Path
-from lpm.services.resource_repo_lock import resource_repo_write_lock
-from lpm.services.state_lock import TargetLockTimeout
+from cc_port.services.resource_repo_lock import resource_repo_write_lock
+from cc_port.services.state_lock import TargetLockTimeout
 
 try:
     with resource_repo_write_lock(Path(sys.argv[1]), timeout_seconds=0.2):

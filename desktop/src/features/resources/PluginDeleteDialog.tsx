@@ -1,6 +1,6 @@
 import { Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { lpmAction } from "@/api/client";
+import { ccPortAction } from "@/api/client";
 import {
   displayError,
   translateMessage,
@@ -9,7 +9,7 @@ import {
 } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
-import type { PluginDeletePlan, PluginDeleteResult } from "@/types/lpm";
+import type { PluginDeletePlan, PluginDeleteResult } from "@/types/cc-port";
 
 export function PluginDeleteDialog({
   resourceKey,
@@ -30,7 +30,7 @@ export function PluginDeleteDialog({
 
   useEffect(() => {
     setBusy(true);
-    void lpmAction<PluginDeletePlan>("plugin_delete_plan", { resource_key: resourceKey })
+    void ccPortAction<PluginDeletePlan>("plugin_delete_plan", { resource_key: resourceKey })
       .then((next) => {
         setPlan(next);
         setSelected(next.selected_instance_ids);
@@ -43,7 +43,7 @@ export function PluginDeleteDialog({
     setBusy(true);
     setError("");
     try {
-      const next = await lpmAction<PluginDeletePlan>("plugin_delete_plan", {
+      const next = await ccPortAction<PluginDeletePlan>("plugin_delete_plan", {
         resource_key: resourceKey,
         instance_ids: selected,
       });
@@ -66,7 +66,7 @@ export function PluginDeleteDialog({
         kind: "plugin-delete",
         title: t("plugin.delete"),
         context: resourceKey,
-        action: () => lpmAction<PluginDeleteResult>("plugin_delete_apply", {
+        action: () => ccPortAction<PluginDeleteResult>("plugin_delete_apply", {
           resource_key: resourceKey,
           instance_ids: selected,
           plan_hash: current.plan_hash,

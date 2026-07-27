@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, GitConfig, InstallConfig, ResourcesConfig
-from lpm.core.models import (
+from cc_port.core.config import Config, GitConfig, InstallConfig, ResourcesConfig
+from cc_port.core.models import (
     PluginInstallation,
     PluginOrigin,
     PluginSpec,
@@ -17,16 +17,16 @@ from lpm.core.models import (
     RegistryItem,
     ResourceKey,
 )
-from lpm.core.ownership import managed_resource_key
-from lpm.core.platforms import PlatformProfile, PlatformsConfig
-from lpm.core.registry import load_registry, save_registry
-from lpm.infrastructure import git_ops
-from lpm.services import asset_sync
-from lpm.services.asset_sync import RemoteSnapshot
-from lpm.services.env_manager import DiscoveredTool, EnvDiscoveryResult
-from lpm.services.plugin_management import DiscoveredPlugin
-from lpm.services.resource_commit import ResourceCommitBlocked
-from lpm.services.resource_discovery import DiscoveredResource
+from cc_port.core.ownership import managed_resource_key
+from cc_port.core.platforms import PlatformProfile, PlatformsConfig
+from cc_port.core.registry import load_registry, save_registry
+from cc_port.infrastructure import git_ops
+from cc_port.services import asset_sync
+from cc_port.services.asset_sync import RemoteSnapshot
+from cc_port.services.env_manager import DiscoveredTool, EnvDiscoveryResult
+from cc_port.services.plugin_management import DiscoveredPlugin
+from cc_port.services.resource_commit import ResourceCommitBlocked
+from cc_port.services.resource_discovery import DiscoveredResource
 
 _GIT_RUNTIME = git_ops.discover_git_executable(configured="")
 if _GIT_RUNTIME.path is None:
@@ -151,9 +151,9 @@ def _seed_bare_remote(tmp_path: Path) -> tuple[Path, Path]:
     _run_git(
         seed,
         "-c",
-        "user.name=LPM Test",
+        "user.name=CC Port Test",
         "-c",
-        "user.email=lpm@example.test",
+        "user.email=cc-port@example.test",
         "commit",
         "-m",
         "seed",
@@ -195,9 +195,9 @@ def _push_concurrent_change(
     _run_git(
         clone,
         "-c",
-        "user.name=LPM Test",
+        "user.name=CC Port Test",
         "-c",
-        "user.email=lpm@example.test",
+        "user.email=cc-port@example.test",
         "commit",
         "-m",
         "concurrent",

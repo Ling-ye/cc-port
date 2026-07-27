@@ -1,4 +1,4 @@
-"""LPM (LingyePluginMarketplace) MCP server.
+"""CC Port MCP server.
 
 Exposes the same operations as the CLI as MCP tools, so an AI coding agent
 can publish, register, and sync skills, MCP servers, and rules directly from chat.
@@ -19,7 +19,7 @@ from ..services.installer import check_all, status_all, sync_all, sync_one, unin
 from ..services.local_resources import export_claude_plugin, import_local_resource
 from ..services.resource_manager import resource_install_plan
 
-mcp = FastMCP("LPM")
+mcp = FastMCP("CC Port")
 
 
 @mcp.tool()
@@ -260,7 +260,7 @@ def import_local_resource_tool(
     overwrite: bool = False,
     mcp_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Copy a local resource into this LPM repository and register it."""
+    """Copy a local resource into this CC Port repository and register it."""
     try:
         result = import_local_resource(
             Path(path),

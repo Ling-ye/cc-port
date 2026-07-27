@@ -27,21 +27,21 @@ plugin_delete_apply
 CLI：
 
 ```bash
-lpm asset list
-lpm asset list --scan-local
-lpm asset upload --resource skill:demo --dry-run
-lpm asset upload --all --yes
-lpm asset download --resource skill:demo --platform cursor --dry-run
-lpm asset download --all --platform cursor --platform codex --yes
-lpm asset plan download --kind skill --name demo --platform cursor
-lpm asset apply <operation-id>
-lpm plugin project list
-lpm plugin project add <path>
-lpm plugin reference add --platform codex --origin marketplace --marketplace openai-bundled --plugin-id chrome
-lpm plugin delete plugin:codex-marketplace-chrome-openai-bundled --dry-run
+cc-port asset list
+cc-port asset list --scan-local
+cc-port asset upload --resource skill:demo --dry-run
+cc-port asset upload --all --yes
+cc-port asset download --resource skill:demo --platform cursor --dry-run
+cc-port asset download --all --platform cursor --platform codex --yes
+cc-port asset plan download --kind skill --name demo --platform cursor
+cc-port asset apply <operation-id>
+cc-port plugin project list
+cc-port plugin project add <path>
+cc-port plugin reference add --platform codex --origin marketplace --marketplace openai-bundled --plugin-id chrome
+cc-port plugin delete plugin:codex-marketplace-chrome-openai-bundled --dry-run
 ```
 
-机器调用可使用 `--json`；批量命令支持重复 `--resource`、`--all`、`--dry-run`、`--yes` 和 YAML `--choices`，下载额外支持重复 `--platform`。旧 `lpm env` 命令已删除。
+机器调用可使用 `--json`；批量命令支持重复 `--resource`、`--all`、`--dry-run`、`--yes` 和 YAML `--choices`，下载额外支持重复 `--platform`。旧 `cc-port env` 命令已删除。
 
 环境采集、ZIP 导出/导入、仓库级环境 push/pull 差异和环境部署服务也已删除，不提供隐藏兼容入口。资产扫描只复用只读工具发现与 MCP 安全占位符处理。
 
@@ -138,9 +138,9 @@ resource_sync_cleanup
 以下 CLI 命令保留一个发布版本，执行前输出弃用警告：
 
 ```text
-lpm resource pull
-lpm resource push
-lpm resource sync-*
+cc-port resource pull
+cc-port resource push
+cc-port resource sync-*
 ```
 
 旧工作区存在 dirty、ahead、diverged、wrong-branch 或未处理旧同步计划时，新资产模型仍允许读取和扫描，但阻断远端写入。先使用兼容命令提交、取消或清理旧状态。

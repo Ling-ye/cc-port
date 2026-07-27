@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, ResourcesConfig
-from lpm.services.resource_commit import (
+from cc_port.core.config import Config, ResourcesConfig
+from cc_port.services.resource_commit import (
     ResourceCommitBlocked,
     build_resource_commit_plan,
     commit_resource_changes,
@@ -39,16 +39,16 @@ def test_commit_plan_blocks_unmanaged_paths_and_only_commits_managed_resources(
     assert [item.path for item in blocked.blocked_paths] == ["notes.txt"]
     assert blocked.managed_paths == ["skills/demo/SKILL.md"]
     with pytest.raises(ResourceCommitBlocked):
-        commit_resource_changes(message="lpm: add demo", config=cfg)
+        commit_resource_changes(message="cc-port: add demo", config=cfg)
 
     notes.unlink()
-    committed = commit_resource_changes(message="lpm: add demo", config=cfg)
+    committed = commit_resource_changes(message="cc-port: add demo", config=cfg)
 
     assert committed.blocked is False
     assert _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.strip() == (
         "skills/demo/SKILL.md"
     )
-    assert "LPM-Device:" in _git(repo, "log", "-1", "--format=%B").stdout
+    assert "CC_PORT-Device:" in _git(repo, "log", "-1", "--format=%B").stdout
 
 
 def test_commit_plan_blocks_secret_and_excluded_environment_files(tmp_path: Path) -> None:
@@ -130,11 +130,11 @@ def test_configured_git_identity_is_used_without_device_trailer(tmp_path: Path) 
     skill.parent.mkdir(parents=True)
     skill.write_text("# Owned\n", encoding="utf-8")
 
-    commit_resource_changes(message="lpm: add owned", config=cfg)
+    commit_resource_changes(message="cc-port: add owned", config=cfg)
 
     log = _git(repo, "log", "-1", "--format=%an|%ae|%B").stdout
     assert log.startswith("Resource Owner|owner@example.test|")
-    assert "LPM-Device:" not in log
+    assert "CC_PORT-Device:" not in log
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -152,9 +152,9 @@ def _commit(repo: Path, message: str) -> None:
     _git(
         repo,
         "-c",
-        "user.name=LPM Test",
+        "user.name=CC Port Test",
         "-c",
-        "user.email=lpm@example.test",
+        "user.email=cc-port@example.test",
         "commit",
         "-m",
         message,

@@ -1,29 +1,29 @@
 Set-StrictMode -Version Latest
 
-$script:LpmExpectedTarget = "x86_64-pc-windows-msvc"
-$script:LpmWingetHelpUrl = "https://learn.microsoft.com/windows/package-manager/winget/"
-$script:LpmJsonCacheSchemaVersion = 1
+$script:CcPortExpectedTarget = "x86_64-pc-windows-msvc"
+$script:CcPortWingetHelpUrl = "https://learn.microsoft.com/windows/package-manager/winget/"
+$script:CcPortJsonCacheSchemaVersion = 1
 
-function Get-LpmRepoRoot {
+function Get-CcPortRepoRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 
-function Get-LpmExpectedTarget {
-    return $script:LpmExpectedTarget
+function Get-CcPortExpectedTarget {
+    return $script:CcPortExpectedTarget
 }
 
-function Get-LpmWingetHelpUrl {
-    return $script:LpmWingetHelpUrl
+function Get-CcPortWingetHelpUrl {
+    return $script:CcPortWingetHelpUrl
 }
 
-function Write-LpmSection {
+function Write-CcPortSection {
     param([Parameter(Mandatory = $true)][string]$Title)
 
     Write-Host ""
     Write-Host "==> $Title" -ForegroundColor Cyan
 }
 
-function Get-LpmOutputExcerpt {
+function Get-CcPortOutputExcerpt {
     param(
         [AllowNull()][string]$Value,
         [int]$MaximumLength = 1200
@@ -39,12 +39,12 @@ function Get-LpmOutputExcerpt {
     return $clean.Substring(0, $MaximumLength) + "...<truncated>"
 }
 
-function Invoke-LpmNative {
+function Invoke-CcPortNative {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @(),
-        [string]$WorkingDirectory = (Get-LpmRepoRoot),
+        [string]$WorkingDirectory = (Get-CcPortRepoRoot),
         [switch]$Capture,
         [switch]$AllowFailure,
         [string]$Description = "external command"
@@ -88,13 +88,13 @@ function Invoke-LpmNative {
         Command  = $displayCommand
     }
     if ($result.ExitCode -ne 0 -and -not $AllowFailure) {
-        $detail = Get-LpmOutputExcerpt -Value $result.Output
+        $detail = Get-CcPortOutputExcerpt -Value $result.Output
         throw "$Description failed (exit $($result.ExitCode)): $detail"
     }
     return $result
 }
 
-function Resolve-LpmExecutable {
+function Resolve-CcPortExecutable {
     [CmdletBinding()]
     param(
         [string[]]$Names = @(),
@@ -119,7 +119,7 @@ function Resolve-LpmExecutable {
     return $null
 }
 
-function Add-LpmPathDirectories {
+function Add-CcPortPathDirectories {
     param([AllowEmptyCollection()][string[]]$Directories = @())
 
     $ordered = New-Object System.Collections.Generic.List[string]
@@ -137,23 +137,23 @@ function Add-LpmPathDirectories {
     $env:PATH = $ordered -join ";"
 }
 
-function Update-LpmProcessPath {
+function Update-CcPortProcessPath {
     $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
     $user = [Environment]::GetEnvironmentVariable("Path", "User")
     $directories = @()
     $directories += @($env:PATH -split ";")
     $directories += @($user -split ";")
     $directories += @($machine -split ";")
-    Add-LpmPathDirectories -Directories $directories
+    Add-CcPortPathDirectories -Directories $directories
 }
 
-function Test-LpmPythonVersion {
+function Test-CcPortPythonVersion {
     param([Parameter(Mandatory = $true)][version]$Version)
 
     return $Version.Major -eq 3 -and $Version.Minor -ge 10 -and $Version.Minor -le 12
 }
 
-function Test-LpmNodeVersion {
+function Test-CcPortNodeVersion {
     param([Parameter(Mandatory = $true)][string]$Value)
 
     $match = [regex]::Match($Value.Trim(), '^v?(\d+)\.(\d+)\.(\d+)$')
@@ -167,7 +167,7 @@ function Test-LpmNodeVersion {
         $major -gt 22
 }
 
-function Get-LpmPython {
+function Get-CcPortPython {
     $local = $env:LOCALAPPDATA
     $programFiles = $env:ProgramFiles
     $fallbacks = @(
@@ -177,9 +177,9 @@ function Get-LpmPython {
     ) | Where-Object { $_ }
 
     $candidates = New-Object System.Collections.Generic.List[string]
-    $launcher = Resolve-LpmExecutable -Names @("py.exe", "py")
+    $launcher = Resolve-CcPortExecutable -Names @("py.exe", "py")
     if ($launcher) {
-        $result = Invoke-LpmNative -FilePath $launcher -ArgumentList @(
+        $result = Invoke-CcPortNative -FilePath $launcher -ArgumentList @(
             "-3.12", "-c", "import sys; print(sys.executable)"
         ) -Capture -AllowFailure -Description "Python launcher"
         if ($result.ExitCode -eq 0 -and (Test-Path -LiteralPath $result.Output.Trim() -PathType Leaf)) {
@@ -191,7 +191,7 @@ function Get-LpmPython {
             $candidates.Add((Resolve-Path -LiteralPath $candidate).Path)
         }
     }
-    $pathPython = Resolve-LpmExecutable -Names @("python.exe", "python")
+    $pathPython = Resolve-CcPortExecutable -Names @("python.exe", "python")
     if ($pathPython) {
         $candidates.Add($pathPython)
     }
@@ -203,7 +203,7 @@ function Get-LpmPython {
             continue
         }
         $seen[$key] = $true
-        $probe = Invoke-LpmNative -FilePath $candidate -ArgumentList @(
+        $probe = Invoke-CcPortNative -FilePath $candidate -ArgumentList @(
             "-c",
             "import platform,sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}|{platform.architecture()[0]}')"
         ) -Capture -AllowFailure -Description "Python version probe"
@@ -211,32 +211,32 @@ function Get-LpmPython {
             continue
         }
         $version = [version]$Matches[1]
-        if (Test-LpmPythonVersion -Version $version) {
+        if (Test-CcPortPythonVersion -Version $version) {
             return [pscustomobject]@{ Path = $candidate; Version = $version }
         }
     }
     return $null
 }
 
-function Get-LpmNode {
+function Get-CcPortNode {
     $local = $env:LOCALAPPDATA
     $programFiles = $env:ProgramFiles
     $fallbacks = @(
         $(if ($programFiles) { Join-Path $programFiles "nodejs\node.exe" }),
         $(if ($local) { Join-Path $local "Programs\nodejs\node.exe" })
     ) | Where-Object { $_ }
-    $nodePath = Resolve-LpmExecutable -Names @("node.exe", "node") -Fallbacks $fallbacks
+    $nodePath = Resolve-CcPortExecutable -Names @("node.exe", "node") -Fallbacks $fallbacks
     if (-not $nodePath) {
         return $null
     }
-    $probe = Invoke-LpmNative -FilePath $nodePath -ArgumentList @("--version") -Capture -AllowFailure -Description "Node.js version probe"
-    if ($probe.ExitCode -ne 0 -or -not (Test-LpmNodeVersion -Value $probe.Output)) {
+    $probe = Invoke-CcPortNative -FilePath $nodePath -ArgumentList @("--version") -Capture -AllowFailure -Description "Node.js version probe"
+    if ($probe.ExitCode -ne 0 -or -not (Test-CcPortNodeVersion -Value $probe.Output)) {
         return $null
     }
     return [pscustomobject]@{ Path = $nodePath; Version = $probe.Output.Trim() }
 }
 
-function Get-LpmNpm {
+function Get-CcPortNpm {
     param([AllowNull()][string]$NodePath)
 
     $fallbacks = @()
@@ -249,10 +249,10 @@ function Get-LpmNpm {
     if ($env:LOCALAPPDATA) {
         $fallbacks += Join-Path $env:LOCALAPPDATA "Programs\nodejs\npm.cmd"
     }
-    return Resolve-LpmExecutable -Names @("npm.cmd", "npm") -Fallbacks $fallbacks
+    return Resolve-CcPortExecutable -Names @("npm.cmd", "npm") -Fallbacks $fallbacks
 }
 
-function Get-LpmGit {
+function Get-CcPortGit {
     $fallbacks = @()
     if ($env:ProgramFiles) {
         $fallbacks += Join-Path $env:ProgramFiles "Git\cmd\git.exe"
@@ -260,14 +260,14 @@ function Get-LpmGit {
     if ($env:LOCALAPPDATA) {
         $fallbacks += Join-Path $env:LOCALAPPDATA "Programs\Git\cmd\git.exe"
     }
-    $root = Get-LpmRepoRoot
+    $root = Get-CcPortRepoRoot
     if ([IO.Path]::GetPathRoot($root)) {
         $fallbacks += Join-Path ([IO.Path]::GetPathRoot($root)) "Git\cmd\git.exe"
     }
-    return Resolve-LpmExecutable -Names @("git.exe", "git") -Fallbacks $fallbacks
+    return Resolve-CcPortExecutable -Names @("git.exe", "git") -Fallbacks $fallbacks
 }
 
-function Remove-LpmTerminalSequences {
+function Remove-CcPortTerminalSequences {
     param([AllowNull()][string]$Value)
 
     if ($null -eq $Value) {
@@ -278,10 +278,10 @@ function Remove-LpmTerminalSequences {
     return $withoutAnsi.Replace([string][char]0xFEFF, "")
 }
 
-function Get-LpmRustHostFromTuple {
+function Get-CcPortRustHostFromTuple {
     param([Parameter(Mandatory = $true)][string]$Output)
 
-    $clean = Remove-LpmTerminalSequences -Value $Output
+    $clean = Remove-CcPortTerminalSequences -Value $Output
     foreach ($line in $clean -split "`r?`n") {
         $candidate = $line.Trim()
         if ($candidate -match '^[A-Za-z0-9_]+(?:-[A-Za-z0-9_.]+)+$') {
@@ -291,10 +291,10 @@ function Get-LpmRustHostFromTuple {
     throw "rustc --print host-tuple did not return a valid target triple."
 }
 
-function Get-LpmRustHostFromVerbose {
+function Get-CcPortRustHostFromVerbose {
     param([Parameter(Mandatory = $true)][string]$Output)
 
-    $clean = Remove-LpmTerminalSequences -Value $Output
+    $clean = Remove-CcPortTerminalSequences -Value $Output
     foreach ($line in $clean -split "`r?`n") {
         $match = [regex]::Match($line, '^\s*host\s*:\s*(?<target>[A-Za-z0-9_]+(?:-[A-Za-z0-9_.]+)+)\s*$', 'IgnoreCase')
         if ($match.Success) {
@@ -304,59 +304,59 @@ function Get-LpmRustHostFromVerbose {
     throw "rustc -vV did not return a valid host target triple."
 }
 
-function Get-LpmRustTarget {
+function Get-CcPortRustTarget {
     param([Parameter(Mandatory = $true)][string]$RustcPath)
 
-    $tuple = Invoke-LpmNative -FilePath $RustcPath -ArgumentList @("--print", "host-tuple") -Capture -AllowFailure -Description "rustc host tuple"
+    $tuple = Invoke-CcPortNative -FilePath $RustcPath -ArgumentList @("--print", "host-tuple") -Capture -AllowFailure -Description "rustc host tuple"
     if ($tuple.ExitCode -eq 0) {
         try {
-            return Get-LpmRustHostFromTuple -Output $tuple.Output
+            return Get-CcPortRustHostFromTuple -Output $tuple.Output
         } catch {
             # Older wrappers sometimes accept the option but format it incorrectly.
         }
     }
 
-    $verbose = Invoke-LpmNative -FilePath $RustcPath -ArgumentList @("-vV") -Capture -AllowFailure -Description "rustc verbose version"
+    $verbose = Invoke-CcPortNative -FilePath $RustcPath -ArgumentList @("-vV") -Capture -AllowFailure -Description "rustc verbose version"
     if ($verbose.ExitCode -eq 0) {
         try {
-            return Get-LpmRustHostFromVerbose -Output $verbose.Output
+            return Get-CcPortRustHostFromVerbose -Output $verbose.Output
         } catch {
             # The diagnostic below includes both attempts.
         }
     }
 
-    $tupleOutput = Get-LpmOutputExcerpt -Value $tuple.Output
-    $verboseOutput = Get-LpmOutputExcerpt -Value $verbose.Output
+    $tupleOutput = Get-CcPortOutputExcerpt -Value $tuple.Output
+    $verboseOutput = Get-CcPortOutputExcerpt -Value $verbose.Output
     throw "rustc did not report a valid Windows host target. rustc=$RustcPath; --print host-tuple exit=$($tuple.ExitCode), output=$tupleOutput; -vV exit=$($verbose.ExitCode), output=$verboseOutput"
 }
 
-function Get-LpmRustTools {
+function Get-CcPortRustTools {
     $cargoFallbacks = @()
     if ($env:USERPROFILE) {
         $cargoFallbacks += Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
     }
-    $cargo = Resolve-LpmExecutable -Names @("cargo.exe", "cargo") -Fallbacks $cargoFallbacks
+    $cargo = Resolve-CcPortExecutable -Names @("cargo.exe", "cargo") -Fallbacks $cargoFallbacks
     if (-not $cargo) {
         return [pscustomobject]@{ Cargo = $null; Rustc = $null; Rustup = $null; Target = $null; Error = "Cargo was not found." }
     }
 
     $cargoDirectory = Split-Path -Parent $cargo
-    $rustup = Resolve-LpmExecutable -Names @("rustup.exe", "rustup") -Fallbacks @(
+    $rustup = Resolve-CcPortExecutable -Names @("rustup.exe", "rustup") -Fallbacks @(
         (Join-Path $cargoDirectory "rustup.exe"),
         $(if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe" })
     )
 
     # A rustc proxy next to the selected Cargo is coherent with that Cargo and
     # must win over unrelated PATH entries such as Conda shims.
-    $rustc = Resolve-LpmExecutable -Fallbacks @((Join-Path $cargoDirectory "rustc.exe"))
+    $rustc = Resolve-CcPortExecutable -Fallbacks @((Join-Path $cargoDirectory "rustc.exe"))
     if (-not $rustc -and $rustup) {
-        $which = Invoke-LpmNative -FilePath $rustup -ArgumentList @("which", "rustc") -Capture -AllowFailure -Description "rustup which rustc"
+        $which = Invoke-CcPortNative -FilePath $rustup -ArgumentList @("which", "rustc") -Capture -AllowFailure -Description "rustup which rustc"
         if ($which.ExitCode -eq 0 -and (Test-Path -LiteralPath $which.Output.Trim() -PathType Leaf)) {
             $rustc = (Resolve-Path -LiteralPath $which.Output.Trim()).Path
         }
     }
     if (-not $rustc) {
-        $rustc = Resolve-LpmExecutable -Names @("rustc.exe", "rustc") -Fallbacks @(
+        $rustc = Resolve-CcPortExecutable -Names @("rustc.exe", "rustc") -Fallbacks @(
             $(if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".cargo\bin\rustc.exe" })
         )
     }
@@ -365,7 +365,7 @@ function Get-LpmRustTools {
     }
 
     try {
-        $target = Get-LpmRustTarget -RustcPath $rustc
+        $target = Get-CcPortRustTarget -RustcPath $rustc
         $errorText = $null
     } catch {
         $target = $null
@@ -380,26 +380,26 @@ function Get-LpmRustTools {
     }
 }
 
-function Get-LpmWinget {
-    return Resolve-LpmExecutable -Names @("winget.exe", "winget") -Fallbacks @(
+function Get-CcPortWinget {
+    return Resolve-CcPortExecutable -Names @("winget.exe", "winget") -Fallbacks @(
         $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe" })
     )
 }
 
-function Get-LpmVsWhere {
+function Get-CcPortVsWhere {
     $fallbacks = @()
     if (${env:ProgramFiles(x86)}) {
         $fallbacks += Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     }
-    return Resolve-LpmExecutable -Names @("vswhere.exe", "vswhere") -Fallbacks $fallbacks
+    return Resolve-CcPortExecutable -Names @("vswhere.exe", "vswhere") -Fallbacks $fallbacks
 }
 
-function Get-LpmVisualStudioPath {
-    $vswhere = Get-LpmVsWhere
+function Get-CcPortVisualStudioPath {
+    $vswhere = Get-CcPortVsWhere
     if (-not $vswhere) {
         return $null
     }
-    $probe = Invoke-LpmNative -FilePath $vswhere -ArgumentList @(
+    $probe = Invoke-CcPortNative -FilePath $vswhere -ArgumentList @(
         "-latest",
         "-products", "*",
         "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
@@ -415,7 +415,7 @@ function Get-LpmVisualStudioPath {
     return $null
 }
 
-function Get-LpmMinimalWindowsPath {
+function Get-CcPortMinimalWindowsPath {
     $systemRoot = if ($env:SystemRoot) { $env:SystemRoot } else { [Environment]::SystemDirectory }
     if (-not $systemRoot) {
         $systemRoot = "C:\Windows"
@@ -430,7 +430,7 @@ function Get-LpmMinimalWindowsPath {
     ) -join ";"
 }
 
-function Get-LpmVisualStudioTransientVariableNames {
+function Get-CcPortVisualStudioTransientVariableNames {
     # Variables that make a second VsDevCmd.bat entry expand past cmd.exe's
     # 8191-character limit when INCLUDE/EXTERNAL_INCLUDE/LIB* are re-prepended,
     # or that pin an old fat PATH via __VSCMD_PREINIT_PATH.
@@ -492,7 +492,7 @@ function Get-LpmVisualStudioTransientVariableNames {
     return @($names)
 }
 
-function Enable-LpmVisualStudioEnvironment {
+function Enable-CcPortVisualStudioEnvironment {
     param([Parameter(Mandatory = $true)][string]$InstallationPath)
 
     $vsDevCmd = Join-Path $InstallationPath "Common7\Tools\VsDevCmd.bat"
@@ -509,13 +509,13 @@ function Enable-LpmVisualStudioEnvironment {
     # then merge MSVC directories back onto the caller's PATH.
     $savedPath = $env:PATH
     $savedTransient = @{}
-    foreach ($name in Get-LpmVisualStudioTransientVariableNames) {
+    foreach ($name in Get-CcPortVisualStudioTransientVariableNames) {
         $savedTransient[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
         [Environment]::SetEnvironmentVariable($name, $null, "Process")
     }
-    $env:PATH = Get-LpmMinimalWindowsPath
+    $env:PATH = Get-CcPortMinimalWindowsPath
     try {
-        $result = Invoke-LpmNative -FilePath $commandProcessor -ArgumentList @("/d", "/s", "/c", $command) -Capture -Description "Visual Studio developer environment"
+        $result = Invoke-CcPortNative -FilePath $commandProcessor -ArgumentList @("/d", "/s", "/c", $command) -Capture -Description "Visual Studio developer environment"
         $vsPath = $null
         foreach ($line in $result.Output -split "`r?`n") {
             if ($line -notmatch '^([^=]+)=(.*)$') {
@@ -539,7 +539,7 @@ function Enable-LpmVisualStudioEnvironment {
         }
         $env:PATH = $savedPath
         if ($vsPath) {
-            Add-LpmPathDirectories -Directories @($vsPath -split ";")
+            Add-CcPortPathDirectories -Directories @($vsPath -split ";")
         }
     } catch {
         $env:PATH = $savedPath
@@ -582,13 +582,13 @@ function Enable-LpmVisualStudioEnvironment {
         $env:WindowsSdkDir = $kitRoot + "\"
         $env:WindowsSDKVersion = $sdkVersion + "\"
         $env:UniversalCRTSdkDir = $kitRoot + "\"
-        Add-LpmPathDirectories -Directories @(
+        Add-CcPortPathDirectories -Directories @(
             (Join-Path (Join-Path (Join-Path $kitRoot "bin") $sdkVersion) "x64")
         )
     }
 }
 
-function Install-LpmWingetPackage {
+function Install-CcPortWingetPackage {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$WingetPath,
@@ -598,7 +598,7 @@ function Install-LpmWingetPackage {
     )
 
     $common = @("--id", $PackageId, "--exact", "--source", "winget", "--accept-source-agreements")
-    Invoke-LpmNative -FilePath $WingetPath -ArgumentList (@("show") + $common) -Description "WinGet package verification ($PackageId)" | Out-Null
+    Invoke-CcPortNative -FilePath $WingetPath -ArgumentList (@("show") + $common) -Description "WinGet package verification ($PackageId)" | Out-Null
 
     $arguments = @("install") + $common + @("--accept-package-agreements")
     if ($NonInteractive) {
@@ -607,10 +607,10 @@ function Install-LpmWingetPackage {
     if ($Override) {
         $arguments += @("--override", $Override)
     }
-    Invoke-LpmNative -FilePath $WingetPath -ArgumentList $arguments -Description "WinGet install ($PackageId)" | Out-Null
+    Invoke-CcPortNative -FilePath $WingetPath -ArgumentList $arguments -Description "WinGet install ($PackageId)" | Out-Null
 }
 
-function Assert-LpmDirectChild {
+function Assert-CcPortDirectChild {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Parent
@@ -626,19 +626,19 @@ function Assert-LpmDirectChild {
     return $fullPath
 }
 
-function Remove-LpmSafePath {
+function Remove-CcPortSafePath {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Parent
     )
 
-    $safePath = Assert-LpmDirectChild -Path $Path -Parent $Parent
+    $safePath = Assert-CcPortDirectChild -Path $Path -Parent $Parent
     if (Test-Path -LiteralPath $safePath) {
         Remove-Item -LiteralPath $safePath -Recurse -Force -ErrorAction Stop
     }
 }
 
-function Get-LpmStringHash {
+function Get-CcPortStringHash {
     param(
         [Parameter(Mandatory = $true)]
         [AllowEmptyString()]
@@ -656,7 +656,7 @@ function Get-LpmStringHash {
     return ([BitConverter]::ToString($hash).Replace("-", "").ToLowerInvariant())
 }
 
-function ConvertTo-LpmFingerprintPath {
+function ConvertTo-CcPortFingerprintPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path)) {
@@ -665,7 +665,7 @@ function ConvertTo-LpmFingerprintPath {
     return [IO.Path]::GetFullPath($Path).Replace("\", "/").ToLowerInvariant()
 }
 
-function Get-LpmDependencyInputFingerprint {
+function Get-CcPortDependencyInputFingerprint {
     param(
         [Parameter(Mandatory = $true)][string]$ContentFingerprint,
         [Parameter(Mandatory = $true)][string]$PythonVersion,
@@ -681,17 +681,17 @@ function Get-LpmDependencyInputFingerprint {
         "dependencyPolicyVersion=1",
         "content=$($ContentFingerprint.Trim())",
         "pythonVersion=$($PythonVersion.Trim())",
-        "pythonPath=$(ConvertTo-LpmFingerprintPath -Path $PythonPath)",
+        "pythonPath=$(ConvertTo-CcPortFingerprintPath -Path $PythonPath)",
         "nodeVersion=$($NodeVersion.Trim())",
-        "nodePath=$(ConvertTo-LpmFingerprintPath -Path $NodePath)",
+        "nodePath=$(ConvertTo-CcPortFingerprintPath -Path $NodePath)",
         "npmVersion=$($NpmVersion.Trim())",
-        "npmPath=$(ConvertTo-LpmFingerprintPath -Path $NpmPath)",
+        "npmPath=$(ConvertTo-CcPortFingerprintPath -Path $NpmPath)",
         "platform=$($Platform.Trim())"
     ) -join "`n"
-    return Get-LpmStringHash -Value $descriptor
+    return Get-CcPortStringHash -Value $descriptor
 }
 
-function Get-LpmFileHashValue {
+function Get-CcPortFileHashValue {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $stream = [IO.File]::OpenRead($Path)
@@ -705,7 +705,7 @@ function Get-LpmFileHashValue {
     return ([BitConverter]::ToString($hash).Replace("-", "").ToLowerInvariant())
 }
 
-function Get-LpmContentFingerprint {
+function Get-CcPortContentFingerprint {
     param(
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
@@ -721,8 +721,8 @@ function Get-LpmContentFingerprint {
         if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
             throw "Fingerprint input file does not exist: $fullPath"
         }
-        $normalizedPath = ConvertTo-LpmFingerprintPath -Path $fullPath
-        $entriesByPath[$normalizedPath] = Get-LpmFileHashValue -Path $fullPath
+        $normalizedPath = ConvertTo-CcPortFingerprintPath -Path $fullPath
+        $entriesByPath[$normalizedPath] = Get-CcPortFileHashValue -Path $fullPath
     }
 
     $entries = New-Object System.Collections.Generic.List[string]
@@ -730,10 +730,10 @@ function Get-LpmContentFingerprint {
         $entries.Add("$normalizedPath`0$($entriesByPath[$normalizedPath])")
     }
     $entries.Sort([StringComparer]::Ordinal)
-    return Get-LpmStringHash -Value ($entries -join "`n")
+    return Get-CcPortStringHash -Value ($entries -join "`n")
 }
 
-function Read-LpmJsonCache {
+function Read-CcPortJsonCache {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $fullPath = [IO.Path]::GetFullPath($Path)
@@ -749,7 +749,7 @@ function Read-LpmJsonCache {
         $schemaProperty = $document.PSObject.Properties["schemaVersion"]
         $valueProperty = $document.PSObject.Properties["value"]
         if ($null -eq $schemaProperty -or $null -eq $valueProperty -or
-            [int]$schemaProperty.Value -ne $script:LpmJsonCacheSchemaVersion) {
+            [int]$schemaProperty.Value -ne $script:CcPortJsonCacheSchemaVersion) {
             return $null
         }
         return $valueProperty.Value
@@ -758,7 +758,7 @@ function Read-LpmJsonCache {
     }
 }
 
-function Write-LpmJsonCacheAtomically {
+function Write-CcPortJsonCacheAtomically {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][AllowNull()]$Value
@@ -776,7 +776,7 @@ function Write-LpmJsonCacheAtomically {
     $temporaryPath = Join-Path $parent ("." + [IO.Path]::GetFileName($fullPath) + ".tmp-" + [guid]::NewGuid().ToString("N"))
     $backupPath = Join-Path $parent ("." + [IO.Path]::GetFileName($fullPath) + ".backup-" + [guid]::NewGuid().ToString("N"))
     $envelope = [ordered]@{
-        schemaVersion = $script:LpmJsonCacheSchemaVersion
+        schemaVersion = $script:CcPortJsonCacheSchemaVersion
         value = $Value
     }
     $json = ($envelope | ConvertTo-Json -Depth 32) + [Environment]::NewLine
@@ -798,7 +798,7 @@ function Write-LpmJsonCacheAtomically {
     }
 }
 
-function Get-LpmWindowsPackageArtifacts {
+function Get-CcPortWindowsPackageArtifacts {
     param([Parameter(Mandatory = $true)][string]$ReleaseDirectory)
 
     $files = @(Get-ChildItem -LiteralPath $ReleaseDirectory -Recurse -File | Sort-Object FullName)
@@ -813,7 +813,7 @@ function Get-LpmWindowsPackageArtifacts {
     return @($msi + $nsis)
 }
 
-function Publish-LpmStagingDirectory {
+function Publish-CcPortStagingDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$StagingDirectory,
         [Parameter(Mandatory = $true)][string]$FinalDirectory,
@@ -821,8 +821,8 @@ function Publish-LpmStagingDirectory {
         [AllowNull()][scriptblock]$MoveDirectory = $null
     )
 
-    $staging = Assert-LpmDirectChild -Path $StagingDirectory -Parent $ReleaseRoot
-    $final = Assert-LpmDirectChild -Path $FinalDirectory -Parent $ReleaseRoot
+    $staging = Assert-CcPortDirectChild -Path $StagingDirectory -Parent $ReleaseRoot
+    $final = Assert-CcPortDirectChild -Path $FinalDirectory -Parent $ReleaseRoot
     if (-not (Test-Path -LiteralPath $staging -PathType Container)) {
         throw "Staging directory does not exist or is not a directory: $staging"
     }
@@ -833,7 +833,7 @@ function Publish-LpmStagingDirectory {
         }
     }
     $backup = Join-Path $ReleaseRoot ("." + [IO.Path]::GetFileName($final) + ".backup-" + [guid]::NewGuid().ToString("N"))
-    Assert-LpmDirectChild -Path $backup -Parent $ReleaseRoot | Out-Null
+    Assert-CcPortDirectChild -Path $backup -Parent $ReleaseRoot | Out-Null
     $movedOld = $false
     $stage = "moving the previous release to its backup"
     try {
@@ -856,7 +856,7 @@ function Publish-LpmStagingDirectory {
     }
     if (Test-Path -LiteralPath $backup) {
         try {
-            Remove-LpmSafePath -Path $backup -Parent $ReleaseRoot
+            Remove-CcPortSafePath -Path $backup -Parent $ReleaseRoot
         } catch {
             Write-Warning "Verified release is active, but the previous release backup could not be removed: $backup ($($_.Exception.Message))"
         }
@@ -864,38 +864,38 @@ function Publish-LpmStagingDirectory {
 }
 
 Export-ModuleMember -Function @(
-    "Add-LpmPathDirectories",
-    "Assert-LpmDirectChild",
-    "Enable-LpmVisualStudioEnvironment",
-    "Get-LpmExpectedTarget",
-    "Get-LpmContentFingerprint",
-    "Get-LpmDependencyInputFingerprint",
-    "Get-LpmGit",
-    "Get-LpmNode",
-    "Get-LpmNpm",
-    "Get-LpmOutputExcerpt",
-    "Get-LpmPython",
-    "Get-LpmRepoRoot",
-    "Get-LpmRustHostFromTuple",
-    "Get-LpmRustHostFromVerbose",
-    "Get-LpmRustTarget",
-    "Get-LpmRustTools",
-    "Get-LpmStringHash",
-    "Get-LpmVisualStudioPath",
-    "Get-LpmMinimalWindowsPath",
-    "Get-LpmVisualStudioTransientVariableNames",
-    "Get-LpmWinget",
-    "Get-LpmWingetHelpUrl",
-    "Get-LpmWindowsPackageArtifacts",
-    "Install-LpmWingetPackage",
-    "Invoke-LpmNative",
-    "Publish-LpmStagingDirectory",
-    "Read-LpmJsonCache",
-    "Remove-LpmSafePath",
-    "Resolve-LpmExecutable",
-    "Test-LpmNodeVersion",
-    "Test-LpmPythonVersion",
-    "Update-LpmProcessPath",
-    "Write-LpmJsonCacheAtomically",
-    "Write-LpmSection"
+    "Add-CcPortPathDirectories",
+    "Assert-CcPortDirectChild",
+    "Enable-CcPortVisualStudioEnvironment",
+    "Get-CcPortExpectedTarget",
+    "Get-CcPortContentFingerprint",
+    "Get-CcPortDependencyInputFingerprint",
+    "Get-CcPortGit",
+    "Get-CcPortNode",
+    "Get-CcPortNpm",
+    "Get-CcPortOutputExcerpt",
+    "Get-CcPortPython",
+    "Get-CcPortRepoRoot",
+    "Get-CcPortRustHostFromTuple",
+    "Get-CcPortRustHostFromVerbose",
+    "Get-CcPortRustTarget",
+    "Get-CcPortRustTools",
+    "Get-CcPortStringHash",
+    "Get-CcPortVisualStudioPath",
+    "Get-CcPortMinimalWindowsPath",
+    "Get-CcPortVisualStudioTransientVariableNames",
+    "Get-CcPortWinget",
+    "Get-CcPortWingetHelpUrl",
+    "Get-CcPortWindowsPackageArtifacts",
+    "Install-CcPortWingetPackage",
+    "Invoke-CcPortNative",
+    "Publish-CcPortStagingDirectory",
+    "Read-CcPortJsonCache",
+    "Remove-CcPortSafePath",
+    "Resolve-CcPortExecutable",
+    "Test-CcPortNodeVersion",
+    "Test-CcPortPythonVersion",
+    "Update-CcPortProcessPath",
+    "Write-CcPortJsonCacheAtomically",
+    "Write-CcPortSection"
 )

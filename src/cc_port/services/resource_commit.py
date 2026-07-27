@@ -218,7 +218,7 @@ def _build_resource_commit_plan_unlocked(root: Path) -> ResourceCommitPlan:
                     item_path,
                     ResourceCommitIssue(
                         path=item_path,
-                        reason="path is outside the LPM-managed resource scope",
+                        reason="path is outside the CC Port-managed resource scope",
                     ),
                 )
 
@@ -376,19 +376,19 @@ def _suggested_message(changes: list[ResourceCommitChange]) -> str:
     resource_count = sum(1 for item in changes if item.kind != "metadata")
     if resource_count == 1:
         item = next(item for item in changes if item.kind != "metadata")
-        return f"lpm: {item.action} {item.kind} {item.name}"
+        return f"cc-port: {item.action} {item.kind} {item.name}"
     if resource_count:
-        return f"lpm: update {resource_count} resources"
-    return "lpm: update resource metadata"
+        return f"cc-port: update {resource_count} resources"
+    return "cc-port: update resource metadata"
 
 
 def _commit_message(root: Path, message: str) -> str:
-    normalized = message.strip() or "lpm: update resources"
+    normalized = message.strip() or "cc-port: update resources"
     if git_ops.configured_commit_identity(root) is not None:
         return normalized
-    if "\nLPM-Device:" in normalized:
+    if "\nCC_PORT-Device:" in normalized:
         return normalized
-    return f"{normalized}\n\nLPM-Device: {_anonymous_device_id()}"
+    return f"{normalized}\n\nCC_PORT-Device: {_anonymous_device_id()}"
 
 
 def _anonymous_device_id() -> str:

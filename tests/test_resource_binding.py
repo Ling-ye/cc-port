@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, GithubConfig, ResourcesConfig, load_raw_config, write_config
-from lpm.infrastructure import git_ops
-from lpm.services import resource_binding
+from cc_port.core.config import Config, GithubConfig, ResourcesConfig, load_raw_config, write_config
+from cc_port.infrastructure import git_ops
+from cc_port.services import resource_binding
 
 
 @pytest.mark.parametrize(

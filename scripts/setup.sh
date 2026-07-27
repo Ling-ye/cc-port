@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot environment setup for LPM (Python + desktop tooling).
+# One-shot environment setup for CC Port (Python + desktop tooling).
 #
 # Usage:
 #   bash scripts/setup.sh
@@ -51,7 +51,7 @@ if [[ "${SKIP_DESKTOP}" -eq 0 ]]; then
     echo "  rustc  : $(rustc --version)"
 fi
 
-section "Installing LPM Python package"
+section "Installing CC Port Python package"
 if [[ "${SKIP_DESKTOP}" -eq 0 ]]; then
     "${PY}" -m pip install -e ".[dev,desktop]"
 else
@@ -77,6 +77,6 @@ if [[ "${SKIP_DESKTOP}" -eq 0 ]]; then
     echo "  Desktop release packaging is supported on Windows x64 via scripts/release-desktop.ps1."
 else
     echo "Next steps:"
-    echo "  lpm doctor         # verify CLI"
-    echo "  lpm platforms      # list configured platforms"
+    echo "  cc-port doctor         # verify CLI"
+    echo "  cc-port platforms      # list configured platforms"
 fi

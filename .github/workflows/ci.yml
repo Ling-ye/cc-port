@@ -24,8 +24,8 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config --global user.email "ci@lpm"
-          git config --global user.name "lpm-ci"
+          git config --global user.email "ci@cc-port"
+          git config --global user.name "cc-port-ci"
 
       - name: Install
         run: |
@@ -33,7 +33,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src/lpm tests
+        run: ruff check src/cc_port tests
 
       - name: Test
         run: pytest -q

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, PluginProjectConfig, load_raw_config
-from lpm.services import plugin_management
+from cc_port.core.config import Config, PluginProjectConfig, load_raw_config
+from cc_port.services import plugin_management
 
 
 def _json(path: Path, value: object) -> None:

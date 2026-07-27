@@ -1,12 +1,12 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lpmAction, selectDirectory } from "@/api/client";
+import { ccPortAction, selectDirectory } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
 import { ScanLocalDialog } from "@/features/resources/ScanLocalDialog";
 
 vi.mock("@/api/client", () => ({
-  lpmAction: vi.fn(),
+  ccPortAction: vi.fn(),
   selectDirectory: vi.fn(),
 }));
 
@@ -30,7 +30,7 @@ describe("ScanLocalDialog", () => {
     const user = userEvent.setup();
     const onScan = vi.fn();
     const onClose = vi.fn();
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
       if (action === "plugin_projects_list") return { projects: [project] } as never;
       throw new Error(`unexpected ${action}`);
     });
@@ -45,19 +45,19 @@ describe("ScanLocalDialog", () => {
       project_ids: ["project-demo"],
     });
     expect(onClose).not.toHaveBeenCalled();
-    expect(lpmAction).toHaveBeenCalledTimes(1);
+    expect(ccPortAction).toHaveBeenCalledTimes(1);
   });
 
   it("keeps project mappings unchanged when directory selection is cancelled", async () => {
     const user = userEvent.setup();
     vi.mocked(selectDirectory).mockResolvedValue(null);
-    vi.mocked(lpmAction).mockResolvedValue({ projects: [project] } as never);
+    vi.mocked(ccPortAction).mockResolvedValue({ projects: [project] } as never);
     render(<ScanLocalDialog t={t} onClose={vi.fn()} onScan={vi.fn()} />);
 
     await screen.findByText("D:/code/demo");
     await user.click(screen.getByRole("button", { name: "Add project" }));
 
-    expect(lpmAction).not.toHaveBeenCalledWith("plugin_projects_add", expect.anything());
+    expect(ccPortAction).not.toHaveBeenCalledWith("plugin_projects_add", expect.anything());
     expect(screen.getByText("D:/code/demo")).toBeVisible();
   });
 });

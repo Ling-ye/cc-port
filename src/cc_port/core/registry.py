@@ -17,7 +17,7 @@ def find_registry_path(start: Path | None = None) -> Path:
     """Walk upwards from `start` looking for registry.yaml.
 
     When `start` is omitted, the default registry lives in the configured
-    private resource repository, not in the LPM tool repository.
+    private resource repository, not in the CC Port tool repository.
 
     Falls back to `<cwd>/registry.yaml` if none is found, so a missing file
     can still be created in place.

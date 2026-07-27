@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
-import type { ResourceKind } from "@/types/lpm";
+import type { ResourceKind } from "@/types/cc-port";
 
 export type AddKind = "auto" | ResourceKind;
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import lpm.services.env_manager as env_manager
+import cc_port.services.env_manager as env_manager
 
 
 def test_discovery_finds_resources_and_marks_mcp_secret_fields(tmp_path: Path) -> None:

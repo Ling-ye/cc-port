@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, ResourcesConfig
-from lpm.core.models import PluginInstallation, PluginOrigin, PluginSpec
-from lpm.services import asset_sync
-from lpm.services.doctor import _resource_repo_check
-from lpm.services.resource_repo import ResourceRepoInfo
-from lpm.services.ui_messages import (
+from cc_port.core.config import Config, ResourcesConfig
+from cc_port.core.models import PluginInstallation, PluginOrigin, PluginSpec
+from cc_port.services import asset_sync
+from cc_port.services.doctor import _resource_repo_check
+from cc_port.services.resource_repo import ResourceRepoInfo
+from cc_port.services.ui_messages import (
     fallback_text,
     ui_message,
     ui_message_from_data,

@@ -19,7 +19,7 @@ class TargetLockTimeout(RuntimeError):
         self.target = target
         self.timeout_seconds = timeout_seconds
         super().__init__(
-            f"Timed out after {timeout_seconds:g}s waiting for another LPM process "
+            f"Timed out after {timeout_seconds:g}s waiting for another CC Port process "
             f"to release target: {target}"
         )
 

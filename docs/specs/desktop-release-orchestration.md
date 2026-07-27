@@ -56,7 +56,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 2. 最多四路并行执行 PowerShell 构建逻辑自测、完整 pytest、Ruff、Vitest 与 `npm audit --package-lock-only --audit-level=moderate`；每项保留独立日志和真实退出码，900 秒超时记为 `124`。
 3. 生成缺失图标，并验证 sidecar 的输入指纹、缓存产物哈希和隔离冒烟；未命中或冒烟失败时 clean 重建一次。
 4. 默认只删除 Tauri bundle 与目标 sidecar，保留 Cargo 管理的主程序；`-Clean` 额外删除顶层主程序以强制重新链接，但不清理依赖编译产物。
-5. 把验证通过的源 sidecar 显式复制到 Tauri `target/release/lpm-desktop-api.exe`，并在构建前校验源、目标 SHA-256 一致。
+5. 把验证通过的源 sidecar 显式复制到 Tauri `target/release/cc-port-desktop-api.exe`，并在构建前校验源、目标 SHA-256 一致。
 6. 执行一次 Tauri release build；前端生产构建只由 `beforeBuildCommand` 触发一次，先在隔离目录生成 Vite 输出，内容未变化时保留现有 `desktop/dist` 及时间戳，内容变化时才事务式替换，再同时生成 MSI 与 NSIS。
 7. 构建后再次验证 Tauri 目标 sidecar 与源 sidecar 的 SHA-256 一致，再把桌面 exe、sidecar、MSI 和 NSIS 复制到同级临时发布目录。
 8. 在隔离状态目录运行临时 sidecar，验证 JSON `ok` 响应，并在临时目录计算四类产物 SHA-256。

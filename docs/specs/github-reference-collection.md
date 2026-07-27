@@ -49,7 +49,7 @@ MCP 引用除相同的 `repo`、`subdir` 和锁定 `ref` 外，必须保存可�
 
 ### 接口契约
 
-- CLI `lpm collect` 和 Desktop API `collect` 复用同一收集服务与 ref 解析规则，不允许任一入口写入未解析的 branch/tag。
+- CLI `cc-port collect` 和 Desktop API `collect` 复用同一收集服务与 ref 解析规则，不允许任一入口写入未解析的 branch/tag。
 - 收集 MCP 时 `mcp_config` 为必填；CLI 接受 JSON 配置参数，Desktop API 接受 mapping。非 MCP 收集携带该字段时拒绝请求。
 - 任何兼容用的 `skip_verify` 标志都不能允许新条目保存可变 ref，也不能跳过 `subdir` 路径语法安全校验。它只允许调用方离线提供完整 commit SHA；该 SHA 若在恢复时不可获取，必须明确失败。
 - 返回的 entry 中 `ref` 必须已经是完整 commit SHA；调用方不得用输入 selector 覆盖它。
@@ -67,7 +67,7 @@ MCP 引用除相同的 `repo`、`subdir` 和锁定 `ref` 外，必须保存可�
 - 上游默认分支、原始分支或标签移动后，恢复结果仍必须来自 registry 中的 commit SHA。
 - 仓库不可访问、凭据不足、commit 无法获取、`subdir` 不存在或内容校验失败时，恢复明确失败；不得回退到默认分支、同名分支、同名标签、最新提交或本地陈旧缓存。
 - 失败不改写 `ref`，不自动把引用转换为 content，也不生成上游镜像。
-- MCP 恢复部署的是脱敏后的启动或连接配置。对于远程 HTTP MCP，LPM 只能复现 `url` 等配置，不能固定或证明远程服务端代码、数据、版本、可用性或运行行为。
+- MCP 恢复部署的是脱敏后的启动或连接配置。对于远程 HTTP MCP，CC Port 只能复现 `url` 等配置，不能固定或证明远程服务端代码、数据、版本、可用性或运行行为。
 
 ## 兼容与 MVP 边界
 

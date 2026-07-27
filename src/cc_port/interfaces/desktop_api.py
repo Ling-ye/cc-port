@@ -110,7 +110,7 @@ from ..services.ui_messages import UiMessageRef, ui_message
 
 JsonDict = dict[str, Any]
 Handler = Callable[[JsonDict], Any]
-DESKTOP_PAYLOAD_ENV_VAR = "LPM_DESKTOP_API_PAYLOAD"
+DESKTOP_PAYLOAD_ENV_VAR = "CC_PORT_DESKTOP_API_PAYLOAD"
 
 
 class DesktopRemoteRepositoryMutationError(RuntimeError):
@@ -546,7 +546,7 @@ def _resource_delete(payload: JsonDict) -> Any:
     kind = _optional_str(payload.get("kind"))
     if resource_delete_requires_remote_scope(name, kind=kind):
         raise DesktopRemoteRepositoryMutationError(
-            "LPM Desktop does not delete GitHub repositories. "
+            "CC Port does not delete GitHub repositories. "
             "Delete the repository on GitHub, or remove only its local/indexed resource."
         )
     deleted = delete_resource(
@@ -559,7 +559,7 @@ def _resource_delete(payload: JsonDict) -> Any:
     return {
         **asdict(deleted),
         "push": push_resource_repo(
-            message=f"lpm: delete resource {deleted.name}",
+            message=f"cc-port: delete resource {deleted.name}",
             config=cfg,
         ),
     }
@@ -581,7 +581,7 @@ def _remove(payload: JsonDict) -> JsonDict:
     cfg = load_config()
     if resource_delete_requires_remote_scope(name, kind=kind):
         raise DesktopRemoteRepositoryMutationError(
-            "LPM Desktop does not delete GitHub repositories. "
+            "CC Port does not delete GitHub repositories. "
             "Delete the repository on GitHub, or remove only its local/indexed resource."
         )
     registry = load_registry()
@@ -604,7 +604,7 @@ def _resource_pull(_: JsonDict) -> Any:
 
 def _resource_push(payload: JsonDict) -> Any:
     return push_resource_repo(
-        message=_optional_str(payload.get("message")) or "lpm: update resources",
+        message=_optional_str(payload.get("message")) or "cc-port: update resources",
         config=load_config(),
     )
 
@@ -615,7 +615,7 @@ def _resource_commit_plan(_: JsonDict) -> Any:
 
 def _resource_commit_push(payload: JsonDict) -> Any:
     return push_resource_repo(
-        message=_optional_str(payload.get("message")) or "lpm: update resources",
+        message=_optional_str(payload.get("message")) or "cc-port: update resources",
         config=load_config(),
     )
 
@@ -772,7 +772,7 @@ def _config_bind_repo(payload: JsonDict) -> JsonDict:
     parsed = parse_github_repo_url(repo_url)
     if parsed.transport != "https":
         raise ValueError(
-            "LPM Desktop only accepts a complete HTTPS GitHub repository URL, "
+            "CC Port only accepts a complete HTTPS GitHub repository URL, "
             "for example https://github.com/owner/repository."
         )
     git_ops.require_git_credential_manager()
@@ -1154,7 +1154,7 @@ ACTIONS: dict[str, Handler] = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="lpm-desktop-api")
+    parser = argparse.ArgumentParser(prog="cc-port-desktop-api")
     parser.add_argument("action", choices=sorted(ACTIONS))
     parser.add_argument("payload", nargs="?")
     args = parser.parse_args(argv)

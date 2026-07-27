@@ -1,9 +1,9 @@
-"""Build the ``lpm-desktop-api`` sidecar binary for the Tauri desktop app.
+"""Build the ``cc-port-desktop-api`` sidecar binary for the Tauri desktop app.
 
 This script wraps PyInstaller so the produced executable matches the naming
 convention required by Tauri's ``bundle.externalBin`` field:
 
-    desktop/src-tauri/binaries/lpm-desktop-api-{target_triple}{exe_suffix}
+    desktop/src-tauri/binaries/cc-port-desktop-api-{target_triple}{exe_suffix}
 
 Usage::
 
@@ -34,8 +34,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUT_DIR = ROOT / "desktop" / "src-tauri" / "binaries"
-ENTRY_SCRIPT = Path(__file__).with_name("lpm_desktop_api_entry.py")
-SIDECAR_NAME = "lpm-desktop-api"
+ENTRY_SCRIPT = Path(__file__).with_name("cc_port_desktop_api_entry.py")
+SIDECAR_NAME = "cc-port-desktop-api"
 EXCLUDED_MODULES = [
     # MCP server runtime is not used by the desktop API.
     "fastmcp",
@@ -139,7 +139,7 @@ def build_pyinstaller_command(python: str, work_root: Path, *, clean: bool) -> l
             "--paths",
             str(ROOT),
             "--collect-submodules",
-            "lpm",
+            "cc_port",
         ]
     )
     for module in EXCLUDED_MODULES:

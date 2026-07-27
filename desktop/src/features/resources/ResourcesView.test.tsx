@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lpmAction } from "@/api/client";
+import { ccPortAction } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
 import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { ResourcesView } from "@/features/resources/ResourcesView";
@@ -10,10 +10,10 @@ import type {
   AssetBatchResult,
   AssetInventory,
   AssetResourceRow,
-} from "@/types/lpm";
+} from "@/types/cc-port";
 
 vi.mock("@/api/client", () => ({
-  lpmAction: vi.fn(),
+  ccPortAction: vi.fn(),
   openPath: vi.fn(),
   selectDirectory: vi.fn(),
 }));
@@ -231,7 +231,7 @@ describe("ResourcesView unified inventory", () => {
       code: "asset.batch.select_source_instance",
       fallback: plan.items[0].reason,
     };
-    vi.mocked(lpmAction).mockResolvedValue(plan);
+    vi.mocked(ccPortAction).mockResolvedValue(plan);
     renderView([resource()], { language: "zh" });
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
@@ -376,7 +376,7 @@ describe("ResourcesView unified inventory", () => {
       local_instances: [],
       description: "Remote prompt",
     });
-    vi.mocked(lpmAction).mockResolvedValue(batchPlan("upload", "blocked"));
+    vi.mocked(ccPortAction).mockResolvedValue(batchPlan("upload", "blocked"));
     renderView([resource(), prompt]);
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
@@ -387,7 +387,7 @@ describe("ResourcesView unified inventory", () => {
     expect(screen.getByText("1 selected outside the current filters")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Upload to repository" }));
     expect(await screen.findByText("Choose a source instance.")).toBeVisible();
-    expect(lpmAction).toHaveBeenCalledWith("asset_batch_plan", expect.objectContaining({
+    expect(ccPortAction).toHaveBeenCalledWith("asset_batch_plan", expect.objectContaining({
       direction: "upload",
       resource_keys: expect.arrayContaining(["skill:demo", "prompt:other"]),
     }));
@@ -402,7 +402,7 @@ describe("ResourcesView unified inventory", () => {
       results: [],
       stale_plan: null,
     };
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
       if (action === "config_get") {
         return {
           config: {
@@ -430,7 +430,7 @@ describe("ResourcesView unified inventory", () => {
     await user.click(screen.getByRole("button", { name: "Apply batch" }));
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(lpmAction).toHaveBeenCalledWith("asset_batch_apply", expect.objectContaining({
+    expect(ccPortAction).toHaveBeenCalledWith("asset_batch_apply", expect.objectContaining({
       direction: "download",
       target_platforms: ["cursor"],
       plan_hash: "plan-hash",
@@ -441,7 +441,7 @@ describe("ResourcesView unified inventory", () => {
     const user = userEvent.setup();
     const initial = batchPlan("upload");
     const refreshed = { ...batchPlan("upload", "blocked"), plan_hash: "new-plan-hash" };
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
       if (action === "asset_batch_plan") return initial;
       if (action === "asset_batch_apply") {
         return {
@@ -479,7 +479,7 @@ describe("ResourcesView unified inventory", () => {
         },
       ],
     });
-    vi.mocked(lpmAction).mockResolvedValue(batchPlan("upload"));
+    vi.mocked(ccPortAction).mockResolvedValue(batchPlan("upload"));
     renderView([variants]);
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
@@ -489,7 +489,7 @@ describe("ResourcesView unified inventory", () => {
     expect(screen.getAllByLabelText("New asset name")).toHaveLength(2);
     await user.click(screen.getByRole("button", { name: "Create safety plan" }));
 
-    await waitFor(() => expect(lpmAction).toHaveBeenLastCalledWith(
+    await waitFor(() => expect(ccPortAction).toHaveBeenLastCalledWith(
       "asset_batch_plan",
       expect.objectContaining({
         direction: "upload",
@@ -511,7 +511,7 @@ describe("ResourcesView unified inventory", () => {
 
   it("collects a GitHub resource, clears filters and batch selection, and targets the new row", async () => {
     const user = userEvent.setup();
-    vi.mocked(lpmAction).mockResolvedValue({ entry: { kind: "skill", name: "new-resource" } });
+    vi.mocked(ccPortAction).mockResolvedValue({ entry: { kind: "skill", name: "new-resource" } });
     const { onChanged, onSelect } = renderView();
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
@@ -528,7 +528,7 @@ describe("ResourcesView unified inventory", () => {
     expect(screen.queryByRole("dialog", { name: "Collect from GitHub" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Resource type")).toHaveValue("all");
     expect(screen.queryByRole("toolbar", { name: "Selected resource actions" })).not.toBeInTheDocument();
-    expect(lpmAction).toHaveBeenCalledWith("collect", expect.objectContaining({
+    expect(ccPortAction).toHaveBeenCalledWith("collect", expect.objectContaining({
       github_url: "https://github.com/example/new-resource",
       push: true,
     }));

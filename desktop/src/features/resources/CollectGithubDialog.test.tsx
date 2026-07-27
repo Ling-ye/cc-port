@@ -1,14 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lpmAction } from "@/api/client";
+import { ccPortAction } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
 import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { ToastViewport } from "@/components/TaskFeedback";
 import { CollectGithubDialog } from "@/features/resources/CollectGithubDialog";
 
 vi.mock("@/api/client", () => ({
-  lpmAction: vi.fn(),
+  ccPortAction: vi.fn(),
 }));
 
 const t = createTranslator("en");
@@ -33,7 +33,7 @@ afterEach(() => {
 describe("CollectGithubDialog", () => {
   it("renders a dedicated GitHub form and submits a pinned reference", async () => {
     const user = userEvent.setup();
-    vi.mocked(lpmAction).mockResolvedValue({ entry: { kind: "skill", name: "demo" } });
+    vi.mocked(ccPortAction).mockResolvedValue({ entry: { kind: "skill", name: "demo" } });
     const { onAdded } = renderDialog();
 
     expect(screen.getByRole("dialog", { name: "Collect from GitHub" })).toBeVisible();
@@ -43,7 +43,7 @@ describe("CollectGithubDialog", () => {
     await user.click(screen.getByRole("button", { name: "Collect from GitHub" }));
 
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith("skill:demo"));
-    expect(lpmAction).toHaveBeenCalledWith("collect", {
+    expect(ccPortAction).toHaveBeenCalledWith("collect", {
       github_url: "https://github.com/example/demo",
       kind: "skill",
       name: "",
@@ -53,7 +53,7 @@ describe("CollectGithubDialog", () => {
 
   it("keeps the GitHub draft after a failed write and confirms dirty close", async () => {
     const user = userEvent.setup();
-    vi.mocked(lpmAction).mockRejectedValue(new Error("write failed"));
+    vi.mocked(ccPortAction).mockRejectedValue(new Error("write failed"));
     const { onClose } = renderDialog();
 
     await user.type(screen.getByLabelText("GitHub URL"), "https://github.com/example/demo");
@@ -72,7 +72,7 @@ describe("CollectGithubDialog", () => {
 
   it("collects an explicit stdio MCP reference with portable arguments and placeholders", async () => {
     const user = userEvent.setup();
-    vi.mocked(lpmAction).mockResolvedValue({ entry: { kind: "mcp", name: "github-server" } });
+    vi.mocked(ccPortAction).mockResolvedValue({ entry: { kind: "mcp", name: "github-server" } });
     const { onAdded } = renderDialog();
 
     await user.type(screen.getByLabelText("GitHub URL"), "https://github.com/example/mcp-server");
@@ -86,7 +86,7 @@ describe("CollectGithubDialog", () => {
     await user.click(screen.getByRole("button", { name: "Collect from GitHub" }));
 
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith("mcp:github-server"));
-    expect(lpmAction).toHaveBeenCalledWith("collect", {
+    expect(ccPortAction).toHaveBeenCalledWith("collect", {
       github_url: "https://github.com/example/mcp-server",
       kind: "mcp",
       name: "",
@@ -118,6 +118,6 @@ describe("CollectGithubDialog", () => {
     expect(await screen.findByText(
       "Use NAME or NAME=${PLACEHOLDER} for each environment variable; literal values are not allowed.",
     )).toBeVisible();
-    expect(lpmAction).not.toHaveBeenCalled();
+    expect(ccPortAction).not.toHaveBeenCalled();
   });
 });

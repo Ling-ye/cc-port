@@ -12,7 +12,7 @@
 ## 领域边界
 
 - 远端资源仓库是跨设备事实源；跨设备共享的资源内容、引用与元数据以其配置分支的提交为准。
-- 受管远端镜像是 LPM 隐藏维护的完整派生缓存，可被丢弃并从远端重建。它不是用户可编辑工作区，不向 AI 工具暴露，也不作为第三份事实源。
+- 受管远端镜像是 CC Port 隐藏维护的完整派生缓存，可被丢弃并从远端重建。它不是用户可编辑工作区，不向 AI 工具暴露，也不作为第三份事实源。
 - 远端快照是由 commit 标识、从受管远端镜像派生的只读视图；清单、比较和计划都引用明确的快照提交。
 - 本地实例只存在于 AI 工具原生目标中。工具不链接受管远端镜像；安装、卸载、备份和回滚继续在工具目标边界内执行。
 - “刷新远端”只检查远端引用并更新受管远端镜像与远端快照，不扫描或写入 AI 工具目录。
@@ -112,12 +112,12 @@
 
 ## CLI 与兼容边界
 
-- 新增 `lpm asset upload` 和 `lpm asset download`，支持多资源、`--all`、重复
+- 新增 `cc-port asset upload` 和 `cc-port asset download`，支持多资源、`--all`、重复
   `--platform`、`--choices`、`--dry-run`、`--yes` 和 `--json`。
-- 新增 `lpm plugin project add|list|remove`、`lpm plugin reference add` 和
-  `lpm plugin delete`；桌面与 CLI 使用相同插件计划和校验。
-- 删除 `lpm env` 命令与全部 `env_*` Desktop API。
-- 不新增 `lpm migrate` 或新的 ZIP 迁移格式。
+- 新增 `cc-port plugin project add|list|remove`、`cc-port plugin reference add` 和
+  `cc-port plugin delete`；桌面与 CLI 使用相同插件计划和校验。
+- 删除 `cc-port env` 命令与全部 `env_*` Desktop API。
+- 不新增 `cc-port migrate` 或新的 ZIP 迁移格式。
 - 旧 `resource_pull`、`local_path` 与仓库级同步端点只保留兼容，不得被新的桌面资源流程调用或展示。
 - 内部仍可保留工具和 MCP 发现能力，但不得继续暴露环境采集、仓库级环境差异或环境部署入口。
 

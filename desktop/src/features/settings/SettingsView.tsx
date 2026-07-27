@@ -10,7 +10,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { lpmAction, openExternalUrl } from "@/api/client";
+import { ccPortAction, openExternalUrl } from "@/api/client";
 import { displayError, translateMessage, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
@@ -20,7 +20,7 @@ import type {
   DoctorCheck,
   DoctorStatus,
   GitCredentialStatus,
-} from "@/types/lpm";
+} from "@/types/cc-port";
 
 const SIMPLE_PLATFORM_NAMES = ["codex", "claude-code", "cursor", "windsurf", "opencode"] as const;
 const SIMPLE_PLATFORM_NAME_SET = new Set<string>(SIMPLE_PLATFORM_NAMES);
@@ -75,8 +75,8 @@ export function SettingsView({
     setLoadError("");
     try {
       const [data, status] = await Promise.all([
-        lpmAction<ConfigSettings>("config_get"),
-        lpmAction<GitCredentialStatus>("git_credential_status"),
+        ccPortAction<ConfigSettings>("config_get"),
+        ccPortAction<GitCredentialStatus>("git_credential_status"),
       ]);
       if (requestId !== settingsRequestRef.current) return;
       applySettings(data);
@@ -124,7 +124,7 @@ export function SettingsView({
         kind: "settings-bind-repo",
         title: t("settings.bindingRepo"),
         context: repoUrl,
-        action: () => lpmAction<ConfigBindRepoResult>("config_bind_repo", {
+        action: () => ccPortAction<ConfigBindRepoResult>("config_bind_repo", {
           repo_url: repoUrl,
           expected_current_repo_url: expectedCurrentUrl,
         }),
@@ -154,7 +154,7 @@ export function SettingsView({
   async function setPlatformEnabled(name: string, enabled: boolean) {
     setPlatformSaving(name);
     try {
-      const next = await lpmAction<ConfigSettings>("platform_set_enabled", { name, enabled });
+      const next = await ccPortAction<ConfigSettings>("platform_set_enabled", { name, enabled });
       applySettings(next, false);
       void onChanged();
     } catch (err) {

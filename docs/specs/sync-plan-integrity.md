@@ -23,7 +23,7 @@
 
 ## 删除边界
 
-- worktree 删除目标必须位于当前 LPM 状态目录的 `sync/<operation-id>/` 内。
+- worktree 删除目标必须位于当前 CC Port 状态目录的 `sync/<operation-id>/` 内。
 - 删除前必须验证目标规范路径、父目录、符号链接和 Windows reparse point。
 - 边界验证失败时不调用 Git worktree remove，也不执行递归删除。
 

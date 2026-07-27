@@ -6,18 +6,18 @@ from pathlib import Path
 from rich.console import Console
 from typer.testing import CliRunner
 
-from lpm.core.config import Config
-from lpm.core.models import RegistryItem
-from lpm.core.resource_detection import DetectedRemoteResource
-from lpm.interfaces import cli
-from lpm.services.asset_sync import (
+from cc_port.core.config import Config
+from cc_port.core.models import RegistryItem
+from cc_port.core.resource_detection import DetectedRemoteResource
+from cc_port.interfaces import cli
+from cc_port.services.asset_sync import (
     AssetActionPlan,
     AssetActionResult,
     AssetBatchPlan,
     AssetBatchResult,
     AssetInventory,
 )
-from lpm.services.resource_repo import ResourceRepoInfo
+from cc_port.services.resource_repo import ResourceRepoInfo
 
 runner = CliRunner()
 
@@ -201,7 +201,7 @@ def test_legacy_resource_pull_warns_but_keeps_behavior(monkeypatch) -> None:
     result = runner.invoke(cli.app, ["resource", "pull"])
 
     assert result.exit_code == 0
-    assert "Deprecated: use `lpm asset list`" in result.stdout
+    assert "Deprecated: use `cc-port asset list`" in result.stdout
     assert "resources" in result.stdout
 
 

@@ -13,7 +13,7 @@ from ..core.platforms import PlatformProfile
 from ..core.resource_files import is_resource_path_excluded, resource_copy_ignore
 from ..core.tool_adapters import tool_adapter_by_id
 
-MANIFEST_FILENAMES = ("lpm.resource.json", "lpm-resource.json")
+MANIFEST_FILENAMES = ("cc-port.resource.json", "cc-port-resource.json")
 RESOURCE_BUCKETS = ("skills", "agents", "commands", "hooks", "mcp", "rules", "prompts", "plugins")
 
 
@@ -49,7 +49,7 @@ class InstallPlan:
 
 
 def load_resource_manifest(root: Path) -> ResourceManifest:
-    """Read an optional LPM resource manifest from a file or directory."""
+    """Read an optional CC Port resource manifest from a file or directory."""
     manifest_path: Path | None = None
     if root.is_file() and root.name in MANIFEST_FILENAMES:
         manifest_path = root

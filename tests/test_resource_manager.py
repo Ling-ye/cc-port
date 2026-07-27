@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, GithubConfig, InstallConfig, ResourcesConfig
-from lpm.core.models import Registry, RegistryItem
-from lpm.core.ownership import mark_lpm_managed_mcp, write_managed_marker
-from lpm.core.platforms import PlatformProfile, PlatformsConfig
-from lpm.core.registry import load_registry, save_registry
-from lpm.services import installer, resource_manager
-from lpm.services.operation_history import operation_history, restore_operation
+from cc_port.core.config import Config, GithubConfig, InstallConfig, ResourcesConfig
+from cc_port.core.models import Registry, RegistryItem
+from cc_port.core.ownership import mark_cc_port_managed_mcp, write_managed_marker
+from cc_port.core.platforms import PlatformProfile, PlatformsConfig
+from cc_port.core.registry import load_registry, save_registry
+from cc_port.services import installer, resource_manager
+from cc_port.services.operation_history import operation_history, restore_operation
 
 
 def _config(
@@ -298,7 +298,7 @@ def test_preview_prefers_install_then_source_then_clone_cache(tmp_path: Path) ->
         subdir="skill",
     )
     save_registry(Registry(items=[external]), registry_path)
-    clone_content = install / ".lpm" / "clones" / "external-demo" / "skill"
+    clone_content = install / ".cc-port" / "clones" / "external-demo" / "skill"
     clone_content.mkdir(parents=True)
     (clone_content / "SKILL.md").write_text("clone preview", encoding="utf-8")
 
@@ -447,7 +447,7 @@ def test_mcp_target_inventory_and_platform_uninstall(tmp_path: Path) -> None:
         install,
         platforms=[PlatformProfile(name="cursor", enabled=True, mcp_json=str(mcp_json))],
     )
-    mark_lpm_managed_mcp(
+    mark_cc_port_managed_mcp(
         mcp_json,
         "demo-mcp",
         resource_name="demo-mcp",

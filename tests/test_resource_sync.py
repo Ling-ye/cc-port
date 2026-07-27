@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, ResourcesConfig
-from lpm.infrastructure.git_ops import GitError
-from lpm.services.resource_sync import (
+from cc_port.core.config import Config, ResourcesConfig
+from cc_port.infrastructure.git_ops import GitError
+from cc_port.services.resource_sync import (
     SYNC_PLAN_SCHEMA_VERSION,
     apply_resource_sync_plan,
     build_resource_sync_plan,
@@ -30,7 +30,7 @@ def test_stale_sync_worktree_requires_explicit_cleanup(
     monkeypatch,
 ) -> None:
     state = tmp_path / "state"
-    monkeypatch.setenv("LPM_STATE_HOME", str(state))
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(state))
     operation_id = "a" * 32
     operation_dir = state / "sync" / operation_id
     worktree = operation_dir / "worktree"
@@ -67,11 +67,11 @@ def test_stale_sync_worktree_requires_explicit_cleanup(
     )
     calls: list[str] = []
     monkeypatch.setattr(
-        "lpm.services.resource_sync.git_ops.worktree_remove",
+        "cc_port.services.resource_sync.git_ops.worktree_remove",
         lambda *_args, **_kwargs: calls.append("remove"),
     )
     monkeypatch.setattr(
-        "lpm.services.resource_sync.git_ops.worktree_prune",
+        "cc_port.services.resource_sync.git_ops.worktree_prune",
         lambda *_args, **_kwargs: calls.append("prune"),
     )
 
@@ -92,7 +92,7 @@ def test_sync_plan_ignores_tampered_worktree_path_and_keeps_external_directory(
     monkeypatch,
 ) -> None:
     state = tmp_path / "state"
-    monkeypatch.setenv("LPM_STATE_HOME", str(state))
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(state))
     remote = tmp_path / "remote.git"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
     seed = _clone(remote, tmp_path / "seed")
@@ -131,7 +131,7 @@ def test_sync_plan_ignores_tampered_worktree_path_and_keeps_external_directory(
 
 def test_sync_plan_rejects_mismatched_operation_id(tmp_path: Path, monkeypatch) -> None:
     state = tmp_path / "state"
-    monkeypatch.setenv("LPM_STATE_HOME", str(state))
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(state))
     operation_id = "b" * 32
     operation_dir = state / "sync" / operation_id
     operation_dir.mkdir(parents=True)
@@ -162,7 +162,7 @@ def test_sync_plan_rejects_mismatched_operation_id(tmp_path: Path, monkeypatch) 
 
 
 def test_resource_sync_fast_forward_and_three_way_conflict(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("LPM_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(tmp_path / "state"))
     remote = tmp_path / "remote.git"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
     seed = _clone(remote, tmp_path / "seed")
@@ -220,7 +220,7 @@ def test_resource_sync_fast_forward_and_three_way_conflict(tmp_path: Path, monke
 
 
 def test_resource_sync_auto_merges_non_conflicting_commits(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("LPM_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(tmp_path / "state"))
     remote = tmp_path / "remote.git"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
     seed = _clone(remote, tmp_path / "seed")
@@ -272,7 +272,7 @@ def test_resource_sync_handles_unborn_clone_and_empty_remote(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("LPM_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(tmp_path / "state"))
     seeded_remote = tmp_path / "seeded.git"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(seeded_remote))
     seed = _clone(seeded_remote, tmp_path / "seed")
@@ -362,9 +362,9 @@ def _commit(repo: Path, message: str) -> None:
     _git(
         repo,
         "-c",
-        "user.name=LPM Test",
+        "user.name=CC Port Test",
         "-c",
-        "user.email=lpm@example.test",
+        "user.email=cc-port@example.test",
         "commit",
         "-m",
         message,

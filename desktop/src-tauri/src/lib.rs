@@ -12,25 +12,25 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Deserialize)]
-struct LpmActionRequest {
+struct CcPortActionRequest {
     action: String,
     payload: Value,
 }
 
 #[derive(Debug, Serialize)]
-struct LpmActionResponse {
+struct CcPortActionResponse {
     ok: bool,
     data: Option<Value>,
     error: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
-struct LpmBridgeError {
+struct CcPortBridgeError {
     code: String,
     detail: String,
 }
 
-impl LpmBridgeError {
+impl CcPortBridgeError {
     fn new(code: &str, detail: impl Into<String>) -> Self {
         Self {
             code: code.to_string(),
@@ -40,20 +40,25 @@ impl LpmBridgeError {
 }
 
 #[tauri::command]
-async fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, LpmBridgeError> {
+async fn cc_port_action(
+    request: CcPortActionRequest,
+) -> Result<CcPortActionResponse, CcPortBridgeError> {
     let action = request.action;
-    let payload = serde_json::to_string(&request.payload)
-        .map_err(|err| LpmBridgeError::new("bridge.request_serialize_failed", err.to_string()))?;
-    let output = tauri::async_runtime::spawn_blocking(move || run_lpm_ui_api(&action, &payload))
-        .await
-        .map_err(|err| LpmBridgeError::new("bridge.sidecar_task_failed", err.to_string()))?
-        .map_err(|err| LpmBridgeError::new("bridge.sidecar_unavailable", err))?;
+    let payload = serde_json::to_string(&request.payload).map_err(|err| {
+        CcPortBridgeError::new("bridge.request_serialize_failed", err.to_string())
+    })?;
+    let output =
+        tauri::async_runtime::spawn_blocking(move || run_cc_port_ui_api(&action, &payload))
+            .await
+            .map_err(|err| CcPortBridgeError::new("bridge.sidecar_task_failed", err.to_string()))?
+            .map_err(|err| CcPortBridgeError::new("bridge.sidecar_unavailable", err))?;
     let raw = String::from_utf8_lossy(&output).trim().to_string();
 
-    let parsed: Value = serde_json::from_str(&raw)
-        .map_err(|err| LpmBridgeError::new("bridge.invalid_sidecar_response", err.to_string()))?;
+    let parsed: Value = serde_json::from_str(&raw).map_err(|err| {
+        CcPortBridgeError::new("bridge.invalid_sidecar_response", err.to_string())
+    })?;
 
-    Ok(LpmActionResponse {
+    Ok(CcPortActionResponse {
         ok: parsed.get("ok").and_then(Value::as_bool).unwrap_or(false),
         data: parsed.get("data").cloned(),
         error: parsed.get("error").cloned(),
@@ -61,14 +66,14 @@ async fn lpm_action(request: LpmActionRequest) -> Result<LpmActionResponse, LpmB
 }
 
 #[tauri::command]
-async fn open_path(path: String) -> Result<(), LpmBridgeError> {
+async fn open_path(path: String) -> Result<(), CcPortBridgeError> {
     tauri::async_runtime::spawn_blocking(move || open_path_with_system(&path))
         .await
-        .map_err(|err| LpmBridgeError::new("bridge.open_path_task_failed", err.to_string()))?
-        .map_err(|err| LpmBridgeError::new("bridge.open_path_failed", err))
+        .map_err(|err| CcPortBridgeError::new("bridge.open_path_task_failed", err.to_string()))?
+        .map_err(|err| CcPortBridgeError::new("bridge.open_path_failed", err))
 }
 
-/// One way to invoke lpm-desktop-api.
+/// One way to invoke cc-port-desktop-api.
 struct Candidate {
     label: String,
     program: String,
@@ -97,10 +102,10 @@ fn build_candidates(action: &str) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     let api_args = vec![action.to_string()];
 
-    if let Ok(bin) = std::env::var("LPM_DESKTOP_API_BIN") {
+    if let Ok(bin) = std::env::var("CC_PORT_DESKTOP_API_BIN") {
         if !bin.trim().is_empty() {
             out.push(Candidate::new(
-                "$LPM_DESKTOP_API_BIN",
+                "$CC_PORT_DESKTOP_API_BIN",
                 bin.trim(),
                 api_args.clone(),
             ));
@@ -111,17 +116,17 @@ fn build_candidates(action: &str) -> Vec<Candidate> {
         .ok()
         .and_then(|p| p.parent().map(PathBuf::from))
     {
-        // Tauri renames `bundle.externalBin` files to plain `lpm-desktop-api(.exe)` in
+        // Tauri renames `bundle.externalBin` files to plain `cc-port-desktop-api(.exe)` in
         // the final installer / release output, but keeps the
-        // `lpm-desktop-api-{target_triple}{.exe}` naming for `cargo run` / `tauri dev`.
+        // `cc-port-desktop-api-{target_triple}{.exe}` naming for `cargo run` / `tauri dev`.
         // Try both, plus a few common siblings (Resources/, _up_/, ...) that
         // various Tauri bundles use on different platforms.
         let triple = env!("TAURI_ENV_TARGET_TRIPLE");
         let names = [
-            "lpm-desktop-api.exe".to_string(),
-            "lpm-desktop-api".to_string(),
-            format!("lpm-desktop-api-{triple}.exe"),
-            format!("lpm-desktop-api-{triple}"),
+            "cc-port-desktop-api.exe".to_string(),
+            "cc-port-desktop-api".to_string(),
+            format!("cc-port-desktop-api-{triple}.exe"),
+            format!("cc-port-desktop-api-{triple}"),
         ];
         let search_dirs = [
             exe_dir.clone(),
@@ -146,7 +151,7 @@ fn build_candidates(action: &str) -> Vec<Candidate> {
     out
 }
 
-fn run_lpm_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
+fn run_cc_port_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
     let candidates = build_candidates(action);
     let mut errors: Vec<String> = Vec::new();
 
@@ -175,7 +180,7 @@ fn run_lpm_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
         errors.join("\n")
     };
     Err(format!(
-        "Unable to run lpm-desktop-api. Tried {} candidates:\n{}\n\nHints:\n  - Run the desktop build scripts so Tauri can bundle the sidecar.\n  - Or set LPM_DESKTOP_API_BIN to the absolute path of lpm-desktop-api(.exe).",
+        "Unable to run cc-port-desktop-api. Tried {} candidates:\n{}\n\nHints:\n  - Run the desktop build scripts so Tauri can bundle the sidecar.\n  - Or set CC_PORT_DESKTOP_API_BIN to the absolute path of cc-port-desktop-api(.exe).",
         candidates.len(),
         detail
     ))
@@ -184,7 +189,7 @@ fn run_lpm_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
 fn run_candidate(candidate: &Candidate, payload: &str) -> std::io::Result<Output> {
     let mut command = candidate.to_command();
     command
-        .env("LPM_DESKTOP_API_PAYLOAD", payload)
+        .env("CC_PORT_DESKTOP_API_PAYLOAD", payload)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -257,18 +262,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![lpm_action, open_path])
+        .invoke_handler(tauri::generate_handler![cc_port_action, open_path])
         .run(tauri::generate_context!())
-        .expect("error while running LPM Desktop");
+        .expect("error while running CC Port");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::LpmBridgeError;
+    use super::CcPortBridgeError;
 
     #[test]
     fn bridge_errors_serialize_stable_code_and_external_detail() {
-        let error = LpmBridgeError::new("bridge.open_path_failed", "Path does not exist: C:\\x");
+        let error = CcPortBridgeError::new("bridge.open_path_failed", "Path does not exist: C:\\x");
         let json = serde_json::to_value(error).expect("bridge error must serialize");
 
         assert_eq!(json["code"], "bridge.open_path_failed");

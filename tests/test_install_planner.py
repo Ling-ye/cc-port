@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from lpm.core.config import Config, InstallConfig, PlatformsConfig, ResourcesConfig
-from lpm.core.models import Registry, RegistryItem
-from lpm.core.platforms import PlatformProfile
-from lpm.core.registry import save_registry
-from lpm.services import installer, resource_manager
-from lpm.services.install_planner import copy_resource_tree, load_resource_manifest
-from lpm.services.mcp_installer import inject_mcp_server
+from cc_port.core.config import Config, InstallConfig, PlatformsConfig, ResourcesConfig
+from cc_port.core.models import Registry, RegistryItem
+from cc_port.core.platforms import PlatformProfile
+from cc_port.core.registry import save_registry
+from cc_port.services import installer, resource_manager
+from cc_port.services.install_planner import copy_resource_tree, load_resource_manifest
+from cc_port.services.mcp_installer import inject_mcp_server
 
 
 def _config(root: Path, install: Path, *, platforms: list[PlatformProfile] | None = None) -> Config:
@@ -138,7 +138,7 @@ def test_manifest_limits_copied_resource_paths(tmp_path: Path) -> None:
     (src / "node_modules" / "pkg" / "index.js").write_text("drop", encoding="utf-8")
     (src / ".env").write_text("TOKEN=secret", encoding="utf-8")
     (src / "extra.md").write_text("drop", encoding="utf-8")
-    (src / "lpm.resource.json").write_text(
+    (src / "cc-port.resource.json").write_text(
         json.dumps(
             {
                 "skills": ["SKILL.md"],
@@ -157,7 +157,7 @@ def test_manifest_limits_copied_resource_paths(tmp_path: Path) -> None:
     assert not (dest / "extra.md").exists()
     assert not (dest / "node_modules").exists()
     assert not (dest / ".env").exists()
-    assert (dest / "lpm.resource.json").is_file()
+    assert (dest / "cc-port.resource.json").is_file()
 
 
 def test_install_plan_maps_plugin_to_enabled_plugin_target(tmp_path: Path) -> None:
@@ -251,7 +251,7 @@ def test_mcp_injection_uses_state_backups_and_preserves_other_servers(
     data = json.loads(mcp_json.read_text(encoding="utf-8"))
     assert data["mcpServers"]["existing"] == {"command": "old"}
     assert data["mcpServers"]["demo"] == {"command": "demo2"}
-    backups = sorted((tmp_path / ".lpm-state" / "backups" / "mcp").rglob("*-mcp.json"))
+    backups = sorted((tmp_path / ".cc-port-state" / "backups" / "mcp").rglob("*-mcp.json"))
     assert len(backups) == 2
     assert json.loads(backups[0].read_text(encoding="utf-8")) == {
         "mcpServers": {"existing": {"command": "old"}}
@@ -259,7 +259,7 @@ def test_mcp_injection_uses_state_backups_and_preserves_other_servers(
     assert json.loads(backups[1].read_text(encoding="utf-8"))["mcpServers"]["demo"] == {
         "command": "demo"
     }
-    assert not (tmp_path / "mcp.json.lpm.bak").exists()
+    assert not (tmp_path / "mcp.json.cc-port.bak").exists()
 
 
 def test_mcp_backup_names_stay_unique_when_clock_does_not_advance(
@@ -268,7 +268,7 @@ def test_mcp_backup_names_stay_unique_when_clock_does_not_advance(
 ) -> None:
     from datetime import datetime, timezone
 
-    import lpm.services.mcp_installer as mcp_installer
+    import cc_port.services.mcp_installer as mcp_installer
 
     frozen = datetime(2026, 7, 20, 14, 45, 51, 790342, tzinfo=timezone.utc)
 
@@ -288,7 +288,7 @@ def test_mcp_backup_names_stay_unique_when_clock_does_not_advance(
     inject_mcp_server(mcp_json, "demo", {"command": "demo"})
     inject_mcp_server(mcp_json, "demo", {"command": "demo2"})
 
-    backups = sorted((tmp_path / ".lpm-state" / "backups" / "mcp").rglob("*-mcp.json"))
+    backups = sorted((tmp_path / ".cc-port-state" / "backups" / "mcp").rglob("*-mcp.json"))
     assert [path.name for path in backups] == [
         "20260720T144551790342Z-0000-mcp.json",
         "20260720T144551790342Z-0001-mcp.json",

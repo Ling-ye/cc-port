@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, StateConfig, default_state_dir
-from lpm.services.operation_state import OperationRecord, save_operation
-from lpm.services.state_maintenance import (
+from cc_port.core.config import Config, StateConfig, default_state_dir
+from cc_port.services.operation_state import OperationRecord, save_operation
+from cc_port.services.state_maintenance import (
     delete_orphan_quarantine,
     export_orphan_backup,
     list_maintenance_audits,
