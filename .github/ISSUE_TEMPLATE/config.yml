@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Ling-ye/cc-port/security/advisories/new
+    about: 请通过私密渠道报告漏洞，不要创建公开 Issue。
+  - name: Quick start and troubleshooting
+    url: https://github.com/Ling-ye/cc-port/blob/main/docs/troubleshooting.md
+    about: 创建 Issue 前先检查安装、凭据和同步故障排查。

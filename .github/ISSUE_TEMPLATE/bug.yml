@@ -1,0 +1,84 @@
+name: Bug report
+description: 报告可复现的错误、回归或异常行为
+title: "[Bug] "
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你报告问题。安全漏洞请不要填写此表单，改用仓库 Security 页面的私密漏洞报告。
+  - type: input
+    id: version
+    attributes:
+      label: CC Port 版本
+      description: 可在安装包、应用说明页或 Release 中查看。
+      placeholder: 0.5.0
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows 版本
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+        - 其他或不确定
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: 使用入口
+      options:
+        - 桌面 GUI
+        - CLI
+        - MCP Server
+        - 安装或卸载
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题概述
+      description: 用一两句话说明发生了什么。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开……
+        2. 选择……
+        3. 点击……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 可附已脱敏的错误消息或截图。
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与诊断
+      description: Git、Git Credential Manager、目标工具版本，以及其他相关信息。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已经删除 Token、Cookie、SSH Key、私有仓库内容、真实路径和个人数据。
+          required: true
+        - label: 这不是需要私密报告的安全漏洞。
+          required: true

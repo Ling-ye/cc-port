@@ -9,7 +9,7 @@ metadata:
 
 CC Port 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、规则 -- 跨多个 AI 编程平台（Cursor、Claude Code、Windsurf、Codex 等）。通过 MCP 工具（或 `cc-port` CLI）完成发布、登记、安装、同步、搜索、项目级链接等操作。
 
-[KNOWN] 当前版本为 `0.5.0`，源码仓库为 <https://github.com/Ling-ye/cc-port>。置信度：HIGH。
+当前版本为 `0.5.0`，源码仓库为 <https://github.com/Ling-ye/cc-port>。
 
 ## 快速上手（三步）
 

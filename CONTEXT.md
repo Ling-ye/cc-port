@@ -2,7 +2,7 @@
 
 CC Port 资源管理上下文描述远端事实、本机观察与 AI 工具安装之间的边界。这里的术语用于桌面端、CLI、服务层和产品文档中的一致表达。
 
-[KNOWN] 本上下文适用于 CC Port `0.5.0`，规范仓库地址为 <https://github.com/Ling-ye/cc-port>。置信度：HIGH。
+本上下文适用于 CC Port `0.5.0`，规范仓库地址为 <https://github.com/Ling-ye/cc-port>。
 
 ## Language
 
