@@ -167,7 +167,7 @@ def is_full_commit_sha(ref: str | None) -> bool:
 
 
 def configure_git_executable(value: str | None) -> None:
-    """Set a process-local preferred Git executable from LPM configuration."""
+    """Set a process-local preferred Git executable from CC Port configuration."""
     global _CONFIGURED_GIT_EXECUTABLE
     _CONFIGURED_GIT_EXECUTABLE = str(value or "").strip()
 
@@ -176,7 +176,7 @@ def discover_git_executable(configured: str | None = None) -> GitRuntime:
     requested = str(
         configured
         if configured is not None
-        else os.environ.get("LPM_GIT_EXECUTABLE", "").strip()
+        else os.environ.get("CC_PORT_GIT_EXECUTABLE", "").strip()
         or _CONFIGURED_GIT_EXECUTABLE
     ).strip()
     if requested:
@@ -211,7 +211,7 @@ def git_credential_status(configured: str | None = None) -> GitCredentialStatus:
             gcm_configured=False,
             gcm_version="",
             credential_helpers=[],
-            detail=f"Git was not found{requested}. Install Git for Windows, then reopen LPM.",
+            detail=f"Git was not found{requested}. Install Git for Windows, then reopen CC Port.",
             install_url=GIT_FOR_WINDOWS_INSTALL_URL,
         )
 
@@ -230,7 +230,7 @@ def git_credential_status(configured: str | None = None) -> GitCredentialStatus:
             gcm_configured=False,
             gcm_version="",
             credential_helpers=[],
-            detail="Git was found but could not be executed. Repair Git for Windows, then reopen LPM.",
+            detail="Git was found but could not be executed. Repair Git for Windows, then reopen CC Port.",
             install_url=GIT_FOR_WINDOWS_INSTALL_URL,
         )
     if version_result.returncode != 0:
@@ -245,7 +245,7 @@ def git_credential_status(configured: str | None = None) -> GitCredentialStatus:
             gcm_configured=False,
             gcm_version="",
             credential_helpers=[],
-            detail="Git was found but did not run successfully. Repair Git for Windows, then reopen LPM.",
+            detail="Git was found but did not run successfully. Repair Git for Windows, then reopen CC Port.",
             install_url=GIT_FOR_WINDOWS_INSTALL_URL,
         )
 
@@ -296,7 +296,7 @@ def git_credential_status(configured: str | None = None) -> GitCredentialStatus:
             credential_helpers=helpers,
             detail=(
                 "Git Credential Manager is installed but credential.helper is not configured "
-                "to use it. Configure GCM outside LPM, then retry."
+                "to use it. Configure GCM outside CC Port, then retry."
             ),
             install_url=GCM_INSTALL_URL,
         )
@@ -592,9 +592,9 @@ def _commit_identity_args(path: Path) -> list[str]:
         return []
     return [
         "-c",
-        "user.email=lpm@local",
+        "user.email=cc-port@local",
         "-c",
-        "user.name=LingyePluginMarketplace",
+        "user.name=CC Port",
     ]
 
 
@@ -1164,22 +1164,22 @@ def probe_remote_binding(
 
     default_branch, branches = _parse_remote_branches(read_result.stdout)
     branch = default_branch or "main"
-    probe_ref = f"refs/heads/lpm-bind-probe-{uuid.uuid4().hex}"
+    probe_ref = f"refs/heads/cc-port-bind-probe-{uuid.uuid4().hex}"
     try:
-        with tempfile.TemporaryDirectory(prefix="lpm-bind-probe-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="cc-port-bind-probe-") as temp_dir:
             probe_root = Path(temp_dir)
             _run(["init", "-q"], cwd=probe_root)
             _run(
                 [
                     "-c",
-                    "user.name=LingyePluginMarketplace",
+                    "user.name=CC Port",
                     "-c",
-                    "user.email=lpm@local",
+                    "user.email=cc-port@local",
                     "commit",
                     "--allow-empty",
                     "-q",
                     "-m",
-                    "lpm: connection probe",
+                    "cc-port: connection probe",
                 ],
                 cwd=probe_root,
             )
@@ -1359,7 +1359,7 @@ def _probe_remote_commit(
         "timeout": timeout,
         "env": env,
     }
-    with tempfile.TemporaryDirectory(prefix="lpm-commit-probe-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="cc-port-commit-probe-") as temp_dir:
         init_result = subprocess.run(
             [executable, "init", "--bare", "--quiet", temp_dir],
             **run_options,

@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, StateConfig, default_state_dir
-from lpm.services import state_retention
-from lpm.services.operation_state import (
+from cc_port.core.config import Config, StateConfig, default_state_dir
+from cc_port.services import state_retention
+from cc_port.services.operation_state import (
     OperationRecord,
     OperationTarget,
     operation_path,
     save_operation,
 )
-from lpm.services.state_retention import build_state_retention_plan, prune_state
+from cc_port.services.state_retention import build_state_retention_plan, prune_state
 
 
 def test_retention_plan_protects_latest_and_running_and_reports_orphans(

@@ -12,11 +12,11 @@ from pathlib import Path
 from ..core.config import Config
 from ..core.models import Registry, RegistryItem
 from ..core.ownership import (
-    is_lpm_managed,
-    is_lpm_managed_mcp,
-    mark_lpm_managed_mcp,
+    is_cc_port_managed,
+    is_cc_port_managed_mcp,
+    mark_cc_port_managed_mcp,
     mcp_ownership_path,
-    unmark_lpm_managed_mcp,
+    unmark_cc_port_managed_mcp,
     write_managed_marker,
 )
 from ..core.platforms import PlatformProfile
@@ -116,7 +116,7 @@ def _clone_path(config: Config, entry: RegistryItem) -> Path:
     """
     if not entry.subdir:
         return _install_path(config, entry)
-    return _install_root(config) / ".lpm" / "clones" / entry.name
+    return _install_root(config) / ".cc-port" / "clones" / entry.name
 
 
 # ---- Platform-aware install helpers ---- #
@@ -145,11 +145,11 @@ def _install_skill_to_platform(
     if target_dir.exists():
         if (
             not force_unmanaged
-            and not is_lpm_managed(target_dir, resource_key=entry.resource_key)
+            and not is_cc_port_managed(target_dir, resource_key=entry.resource_key)
         ):
-            raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
+            raise RuntimeError(f"Target exists and is not managed by CC Port: {target_dir}")
         if (
-            is_lpm_managed(target_dir, resource_key=entry.resource_key)
+            is_cc_port_managed(target_dir, resource_key=entry.resource_key)
             and resource_hash_path(source_path) == resource_hash_path(target_dir)
         ):
             return target_dir
@@ -173,20 +173,20 @@ def _install_mcp_to_platform(
         mcp_path.exists()
         and has_mcp_server(mcp_path, server_name)
         and not force_unmanaged
-        and not is_lpm_managed_mcp(
+        and not is_cc_port_managed_mcp(
             mcp_path,
             server_name,
             resource_key=entry.resource_key,
         )
     ):
         raise RuntimeError(
-            f"MCP server exists and is not managed by LPM: {server_name} in {mcp_path}"
+            f"MCP server exists and is not managed by CC Port: {server_name} in {mcp_path}"
         )
     expected = sanitize_mcp_config_for_storage(entry.mcp_config)
     if (
         mcp_path.exists()
         and list_mcp_servers(mcp_path).get(server_name) == expected
-        and is_lpm_managed_mcp(
+        and is_cc_port_managed_mcp(
             mcp_path,
             server_name,
             resource_key=entry.resource_key,
@@ -194,7 +194,7 @@ def _install_mcp_to_platform(
     ):
         return mcp_path
     inject_mcp_server(mcp_path, server_name, expected)
-    mark_lpm_managed_mcp(
+    mark_cc_port_managed_mcp(
         mcp_path,
         server_name,
         resource_name=entry.name,
@@ -228,11 +228,11 @@ def _install_rule_to_platform(
     if target_dir.exists():
         if (
             not force_unmanaged
-            and not is_lpm_managed(target_dir, resource_key=entry.resource_key)
+            and not is_cc_port_managed(target_dir, resource_key=entry.resource_key)
         ):
-            raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
+            raise RuntimeError(f"Target exists and is not managed by CC Port: {target_dir}")
         if (
-            is_lpm_managed(target_dir, resource_key=entry.resource_key)
+            is_cc_port_managed(target_dir, resource_key=entry.resource_key)
             and resource_hash_path(source_path) == resource_hash_path(target_dir)
         ):
             return target_dir
@@ -263,11 +263,11 @@ def _install_plugin_to_platform(
     if target_dir.exists():
         if (
             not force_unmanaged
-            and not is_lpm_managed(target_dir, resource_key=entry.resource_key)
+            and not is_cc_port_managed(target_dir, resource_key=entry.resource_key)
         ):
-            raise RuntimeError(f"Target exists and is not managed by LPM: {target_dir}")
+            raise RuntimeError(f"Target exists and is not managed by CC Port: {target_dir}")
         if (
-            is_lpm_managed(target_dir, resource_key=entry.resource_key)
+            is_cc_port_managed(target_dir, resource_key=entry.resource_key)
             and resource_hash_path(source_path) == resource_hash_path(target_dir)
         ):
             return target_dir
@@ -333,7 +333,7 @@ def _distribute_to_platforms(
         if result_path is not None:
             if (
                 entry.kind != "mcp"
-                and not is_lpm_managed(result_path, resource_key=entry.resource_key)
+                and not is_cc_port_managed(result_path, resource_key=entry.resource_key)
             ):
                 write_managed_marker(result_path, entry, platform=plat.name)
             installed_on.append(plat.name)
@@ -821,7 +821,7 @@ def _preview_sync_item(
         unmanaged_directory = (
             entry.kind != "mcp"
             and target_path.exists()
-            and not is_lpm_managed(target_path, resource_key=entry.resource_key)
+            and not is_cc_port_managed(target_path, resource_key=entry.resource_key)
         )
         unmanaged_mcp = False
         if entry.kind == "mcp" and target_path.exists():
@@ -831,7 +831,7 @@ def _preview_sync_item(
                         target_path,
                         entry.install_target_name(platform_name),
                     )
-                    and not is_lpm_managed_mcp(
+                    and not is_cc_port_managed_mcp(
                         target_path,
                         entry.install_target_name(platform_name),
                         resource_key=entry.resource_key,
@@ -845,7 +845,7 @@ def _preview_sync_item(
         if unmanaged_directory or unmanaged_mcp:
             blocked = True
             warnings.append(
-                f"Target for {platform_name} exists and is not managed by LPM: {target_path}"
+                f"Target for {platform_name} exists and is not managed by CC Port: {target_path}"
             )
 
     return SyncPreviewItem(
@@ -1078,7 +1078,7 @@ def _verify_resource_install(
             if (
                 mcp_path is None
                 or list_mcp_servers(mcp_path).get(server_name) != expected
-                or not is_lpm_managed_mcp(
+                or not is_cc_port_managed_mcp(
                     mcp_path,
                     server_name,
                     resource_key=entry.resource_key,
@@ -1105,7 +1105,7 @@ def _verify_resource_install(
         )
         if (
             target is None
-            or not is_lpm_managed(target, resource_key=entry.resource_key)
+            or not is_cc_port_managed(target, resource_key=entry.resource_key)
             or resource_hash_path(target) != cache_hash
         ):
             raise RuntimeError(
@@ -1135,7 +1135,7 @@ def _verify_resource_uninstall(
             server_name = entry.install_target_name(platform.name)
             if (
                 mcp_path
-                and is_lpm_managed_mcp(
+                and is_cc_port_managed_mcp(
                     mcp_path,
                     server_name,
                     resource_key=entry.resource_key,
@@ -1149,7 +1149,7 @@ def _verify_resource_uninstall(
             entry.kind,
             entry.install_target_name(platform.name),
         )
-        if target and is_lpm_managed(target, resource_key=entry.resource_key):
+        if target and is_cc_port_managed(target, resource_key=entry.resource_key):
             raise RuntimeError(
                 f"Uninstall verification failed for {entry.name} on {platform.name}."
             )
@@ -1166,7 +1166,7 @@ def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile
         server_name = entry.install_target_name(platform.name)
         if (
             not mcp_path
-            or not is_lpm_managed_mcp(
+            or not is_cc_port_managed_mcp(
                 mcp_path,
                 server_name,
                 resource_key=entry.resource_key,
@@ -1175,7 +1175,7 @@ def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile
             return False
         removed = remove_mcp_server(mcp_path, server_name)
         if removed:
-            unmark_lpm_managed_mcp(mcp_path, server_name)
+            unmark_cc_port_managed_mcp(mcp_path, server_name)
         return removed
     elif entry.kind in {"rule", "prompt"}:
         target = platform.resolve_install_path(
@@ -1191,7 +1191,7 @@ def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile
         target = None
 
     if target and target.exists():
-        if not is_lpm_managed(target, resource_key=entry.resource_key):
+        if not is_cc_port_managed(target, resource_key=entry.resource_key):
             return False
         _remove_path(target)
         return True

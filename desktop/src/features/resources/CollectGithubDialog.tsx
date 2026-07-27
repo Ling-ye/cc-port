@@ -1,6 +1,6 @@
 import { Github } from "lucide-react";
 import { type FormEvent, useMemo, useState } from "react";
-import { lpmAction } from "@/api/client";
+import { ccPortAction } from "@/api/client";
 import { displayError, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
@@ -14,7 +14,7 @@ import type {
   McpTransport,
   PortableMcpConfig,
   ResourceKind,
-} from "@/types/lpm";
+} from "@/types/cc-port";
 
 interface CollectDraft {
   githubUrl: string;
@@ -137,7 +137,7 @@ export function CollectGithubDialog({
         kind: "resource-collect",
         title: t("add.modeCollect"),
         context: draft.name || draft.githubUrl,
-        action: () => lpmAction<AddResourceResult>("collect", payload),
+        action: () => ccPortAction<AddResourceResult>("collect", payload),
         successMessage: t("add.successCollected"),
         failureMessage: (error) => displayError(error, t),
         retryPolicy: "none",

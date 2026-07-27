@@ -37,11 +37,11 @@ from ..core.models import (
     ResourceKey,
 )
 from ..core.ownership import (
-    is_lpm_managed,
-    is_lpm_managed_mcp,
+    is_cc_port_managed,
+    is_cc_port_managed_mcp,
     managed_mcp_resource_key,
     managed_resource_key,
-    mark_lpm_managed_mcp,
+    mark_cc_port_managed_mcp,
     mcp_ownership_path,
     write_managed_marker,
 )
@@ -446,7 +446,7 @@ def build_asset_inventory(
     _cleanup_expired_asset_plans(cfg)
     discovery: EnvDiscoveryResult | None = None
     if scan_local and remote_snapshot is None:
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="lpm-inventory") as executor:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="cc-port-inventory") as executor:
             remote_future = executor.submit(
                 _refresh_remote_snapshot,
                 cfg,
@@ -1390,7 +1390,7 @@ def add_plugin_reference(
         raise AssetSyncError("No remote resource repository URL is configured.")
     last_error: Exception | None = None
     for attempt in range(2):
-        with tempfile.TemporaryDirectory(prefix="lpm-plugin-reference-", ignore_cleanup_errors=True) as temporary:
+        with tempfile.TemporaryDirectory(prefix="cc-port-plugin-reference-", ignore_cleanup_errors=True) as temporary:
             worktree = Path(temporary) / "repo"
             _clone_remote_for_write(repo_url, worktree, cfg)
             registry_path = worktree / DEFAULT_REGISTRY_FILENAME
@@ -1420,7 +1420,7 @@ def add_plugin_reference(
                 )
             commit_resource_changes_unlocked(
                 worktree,
-                message=f"lpm: save plugin reference {key.name}",
+                message=f"cc-port: save plugin reference {key.name}",
             )
             committed = git_ops.head_commit(worktree) or ""
             try:
@@ -1685,7 +1685,7 @@ def _plugin_delete_instance(
         method = "managed-policy"
         detail_ref = ui_message(
             "plugin.delete.detail.managed_policy",
-            "Organization policy controls this instance; LPM cannot uninstall it.",
+            "Organization policy controls this instance; CC Port cannot uninstall it.",
         )
         selectable = False
     elif row is None:
@@ -1898,7 +1898,7 @@ def _remove_plugin_remote_installations(
     selected_identities = {
         json.dumps(item.installation, sort_keys=True, separators=(",", ":")) for item in selected
     }
-    with tempfile.TemporaryDirectory(prefix="lpm-plugin-delete-", ignore_cleanup_errors=True) as temporary:
+    with tempfile.TemporaryDirectory(prefix="cc-port-plugin-delete-", ignore_cleanup_errors=True) as temporary:
         worktree = Path(temporary) / "repo"
         _clone_remote_for_write(repo_url, worktree, cfg)
         if (git_ops.head_commit(worktree) or "") != plan.remote_commit:
@@ -1923,7 +1923,7 @@ def _remove_plugin_remote_installations(
             updated.removed_effect = "index_only"
         registry.upsert(updated)
         save_registry(registry, registry_path)
-        commit_resource_changes_unlocked(worktree, message=f"lpm: delete plugin instances {key.name}")
+        commit_resource_changes_unlocked(worktree, message=f"cc-port: delete plugin instances {key.name}")
         committed = git_ops.head_commit(worktree) or ""
         git_ops.push(
             worktree,
@@ -3138,7 +3138,7 @@ def _expected_plugin_rows(
                 remote_path=remote_path,
                 local_path=target if local_exists else None,
                 target_path=target,
-                ownership=("managed" if local_exists and target is not None and target.is_dir() and is_lpm_managed(target, resource_key=entry.resource_key) else "unmanaged" if local_exists else "missing"),
+                ownership=("managed" if local_exists and target is not None and target.is_dir() and is_cc_port_managed(target, resource_key=entry.resource_key) else "unmanaged" if local_exists else "missing"),
                 status=status,
                 remote_commit=snapshot.commit,
                 remote_content_fingerprint=remote_content,
@@ -3689,7 +3689,7 @@ def _expected_local_state(
             _json_fingerprint(sanitize_mcp_config_for_storage(config) or {}) if exists else ""
         )
         managed = (
-            is_lpm_managed_mcp(
+            is_cc_port_managed_mcp(
                 target,
                 install_name,
                 resource_key=entry.resource_key,
@@ -3701,7 +3701,7 @@ def _expected_local_state(
     exists = target.exists() and not target.is_symlink()
     fingerprint = resource_hash_path(target) if exists else ""
     managed = (
-        is_lpm_managed(target, resource_key=entry.resource_key)
+        is_cc_port_managed(target, resource_key=entry.resource_key)
         if exists and target.is_dir()
         else False
     )
@@ -4164,7 +4164,7 @@ def _copy_local_target_state(
             _json_fingerprint(sanitize_mcp_config_for_storage(config) or {}) if exists else ""
         )
         managed = (
-            is_lpm_managed_mcp(target, new_name, resource_key=f"{row.kind}:{new_name}")
+            is_cc_port_managed_mcp(target, new_name, resource_key=f"{row.kind}:{new_name}")
             if exists
             else False
         )
@@ -4172,7 +4172,7 @@ def _copy_local_target_state(
         exists = target.exists()
         fingerprint = resource_hash_path(target) if exists else ""
         managed = (
-            is_lpm_managed(target, resource_key=f"{row.kind}:{new_name}")
+            is_cc_port_managed(target, resource_key=f"{row.kind}:{new_name}")
             if exists and target.is_dir()
             else False
         )
@@ -4325,7 +4325,7 @@ def _apply_local_asset_action(
             if not config:
                 raise AssetSyncError("The remote MCP asset has no safe configuration.")
             inject_mcp_server(target, install_name, config)
-            mark_lpm_managed_mcp(
+            mark_cc_port_managed_mcp(
                 target,
                 install_name,
                 resource_name=marker_entry.name,
@@ -4393,7 +4393,7 @@ def _apply_plugin_content_download(
     current_managed = bool(
         current_exists
         and target.is_dir()
-        and is_lpm_managed(target, resource_key=plan.target_resource_key)
+        and is_cc_port_managed(target, resource_key=plan.target_resource_key)
     )
     if (
         current_exists != plan.target_exists
@@ -4871,7 +4871,7 @@ def _apply_remote_asset_action(
     last_push_error: Exception | None = None
     for attempt in range(2):
         with tempfile.TemporaryDirectory(
-            prefix="lpm-asset-write-",
+            prefix="cc-port-asset-write-",
             ignore_cleanup_errors=True,
         ) as temporary:
             worktree = Path(temporary) / "repo"
@@ -5025,7 +5025,7 @@ def _apply_remote_asset_batch(
     last_push_error: Exception | None = None
     for attempt in range(2):
         with tempfile.TemporaryDirectory(
-            prefix="lpm-asset-batch-write-",
+            prefix="cc-port-asset-batch-write-",
             ignore_cleanup_errors=True,
         ) as temporary:
             worktree = Path(temporary) / "repo"
@@ -5139,7 +5139,7 @@ def _apply_remote_asset_batch(
             try:
                 commit_resource_changes_unlocked(
                     worktree,
-                    message=f"lpm: batch upload {len(changed)} assets",
+                    message=f"cc-port: batch upload {len(changed)} assets",
                 )
             except Exception as exc:  # noqa: BLE001 - no remote write occurred
                 return [
@@ -5532,10 +5532,10 @@ def _merge_plugin_installations(
 
 def _asset_commit_message(plan: AssetActionPlan) -> str:
     if plan.action == "upload":
-        return f"lpm: update {plan.target_resource_key}"
+        return f"cc-port: update {plan.target_resource_key}"
     if plan.action == "copy-to-remote":
-        return f"lpm: create {plan.target_resource_key}"
-    return f"lpm: set install name for {plan.target_resource_key} on {plan.platform}"
+        return f"cc-port: create {plan.target_resource_key}"
+    return f"cc-port: set install name for {plan.target_resource_key} on {plan.platform}"
 
 
 def _current_target_assertion(
@@ -5551,13 +5551,13 @@ def _current_target_assertion(
             _json_fingerprint(sanitize_mcp_config_for_storage(config) or {}) if exists else ""
         )
         managed = (
-            is_lpm_managed_mcp(target, install_name, resource_key=resource_key) if exists else False
+            is_cc_port_managed_mcp(target, install_name, resource_key=resource_key) if exists else False
         )
         return exists, fingerprint, managed
     exists = target.exists()
     fingerprint = resource_hash_path(target) if exists else ""
     managed = (
-        is_lpm_managed(target, resource_key=resource_key) if exists and target.is_dir() else False
+        is_cc_port_managed(target, resource_key=resource_key) if exists and target.is_dir() else False
     )
     return exists, fingerprint, managed
 

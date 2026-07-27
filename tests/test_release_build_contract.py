@@ -44,7 +44,7 @@ def test_release_python_environment_pins_and_probes_xdist() -> None:
     setup_source = SETUP_SCRIPT.read_text(encoding="utf-8")
 
     assert "pytest-xdist==3.8.0" in manifest["project"]["optional-dependencies"]["dev"]
-    assert "import PIL, PyInstaller, lpm, pytest, xdist" in setup_source
+    assert "import PIL, PyInstaller, cc_port, pytest, xdist" in setup_source
 
 
 def test_release_runs_pytest_with_dynamic_xdist_workers() -> None:
@@ -103,7 +103,7 @@ def test_incomplete_sidecar_cache_is_a_miss_and_environment_is_restored() -> Non
     assert '$record.PSObject.Properties["artifactSha256"]' in source
     assert "missing-or-invalid-record" in source
     assert "$script:HadPriorDependencyCacheStatus" in source
-    assert "Remove-Item Env:LPM_DEPENDENCY_CACHE_STATUS" in source
+    assert "Remove-Item Env:CC_PORT_DEPENDENCY_CACHE_STATUS" in source
 
 
 def test_artifacts_are_hashed_before_the_verified_release_is_published() -> None:

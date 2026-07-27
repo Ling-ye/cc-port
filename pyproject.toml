@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lingyepluginmarketplace"
-version = "0.4.0"
-description = "LPM (LingyePluginMarketplace): multi-platform registry, publisher and installer for AI coding agent resources (skills, MCP servers, rules) across AI coding platforms."
+name = "cc-port"
+version = "0.5.0"
+description = "CC Port: multi-platform registry, publisher and installer for AI coding agent resources (skills, MCP servers, rules) across AI coding platforms."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -46,20 +46,20 @@ desktop = [
 ]
 
 [project.scripts]
-lpm = "lpm.interfaces.cli:app"
-lpm-mcp = "lpm.interfaces.mcp_server:main"
-lpm-desktop-api = "lpm.interfaces.desktop_api:main"
+cc-port = "cc_port.interfaces.cli:app"
+cc-port-mcp = "cc_port.interfaces.mcp_server:main"
+cc-port-desktop-api = "cc_port.interfaces.desktop_api:main"
 
 [project.urls]
-Homepage = "https://github.com/Ling-ye/LingyePluginMarketplace"
-Issues = "https://github.com/Ling-ye/LingyePluginMarketplace/issues"
+Homepage = "https://github.com/Ling-ye/cc-port"
+Issues = "https://github.com/Ling-ye/cc-port/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["lpm*"]
+include = ["cc_port*"]
 exclude = ["tests*", "examples*"]
 
 [tool.ruff]

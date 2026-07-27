@@ -32,7 +32,7 @@ class GithubClient:
     def __init__(self, token: str):
         if not token:
             raise GithubAuthError(
-                "No GitHub token configured. Set LPM_GITHUB_TOKEN or run `lpm init`."
+                "No GitHub token configured. Set CC_PORT_GITHUB_TOKEN or run `cc-port init`."
             )
         self._gh = Github(login_or_token=token)
         self._cached_user_login: str | None = None

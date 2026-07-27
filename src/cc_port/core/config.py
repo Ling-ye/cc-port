@@ -1,7 +1,7 @@
-"""LPM user configuration.
+"""CC Port user configuration.
 
-Loads ``~/.config/lpm/config.toml``.  The GitHub token may also come from
-the ``LPM_GITHUB_TOKEN`` environment variable (which takes precedence).
+Loads ``~/.config/cc-port/config.toml``.  The GitHub token may also come from
+the ``CC_PORT_GITHUB_TOKEN`` environment variable (which takes precedence).
 """
 
 from __future__ import annotations
@@ -18,14 +18,14 @@ else:  # pragma: no cover - py310 fallback
 
 from .platforms import PlatformsConfig, default_platform_profiles, load_platforms_from_dict
 
-CONFIG_ENV_VAR = "LPM_GITHUB_TOKEN"
-CONFIG_PATH_ENV_VAR = "LPM_CONFIG"
-RESOURCE_HOME_ENV_VAR = "LPM_RESOURCE_HOME"
-STATE_HOME_ENV_VAR = "LPM_STATE_HOME"
-GIT_EXECUTABLE_ENV_VAR = "LPM_GIT_EXECUTABLE"
-DEFAULT_CONFIG_RELATIVE = Path(".config/lpm/config.toml")
+CONFIG_ENV_VAR = "CC_PORT_GITHUB_TOKEN"
+CONFIG_PATH_ENV_VAR = "CC_PORT_CONFIG"
+RESOURCE_HOME_ENV_VAR = "CC_PORT_RESOURCE_HOME"
+STATE_HOME_ENV_VAR = "CC_PORT_STATE_HOME"
+GIT_EXECUTABLE_ENV_VAR = "CC_PORT_GIT_EXECUTABLE"
+DEFAULT_CONFIG_RELATIVE = Path(".config/cc-port/config.toml")
 DEFAULT_INSTALL_TARGET = "~/.cursor/skills"
-DEFAULT_REPO_PREFIX = "lpm-"
+DEFAULT_REPO_PREFIX = "cc-port-"
 LEGACY_REPO_PREFIX = "cursor-skill-"
 DEFAULT_GITHUB_PRIVATE = True
 LEGACY_GITHUB_PRIVATE = False
@@ -121,7 +121,7 @@ def default_state_dir() -> Path:
 
     State and backups must never live inside the Git-synchronized resource
     repository. Tests and portable installations may override the location
-    with ``LPM_STATE_HOME``.
+    with ``CC_PORT_STATE_HOME``.
     """
     override = os.environ.get(STATE_HOME_ENV_VAR, "").strip()
     if override:
@@ -129,11 +129,11 @@ def default_state_dir() -> Path:
     if sys.platform == "win32":
         local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
         if local_app_data:
-            return Path(local_app_data) / "LPM"
+            return Path(local_app_data) / "cc-port"
     xdg_state_home = os.environ.get("XDG_STATE_HOME", "").strip()
     if xdg_state_home:
-        return Path(xdg_state_home).expanduser() / "lpm"
-    return Path.home() / ".local" / "state" / "lpm"
+        return Path(xdg_state_home).expanduser() / "cc-port"
+    return Path.home() / ".local" / "state" / "cc-port"
 
 
 def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
@@ -240,17 +240,17 @@ def load_raw_config(path: Path | None = None) -> Config:
     """Load config.toml without environment overrides.
 
     Desktop settings editing needs the persisted config, while normal runtime
-    calls still use env overrides such as ``LPM_GITHUB_TOKEN``.
+    calls still use env overrides such as ``CC_PORT_GITHUB_TOKEN``.
     """
     return load_config(path, apply_env=False)
 
 
 def write_config(cfg: Config, path: Path | None = None) -> Path:
-    """Write a config TOML file (used by ``lpm init``)."""
+    """Write a config TOML file (used by ``cc-port init``)."""
     out = path or default_config_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# LPM (LingyePluginMarketplace) config -- edit this file, then run `lpm doctor` to verify.",
+        "# CC Port config -- edit this file, then run `cc-port doctor` to verify.",
         "",
         "[github]",
         "# Optional GitHub API personal access token for CLI/MCP operations. Set the",
@@ -279,7 +279,7 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         f'credential_mode = "{_escape(_resource_credential_mode(cfg.resources.credential_mode))}"',
         "",
         "[state]",
-        "# Seconds to wait for another LPM process writing the same target.",
+        "# Seconds to wait for another CC Port process writing the same target.",
         f"lock_timeout_seconds = {cfg.state.lock_timeout_seconds:g}",
         "# Completed operation records older than this may enter a cleanup plan.",
         f"retention_days = {cfg.state.retention_days}",

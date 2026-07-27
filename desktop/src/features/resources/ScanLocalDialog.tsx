@@ -1,9 +1,9 @@
 import { FolderOpen, RefreshCcw, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { lpmAction, selectDirectory } from "@/api/client";
+import { ccPortAction, selectDirectory } from "@/api/client";
 import { displayError, type TFunction } from "@/app/i18n";
 import { Banner } from "@/components/Banner";
-import type { PluginProject } from "@/types/lpm";
+import type { PluginProject } from "@/types/cc-port";
 
 export interface ScanScope {
   scan_global: boolean;
@@ -25,7 +25,7 @@ export function ScanLocalDialog({
   const [error, setError] = useState("");
 
   useEffect(() => {
-    void lpmAction<{ projects: PluginProject[] }>("plugin_projects_list")
+    void ccPortAction<{ projects: PluginProject[] }>("plugin_projects_list")
       .then((result) => {
         setProjects(result.projects);
         setSelectedIds(result.projects.filter((item) => item.exists).map((item) => item.id));
@@ -38,7 +38,7 @@ export function ScanLocalDialog({
     try {
       const path = await selectDirectory();
       if (!path) return;
-      const project = await lpmAction<PluginProject>("plugin_projects_add", { path });
+      const project = await ccPortAction<PluginProject>("plugin_projects_add", { path });
       setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
       setSelectedIds((current) => Array.from(new Set([...current, project.id])));
     } catch (reason) {
@@ -49,7 +49,7 @@ export function ScanLocalDialog({
   async function removeProject(projectId: string) {
     setError("");
     try {
-      await lpmAction<PluginProject>("plugin_projects_remove", { project_id: projectId });
+      await ccPortAction<PluginProject>("plugin_projects_remove", { project_id: projectId });
       setProjects((current) => current.filter((item) => item.id !== projectId));
       setSelectedIds((current) => current.filter((item) => item !== projectId));
     } catch (reason) {

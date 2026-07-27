@@ -11,10 +11,10 @@ const catalogPath = path.join(sourceRoot, "app", "i18n", "catalog.ts");
 const allowedVisibleLiterals = new Map([
   ["Git", "product name"],
   ["GitHub", "product name"],
-  ["LPM", "product name"],
+  ["CC Port", "product name"],
   ["MCP", "protocol name"],
   ["HTTP", "protocol name"],
-  ["L", "product monogram"],
+  ["CC", "product monogram"],
   ["npm", "package ecosystem name"],
   ["marketplace", "technical origin value"],
   ["stdio", "transport value"],
@@ -113,7 +113,7 @@ function auditCatalog(errors) {
 
 function collectBackendMessageCodes() {
   const files = [
-    ...walkFiles(path.join(repositoryRoot, "src", "lpm"), ".py"),
+    ...walkFiles(path.join(repositoryRoot, "src", "cc_port"), ".py"),
     path.join(desktopRoot, "src-tauri", "src", "lib.rs"),
   ];
   const codes = new Set();

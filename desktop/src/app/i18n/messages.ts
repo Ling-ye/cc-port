@@ -1,8 +1,8 @@
 import { en, type I18nKey } from "@/app/i18n/catalog";
 import type { TFunction, TranslationValues } from "@/app/i18n/core";
-import type { UiMessageParam, UiMessageRef } from "@/types/lpm";
+import type { UiMessageParam, UiMessageRef } from "@/types/cc-port";
 
-export type { UiMessageRef } from "@/types/lpm";
+export type { UiMessageRef } from "@/types/cc-port";
 
 type MessageI18nKey = Extract<I18nKey, `message.${string}`>;
 

@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from lpm.core.config import Config, GithubConfig, ResourcesConfig
-from lpm.infrastructure import git_ops
-from lpm.infrastructure.github_client import CreatedRepo
-from lpm.services import resource_repo
+from cc_port.core.config import Config, GithubConfig, ResourcesConfig
+from cc_port.infrastructure import git_ops
+from cc_port.infrastructure.github_client import CreatedRepo
+from cc_port.services import resource_repo
 
 
 def test_first_pull_clones_bound_repo_with_native_credentials(

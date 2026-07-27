@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from lpm.infrastructure import git_ops
+from cc_port.infrastructure import git_ops
 
 
 def test_remote_branches_parses_default_and_named_branches(monkeypatch) -> None:
@@ -421,9 +421,9 @@ def test_real_git_branch_tag_and_pinned_commit_compatibility(tmp_path) -> None:
     git_ops._run(
         [
             "-c",
-            "user.email=lpm@local",
+            "user.email=cc-port@local",
             "-c",
-            "user.name=LingyePluginMarketplace",
+            "user.name=CC Port",
             "tag",
             "-a",
             "v1.0.0",
@@ -473,7 +473,7 @@ def test_token_transport_uses_process_environment_without_raw_token_or_temp_file
 
     assert token not in json.dumps(env)
     assert "GIT_ASKPASS" not in env
-    assert "_LPM_ASKPASS_TMP" not in env
+    assert "_CC_PORT_ASKPASS_TMP" not in env
     assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
     assert env["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
 

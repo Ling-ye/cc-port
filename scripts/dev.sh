@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run the LPM Desktop app in development mode.
+# Run the CC Port desktop app in development mode.
 #
-# Builds the lpm-desktop-api sidecar binary first, then uses
+# Builds the cc-port-desktop-api sidecar binary first, then uses
 # `npm run tauri dev` as the internal Tauri development step.
 #
 # Usage:
@@ -27,7 +27,7 @@ fi
 PY="$(command -v python3 || command -v python)"
 
 if [[ "${SKIP_SIDECAR}" -eq 0 ]]; then
-    echo "==> Building lpm-desktop-api sidecar"
+    echo "==> Building cc-port-desktop-api sidecar"
     "${PY}" "${REPO_ROOT}/tools/packaging/sidecar/build_sidecar.py"
 fi
 

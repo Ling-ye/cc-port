@@ -1,4 +1,4 @@
-"""Manage resources stored directly inside the private LPM resource repository."""
+"""Manage resources stored directly inside the private CC Port resource repository."""
 
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
 # Windows 桌面打包与部署
 
+[KNOWN] 本发布文档适用于 CC Port `0.5.0`，源码仓库为 <https://github.com/Ling-ye/cc-port>。置信度：HIGH。
+
 ## 支持边界
 
 - [KNOWN] 桌面发布构建正式支持 Windows 10/11 x64 和 Windows PowerShell 5.1。置信度：HIGH。
@@ -87,10 +89,10 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 2. 无论是否命中缓存，都运行 PowerShell 构建逻辑自测、完整 pytest 与 Ruff。
 3. 无论是否命中缓存，都运行 Vitest、`npm audit --package-lock-only --audit-level=moderate` 和一次 Vite 生产构建。
 4. 验证 sidecar 缓存；命中后先直接冒烟，未命中或冒烟失败时执行 clean 重建并再次验证。
-5. 删除已知 Tauri 输出后，把验证通过的源 sidecar 显式复制到 `desktop/src-tauri/target/release/lpm-desktop-api.exe`，并在构建前校验源、目标 SHA-256 一致。
+5. 删除已知 Tauri 输出后，把验证通过的源 sidecar 显式复制到 `desktop/src-tauri/target/release/cc-port-desktop-api.exe`，并在构建前校验源、目标 SHA-256 一致。
 6. 执行 Tauri release build，并要求同时生成 MSI 和 NSIS；构建后再次校验目标 sidecar 与源 sidecar 的 SHA-256。
 7. 在 `release/desktop/` 同级临时目录收集 exe 与安装包。
-8. 使用隔离 `LPM_STATE_HOME` 运行打包后的 sidecar，并验证 JSON `ok` 响应。
+8. 使用隔离 `CC_PORT_STATE_HOME` 运行打包后的 sidecar，并验证 JSON `ok` 响应。
 9. 在临时目录计算并输出绝对发布路径、大小和 SHA-256；全部成功后事务式切换上一次正式发布目录。
 10. 在终端汇总总耗时、各阶段耗时与缓存状态，并写入本次发布的 JSON 指标。
 
@@ -115,7 +117,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 - [KNOWN] 即使输入指纹匹配，Python import/Ruff 探针、`pip check`、`pip list --format=json` 清单哈希、`npm ls --all --json` 或 `node_modules/.package-lock.json` 哈希任一验证失败，依赖缓存仍然失效并重新同步。置信度：HIGH。
 - [KNOWN] 默认发布的首次依赖判断只做输入与缓存记录预判；真正复用前只执行一次完整环境探针，并重新计算输入指纹，避免交互等待期间的状态变化和重复探针开销。`setup.ps1 -CheckOnly` 直接执行完整探针。置信度：HIGH。
 - [KNOWN] sidecar 缓存固定为 `build/cache/sidecar.json`，其 `schemaVersion` 为 `1`；实际 PyInstaller 工作目录与中间产物仍位于 `build/sidecar/`。置信度：HIGH。
-- [KNOWN] `src/lpm` 下任一运行时文件、`tools/packaging/sidecar/*.py`、`pyproject.toml`、Python ABI 或路径、PyInstaller 版本、pip 安装清单、target triple 或已缓存产物哈希任一变化，都会使 sidecar 缓存失效。置信度：HIGH。
+- [KNOWN] `src/cc_port` 下任一运行时文件、`tools/packaging/sidecar/*.py`、`pyproject.toml`、Python ABI 或路径、PyInstaller 版本、pip 安装清单、target triple 或已缓存产物哈希任一变化，都会使 sidecar 缓存失效。置信度：HIGH。
 - [KNOWN] sidecar 缓存命中后仍必须直接执行隔离冒烟；冒烟失败会废弃该命中并执行 clean 重建，不能发布旧二进制。置信度：HIGH。
 - [KNOWN] 缓存 sidecar 冒烟失败时，指标先记录 `recoveryAttempted = true` 且保留原失败；只有 clean 重建、重建后冒烟与缓存刷新全部成功，才把该阶段标成 `recovered = true`。置信度：HIGH。
 - [KNOWN] 缓存文件缺失、JSON 损坏、schema 不支持或记录不完整时按缓存未命中处理；只有相应同步、构建与验证全部成功后才刷新记录。置信度：HIGH。
@@ -177,12 +179,12 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 
 ```text
 release/desktop/x86_64-pc-windows-msvc/
-  lpm-desktop.exe
-  lpm-desktop-api.exe
+  cc-port-desktop.exe
+  cc-port-desktop-api.exe
   msi/
-    LPM Desktop_<version>_x64_en-US.msi
+    CC Port_<version>_x64_en-US.msi
   nsis/
-    LPM Desktop_<version>_x64-setup.exe
+    CC Port_<version>_x64-setup.exe
 ```
 
 [KNOWN] Tauri 原始输出保留在 `desktop/src-tauri/target/release/`，PyInstaller 中间输出保留在 `build/sidecar/`，缓存记录保留在 `build/cache/`，发布指标保留在 `build/metrics/`。置信度：HIGH。

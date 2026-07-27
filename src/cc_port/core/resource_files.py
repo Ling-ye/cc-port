@@ -28,7 +28,7 @@ DEFAULT_EXCLUDED_DIRS = {
 }
 DEFAULT_EXCLUDED_FILES = {
     ".DS_Store",
-    ".lpm-managed.json",
+    ".cc-port-managed.json",
     "Thumbs.db",
 }
 DEFAULT_EXCLUDED_FILE_NAMES = {item.lower() for item in DEFAULT_EXCLUDED_FILES}

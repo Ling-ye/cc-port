@@ -11,16 +11,16 @@ import type {
   AssetResourceRow,
   DiagnosticsState,
   DoctorCheck,
-} from "@/types/lpm";
+} from "@/types/cc-port";
 
 const clientMocks = vi.hoisted(() => ({
   assetInventory: vi.fn(),
   doctor: vi.fn(),
-  lpmAction: vi.fn(),
+  ccPortAction: vi.fn(),
 }));
 
 vi.mock("@/api/client", () => ({
-  lpmAction: clientMocks.lpmAction,
+  ccPortAction: clientMocks.ccPortAction,
   openPath: vi.fn(),
   selectDirectory: vi.fn(),
 }));
@@ -200,8 +200,8 @@ beforeEach(() => {
   clientMocks.assetInventory.mockResolvedValue(makeInventory());
   clientMocks.doctor.mockReset();
   clientMocks.doctor.mockResolvedValue({ checks: [] });
-  clientMocks.lpmAction.mockReset();
-  clientMocks.lpmAction.mockImplementation((action: string, payload?: unknown) => {
+  clientMocks.ccPortAction.mockReset();
+  clientMocks.ccPortAction.mockImplementation((action: string, payload?: unknown) => {
     if (action === "asset_inventory") return clientMocks.assetInventory(payload);
     if (action === "doctor") return clientMocks.doctor(payload);
     throw new Error(`Unexpected action: ${action}`);
@@ -310,7 +310,7 @@ describe("App inventory orchestration", () => {
       refresh_remote: true,
     });
     expect(screen.getByTestId("remote-commit")).toHaveTextContent(/^$/);
-    expect(clientMocks.lpmAction).not.toHaveBeenCalledWith("summary");
+    expect(clientMocks.ccPortAction).not.toHaveBeenCalledWith("summary");
     expect(screen.queryByRole("status")).toBeNull();
 
     inventoryResult.resolve(makeInventory());

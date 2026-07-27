@@ -6,5 +6,5 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolate_lpm_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LPM_STATE_HOME", str(tmp_path / ".lpm-state"))
+def isolate_cc_port_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(tmp_path / ".cc-port-state"))

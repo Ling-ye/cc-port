@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from lpm.core.models import Registry, RegistryItem
-from lpm.core.registry import save_registry
-from lpm.services.local_resources import export_claude_plugin
+from cc_port.core.models import Registry, RegistryItem
+from cc_port.core.registry import save_registry
+from cc_port.services.local_resources import export_claude_plugin
 
 
 def test_export_claude_plugin_uses_valid_slug_and_active_local_skills(tmp_path: Path) -> None:

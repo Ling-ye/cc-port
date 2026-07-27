@@ -1,6 +1,6 @@
 import { FolderInput, FolderOpen } from "lucide-react";
 import { type FormEvent, useMemo, useState } from "react";
-import { lpmAction, selectDirectory } from "@/api/client";
+import { ccPortAction, selectDirectory } from "@/api/client";
 import { displayError, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
@@ -9,7 +9,7 @@ import {
   ResourceDialogFrame,
   type AddKind,
 } from "@/features/resources/ResourceDialogFrame";
-import type { AddResourceResult } from "@/types/lpm";
+import type { AddResourceResult } from "@/types/cc-port";
 
 interface ImportDraft {
   path: string;
@@ -68,7 +68,7 @@ export function ImportLocalDialog({
         kind: "resource-import",
         title: t("add.modeImport"),
         context: draft.name || draft.path,
-        action: () => lpmAction<AddResourceResult>("upload", {
+        action: () => ccPortAction<AddResourceResult>("upload", {
           path: draft.path,
           kind: draft.kind === "auto" ? undefined : draft.kind,
           name: draft.name,

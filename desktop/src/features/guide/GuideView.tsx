@@ -3,7 +3,7 @@ import { openExternalUrl } from "@/api/client";
 import type { I18nKey, TFunction } from "@/app/i18n";
 import { DescriptionList } from "@/components/DescriptionList";
 
-const PROJECT_URL = "https://github.com/Ling-ye/LingyePluginMarketplace";
+const PROJECT_URL = "https://github.com/Ling-ye/cc-port";
 
 const resourceRows = [
   ["guide.resourceSkill", "guide.resourceSkillDescription"],
@@ -45,7 +45,7 @@ export function GuideView({ t }: { t: TFunction }) {
             <h3>{t("guide.projectInfo")}</h3>
             <DescriptionList
               rows={[
-                [t("guide.projectName"), "LingyePluginMarketplace / LPM"],
+                [t("guide.projectName"), "cc-port / CC Port"],
                 [t("guide.positioning"), t("guide.positioningValue")],
                 [t("guide.developer"), t("guide.developerDescription")],
                 [

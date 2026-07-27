@@ -35,9 +35,9 @@ items:
 - 不同平台或来源的同名插件默认是不同逻辑资源，不自动跨平台关联。
 - 默认名称由平台、来源和插件标识组成；超过名称限制或发生冲突时追加来源摘要的稳定短哈希。
 - 同平台、同来源的多个 `user`、`project`、`local`、`managed` 实例聚合到一个插件资源。
-- `project` 与 `local` 实例只保存规范化 Git remote 和仓库内相对根；local content 的来源身份同时包含仓库内插件相对路径，绝对路径只存在于本机 LPM 配置。
+- `project` 与 `local` 实例只保存规范化 Git remote 和仓库内相对根；local content 的来源身份同时包含仓库内插件相对路径，绝对路径只存在于本机 CC Port 配置。
 - 无 Git remote 的项目实例可以扫描和展示，但不能保存到远端注册表。
-- `managed` 实例只读，不能由 LPM 安装、启用、禁用或卸载。
+- `managed` 实例只读，不能由 CC Port 安装、启用、禁用或卸载。
 - marketplace 来源必须保存可移植的 marketplace 名称或远端 URL/Git 身份；本机 runtime/cache 绝对路径不得进入注册表。
 
 ## 兼容与验证

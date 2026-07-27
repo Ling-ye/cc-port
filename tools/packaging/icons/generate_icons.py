@@ -1,7 +1,8 @@
-"""Generate placeholder Tauri icons for the LPM Desktop app.
+"""Generate the CC Port desktop icon set.
 
-Produces a simple flat icon with the letters ``LPM`` in white on a deep purple
-background. Output directory defaults to ``desktop/src-tauri/icons``.
+The mark is a white bridge-and-arrow glyph on a blue-to-cyan gradient. It is
+drawn entirely from geometry so every output is deterministic and contains no
+embedded text or font dependency. Output defaults to ``desktop/src-tauri/icons``.
 
 Usage::
 
@@ -15,55 +16,120 @@ import argparse
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUT = ROOT / "desktop" / "src-tauri" / "icons"
 
-BG_COLOR = (88, 64, 168, 255)
-FG_COLOR = (255, 255, 255, 255)
-TEXT = "LPM"
+BLUE = (15, 70, 190, 255)
+CYAN = (13, 201, 196, 255)
+WHITE = (255, 255, 255, 255)
+MASTER_SIZE = 1024
+SUPERSAMPLE = 4
 
 
-def _load_font(size: int) -> ImageFont.ImageFont:
-    candidates = [
-        "C:/Windows/Fonts/segoeuib.ttf",
-        "C:/Windows/Fonts/arialbd.ttf",
-        "C:/Windows/Fonts/segoeui.ttf",
-        "C:/Windows/Fonts/arial.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+def _mix(start: int, end: int, amount: float) -> int:
+    return round(start + (end - start) * amount)
+
+
+def _gradient(size: int) -> Image.Image:
+    image = Image.new("RGBA", (size, size))
+    draw = ImageDraw.Draw(image)
+    denominator = max(1, size - 1)
+    for y in range(size):
+        amount = y / denominator
+        color = tuple(_mix(BLUE[channel], CYAN[channel], amount) for channel in range(3))
+        draw.line((0, y, size, y), fill=(*color, 255))
+    return image
+
+
+def _bridge_points(size: int) -> list[tuple[int, int]]:
+    return [
+        (round(size * 0.23), round(size * 0.56)),
+        (round(size * 0.29), round(size * 0.45)),
+        (round(size * 0.38), round(size * 0.36)),
+        (round(size * 0.50), round(size * 0.32)),
+        (round(size * 0.62), round(size * 0.36)),
+        (round(size * 0.71), round(size * 0.45)),
+        (round(size * 0.76), round(size * 0.54)),
     ]
-    for path in candidates:
-        try:
-            return ImageFont.truetype(path, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
 
 
 def _draw_icon(size: int) -> Image.Image:
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    render_size = size * SUPERSAMPLE
+    image = _gradient(render_size)
 
-    radius = size // 6
-    draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=BG_COLOR)
+    corner_mask = Image.new("L", (render_size, render_size), 0)
+    mask_draw = ImageDraw.Draw(corner_mask)
+    inset = max(1, round(render_size * 0.015))
+    mask_draw.rounded_rectangle(
+        (inset, inset, render_size - inset - 1, render_size - inset - 1),
+        radius=round(render_size * 0.20),
+        fill=255,
+    )
+    image.putalpha(corner_mask)
 
-    font_size = max(8, int(size * 0.42))
-    font = _load_font(font_size)
-    bbox = draw.textbbox((0, 0), TEXT, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
-    x = (size - text_w) / 2 - bbox[0]
-    y = (size - text_h) / 2 - bbox[1]
-    draw.text((x, y), TEXT, fill=FG_COLOR, font=font)
-    return img
+    draw = ImageDraw.Draw(image)
+    stroke = max(4, round(render_size * 0.055))
+    deck_y = round(render_size * 0.59)
+    deck_start = round(render_size * 0.18)
+    deck_end = round(render_size * 0.73)
+
+    draw.line(
+        _bridge_points(render_size),
+        fill=WHITE,
+        width=stroke,
+        joint="curve",
+    )
+    draw.line(
+        (deck_start, deck_y, deck_end, deck_y),
+        fill=WHITE,
+        width=stroke,
+    )
+
+    for x, top in (
+        (0.31, 0.45),
+        (0.40, 0.36),
+        (0.50, 0.32),
+        (0.60, 0.36),
+        (0.69, 0.45),
+    ):
+        draw.line(
+            (
+                round(render_size * x),
+                round(render_size * top),
+                round(render_size * x),
+                deck_y,
+            ),
+            fill=WHITE,
+            width=max(2, round(stroke * 0.32)),
+        )
+
+    support_width = max(3, round(stroke * 0.50))
+    for x in (0.29, 0.66):
+        draw.line(
+            (
+                round(render_size * x),
+                deck_y,
+                round(render_size * x),
+                round(render_size * 0.75),
+            ),
+            fill=WHITE,
+            width=support_width,
+        )
+
+    arrow_tip = (round(render_size * 0.84), deck_y)
+    arrow_back_top = (round(render_size * 0.70), round(render_size * 0.47))
+    arrow_back_bottom = (round(render_size * 0.70), round(render_size * 0.71))
+    draw.polygon((arrow_tip, arrow_back_top, arrow_back_bottom), fill=WHITE)
+
+    return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
 def write_icons(out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    base = _draw_icon(1024)
+    base = _draw_icon(MASTER_SIZE)
     base.save(out_dir / "icon.png", format="PNG")
 
     sizes = [16, 24, 32, 48, 64, 128, 256]

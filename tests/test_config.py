@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lpm.core.config import (
+from cc_port.core.config import (
     Config,
     GitConfig,
     GithubConfig,
@@ -106,13 +106,13 @@ def test_legacy_resource_credential_mode_defaults_to_auto(tmp_path: Path) -> Non
     ]
 
 
-def test_new_config_uses_private_lpm_defaults_and_enables_complete_presets(
+def test_new_config_uses_private_cc_port_defaults_and_enables_complete_presets(
     tmp_path: Path,
 ) -> None:
     loaded = load_config(tmp_path / "missing.toml")
 
     assert loaded.github.owner == ""
-    assert loaded.github.repo_prefix == "lpm-"
+    assert loaded.github.repo_prefix == "cc-port-"
     assert loaded.github.default_private is True
     assert loaded.resources.branch == "main"
     assert loaded.resources.credential_mode == "native"

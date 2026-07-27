@@ -1,8 +1,8 @@
-# LPM 项目架构
+# CC Port 项目架构
 
 ## 产品边界
 
-LPM 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置；用户自己的远端资源仓库是跨设备事实源，本机状态目录保存可重建的受管远端镜像、commit 只读快照、备份、所有权和临时操作数据。AI 工具原生目录中的资源是本地实例，不通过本机镜像转发。
+CC Port 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置；用户自己的远端资源仓库是跨设备事实源，本机状态目录保存可重建的受管远端镜像、commit 只读快照、备份、所有权和临时操作数据。AI 工具原生目录中的资源是本地实例，不通过本机镜像转发。
 
 当前采用模块化单体，不拆分独立服务：
 
@@ -74,12 +74,12 @@ resources/  # 兼容旧仓库布局
 
 该仓库是跨设备事实源，只保存可跨设备同步的数据，不保存真实密钥、机器备份、临时 worktree 或操作日志。第三方 GitHub Skill/MCP 只在 `registry.yaml` 保存锁定到完整 commit SHA 的引用；本地导入才写入内容目录。具体收集、脱敏、恢复失败与旧 branch/tag 兼容语义见 [GitHub 引用收集与本地内容导入规格](specs/github-reference-collection.md)。
 
-桌面主流程不为它创建用户需要维护的本地工作区。需要读取远端内容时，LPM 更新受管远端镜像并选择明确 commit 生成只读远端快照；需要写入时，只通过选中资源的上传计划产生普通提交与推送。
+桌面主流程不为它创建用户需要维护的本地工作区。需要读取远端内容时，CC Port 更新受管远端镜像并选择明确 commit 生成只读远端快照；需要写入时，只通过选中资源的上传计划产生普通提交与推送。
 这一取舍及被拒绝的可编辑中枢、逐次临时克隆方案见 [ADR 0001：使用受管远端镜像，而不是可编辑工作区](adr/0001-use-managed-remote-mirror.md)。
 
 ### 本机状态目录
 
-Windows 默认为 `%LOCALAPPDATA%\LPM`；其他系统使用用户状态目录。`LPM_STATE_HOME` 可覆盖默认值。
+Windows 默认为 `%LOCALAPPDATA%\cc-port`；其他系统使用用户状态目录。`CC_PORT_STATE_HOME` 可覆盖默认值。
 
 ```text
 backups/
@@ -100,7 +100,7 @@ sync/<operation-id>/  # 弃用兼容
 
 ### AI 工具目标
 
-工具目标路径来自 `PlatformProfile` 和内部 `ToolAdapter`。每个被发现或安装到这些原生目标的资源都是本地实例；同一逻辑资源可以在多个工具或项目范围内存在多个实例。目录型资源写入 `.lpm-managed.json`；MCP 只拥有指定 server entry，不拥有整个 JSON 配置文件。
+工具目标路径来自 `PlatformProfile` 和内部 `ToolAdapter`。每个被发现或安装到这些原生目标的资源都是本地实例；同一逻辑资源可以在多个工具或项目范围内存在多个实例。目录型资源写入 `.cc-port-managed.json`；MCP 只拥有指定 server entry，不拥有整个 JSON 配置文件。
 
 ## 资源清单读取流
 

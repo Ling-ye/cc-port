@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LPM Desktop",
-  "version": "0.1.0",
-  "identifier": "com.lingye.lpm.desktop",
+  "productName": "CC Port",
+  "version": "0.5.0",
+  "identifier": "com.lingye.cc-port.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "LPM Desktop",
+        "title": "CC Port",
         "width": 1360,
         "height": 820,
         "minWidth": 1280,
@@ -30,7 +30,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/lpm-desktop-api"
+      "binaries/cc-port-desktop-api"
     ]
   }
 }

@@ -11,7 +11,7 @@ import { outputTreesEqual, publishStableOutput } from "./stable-vite-build.mjs";
 const temporaryRoots = [];
 
 async function createFixture() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "lpm-stable-vite-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cc-port-stable-vite-"));
   temporaryRoots.push(root);
   const output = path.join(root, "dist");
   const staging = path.join(root, "staging");

@@ -11,7 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { lpmAction } from "@/api/client";
+import { ccPortAction } from "@/api/client";
 import { displayError, translateMessage, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import type {
@@ -34,7 +34,7 @@ import type {
   StateRetentionPlan,
   StaleResourceSyncPlan,
   StaleResourceSyncResult,
-} from "@/types/lpm";
+} from "@/types/cc-port";
 
 const HISTORY_PAGE_SIZE = 20;
 
@@ -64,17 +64,17 @@ export function OperationsView({ t }: { t: TFunction }) {
     const action = async () => {
       const [historyPage, stale, retention, orphanResult, quarantineResult, auditResult] =
         await Promise.all([
-          lpmAction<OperationHistoryPage>("operation_history_page", {
+          ccPortAction<OperationHistoryPage>("operation_history_page", {
             offset: requestedOffset,
             limit: HISTORY_PAGE_SIZE,
           }),
-          lpmAction<StaleResourceSyncResult>("resource_sync_stale", {
+          ccPortAction<StaleResourceSyncResult>("resource_sync_stale", {
             min_age_hours: 24,
           }),
-          lpmAction<StateRetentionPlan>("state_retention_plan"),
-          lpmAction<OrphanBackupResult>("orphan_backups"),
-          lpmAction<OrphanQuarantineList>("orphan_quarantines"),
-          lpmAction<MaintenanceAuditList>("maintenance_audits", { limit: 30 }),
+          ccPortAction<StateRetentionPlan>("state_retention_plan"),
+          ccPortAction<OrphanBackupResult>("orphan_backups"),
+          ccPortAction<OrphanQuarantineList>("orphan_quarantines"),
+          ccPortAction<MaintenanceAuditList>("maintenance_audits", { limit: 30 }),
         ]);
       setOperations(historyPage.operations);
       setHistoryTotal(historyPage.total);
@@ -120,7 +120,7 @@ export function OperationsView({ t }: { t: TFunction }) {
       const page = await runTask({
         kind: "operation-history-page",
         title: t("operations.refresh"),
-        action: () => lpmAction<OperationHistoryPage>("operation_history_page", {
+        action: () => ccPortAction<OperationHistoryPage>("operation_history_page", {
           offset: requestedOffset,
           limit: HISTORY_PAGE_SIZE,
         }),
@@ -146,7 +146,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         kind: "operation-detail",
         title: t("operations.viewDetails"),
         context: item.operation_id,
-        action: () => lpmAction<OperationHistoryEntry>("operation_detail", {
+        action: () => ccPortAction<OperationHistoryEntry>("operation_detail", {
           operation_id: item.operation_id,
         }),
         failureMessage,
@@ -168,7 +168,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         kind: "operation-restore",
         title: t("operations.restore"),
         context: item.operation_id,
-        action: () => lpmAction<OperationRestoreResult>("operation_restore", {
+        action: () => ccPortAction<OperationRestoreResult>("operation_restore", {
           operation_id: item.operation_id,
           force: forceRestore,
         }),
@@ -192,7 +192,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         kind: "resource-sync-cleanup",
         title: t("operations.cleanup"),
         context: item.operation_id,
-        action: () => lpmAction<ResourceSyncPlan>("resource_sync_cleanup", {
+        action: () => ccPortAction<ResourceSyncPlan>("resource_sync_cleanup", {
           operation_id: item.operation_id,
         }),
         successMessage: t("operations.cleaned"),
@@ -213,7 +213,7 @@ export function OperationsView({ t }: { t: TFunction }) {
       const data = await runTask({
         kind: "state-retention-plan",
         title: t("operations.retentionPreview"),
-        action: () => lpmAction<StateRetentionPlan>("state_retention_plan", {
+        action: () => ccPortAction<StateRetentionPlan>("state_retention_plan", {
           retention_days: retentionDays,
           keep_latest_operations: keepLatest,
           max_backup_mb: maxBackupMb,
@@ -241,7 +241,7 @@ export function OperationsView({ t }: { t: TFunction }) {
       await runTask({
         kind: "state-prune",
         title: t("operations.prune"),
-        action: () => lpmAction<StatePruneResult>("state_prune", {
+        action: () => ccPortAction<StatePruneResult>("state_prune", {
           operation_ids: selectedPruneIds,
           retention_days: retentionDays,
           keep_latest_operations: keepLatest,
@@ -269,7 +269,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         kind: "orphan-export",
         title: t("operations.orphanExport"),
         context: item.name,
-        action: () => lpmAction<OrphanBackupExport>("orphan_export", {
+        action: () => ccPortAction<OrphanBackupExport>("orphan_export", {
           name: item.name,
         }),
         successMessage: (result) => t("operations.orphanExported", {
@@ -295,7 +295,7 @@ export function OperationsView({ t }: { t: TFunction }) {
       await runTask({
         kind: "orphan-quarantine",
         title: t("operations.orphanQuarantine"),
-        action: () => lpmAction<OrphanQuarantineResult>("orphan_quarantine", {
+        action: () => ccPortAction<OrphanQuarantineResult>("orphan_quarantine", {
           names: selectedOrphanNames,
         }),
         successMessage: (result) => t("operations.orphanQuarantined", {
@@ -323,7 +323,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         kind: "orphan-quarantine-delete",
         title: t("operations.quarantineDelete"),
         context: item.quarantine_id,
-        action: () => lpmAction<OrphanDeleteResult>("orphan_quarantine_delete", {
+        action: () => ccPortAction<OrphanDeleteResult>("orphan_quarantine_delete", {
           quarantine_id: item.quarantine_id,
         }),
         successMessage: (result) => t("operations.quarantineDeleted", {
@@ -347,7 +347,7 @@ export function OperationsView({ t }: { t: TFunction }) {
         kind: "maintenance-audit",
         title: t("operations.auditDetails"),
         context: item.audit_id,
-        action: () => lpmAction<MaintenanceAuditDetail>("maintenance_audit", {
+        action: () => ccPortAction<MaintenanceAuditDetail>("maintenance_audit", {
           audit_id: item.audit_id,
         }),
         failureMessage,

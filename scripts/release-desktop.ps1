@@ -26,8 +26,8 @@ $script:ReleaseMetricsPath = $null
 $script:ReleaseSucceeded = $false
 $script:ReleaseError = $null
 $script:ReleaseLock = $null
-$script:HadPriorDependencyCacheStatus = Test-Path Env:LPM_DEPENDENCY_CACHE_STATUS
-$script:PriorDependencyCacheStatus = $env:LPM_DEPENDENCY_CACHE_STATUS
+$script:HadPriorDependencyCacheStatus = Test-Path Env:CC_PORT_DEPENDENCY_CACHE_STATUS
+$script:PriorDependencyCacheStatus = $env:CC_PORT_DEPENDENCY_CACHE_STATUS
 
 function Add-ReleasePhase {
     param(
@@ -88,7 +88,7 @@ function Invoke-ReleaseAction {
         [AllowNull()][string]$CacheStatus
     )
 
-    Write-LpmSection $Description
+    Write-CcPortSection $Description
     $startedAt = [DateTime]::UtcNow
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     try {
@@ -111,12 +111,12 @@ function Invoke-ReleaseStep {
         [AllowNull()][string]$CacheStatus
     )
 
-    Write-LpmSection $Description
+    Write-CcPortSection $Description
     $startedAt = [DateTime]::UtcNow
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     $recorded = $false
     try {
-        $result = Invoke-LpmNative -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -AllowFailure -Description $Description
+        $result = Invoke-CcPortNative -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -AllowFailure -Description $Description
         $stopwatch.Stop()
         Add-ReleasePhase -Name $Description -StartedAtUtc $startedAt -DurationMs $stopwatch.Elapsed.TotalMilliseconds -ExitCode $result.ExitCode -CacheStatus $CacheStatus -LogPath $null
         $recorded = $true
@@ -190,7 +190,7 @@ function Invoke-ParallelReleaseGates {
         }
     }
 
-    Write-LpmSection "Running release quality gates (max $limit concurrent)"
+    Write-CcPortSection "Running release quality gates (max $limit concurrent)"
     try {
         while ($pending.Count -gt 0 -or $active.Count -gt 0) {
             while ($pending.Count -gt 0 -and $active.Count -lt $limit) {
@@ -253,7 +253,7 @@ function Invoke-ParallelReleaseGates {
             } else {
                 $failures.Add("$($gate.Name) (exit $($result.exitCode), log $logPath)")
                 Write-Host ("  FAIL  {0} ({1:N2}s) -> {2}" -f $gate.Name, ([double]$result.durationMs / 1000), $logPath) -ForegroundColor Red
-                Write-Host (Get-LpmOutputExcerpt -Value ([string]$result.output))
+                Write-Host (Get-CcPortOutputExcerpt -Value ([string]$result.output))
             }
             Remove-Job -Job $finished -Force
             $active.Remove($finished.Id)
@@ -284,11 +284,11 @@ function Save-ReleaseMetrics {
         phases       = $script:ReleasePhases.ToArray()
         artifacts    = $script:ReleaseArtifacts.ToArray()
     }
-    Write-LpmJsonCacheAtomically -Path $script:ReleaseMetricsPath -Value $payload
+    Write-CcPortJsonCacheAtomically -Path $script:ReleaseMetricsPath -Value $payload
 }
 
 function Write-ReleaseSummary {
-    Write-LpmSection "Release timing summary"
+    Write-CcPortSection "Release timing summary"
     foreach ($phase in $script:ReleasePhases) {
         $status = if ($phase.recovered) {
             "RCVR"
@@ -355,13 +355,13 @@ function Get-SidecarInputFingerprint {
     )
 
     $sourceFiles = @(
-        Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\lpm") -Recurse -File -Force | Where-Object {
+        Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\cc_port") -Recurse -File -Force | Where-Object {
             $_.FullName -notmatch '\\__pycache__\\' -and $_.Extension -notin @(".pyc", ".pyo")
         }
         Get-ChildItem -LiteralPath (Join-Path $RepoRoot "tools\packaging\sidecar") -File -Filter "*.py" -Force
         Get-Item -LiteralPath (Join-Path $RepoRoot "pyproject.toml")
     ) | Sort-Object FullName -Unique
-    $contentFingerprint = Get-LpmContentFingerprint -Paths @($sourceFiles | ForEach-Object { $_.FullName })
+    $contentFingerprint = Get-CcPortContentFingerprint -Paths @($sourceFiles | ForEach-Object { $_.FullName })
     $metadataCode = @'
 import importlib.metadata as metadata
 import json
@@ -384,13 +384,13 @@ print(json.dumps({
     'packages': packages,
 }, sort_keys=True, separators=(',', ':')))
 '@
-    $metadata = Invoke-LpmNative -FilePath $PythonPath -ArgumentList @("-c", $metadataCode) -WorkingDirectory $RepoRoot -Capture -Description "sidecar build environment fingerprint"
+    $metadata = Invoke-CcPortNative -FilePath $PythonPath -ArgumentList @("-c", $metadataCode) -WorkingDirectory $RepoRoot -Capture -Description "sidecar build environment fingerprint"
     $payload = [ordered]@{
         content = $contentFingerprint
         environment = $metadata.Output.Trim()
         target = $Target
     } | ConvertTo-Json -Depth 5 -Compress
-    return Get-LpmStringHash -Value $payload
+    return Get-CcPortStringHash -Value $payload
 }
 
 function Get-SidecarCacheStatus {
@@ -404,7 +404,7 @@ function Get-SidecarCacheStatus {
     if ($ForceClean) {
         return [pscustomobject]@{ Hit = $false; Reason = "forced"; Record = $null }
     }
-    $record = Read-LpmJsonCache -Path $CachePath
+    $record = Read-CcPortJsonCache -Path $CachePath
     if ($null -eq $record) {
         return [pscustomobject]@{ Hit = $false; Reason = "missing-or-invalid-record"; Record = $null }
     }
@@ -445,7 +445,7 @@ function Write-SidecarCacheRecord {
         artifactBytes = $artifact.Length
         verifiedAtUtc = [DateTime]::UtcNow.ToString("o")
     }
-    Write-LpmJsonCacheAtomically -Path $CachePath -Value $record
+    Write-CcPortJsonCacheAtomically -Path $CachePath -Value $record
 }
 
 function Assert-SidecarHashesMatch {
@@ -478,14 +478,14 @@ function Remove-KnownTauriOutputs {
         New-Item -ItemType Directory -Path $TargetReleaseDirectory -Force | Out-Null
     }
     $bundleDirectory = Join-Path $TargetReleaseDirectory "bundle"
-    Remove-LpmSafePath -Path $bundleDirectory -Parent $TargetReleaseDirectory
+    Remove-CcPortSafePath -Path $bundleDirectory -Parent $TargetReleaseDirectory
     $names = @("$SidecarName.exe")
     if ($Clean) {
         $names += "$DesktopName.exe"
     }
     foreach ($name in $names) {
         $path = Join-Path $TargetReleaseDirectory $name
-        Assert-LpmDirectChild -Path $path -Parent $TargetReleaseDirectory | Out-Null
+        Assert-CcPortDirectChild -Path $path -Parent $TargetReleaseDirectory | Out-Null
         if (Test-Path -LiteralPath $path) {
             Remove-Item -LiteralPath $path -Force
         }
@@ -518,7 +518,7 @@ function Copy-TauriOutputs {
     foreach ($source in Get-ChildItem -LiteralPath $bundleDirectory -Force) {
         Copy-Item -LiteralPath $source.FullName -Destination (Join-Path $StagingDirectory $source.Name) -Recurse
     }
-    Get-LpmWindowsPackageArtifacts -ReleaseDirectory $StagingDirectory | Out-Null
+    Get-CcPortWindowsPackageArtifacts -ReleaseDirectory $StagingDirectory | Out-Null
 }
 
 function Invoke-SidecarSmokeTest {
@@ -528,37 +528,37 @@ function Invoke-SidecarSmokeTest {
     )
 
     $tempRoot = [IO.Path]::GetTempPath().TrimEnd("\")
-    $stateHome = Join-Path $tempRoot ("lpm-release-smoke-" + [guid]::NewGuid().ToString("N"))
-    Assert-LpmDirectChild -Path $stateHome -Parent $tempRoot | Out-Null
+    $stateHome = Join-Path $tempRoot ("cc-port-release-smoke-" + [guid]::NewGuid().ToString("N"))
+    Assert-CcPortDirectChild -Path $stateHome -Parent $tempRoot | Out-Null
     New-Item -ItemType Directory -Path $stateHome | Out-Null
-    $hadPriorStateHome = Test-Path Env:LPM_STATE_HOME
-    $priorStateHome = $env:LPM_STATE_HOME
+    $hadPriorStateHome = Test-Path Env:CC_PORT_STATE_HOME
+    $priorStateHome = $env:CC_PORT_STATE_HOME
     try {
-        $env:LPM_STATE_HOME = $stateHome
-        $result = Invoke-LpmNative -FilePath $SidecarPath -ArgumentList @("operation_history_page") -WorkingDirectory $RepoRoot -Capture -Description "packaged sidecar smoke test"
+        $env:CC_PORT_STATE_HOME = $stateHome
+        $result = Invoke-CcPortNative -FilePath $SidecarPath -ArgumentList @("operation_history_page") -WorkingDirectory $RepoRoot -Capture -Description "packaged sidecar smoke test"
         try {
             $response = $result.Output | ConvertFrom-Json -ErrorAction Stop
         } catch {
-            throw "Packaged sidecar returned invalid JSON: $(Get-LpmOutputExcerpt -Value $result.Output)"
+            throw "Packaged sidecar returned invalid JSON: $(Get-CcPortOutputExcerpt -Value $result.Output)"
         }
         if ($null -eq $response -or -not $response.ok) {
-            throw "Packaged sidecar returned an error: $(Get-LpmOutputExcerpt -Value $result.Output)"
+            throw "Packaged sidecar returned an error: $(Get-CcPortOutputExcerpt -Value $result.Output)"
         }
         Write-Host "  sidecar response: ok"
     } finally {
         if ($hadPriorStateHome) {
-            $env:LPM_STATE_HOME = $priorStateHome
+            $env:CC_PORT_STATE_HOME = $priorStateHome
         } else {
-            Remove-Item Env:LPM_STATE_HOME -ErrorAction SilentlyContinue
+            Remove-Item Env:CC_PORT_STATE_HOME -ErrorAction SilentlyContinue
         }
         if (Test-Path -LiteralPath $stateHome) {
-            Remove-LpmSafePath -Path $stateHome -Parent $tempRoot
+            Remove-CcPortSafePath -Path $stateHome -Parent $tempRoot
         }
     }
 }
 
 try {
-    $repoRoot = Get-LpmRepoRoot
+    $repoRoot = Get-CcPortRepoRoot
     $metricsDirectory = Join-Path $repoRoot "build\metrics"
     $metricsStem = "release-$($script:ReleaseStartedAtUtc.ToString('yyyyMMdd-HHmmss'))-$($script:ReleaseRunId)"
     $script:ReleaseMetricsPath = Join-Path $metricsDirectory "$metricsStem.json"
@@ -573,15 +573,15 @@ try {
     $tauriDirectory = Join-Path $desktopDirectory "src-tauri"
     $targetReleaseDirectory = Join-Path $tauriDirectory "target\release"
     $releaseRoot = Join-Path $repoRoot "release\desktop"
-    $desktopName = "lpm-desktop"
-    $sidecarName = "lpm-desktop-api"
-    $expectedTarget = Get-LpmExpectedTarget
+    $desktopName = "cc-port-desktop"
+    $sidecarName = "cc-port-desktop-api"
+    $expectedTarget = Get-CcPortExpectedTarget
     $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
     $sidecarCachePath = Join-Path $repoRoot "build\cache\sidecar.json"
     $sourceSidecar = Join-Path $tauriDirectory "binaries\$sidecarName-$expectedTarget.exe"
     $targetSidecar = Join-Path $targetReleaseDirectory "$sidecarName.exe"
 
-    $env:LPM_DEPENDENCY_CACHE_STATUS = $null
+    $env:CC_PORT_DEPENDENCY_CACHE_STATUS = $null
     $setupPhaseIndex = $script:ReleasePhases.Count
     try {
         Invoke-ReleaseAction -Description "Preparing build environment" -CacheStatus $(if ($Clean) { "forced" } else { $null }) -Action {
@@ -595,26 +595,26 @@ try {
             }
         }
     } finally {
-        if ($script:ReleasePhases.Count -gt $setupPhaseIndex -and $env:LPM_DEPENDENCY_CACHE_STATUS) {
-            $script:ReleasePhases[$setupPhaseIndex].cacheStatus = $env:LPM_DEPENDENCY_CACHE_STATUS
+        if ($script:ReleasePhases.Count -gt $setupPhaseIndex -and $env:CC_PORT_DEPENDENCY_CACHE_STATUS) {
+            $script:ReleasePhases[$setupPhaseIndex].cacheStatus = $env:CC_PORT_DEPENDENCY_CACHE_STATUS
         }
     }
 
     $resolveStartedAt = [DateTime]::UtcNow
     $resolveStopwatch = [Diagnostics.Stopwatch]::StartNew()
     try {
-        Update-LpmProcessPath
-        $node = Get-LpmNode
-        $npm = Get-LpmNpm -NodePath $(if ($node) { $node.Path } else { $null })
-        $git = Get-LpmGit
-        $rust = Get-LpmRustTools
-        $visualStudio = Get-LpmVisualStudioPath
+        Update-CcPortProcessPath
+        $node = Get-CcPortNode
+        $npm = Get-CcPortNpm -NodePath $(if ($node) { $node.Path } else { $null })
+        $git = Get-CcPortGit
+        $rust = Get-CcPortRustTools
+        $visualStudio = Get-CcPortVisualStudioPath
         if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf) -or -not $node -or
             -not $npm -or -not $git -or -not $rust.Cargo -or -not $rust.Rustc -or
             $rust.Target -ne $expectedTarget -or -not $visualStudio) {
             throw "Resolved environment is incomplete after setup. Run scripts/setup.ps1 -CheckOnly for details."
         }
-        Add-LpmPathDirectories -Directories @(
+        Add-CcPortPathDirectories -Directories @(
             (Split-Path -Parent $venvPython),
             (Split-Path -Parent $node.Path),
             (Split-Path -Parent $npm),
@@ -623,7 +623,7 @@ try {
             (Split-Path -Parent $rust.Rustc)
         )
         $env:RUSTUP_TOOLCHAIN = "stable-$expectedTarget"
-        Enable-LpmVisualStudioEnvironment -InstallationPath $visualStudio
+        Enable-CcPortVisualStudioEnvironment -InstallationPath $visualStudio
         $resolveStopwatch.Stop()
         Add-ReleasePhase -Name "Resolving build tools" -StartedAtUtc $resolveStartedAt -DurationMs $resolveStopwatch.Elapsed.TotalMilliseconds -ExitCode 0 -CacheStatus $null -LogPath $null
     } catch {
@@ -632,7 +632,7 @@ try {
         throw
     }
 
-    Write-LpmSection "Resolved build tools"
+    Write-CcPortSection "Resolved build tools"
     Write-Host "  python : $venvPython"
     Write-Host "  node   : $($node.Path)"
     Write-Host "  npm    : $npm"
@@ -666,7 +666,7 @@ try {
         [pscustomobject]@{
             Name = "Ruff"
             FilePath = $venvPython
-            ArgumentList = @("-m", "ruff", "check", "src/lpm", "tests", "tools/packaging/sidecar", "tools/packaging/icons")
+            ArgumentList = @("-m", "ruff", "check", "src/cc_port", "tests", "tools/packaging/sidecar", "tools/packaging/icons")
             WorkingDirectory = $repoRoot
         },
         [pscustomobject]@{
@@ -692,7 +692,7 @@ try {
         ) -WorkingDirectory $repoRoot
     } else {
         Add-ReleasePhase -Name "Generating desktop icons" -StartedAtUtc ([DateTime]::UtcNow) -DurationMs 0 -ExitCode 0 -CacheStatus "hit" -LogPath $null
-        Write-LpmSection "Desktop icons already exist"
+        Write-CcPortSection "Desktop icons already exist"
     }
 
     $sidecarFingerprint = $null
@@ -755,8 +755,8 @@ try {
     }
     $finalDirectory = Join-Path $releaseRoot $expectedTarget
     $stagingDirectory = Join-Path $releaseRoot ("." + $expectedTarget + ".staging-" + [guid]::NewGuid().ToString("N"))
-    Assert-LpmDirectChild -Path $finalDirectory -Parent $releaseRoot | Out-Null
-    Assert-LpmDirectChild -Path $stagingDirectory -Parent $releaseRoot | Out-Null
+    Assert-CcPortDirectChild -Path $finalDirectory -Parent $releaseRoot | Out-Null
+    Assert-CcPortDirectChild -Path $stagingDirectory -Parent $releaseRoot | Out-Null
     New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
     try {
         Invoke-ReleaseAction -Description "Collecting release artifacts into staging" -CacheStatus $null -Action {
@@ -769,7 +769,7 @@ try {
         $stagedArtifacts = @(
             (Get-Item -LiteralPath (Join-Path $stagingDirectory "$desktopName.exe")),
             (Get-Item -LiteralPath (Join-Path $stagingDirectory "$sidecarName.exe"))
-        ) + @(Get-LpmWindowsPackageArtifacts -ReleaseDirectory $stagingDirectory)
+        ) + @(Get-CcPortWindowsPackageArtifacts -ReleaseDirectory $stagingDirectory)
         Invoke-ReleaseAction -Description "Hashing verified release artifacts" -CacheStatus $null -Action {
             $verifiedArtifacts = New-Object System.Collections.Generic.List[object]
             $stagingPrefix = $stagingDirectory.TrimEnd("\") + "\"
@@ -791,14 +791,14 @@ try {
             $script:PendingReleaseArtifacts = $verifiedArtifacts.ToArray()
         }
         Invoke-ReleaseAction -Description "Publishing verified release" -CacheStatus $null -Action {
-            Publish-LpmStagingDirectory -StagingDirectory $stagingDirectory -FinalDirectory $finalDirectory -ReleaseRoot $releaseRoot
+            Publish-CcPortStagingDirectory -StagingDirectory $stagingDirectory -FinalDirectory $finalDirectory -ReleaseRoot $releaseRoot
         }
         foreach ($verifiedArtifact in $script:PendingReleaseArtifacts) {
             $script:ReleaseArtifacts.Add($verifiedArtifact)
         }
     } finally {
         if (Test-Path -LiteralPath $stagingDirectory) {
-            Remove-LpmSafePath -Path $stagingDirectory -Parent $releaseRoot
+            Remove-CcPortSafePath -Path $stagingDirectory -Parent $releaseRoot
         }
     }
     $script:ReleaseSucceeded = $true
@@ -831,9 +831,9 @@ try {
             }
         } finally {
             if ($script:HadPriorDependencyCacheStatus) {
-                $env:LPM_DEPENDENCY_CACHE_STATUS = $script:PriorDependencyCacheStatus
+                $env:CC_PORT_DEPENDENCY_CACHE_STATUS = $script:PriorDependencyCacheStatus
             } else {
-                Remove-Item Env:LPM_DEPENDENCY_CACHE_STATUS -ErrorAction SilentlyContinue
+                Remove-Item Env:CC_PORT_DEPENDENCY_CACHE_STATUS -ErrorAction SilentlyContinue
             }
         }
     }

@@ -259,7 +259,7 @@ def hash_path(path: Path, *, ignore_managed_marker: bool = False) -> str:
 
     digest.update(b"dir\0")
     for item in sorted(path.rglob("*"), key=lambda value: value.as_posix()):
-        if ignore_managed_marker and item.name == ".lpm-managed.json":
+        if ignore_managed_marker and item.name == ".cc-port-managed.json":
             continue
         relative = item.relative_to(path).as_posix()
         digest.update(relative.encode("utf-8", errors="surrogateescape"))
@@ -287,7 +287,7 @@ def resource_hash_path(path: Path) -> str:
     for item in sorted(path.rglob("*"), key=lambda value: value.as_posix()):
         relative = item.relative_to(path)
         if (
-            item.name == ".lpm-managed.json"
+            item.name == ".cc-port-managed.json"
             or item.is_symlink()
             or is_resource_path_excluded(relative)
         ):

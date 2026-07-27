@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lpm.core.agent_providers import detect_agents
-from lpm.core.platforms import PLATFORM_PRESETS
-from lpm.core.tool_adapters import TOOL_ADAPTERS, stable_tool_adapters
-from lpm.services.env_manager import TOOL_SPECS
+from cc_port.core.agent_providers import detect_agents
+from cc_port.core.platforms import PLATFORM_PRESETS
+from cc_port.core.tool_adapters import TOOL_ADAPTERS, stable_tool_adapters
+from cc_port.services.env_manager import TOOL_SPECS
 
 
 def test_provider_detection_uses_strong_and_soft_signals(tmp_path: Path, monkeypatch) -> None:
@@ -13,7 +13,7 @@ def test_provider_detection_uses_strong_and_soft_signals(tmp_path: Path, monkeyp
     (home / ".codex" / "skills").mkdir(parents=True)
     (home / ".vscode" / "extensions").mkdir(parents=True)
 
-    monkeypatch.setattr("lpm.core.agent_providers.shutil.which", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("cc_port.core.agent_providers.shutil.which", lambda *_args, **_kwargs: None)
 
     detections = {item.provider.id: item for item in detect_agents(home=home)}
 
@@ -27,7 +27,7 @@ def test_provider_detection_uses_command_signal(tmp_path: Path, monkeypatch) -> 
     def fake_which(command: str, **_kwargs):
         return str(tmp_path / f"{command}.cmd") if command == "opencode" else None
 
-    monkeypatch.setattr("lpm.core.agent_providers.shutil.which", fake_which)
+    monkeypatch.setattr("cc_port.core.agent_providers.shutil.which", fake_which)
 
     detections = {item.provider.id: item for item in detect_agents(home=tmp_path / "home")}
 
@@ -39,7 +39,7 @@ def test_internal_adapter_registry_is_the_single_source_for_tool_metadata(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr("lpm.core.agent_providers.shutil.which", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("cc_port.core.agent_providers.shutil.which", lambda *_args, **_kwargs: None)
     adapter_ids = {adapter.id for adapter in TOOL_ADAPTERS}
     detection_ids = {
         detection.provider.id

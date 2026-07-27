@@ -5,7 +5,7 @@ export type TranslationValues = Record<string, string | number>;
 export type TFunction = (key: I18nKey, values?: TranslationValues) => string;
 
 export const DEFAULT_LANGUAGE: Language = "zh";
-export const LANGUAGE_STORAGE_KEY = "lpm.language";
+export const LANGUAGE_STORAGE_KEY = "cc-port.language";
 
 export function readStoredLanguage(): Language {
   if (typeof window === "undefined") return DEFAULT_LANGUAGE;

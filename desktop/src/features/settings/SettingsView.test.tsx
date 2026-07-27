@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lpmAction, openExternalUrl } from "@/api/client";
+import { ccPortAction, openExternalUrl } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
 import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { SettingsView } from "@/features/settings/SettingsView";
@@ -11,10 +11,10 @@ import type {
   DiagnosticsState,
   DoctorCheck,
   GitCredentialStatus,
-} from "@/types/lpm";
+} from "@/types/cc-port";
 
 vi.mock("@/api/client", () => ({
-  lpmAction: vi.fn(),
+  ccPortAction: vi.fn(),
   openExternalUrl: vi.fn(),
 }));
 
@@ -22,7 +22,7 @@ const platformNames = ["codex", "claude-code", "cursor", "windsurf", "opencode"]
 
 function settings(repoUrl = "", repoName = "LingyeAIResources"): ConfigSettings {
   return {
-    path: "C:/Users/test/.config/lpm/config.toml",
+    path: "C:/Users/test/.config/cc-port/config.toml",
     exists: true,
     config: {
       git: { executable: "" },
@@ -93,7 +93,7 @@ function bindingResult(next: ConfigSettings): ConfigBindRepoResult {
 }
 
 function mockInitial(data = settings(), status = credentialStatus()) {
-  vi.mocked(lpmAction).mockImplementation(async (action) => {
+  vi.mocked(ccPortAction).mockImplementation(async (action) => {
     if (action === "config_get") return data;
     if (action === "git_credential_status") return status;
     throw new Error(`Unexpected action: ${action}`);
@@ -146,7 +146,7 @@ afterEach(() => {
 
 describe("SettingsView native Git settings", () => {
   it("renders the complete disabled settings shell before initial reads finish", () => {
-    vi.mocked(lpmAction).mockImplementation(() => new Promise(() => undefined));
+    vi.mocked(ccPortAction).mockImplementation(() => new Promise(() => undefined));
 
     renderView();
 
@@ -172,20 +172,20 @@ describe("SettingsView native Git settings", () => {
 
     await screen.findByText("Connect resource repository");
     expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
-    expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(1);
-    expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(1);
+    expect(vi.mocked(ccPortAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(1);
+    expect(vi.mocked(ccPortAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(1);
 
     rerender(1);
 
     await waitFor(() => {
-      expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(2);
-      expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(2);
+      expect(vi.mocked(ccPortAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(2);
+      expect(vi.mocked(ccPortAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(2);
     });
   });
 
   it("keeps the settings shell disabled after a load failure and retries both reads", async () => {
     let attempt = 0;
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
       if (action === "config_get") {
         attempt += 1;
         if (attempt === 1) throw new Error("Unable to read settings.");
@@ -210,8 +210,8 @@ describe("SettingsView native Git settings", () => {
     expect(await screen.findByRole("checkbox", { name: "Codex" })).toBeEnabled();
     expect(screen.getByLabelText("Repository URL")).toBeEnabled();
     expect(screen.queryAllByText("Settings could not be loaded")).toHaveLength(0);
-    expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(2);
-    expect(vi.mocked(lpmAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(2);
+    expect(vi.mocked(ccPortAction).mock.calls.filter(([action]) => action === "config_get")).toHaveLength(2);
+    expect(vi.mocked(ccPortAction).mock.calls.filter(([action]) => action === "git_credential_status")).toHaveLength(2);
   });
 
   it("ignores an older settings response when a newer refresh finishes first", async () => {
@@ -220,7 +220,7 @@ describe("SettingsView native Git settings", () => {
       resolveFirstConfig = resolve;
     });
     let configCalls = 0;
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
       if (action === "config_get") {
         configCalls += 1;
         return configCalls === 1
@@ -257,7 +257,7 @@ describe("SettingsView native Git settings", () => {
     ]) {
       expect(screen.queryByText(text)).not.toBeInTheDocument();
     }
-    expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action.startsWith("github_"))).toBe(false);
+    expect(vi.mocked(ccPortAction).mock.calls.some(([action]) => action.startsWith("github_"))).toBe(false);
     const toolList = screen.getByRole("list", { name: "Target tools" });
     expect(within(toolList).getAllByRole("listitem")).toHaveLength(5);
   });
@@ -265,7 +265,7 @@ describe("SettingsView native Git settings", () => {
   it("uses one connect-and-verify action and preserves the narrow binding interface", async () => {
     const initial = settings();
     const connected = settings("https://github.com/example/resources.git", "resources");
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
       if (action === "config_get") return initial;
       if (action === "git_credential_status") return credentialStatus();
       if (action === "config_bind_repo") return bindingResult(connected);
@@ -279,11 +279,11 @@ describe("SettingsView native Git settings", () => {
     await user.click(screen.getByRole("button", { name: "Connect and verify repository" }));
 
     expect(await screen.findByText("Read and write credentials verified")).toBeVisible();
-    expect(vi.mocked(lpmAction)).toHaveBeenCalledWith("config_bind_repo", {
+    expect(vi.mocked(ccPortAction)).toHaveBeenCalledWith("config_bind_repo", {
       repo_url: "https://github.com/example/resources",
       expected_current_repo_url: "",
     });
-    expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action === "config_save")).toBe(false);
+    expect(vi.mocked(ccPortAction).mock.calls.some(([action]) => action === "config_save")).toBe(false);
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
@@ -325,7 +325,7 @@ describe("SettingsView native Git settings", () => {
     updated.config.platforms = updated.config.platforms.map((profile) => (
       profile.name === "windsurf" ? { ...profile, enabled: false } : profile
     ));
-    vi.mocked(lpmAction).mockImplementation(async (action) => {
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
       if (action === "config_get") return initial;
       if (action === "git_credential_status") return credentialStatus();
       if (action === "platform_set_enabled") return updated;
@@ -336,7 +336,7 @@ describe("SettingsView native Git settings", () => {
 
     await user.click(await screen.findByRole("checkbox", { name: "Windsurf" }));
 
-    expect(vi.mocked(lpmAction)).toHaveBeenCalledWith("platform_set_enabled", {
+    expect(vi.mocked(ccPortAction)).toHaveBeenCalledWith("platform_set_enabled", {
       name: "windsurf",
       enabled: false,
     });
@@ -350,7 +350,7 @@ describe("SettingsView native Git settings", () => {
     expect(screen.getByText("Not checked yet")).toBeVisible();
     expect(document.querySelector("details")).not.toBeInTheDocument();
     expect(document.querySelector("summary")).not.toBeInTheDocument();
-    expect(vi.mocked(lpmAction).mock.calls.some(([action]) => action === "doctor")).toBe(false);
+    expect(vi.mocked(ccPortAction).mock.calls.some(([action]) => action === "doctor")).toBe(false);
   });
 
   it("opens a loading dialog and delegates diagnostics without disabling the running button", async () => {

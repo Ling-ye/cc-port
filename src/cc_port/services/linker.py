@@ -1,6 +1,6 @@
 """Project-level skill linking.
 
-``lpm link`` creates symlinks and a Cursor Rule index file in the current
+``cc-port link`` creates symlinks and a Cursor Rule index file in the current
 project so that AI agents can automatically discover and use installed skills.
 """
 
@@ -14,8 +14,8 @@ from ..core.config import Config
 from ..core.models import RegistryItem
 from ..core.registry import load_registry
 
-LPM_RULE_FILENAME = "lpm-skills.md"
-LPM_LINK_MARKER = ".lpm-linked"
+CC_PORT_RULE_FILENAME = "cc-port-skills.md"
+CC_PORT_LINK_MARKER = ".cc-port-linked"
 
 
 def _project_cursor_dir(project: Path) -> Path:
@@ -62,18 +62,18 @@ def _create_symlink(source: Path, link: Path) -> bool:
 
 
 def _generate_rule_content(items: list[RegistryItem], config: Config) -> str:
-    """Generate the lpm-skills.md rule file content."""
+    """Generate the cc-port-skills.md rule file content."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         "---",
-        "description: LPM managed skill index. AI should read referenced SKILL.md files when matching trigger keywords.",
+        "description: CC Port managed skill index. AI should read referenced SKILL.md files when matching trigger keywords.",
         "globs: \"**/*\"",
         "---",
         "",
-        f"# LPM Skill Index (auto-generated {now})",
+        f"# CC Port Skill Index (auto-generated {now})",
         "",
         "The following Agent Skills are available in this project, managed by",
-        "[LPM (LingyePluginMarketplace)](https://github.com/Lingye/LingyePluginMarketplace).",
+        "[CC Port](https://github.com/Ling-ye/cc-port).",
         "When the user's request matches a skill's trigger keywords, read the",
         "corresponding SKILL.md to learn how to use it.",
         "",
@@ -103,7 +103,7 @@ def link(
     """Link registry items into a project.
 
     Creates:
-    1. ``.cursor/rules/lpm-skills.md`` -- Cursor Rule for auto-discovery
+    1. ``.cursor/rules/cc-port-skills.md`` -- Cursor Rule for auto-discovery
     2. ``.cursor/skills/<name>`` -- symlinks to globally-installed skills
 
     Returns ``(linked_names, rule_path)``.
@@ -132,11 +132,11 @@ def link(
         _create_symlink(source, link_path)
         linked.append(item.name)
 
-    rule_path = _rules_dir(project) / LPM_RULE_FILENAME
+    rule_path = _rules_dir(project) / CC_PORT_RULE_FILENAME
     rule_path.parent.mkdir(parents=True, exist_ok=True)
     rule_path.write_text(_generate_rule_content(items, config), encoding="utf-8")
 
-    marker = _project_cursor_dir(project) / LPM_LINK_MARKER
+    marker = _project_cursor_dir(project) / CC_PORT_LINK_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(
         datetime.now(timezone.utc).isoformat(timespec="seconds"), encoding="utf-8"
@@ -146,7 +146,7 @@ def link(
 
 
 def unlink(project: Path) -> tuple[list[str], bool]:
-    """Remove all LPM-created links and the rule file from a project.
+    """Remove all CC Port-created links and the rule file from a project.
 
     Returns ``(removed_names, rule_removed)``.
     """
@@ -162,13 +162,13 @@ def unlink(project: Path) -> tuple[list[str], bool]:
                 child.unlink()
                 removed.append(child.name)
 
-    rule_path = _rules_dir(project) / LPM_RULE_FILENAME
+    rule_path = _rules_dir(project) / CC_PORT_RULE_FILENAME
     rule_removed = False
     if rule_path.exists():
         rule_path.unlink()
         rule_removed = True
 
-    marker = _project_cursor_dir(project) / LPM_LINK_MARKER
+    marker = _project_cursor_dir(project) / CC_PORT_LINK_MARKER
     if marker.exists():
         marker.unlink()
 

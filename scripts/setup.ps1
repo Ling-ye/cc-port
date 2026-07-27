@@ -18,7 +18,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$env:LPM_DEPENDENCY_CACHE_STATUS = "miss:bootstrap"
+$env:CC_PORT_DEPENDENCY_CACHE_STATUS = "miss:bootstrap"
 $ModulePath = Join-Path $PSScriptRoot "desktop-build.psm1"
 Import-Module $ModulePath -Force -ErrorAction Stop
 
@@ -41,7 +41,7 @@ function Test-VenvInterpreterReady {
     if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
         return $false
     }
-    $probe = Invoke-LpmNative -FilePath $PythonPath -ArgumentList @(
+    $probe = Invoke-CcPortNative -FilePath $PythonPath -ArgumentList @(
         "-c",
         "import platform,sys; ok=(sys.version_info[:2] >= (3,10) and sys.version_info[:2] <= (3,12) and platform.architecture()[0] == '64bit'); raise SystemExit(0 if ok else 1)"
     ) -Capture -AllowFailure -Description "virtual environment probe"
@@ -57,13 +57,13 @@ function Test-VenvReady {
     if (-not (Test-VenvInterpreterReady -PythonPath $PythonPath)) {
         return $false
     }
-    $imports = Invoke-LpmNative -FilePath $PythonPath -ArgumentList @(
-        "-c", "import PIL, PyInstaller, lpm, pytest, xdist"
+    $imports = Invoke-CcPortNative -FilePath $PythonPath -ArgumentList @(
+        "-c", "import PIL, PyInstaller, cc_port, pytest, xdist"
     ) -Capture -AllowFailure -Description "Python build dependency probe"
     if ($imports.ExitCode -ne 0) {
         return $false
     }
-    $ruff = Invoke-LpmNative -FilePath $PythonPath -ArgumentList @("-m", "ruff", "--version") -Capture -AllowFailure -Description "Ruff probe"
+    $ruff = Invoke-CcPortNative -FilePath $PythonPath -ArgumentList @("-m", "ruff", "--version") -Capture -AllowFailure -Description "Ruff probe"
     return $ruff.ExitCode -eq 0
 }
 
@@ -87,19 +87,19 @@ function Get-DependencyInputState {
         [Parameter(Mandatory = $true)][string]$ExpectedTarget
     )
 
-    $python = Invoke-LpmNative -FilePath $VenvPython -ArgumentList @(
+    $python = Invoke-CcPortNative -FilePath $VenvPython -ArgumentList @(
         "-c", "import platform,sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}|{platform.architecture()[0]}')"
     ) -Capture -AllowFailure -Description "dependency cache Python version probe"
     if ($python.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($python.Output)) {
         throw "Repository Python version could not be determined for dependency caching."
     }
 
-    $npm = Invoke-LpmNative -FilePath $NpmPath -ArgumentList @("--version") -WorkingDirectory $DesktopDirectory -Capture -AllowFailure -Description "npm version probe"
+    $npm = Invoke-CcPortNative -FilePath $NpmPath -ArgumentList @("--version") -WorkingDirectory $DesktopDirectory -Capture -AllowFailure -Description "npm version probe"
     if ($npm.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($npm.Output)) {
         throw "npm version could not be determined for dependency caching."
     }
 
-    $contentFingerprint = Get-LpmContentFingerprint -Paths @(
+    $contentFingerprint = Get-CcPortContentFingerprint -Paths @(
         (Join-Path $RepoRoot "pyproject.toml"),
         (Join-Path $DesktopDirectory "package.json"),
         (Join-Path $DesktopDirectory "package-lock.json")
@@ -113,7 +113,7 @@ function Get-DependencyInputState {
     $pythonVersion = $python.Output.Trim()
     $normalizedNodeVersion = $NodeVersion.Trim()
     $npmVersion = $npm.Output.Trim()
-    $fingerprint = Get-LpmDependencyInputFingerprint -ContentFingerprint $contentFingerprint `
+    $fingerprint = Get-CcPortDependencyInputFingerprint -ContentFingerprint $contentFingerprint `
         -PythonVersion $pythonVersion -PythonPath $VenvPython `
         -NodeVersion $normalizedNodeVersion -NodePath $NodePath `
         -NpmVersion $npmVersion -NpmPath $NpmPath -Platform $platform
@@ -145,16 +145,16 @@ function Get-DependencyProbeState {
         return [pscustomobject]@{ Ready = $false; Reason = "node-modules-tools" }
     }
 
-    $pipCheck = Invoke-LpmNative -FilePath $VenvPython -ArgumentList @("-m", "pip", "check") -Capture -AllowFailure -Description "pip dependency check"
+    $pipCheck = Invoke-CcPortNative -FilePath $VenvPython -ArgumentList @("-m", "pip", "check") -Capture -AllowFailure -Description "pip dependency check"
     if ($pipCheck.ExitCode -ne 0) {
         return [pscustomobject]@{ Ready = $false; Reason = "pip-check" }
     }
-    $pipList = Invoke-LpmNative -FilePath $VenvPython -ArgumentList @("-m", "pip", "--disable-pip-version-check", "list", "--format=json") -Capture -AllowFailure -Description "pip dependency manifest"
+    $pipList = Invoke-CcPortNative -FilePath $VenvPython -ArgumentList @("-m", "pip", "--disable-pip-version-check", "list", "--format=json") -Capture -AllowFailure -Description "pip dependency manifest"
     if ($pipList.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($pipList.Output)) {
         return [pscustomobject]@{ Ready = $false; Reason = "pip-list" }
     }
 
-    $npmTree = Invoke-LpmNative -FilePath $NpmPath -ArgumentList @("ls", "--all", "--json") -WorkingDirectory $DesktopDirectory -Capture -AllowFailure -Description "npm dependency tree"
+    $npmTree = Invoke-CcPortNative -FilePath $NpmPath -ArgumentList @("ls", "--all", "--json") -WorkingDirectory $DesktopDirectory -Capture -AllowFailure -Description "npm dependency tree"
     if ($npmTree.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($npmTree.Output)) {
         return [pscustomobject]@{ Ready = $false; Reason = "npm-tree" }
     }
@@ -166,9 +166,9 @@ function Get-DependencyProbeState {
     return [pscustomobject]@{
         Ready = $true
         Reason = $null
-        PythonManifestHash = Get-LpmStringHash -Value $pipList.Output.Trim()
-        NpmTreeHash = Get-LpmStringHash -Value $npmTree.Output.Trim()
-        NodeModulesLockHash = Get-LpmContentFingerprint -Paths @($nodeModulesLock)
+        PythonManifestHash = Get-CcPortStringHash -Value $pipList.Output.Trim()
+        NpmTreeHash = Get-CcPortStringHash -Value $npmTree.Output.Trim()
+        NodeModulesLockHash = Get-CcPortContentFingerprint -Paths @($nodeModulesLock)
     }
 }
 
@@ -193,7 +193,7 @@ function Get-DependencyCacheDecision {
         return [pscustomobject]@{ Hit = $false; Status = "miss:cache-missing"; Probe = $null; Cache = $null }
     }
 
-    $cache = Read-LpmJsonCache -Path $CachePath
+    $cache = Read-CcPortJsonCache -Path $CachePath
     if ($null -eq $cache) {
         return [pscustomobject]@{ Hit = $false; Status = "miss:cache-invalid"; Probe = $null; Cache = $null }
     }
@@ -226,12 +226,12 @@ function Get-DependencyCacheDecision {
 }
 
 function Get-EnvironmentSnapshot {
-    $python = Get-LpmPython
-    $node = Get-LpmNode
-    $npm = Get-LpmNpm -NodePath $(if ($node) { $node.Path } else { $null })
-    $git = Get-LpmGit
-    $rust = Get-LpmRustTools
-    $visualStudio = Get-LpmVisualStudioPath
+    $python = Get-CcPortPython
+    $node = Get-CcPortNode
+    $npm = Get-CcPortNpm -NodePath $(if ($node) { $node.Path } else { $null })
+    $git = Get-CcPortGit
+    $rust = Get-CcPortRustTools
+    $visualStudio = Get-CcPortVisualStudioPath
     return [pscustomobject]@{
         Python       = $python
         Node         = $node
@@ -239,14 +239,14 @@ function Get-EnvironmentSnapshot {
         Git          = $git
         Rust         = $rust
         VisualStudio = $visualStudio
-        Winget       = Get-LpmWinget
+        Winget       = Get-CcPortWinget
     }
 }
 
 function Write-EnvironmentSnapshot {
     param([Parameter(Mandatory = $true)]$Snapshot)
 
-    Write-LpmSection "Detected build environment"
+    Write-CcPortSection "Detected build environment"
     Write-ToolValue -Name "PowerShell" -Value $PSVersionTable.PSVersion
     Write-ToolValue -Name "Python" -Value $(if ($Snapshot.Python) { "$($Snapshot.Python.Version) ($($Snapshot.Python.Path))" })
     Write-ToolValue -Name "Node.js" -Value $(if ($Snapshot.Node) { "$($Snapshot.Node.Version) ($($Snapshot.Node.Path))" })
@@ -263,11 +263,11 @@ function Write-EnvironmentSnapshot {
 }
 
 try {
-    $repoRoot = Get-LpmRepoRoot
+    $repoRoot = Get-CcPortRepoRoot
     $desktopDirectory = Join-Path $repoRoot "desktop"
     $venvDirectory = Join-Path $repoRoot ".venv"
     $venvPython = Join-Path $venvDirectory "Scripts\python.exe"
-    $expectedTarget = Get-LpmExpectedTarget
+    $expectedTarget = Get-CcPortExpectedTarget
     $dependencyCachePath = Join-Path $repoRoot "build\cache\dependencies.json"
 
     if ($env:OS -ne "Windows_NT") {
@@ -316,9 +316,9 @@ try {
     $dependencyDecision = Get-DependencyCacheDecision -CachePath $dependencyCachePath `
         -InputState $dependencyInputState -VenvPython $venvPython -NpmPath $snapshot.Npm `
         -DesktopDirectory $desktopDirectory -ForceSync:$ForceSync -DeferProbe:(-not $CheckOnly)
-    $env:LPM_DEPENDENCY_CACHE_STATUS = $dependencyDecision.Status
+    $env:CC_PORT_DEPENDENCY_CACHE_STATUS = $dependencyDecision.Status
 
-    Write-LpmSection "Required actions"
+    Write-CcPortSection "Required actions"
     if ($packages.Count -eq 0) {
         Write-Host "  System tools are installed."
     } else {
@@ -362,7 +362,7 @@ try {
             if ($packages.Count -gt 0 -and -not $snapshot.Winget) {
                 Write-Host ""
                 Write-Host "WinGet is required to install missing system tools." -ForegroundColor Red
-                Write-Host "Install or repair App Installer, then rerun this command: $(Get-LpmWingetHelpUrl)"
+                Write-Host "Install or repair App Installer, then rerun this command: $(Get-CcPortWingetHelpUrl)"
             }
             throw "Build environment is not ready. Check-only mode made no changes."
         }
@@ -372,7 +372,7 @@ try {
     }
 
     if ($packages.Count -gt 0 -and -not $snapshot.Winget) {
-        throw "WinGet is required to install missing system tools. Install or repair App Installer from $(Get-LpmWingetHelpUrl), then rerun the same command."
+        throw "WinGet is required to install missing system tools. Install or repair App Installer from $(Get-CcPortWingetHelpUrl), then rerun the same command."
     }
 
     if (-not $NonInteractive) {
@@ -383,15 +383,15 @@ try {
     }
 
     foreach ($packageId in $packages.Keys) {
-        Write-LpmSection "Installing $($packages[$packageId])"
+        Write-CcPortSection "Installing $($packages[$packageId])"
         $override = $null
         if ($packageId -eq "Microsoft.VisualStudio.2022.BuildTools") {
             $override = "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
         }
-        Install-LpmWingetPackage -WingetPath $snapshot.Winget -PackageId $packageId -Override $override -NonInteractive:$NonInteractive
+        Install-CcPortWingetPackage -WingetPath $snapshot.Winget -PackageId $packageId -Override $override -NonInteractive:$NonInteractive
     }
 
-    Update-LpmProcessPath
+    Update-CcPortProcessPath
     $snapshot = Get-EnvironmentSnapshot
     if (-not $snapshot.Python -or -not $snapshot.Node -or -not $snapshot.Npm -or
         -not $snapshot.Git -or -not $snapshot.Rust.Rustup -or -not $snapshot.VisualStudio) {
@@ -399,7 +399,7 @@ try {
         throw "One or more installed tools are still unavailable. A package may require a Windows restart; restart if requested, then rerun the same command."
     }
 
-    Add-LpmPathDirectories -Directories @(
+    Add-CcPortPathDirectories -Directories @(
         (Split-Path -Parent $snapshot.Python.Path),
         (Split-Path -Parent $snapshot.Node.Path),
         (Split-Path -Parent $snapshot.Npm),
@@ -408,22 +408,22 @@ try {
         (Split-Path -Parent $snapshot.Rust.Rustup)
     )
 
-    Write-LpmSection "Ensuring Rust MSVC toolchain"
+    Write-CcPortSection "Ensuring Rust MSVC toolchain"
     $env:RUSTUP_TOOLCHAIN = "stable-$expectedTarget"
-    $rust = Get-LpmRustTools
+    $rust = Get-CcPortRustTools
     if ($rust.Target -ne $expectedTarget) {
-        Invoke-LpmNative -FilePath $snapshot.Rust.Rustup -ArgumentList @(
+        Invoke-CcPortNative -FilePath $snapshot.Rust.Rustup -ArgumentList @(
             "toolchain", "install", "stable-$expectedTarget", "--profile", "minimal"
         ) -Description "Rust MSVC toolchain installation" | Out-Null
-        $rust = Get-LpmRustTools
+        $rust = Get-CcPortRustTools
     }
     if ($rust.Target -ne $expectedTarget) {
         throw "Rust target mismatch after toolchain setup. expected=$expectedTarget actual=$($rust.Target); detail=$($rust.Error)"
     }
 
-    Write-LpmSection "Loading Visual Studio C++ environment"
-    Enable-LpmVisualStudioEnvironment -InstallationPath $snapshot.VisualStudio
-    $link = Resolve-LpmExecutable -Names @("link.exe")
+    Write-CcPortSection "Loading Visual Studio C++ environment"
+    Enable-CcPortVisualStudioEnvironment -InstallationPath $snapshot.VisualStudio
+    $link = Resolve-CcPortExecutable -Names @("link.exe")
     if (-not $link) {
         throw "Visual Studio C++ linker link.exe was not found after loading VsDevCmd.bat."
     }
@@ -432,15 +432,15 @@ try {
     if ((Test-Path -LiteralPath $venvDirectory -PathType Container) -and -not (Test-VenvInterpreterReady -PythonPath $venvPython)) {
         $backupName = ".venv.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
         $backupPath = Join-Path $repoRoot $backupName
-        Assert-LpmDirectChild -Path $venvDirectory -Parent $repoRoot | Out-Null
-        Assert-LpmDirectChild -Path $backupPath -Parent $repoRoot | Out-Null
-        Write-LpmSection "Backing up incompatible virtual environment"
+        Assert-CcPortDirectChild -Path $venvDirectory -Parent $repoRoot | Out-Null
+        Assert-CcPortDirectChild -Path $backupPath -Parent $repoRoot | Out-Null
+        Write-CcPortSection "Backing up incompatible virtual environment"
         Move-Item -LiteralPath $venvDirectory -Destination $backupPath
         Write-Host "  backup: $backupPath"
     }
     if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-        Write-LpmSection "Creating repository virtual environment"
-        Invoke-LpmNative -FilePath $snapshot.Python.Path -ArgumentList @("-m", "venv", $venvDirectory) -Description "Python virtual environment creation" | Out-Null
+        Write-CcPortSection "Creating repository virtual environment"
+        Invoke-CcPortNative -FilePath $snapshot.Python.Path -ArgumentList @("-m", "venv", $venvDirectory) -Description "Python virtual environment creation" | Out-Null
     }
 
     $currentDependencyInput = Get-DependencyInputState -RepoRoot $repoRoot -DesktopDirectory $desktopDirectory `
@@ -452,27 +452,27 @@ try {
     $dependencyDecision = Get-DependencyCacheDecision -CachePath $dependencyCachePath `
         -InputState $currentDependencyInput -VenvPython $venvPython -NpmPath $snapshot.Npm `
         -DesktopDirectory $desktopDirectory -ForceSync:$ForceSync
-    $env:LPM_DEPENDENCY_CACHE_STATUS = $dependencyDecision.Status
+    $env:CC_PORT_DEPENDENCY_CACHE_STATUS = $dependencyDecision.Status
 
     if ($dependencyDecision.Hit) {
-        Write-LpmSection "Reusing verified dependency environment"
+        Write-CcPortSection "Reusing verified dependency environment"
         Write-Host "  cache: $dependencyCachePath"
     } else {
         # Invalidate the previous record before either package manager mutates the
         # environment. A failed repair must never leave a stale record eligible
         # for reuse on the next invocation.
-        Write-LpmJsonCacheAtomically -Path $dependencyCachePath -Value ([pscustomobject]@{
+        Write-CcPortJsonCacheAtomically -Path $dependencyCachePath -Value ([pscustomobject]@{
             invalidatedAtUtc = [DateTime]::UtcNow.ToString("o")
             reason = $dependencyDecision.Status
         })
 
-        Write-LpmSection "Installing Python build dependencies"
-        Invoke-LpmNative -FilePath $venvPython -ArgumentList @(
+        Write-CcPortSection "Installing Python build dependencies"
+        Invoke-CcPortNative -FilePath $venvPython -ArgumentList @(
             "-m", "pip", "install", "--disable-pip-version-check", "-e", ".[dev,desktop]"
         ) -WorkingDirectory $repoRoot -Description "Python dependency installation" | Out-Null
 
-        Write-LpmSection "Installing locked frontend dependencies"
-        Invoke-LpmNative -FilePath $snapshot.Npm -ArgumentList @(
+        Write-CcPortSection "Installing locked frontend dependencies"
+        Invoke-CcPortNative -FilePath $snapshot.Npm -ArgumentList @(
             "ci", "--ignore-scripts", "--no-audit", "--no-fund"
         ) -WorkingDirectory $desktopDirectory -Description "frontend dependency installation" | Out-Null
 
@@ -497,11 +497,11 @@ try {
             nodeModulesLockHash = $probe.NodeModulesLockHash
             writtenAtUtc = [DateTime]::UtcNow.ToString("o")
         }
-        Write-LpmJsonCacheAtomically -Path $dependencyCachePath -Value $cacheValue
+        Write-CcPortJsonCacheAtomically -Path $dependencyCachePath -Value $cacheValue
         Write-Host "  dependency cache: $dependencyCachePath"
     }
 
-    Write-LpmSection "Environment ready"
+    Write-CcPortSection "Environment ready"
     Write-Host "  python : $venvPython"
     Write-Host "  node   : $($snapshot.Node.Path)"
     Write-Host "  npm    : $($snapshot.Npm)"
@@ -510,11 +510,11 @@ try {
     Write-Host "  rustc  : $($rust.Rustc)"
     Write-Host "  target : $($rust.Target)"
     Write-Host "  msvc   : $($snapshot.VisualStudio)"
-    Write-Host "  cache  : $($env:LPM_DEPENDENCY_CACHE_STATUS)"
+    Write-Host "  cache  : $($env:CC_PORT_DEPENDENCY_CACHE_STATUS)"
     exit 0
 } catch {
-    if ([string]::IsNullOrWhiteSpace($env:LPM_DEPENDENCY_CACHE_STATUS)) {
-        $env:LPM_DEPENDENCY_CACHE_STATUS = "miss:setup-error"
+    if ([string]::IsNullOrWhiteSpace($env:CC_PORT_DEPENDENCY_CACHE_STATUS)) {
+        $env:CC_PORT_DEPENDENCY_CACHE_STATUS = "miss:setup-error"
     }
     Write-Host ""
     Write-Host "Environment setup failed: $($_.Exception.Message)" -ForegroundColor Red

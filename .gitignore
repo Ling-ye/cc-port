@@ -192,7 +192,7 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
-# LPM private resource data lives in a separate private repository.
+# CC Port private resource data lives in a separate private repository.
 registry.yaml
 skills/
 rules/
@@ -201,7 +201,7 @@ mcp/
 plugins/
 .claude-plugin/
 
-# LPM desktop build artifacts and dependencies.
+# CC Port desktop build artifacts and dependencies.
 # - `desktop/node_modules/` is npm's local install.
 # - `desktop/dist/` is the Vite output consumed by Tauri.
 # - `desktop/src-tauri/target/` is Cargo/Tauri build output.

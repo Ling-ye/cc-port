@@ -1,14 +1,14 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lpmAction, selectDirectory } from "@/api/client";
+import { ccPortAction, selectDirectory } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
 import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { ToastViewport } from "@/components/TaskFeedback";
 import { ImportLocalDialog } from "@/features/resources/ImportLocalDialog";
 
 vi.mock("@/api/client", () => ({
-  lpmAction: vi.fn(),
+  ccPortAction: vi.fn(),
   selectDirectory: vi.fn(),
 }));
 
@@ -50,7 +50,7 @@ describe("ImportLocalDialog", () => {
 
   it("maps disabled push to no_push and reports the imported resource key", async () => {
     const user = userEvent.setup();
-    vi.mocked(lpmAction).mockResolvedValue({ entry: { kind: "rule", name: "local-rule" } });
+    vi.mocked(ccPortAction).mockResolvedValue({ entry: { kind: "rule", name: "local-rule" } });
     const { onAdded } = renderDialog();
 
     await user.type(screen.getByLabelText("Local path"), "D:/resources/rule");
@@ -60,7 +60,7 @@ describe("ImportLocalDialog", () => {
     await user.click(screen.getByRole("button", { name: "Import local folder" }));
 
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith("rule:local-rule"));
-    expect(lpmAction).toHaveBeenCalledWith("upload", {
+    expect(ccPortAction).toHaveBeenCalledWith("upload", {
       path: "D:/resources/rule",
       kind: "rule",
       name: "",
@@ -70,7 +70,7 @@ describe("ImportLocalDialog", () => {
 
   it("keeps the local draft after a failed write and confirms dirty close", async () => {
     const user = userEvent.setup();
-    vi.mocked(lpmAction).mockRejectedValue(new Error("import failed"));
+    vi.mocked(ccPortAction).mockRejectedValue(new Error("import failed"));
     const { onClose } = renderDialog();
 
     await user.type(screen.getByLabelText("Local path"), "D:/resources/rule");

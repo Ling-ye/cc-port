@@ -2,32 +2,32 @@ import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { LpmResponse, UiMessageRef } from "@/types/lpm";
+import type { CcPortResponse, UiMessageRef } from "@/types/cc-port";
 
-export class LpmApiError extends Error {
+export class CcPortApiError extends Error {
   code: string;
   messageRef?: UiMessageRef;
 
   constructor(code: string, message: string, messageRef?: UiMessageRef) {
     super(message);
-    this.name = "LpmApiError";
+    this.name = "CcPortApiError";
     this.code = code;
     this.messageRef = messageRef;
   }
 }
 
-export async function lpmAction<T>(
+export async function ccPortAction<T>(
   action: string,
   payload: Record<string, unknown> = {},
 ): Promise<T> {
-  const response = await invoke<LpmResponse<T>>("lpm_action", {
+  const response = await invoke<CcPortResponse<T>>("cc_port_action", {
     request: { action, payload },
   });
 
   if (!response.ok) {
-    const message = response.error?.message || "LPM action failed";
-    throw new LpmApiError(
-      response.error?.code || "lpm_error",
+    const message = response.error?.message || "CC Port action failed";
+    throw new CcPortApiError(
+      response.error?.code || "cc_port_error",
       message,
       response.error?.message_ref || undefined,
     );

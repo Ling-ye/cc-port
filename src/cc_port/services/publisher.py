@@ -101,7 +101,7 @@ def publish_local_skill(
         from ..infrastructure.github_client import GithubAuthError
 
         raise GithubAuthError(
-            "No GitHub token configured. Set LPM_GITHUB_TOKEN or run `lpm init`."
+            "No GitHub token configured. Set CC_PORT_GITHUB_TOKEN or run `cc-port init`."
         )
 
     client = GithubClient(config.github.token)
@@ -178,7 +178,7 @@ def set_skill_visibility(
         from ..infrastructure.github_client import GithubAuthError
 
         raise GithubAuthError(
-            "No GitHub token configured. Set LPM_GITHUB_TOKEN or run `lpm init`."
+            "No GitHub token configured. Set CC_PORT_GITHUB_TOKEN or run `cc-port init`."
         )
 
     registry = load_registry(registry_path)
@@ -233,7 +233,7 @@ def _git_publish(skill_dir: Path, https_url: str, branch: str, token: str) -> bo
 
     git_ops.add_all(skill_dir)
     try:
-        git_ops.commit(skill_dir, message="lpm: publish resource")
+        git_ops.commit(skill_dir, message="cc-port: publish resource")
     except git_ops.GitError as exc:
         if "nothing to commit" not in str(exc).lower():
             raise

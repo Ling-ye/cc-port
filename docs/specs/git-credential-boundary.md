@@ -4,7 +4,7 @@
 
 桌面端不获取、不保存也不显示 GitHub OAuth Token。桌面端仅通过原生 Git 访问用户已经创建的 GitHub 仓库；HTTPS 凭据由 Git Credential Manager（GCM）获取并保存在操作系统凭据库中。
 
-CLI/MCP 的现有兼容能力不变：它们仍可使用 HTTPS、SSH、`LPM_GITHUB_TOKEN` 和配置 Token，并可继续调用已有 GitHub API 能力。
+CLI/MCP 的现有兼容能力不变：它们仍可使用 HTTPS、SSH、`CC_PORT_GITHUB_TOKEN` 和配置 Token，并可继续调用已有 GitHub API 能力。
 
 ## 桌面仓库绑定
 

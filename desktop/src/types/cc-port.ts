@@ -1004,7 +1004,7 @@ export interface EnvDiffPlan {
   secret_findings: EnvSecretFinding[];
 }
 
-export interface LpmResponse<T> {
+export interface CcPortResponse<T> {
   ok: boolean;
   data?: T;
   deprecated?: boolean;

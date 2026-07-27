@@ -1,6 +1,8 @@
-# LPM（LingyePluginMarketplace）
+# CC Port（cc-port）
 
-LPM 是一个面向 AI coding 资源的桌面管理工具。它以 **桌面 GUI** 作为主要使用入口，同时保留 **CLI** 和 **MCP Server**，方便自动化、脚本化和接入 AI 开发环境。
+CC Port 是一个面向 AI coding 资源的桌面管理工具。它以 **桌面 GUI** 作为主要使用入口，同时保留 **CLI** 和 **MCP Server**，方便自动化、脚本化和接入 AI 开发环境。
+
+[KNOWN] 当前项目版本为 `0.5.0`，源码与发布地址为 <https://github.com/Ling-ye/cc-port>。置信度：HIGH。
 
 桌面端固定文案支持简体中文与英文；资源描述、路径、版本和外部诊断保持原值。固定消息使用稳定语义代码与前端词典解耦，具体边界见 [桌面端国际化规格](docs/specs/desktop-i18n.md)。
 
@@ -8,7 +10,7 @@ LPM 是一个面向 AI coding 资源的桌面管理工具。它以 **桌面 GUI*
 
 ## 能做什么
 
-LPM 用来管理和同步 AI coding 相关资源：
+CC Port 用来管理和同步 AI coding 相关资源：
 
 - 管理 `skill`、`mcp`、`rule`、`prompt`、`plugin` 等资源类型。
 - 从 GitHub 收集第三方资源，只记录引用，不复制无关内容。
@@ -21,7 +23,7 @@ LPM 用来管理和同步 AI coding 相关资源：
 - 自动发现本机 Codex、Claude Code、Cursor、Windsurf、opencode、Gemini CLI 等 AI 工具的非敏配置资源。
 - 采集 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置，并把 MCP `env` 字面值替换为 `${SECRET_NAME}` 占位符。
 - 把资源同步安装到 Cursor、Claude Code 等配置的平台目录。
-- 为目录资源和 MCP server entry 记录 LPM 所有权，避免覆盖或卸载用户手工维护的同名配置。
+- 为目录资源和 MCP server entry 记录 CC Port 所有权，避免覆盖或卸载用户手工维护的同名配置。
 - 安装、卸载和环境部署统一使用持久化事务记录、集中备份、结果校验和失败回滚。
 - 对相同本地目标使用跨进程路径锁，避免桌面端和 CLI 同时写入时互相覆盖快照或回滚结果。
 - 分页查看跨重启保存的操作历史，按需加载目标详情，并把成功操作显式恢复到执行前状态；目标发生后续修改时默认阻断恢复。
@@ -30,7 +32,7 @@ LPM 用来管理和同步 AI coding 相关资源：
 - 统一查看状态清理、孤立备份隔离和永久删除产生的维护审计。
 - 检查 Git、GitHub token、配置文件、私有资源仓库和平台安装状态。
 - 通过 CLI 执行自动化任务。
-- 通过 MCP Server 让 AI coding 工具调用 LPM 能力。
+- 通过 MCP Server 让 AI coding 工具调用 CC Port 能力。
 - 通过桌面 GUI 管理资源并执行资产级双向同步、部署环境；软件启动后会在后台异步运行环境诊断，设置页显示诊断状态，点击“诊断”可打开弹窗并重新检测；操作历史、恢复与本机维护能力暂时通过 CLI 或 Desktop API 使用。
 - 在桌面 GUI 的任务中心统一查看会话内异步操作的运行、成功和失败状态。
 
@@ -48,7 +50,7 @@ LPM 用来管理和同步 AI coding 相关资源：
 React UI
   -> Tauri invoke
   -> Rust command bridge
-  -> lpm-desktop-api sidecar
+  -> cc-port-desktop-api sidecar
   -> Python interfaces.desktop_api
   -> Python services/core
 
@@ -64,7 +66,7 @@ MCP Server
 Rust/Tauri 不实现业务逻辑，只负责：
 
 - 创建桌面窗口。
-- 调用随应用打包的 `lpm-desktop-api` sidecar。
+- 调用随应用打包的 `cc-port-desktop-api` sidecar。
 - 把 JSON 请求和响应转发给前端。
 
 Python 分层：
@@ -85,7 +87,7 @@ docs/
   packaging-and-deployment.md   # 桌面打包、分发、升级与回退
   specs/                        # 功能规格与验收标准
 
-src/lpm/
+src/cc_port/
   core/                         # 领域模型、配置、registry、校验、资源识别
   services/                     # 业务用例：安装、同步、发布、资源仓库等
   infrastructure/               # Git / GitHub / 外部命令适配
@@ -119,7 +121,7 @@ release/desktop/                # 对外发布的最终 exe/installer，可忽�
 build/sidecar/                  # PyInstaller 中间产物，可忽略
 ```
 
-本机状态与用户的私有资源 Git 仓库分离。Windows 默认使用 `%LOCALAPPDATA%\LPM`，其他系统使用用户状态目录；可通过 `LPM_STATE_HOME` 覆盖。该目录保存：
+本机状态与用户的私有资源 Git 仓库分离。Windows 默认使用 `%LOCALAPPDATA%\cc-port`，其他系统使用用户状态目录；可通过 `CC_PORT_STATE_HOME` 覆盖。该目录保存：
 
 ```text
 backups/                       # 安装、卸载、部署和恢复备份
@@ -145,19 +147,19 @@ sync/<operation-id>/           # 弃用兼容：旧 Git 同步计划与临时 wo
 
 适合普通用户。
 
-安装包内包含桌面程序和 `lpm-desktop-api` sidecar，因此用户不需要单独安装 Python，也不需要安装 LPM CLI。
+安装包内包含桌面程序和 `cc-port-desktop-api` sidecar，因此用户不需要单独安装 Python，也不需要安装 CC Port CLI。
 
 用户机器需要：
 
-- Git for Windows 与 Git Credential Manager 可用；LPM 会搜索配置路径、系统 PATH 和常见安装目录。
-- LPM 运行时配置可用。
+- Git for Windows 与 Git Credential Manager 可用；CC Port 会搜索配置路径、系统 PATH 和常见安装目录。
+- CC Port 运行时配置可用。
 - 桌面仓库绑定要求 GCM 已配置为 `credential.helper`；CLI/MCP 仍可使用 SSH Key 或 GitHub Token。
 
 安装后：
 
-1. 安装包含 GCM 的 Git for Windows；通常无需手工配置 PATH，非标准位置通过 `config.toml` 的 `[git].executable` 或 `LPM_GIT_EXECUTABLE` 指定。
+1. 安装包含 GCM 的 Git for Windows；通常无需手工配置 PATH，非标准位置通过 `config.toml` 的 `[git].executable` 或 `CC_PORT_GIT_EXECUTABLE` 指定。
 2. 用户先在 GitHub 创建仓库，再启动桌面应用，在设置页粘贴完整 HTTPS 仓库地址并点击“连接并验证仓库”；首次需要凭据时由 GCM 打开登录。
-3. 高级值需要时直接编辑 `~/.config/lpm/config.toml`；可参考 `config/config.example.toml`。
+3. 高级值需要时直接编辑 `~/.config/cc-port/config.toml`；可参考 `config/config.example.toml`。
 4. 启动软件后，环境诊断会在后台异步运行；设置页显示“正在检测 / 环境正常 / 发现问题 / 检测失败”。需要排障或重新检查时，点击“诊断”打开弹窗，查看检查摘要、警告和错误。
 
 ### 从源码构建最终工具
@@ -171,8 +173,8 @@ sync/<operation-id>/           # 弃用兼容：旧 Git 同步计划与临时 wo
 克隆仓库：
 
 ```bash
-git clone https://github.com/Ling-ye/LingyePluginMarketplace.git
-cd LingyePluginMarketplace
+git clone https://github.com/Ling-ye/cc-port.git
+cd cc-port
 ```
 
 [KNOWN] 一键检查并准备完整构建环境：置信度：HIGH。
@@ -203,24 +205,24 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -CheckOn
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\dev.ps1
 ```
 
-[KNOWN] 调试脚本会先构建 `lpm-desktop-api` sidecar，再启动 Tauri dev shell；它不会生成最终安装包。置信度：HIGH。
+[KNOWN] 调试脚本会先构建 `cc-port-desktop-api` sidecar，再启动 Tauri dev shell；它不会生成最终安装包。置信度：HIGH。
 
 `scripts/dev.*` 生成和使用的主要产物路径：
 
 ```text
-desktop/src-tauri/binaries/lpm-desktop-api-<target-triple>[.exe]
+desktop/src-tauri/binaries/cc-port-desktop-api-<target-triple>[.exe]
 ```
 
 Windows x86_64 默认路径通常是：
 
 ```text
-desktop/src-tauri/binaries/lpm-desktop-api-x86_64-pc-windows-msvc.exe
+desktop/src-tauri/binaries/cc-port-desktop-api-x86_64-pc-windows-msvc.exe
 ```
 
 同时会保留这些调试/中间输出：
 
 ```text
-build/sidecar/dist/lpm-desktop-api[.exe]       # PyInstaller 中间输出
+build/sidecar/dist/cc-port-desktop-api[.exe]       # PyInstaller 中间输出
 build/sidecar/work/                            # PyInstaller 工作目录
 desktop/src-tauri/target/debug/                # Tauri/Cargo dev 调试输出
 ```
@@ -261,12 +263,12 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 
 ```text
 release/desktop/x86_64-pc-windows-msvc/
-  lpm-desktop.exe
-  lpm-desktop-api.exe
+  cc-port-desktop.exe
+  cc-port-desktop-api.exe
   msi/
-    LPM Desktop_*.msi
+    CC Port_*.msi
   nsis/
-    LPM Desktop_*-setup.exe
+    CC Port_*-setup.exe
 ```
 
 [KNOWN] 中间产物和 Tauri 原始输出保留在：置信度：HIGH。
@@ -310,13 +312,13 @@ config/registry.example.yaml
 真实运行时配置默认位置：
 
 ```text
-~/.config/lpm/config.toml
+~/.config/cc-port/config.toml
 ```
 
 Windows 下等价路径通常是：
 
 ```text
-%USERPROFILE%\.config\lpm\config.toml
+%USERPROFILE%\.config\cc-port\config.toml
 ```
 
 资源仓库地址格式：
@@ -331,7 +333,7 @@ Windows 下等价路径通常是：
 - HTTPS 缺少凭据时，GCM 可以打开一次 GitHub 浏览器登录，并把凭据保存到系统凭据库。
 - 绑定只执行远端引用读取和 `push --dry-run` 权限探测，不 clone、pull、fetch、commit 或实际 push。
 - 绑定成功后显示“下一次远端刷新生效”；绑定本身不下载资源，也不创建用户需要维护的本地仓库。
-- 后续“刷新远端”只更新 LPM 隐藏维护的受管镜像和 commit 只读快照，不调用旧 `resource_pull`，也不写 AI 工具目录。
+- 后续“刷新远端”只更新 CC Port 隐藏维护的受管镜像和 commit 只读快照，不调用旧 `resource_pull`，也不写 AI 工具目录。
 - `[resources].credential_mode` 可选 `native`、`auto` 或 `token`；一键绑定使用 `native`，旧配置默认按 `auto` 兼容。
 
 设置页只编辑资源仓库绑定和五个目标工具开关；不显示 GitHub 账号、OAuth、Token、仓库创建、整仓删除或可见性修改。Owner、分支、凭据模式、Git 可执行文件、仓库前缀与状态保留策略继续由内部规则、`config.toml` 和 CLI 管理。资源仓库 URL 中的 Owner 在绑定后优先于旧 `[github].owner`；未绑定时旧字段继续兼容。旧 `local_path` 与用户工作区只保留兼容，不会因设置页保存而被重置，也不进入新的桌面资源流程。
@@ -350,18 +352,18 @@ Windows 下等价路径通常是：
 
 常用环境变量：
 
-- `LPM_CONFIG`：指定配置文件路径。
-- `LPM_GITHUB_TOKEN`：覆盖配置文件中的 GitHub token。
-- `LPM_GIT_EXECUTABLE`：覆盖 `[git].executable`，指定 Git 可执行文件。
+- `CC_PORT_CONFIG`：指定配置文件路径。
+- `CC_PORT_GITHUB_TOKEN`：覆盖配置文件中的 GitHub token。
+- `CC_PORT_GIT_EXECUTABLE`：覆盖 `[git].executable`，指定 Git 可执行文件。
 - 桌面后台 Git 操作复用已缓存的 GCM 凭据并保持非交互；只有用户显式点击绑定时允许浏览器登录。
-- `LPM_RESOURCE_HOME`：覆盖旧兼容工作区路径；新的桌面资源流程不把该路径作为资源中枢。
-- `LPM_DESKTOP_API_BIN`：指定桌面 GUI 使用的 `lpm-desktop-api` 可执行文件，主要用于调试。
+- `CC_PORT_RESOURCE_HOME`：覆盖旧兼容工作区路径；新的桌面资源流程不把该路径作为资源中枢。
+- `CC_PORT_DESKTOP_API_BIN`：指定桌面 GUI 使用的 `cc-port-desktop-api` 可执行文件，主要用于调试。
 
 `[git].executable` 可填写 Git 的绝对路径或命令名；留空时按 PATH、常见系统安装目录和应用邻近目录自动发现。
 
 `[state]` 配置控制本机写锁和清理默认值：
 
-- `lock_timeout_seconds`：等待另一个 LPM 进程释放相同目标的秒数，默认 `10`。
+- `lock_timeout_seconds`：等待另一个 CC Port 进程释放相同目标的秒数，默认 `10`。
 - `retention_days`：已结束操作的保留期，默认 `90` 天。
 - `keep_latest_operations`：无论年龄都保护的最近操作数量，默认 `20`。
 - `max_backup_mb`：备份容量软上限，默认 `2048` MiB；`0` 表示不按容量选择候选。
@@ -370,21 +372,21 @@ Windows 下等价路径通常是：
 初始化 CLI 配置：
 
 ```bash
-lpm init
+cc-port init
 ```
 
-`lpm init` 对全新配置启用五个完整平台预设；旧配置缺少 `[platforms]` 时仍按历史语义只启用 Cursor。
+`cc-port init` 对全新配置启用五个完整平台预设；旧配置缺少 `[platforms]` 时仍按历史语义只启用 Cursor。
 
 初始化或绑定私有资源仓库：
 
 ```bash
-lpm resource init
+cc-port resource init
 ```
 
 检查环境：
 
 ```bash
-lpm doctor
+cc-port doctor
 ```
 
 真实 `registry.yaml` 属于用户的私有资源仓库，不属于这个工具仓库。公开仓库默认忽略真实 `registry.yaml`、`skills/`、`rules/`、`prompts/`、`mcp/`、`plugins/` 和 `.claude-plugin/`。
@@ -436,15 +438,15 @@ lpm doctor
 CLI 对应命令：
 
 ```bash
-lpm asset list --scan-local
-lpm asset upload --all --dry-run
-lpm asset upload --resource skill:demo --yes
-lpm asset download --all --platform cursor --platform codex --dry-run
-lpm asset download --resource skill:demo --platform cursor --yes
-lpm plugin project add D:\Code\demo
-lpm plugin project list
-lpm plugin reference add --platform codex --origin marketplace --marketplace openai-bundled --plugin-id chrome
-lpm plugin delete plugin:codex-marketplace-chrome-openai-bundled --dry-run
+cc-port asset list --scan-local
+cc-port asset upload --all --dry-run
+cc-port asset upload --resource skill:demo --yes
+cc-port asset download --all --platform cursor --platform codex --dry-run
+cc-port asset download --resource skill:demo --platform cursor --yes
+cc-port plugin project add D:\Code\demo
+cc-port plugin project list
+cc-port plugin reference add --platform codex --origin marketplace --marketplace openai-bundled --plugin-id chrome
+cc-port plugin delete plugin:codex-marketplace-chrome-openai-bundled --dry-run
 ```
 
 批量 choices 文件格式：
@@ -472,8 +474,8 @@ items:
 - MCP `env` 的非空字面值在比较和上传前转换为 `${ENV_NAME}` 占位符；资源流程不采集或保存真实值，也不生成机器级密钥清单。
 - 批量 apply 前会重新扫描本地、刷新远端并重建计划；`plan_hash` 变化时拒绝写入并返回最新计划。
 - 前端提交的路径、指纹、兼容性和可写性都不可信，必须由服务端重新计算。
-- 下载先生成 plan；目标已有同名资源且没有 LPM 管理标记时进入阻断，不会静默覆盖。
-- 目录资源使用 `.lpm-managed.json`，MCP 使用本机 entry 级所有权记录；未归 LPM 管理的目标不会被普通覆盖或卸载。
+- 下载先生成 plan；目标已有同名资源且没有 CC Port 管理标记时进入阻断，不会静默覆盖。
+- 目录资源使用 `.cc-port-managed.json`，MCP 使用本机 entry 级所有权记录；未归 CC Port 管理的目标不会被普通覆盖或卸载。
 - 下载备份写入本机状态目录的 `backups/<operation-id>/`，不会让私有资源 Git 仓库产生备份脏文件。
 - 普通资源安装和卸载也使用相同事务边界；批量同步由多个可独立恢复的资源事务组成。
 
@@ -482,55 +484,55 @@ items:
 CLI 是自动化入口，适合脚本、CI 或高级用户使用。
 
 ```bash
-lpm --help
-lpm init
-lpm resource init
-lpm resource status
-lpm asset list
-lpm asset list --scan-local
-lpm asset plan download --kind skill --name demo --platform cursor
-lpm asset plan upload --kind skill --name demo --platform cursor
-lpm asset plan copy-to-local --kind skill --name demo --platform cursor --new-name demo-copy
-lpm asset plan copy-to-remote --kind skill --name demo --platform cursor --new-name demo-copy
-lpm asset plan set-platform-install-name --kind skill --name demo --platform cursor --new-install-name demo-cursor
-lpm asset apply <operation-id>
-lpm asset upload --resource skill:demo --dry-run
-lpm asset upload --all --yes
-lpm asset download --resource skill:demo --platform cursor --dry-run
-lpm asset download --all --platform cursor --platform codex --yes
-lpm resource commit-plan
-lpm resource sync-status --fetch
-lpm resource sync-plan
-lpm resource sync-resolve <operation-id> --choices choices.yaml
-lpm resource sync-apply <operation-id>
-lpm resource sync-cancel <operation-id>
-lpm resource sync-stale
-lpm resource sync-cleanup <operation-id>
-lpm resource push
-lpm operations list
-lpm operations show <operation-id>
-lpm operations restore <operation-id>
-lpm operations retention-plan
-lpm operations prune
-lpm operations orphans
-lpm operations orphan-export <name>
-lpm operations orphan-quarantine --name <name>
-lpm operations quarantines
-lpm operations quarantine-delete <quarantine-id>
-lpm operations audits
-lpm operations audit <audit-id>
-lpm collect <github-url-or-tree-url> [--platform cursor]
-lpm upload <local-path> [--platform cursor]
-lpm import-local <local-path> [--platform cursor]
-lpm export-plugin
-lpm list
-lpm sync
-lpm doctor
+cc-port --help
+cc-port init
+cc-port resource init
+cc-port resource status
+cc-port asset list
+cc-port asset list --scan-local
+cc-port asset plan download --kind skill --name demo --platform cursor
+cc-port asset plan upload --kind skill --name demo --platform cursor
+cc-port asset plan copy-to-local --kind skill --name demo --platform cursor --new-name demo-copy
+cc-port asset plan copy-to-remote --kind skill --name demo --platform cursor --new-name demo-copy
+cc-port asset plan set-platform-install-name --kind skill --name demo --platform cursor --new-install-name demo-cursor
+cc-port asset apply <operation-id>
+cc-port asset upload --resource skill:demo --dry-run
+cc-port asset upload --all --yes
+cc-port asset download --resource skill:demo --platform cursor --dry-run
+cc-port asset download --all --platform cursor --platform codex --yes
+cc-port resource commit-plan
+cc-port resource sync-status --fetch
+cc-port resource sync-plan
+cc-port resource sync-resolve <operation-id> --choices choices.yaml
+cc-port resource sync-apply <operation-id>
+cc-port resource sync-cancel <operation-id>
+cc-port resource sync-stale
+cc-port resource sync-cleanup <operation-id>
+cc-port resource push
+cc-port operations list
+cc-port operations show <operation-id>
+cc-port operations restore <operation-id>
+cc-port operations retention-plan
+cc-port operations prune
+cc-port operations orphans
+cc-port operations orphan-export <name>
+cc-port operations orphan-quarantine --name <name>
+cc-port operations quarantines
+cc-port operations quarantine-delete <quarantine-id>
+cc-port operations audits
+cc-port operations audit <audit-id>
+cc-port collect <github-url-or-tree-url> [--platform cursor]
+cc-port upload <local-path> [--platform cursor]
+cc-port import-local <local-path> [--platform cursor]
+cc-port export-plugin
+cc-port list
+cc-port sync
+cc-port doctor
 ```
 
-`lpm asset list/plan/apply/upload/download` 支持 `--json`。`upload` 和 `download` 支持重复 `--resource`、`--all`、`--dry-run`、`--yes` 与选择文件；`download` 还支持重复 `--platform`。批量命令在执行前重新生成计划并校验 `plan_hash`，不再提供 `lpm env` 迁移命令。
+`cc-port asset list/plan/apply/upload/download` 支持 `--json`。`upload` 和 `download` 支持重复 `--resource`、`--all`、`--dry-run`、`--yes` 与选择文件；`download` 还支持重复 `--platform`。批量命令在执行前重新生成计划并校验 `plan_hash`，不再提供 `cc-port env` 迁移命令。
 
-`lpm resource pull`、`lpm resource push` 和 `lpm resource sync-*` 仅保留一个发布版本处理旧工作区状态，执行时会输出弃用警告。旧工作区处于 dirty、ahead、diverged、wrong-branch 或存在待处理旧计划时，新资产模型允许读取和扫描，但阻断远端写入。
+`cc-port resource pull`、`cc-port resource push` 和 `cc-port resource sync-*` 仅保留一个发布版本处理旧工作区状态，执行时会输出弃用警告。旧工作区处于 dirty、ahead、diverged、wrong-branch 或存在待处理旧计划时，新资产模型允许读取和扫描，但阻断远端写入。
 
 `--platform` 可重复使用。资源未设置平台白名单时沿用旧行为，安装到所有已启用且支持该资源类型的平台；设置后只安装到列出的平台：
 
@@ -543,14 +545,14 @@ lpm doctor
   - cursor
 ```
 
-`lpm export-plugin` 会从兼容 `claude-code` 的 active local skills 重新生成 `.claude-plugin/plugin.json`，并把默认插件名规范化为 kebab-case。
+`cc-port export-plugin` 会从兼容 `claude-code` 的 active local skills 重新生成 `.claude-plugin/plugin.json`，并把默认插件名规范化为 kebab-case。
 
 Desktop API smoke test：
 
 ```bash
-lpm-desktop-api platforms {}
-lpm-desktop-api summary {}
-lpm-desktop-api asset_inventory "{\"scan_local\":true,\"refresh_remote\":true}"
+cc-port-desktop-api platforms {}
+cc-port-desktop-api summary {}
+cc-port-desktop-api asset_inventory "{\"scan_local\":true,\"refresh_remote\":true}"
 ```
 
 接口迁移、动作参数和兼容期说明见 [资产同步 API / CLI 迁移指南](docs/asset-api-cli-migration.md)。核心状态、比较与并发语义见 [资产级双向同步规格](docs/specs/asset-sync.md)，registry 结构见 [Registry v7 规格](docs/specs/registry-v7.md)。
@@ -558,7 +560,7 @@ lpm-desktop-api asset_inventory "{\"scan_local\":true,\"refresh_remote\":true}"
 MCP Server：
 
 ```bash
-lpm-mcp
+cc-port-mcp
 ```
 
 ## 开发检查
@@ -568,8 +570,8 @@ lpm-mcp
 Python 检查：
 
 ```bash
-python -m compileall -q src/lpm
-ruff check src/lpm tests
+python -m compileall -q src/cc_port
+ruff check src/cc_port tests
 pytest -q
 ```
 
@@ -598,7 +600,7 @@ python tools/packaging/sidecar/build_sidecar.py
 运行生成的 sidecar：
 
 ```powershell
-desktop\src-tauri\binaries\lpm-desktop-api-x86_64-pc-windows-msvc.exe platforms "{}"
+desktop\src-tauri\binaries\cc-port-desktop-api-x86_64-pc-windows-msvc.exe platforms "{}"
 ```
 
 ## 发布说明
@@ -613,10 +615,10 @@ desktop\src-tauri\binaries\lpm-desktop-api-x86_64-pc-windows-msvc.exe platforms 
 
 PyInstaller 在本项目中只是 **发布手段**，不是业务架构核心。
 
-开发和业务代码仍然以 Python package 的形式组织在 `src/lpm` 中。发布桌面应用时，PyInstaller 负责把 `lpm.interfaces.desktop_api` 打包为 Tauri 可携带的 sidecar：
+开发和业务代码仍然以 Python package 的形式组织在 `src/cc_port` 中。发布桌面应用时，PyInstaller 负责把 `cc_port.interfaces.desktop_api` 打包为 Tauri 可携带的 sidecar：
 
 ```text
-desktop/src-tauri/binaries/lpm-desktop-api-<target-triple>[.exe]
+desktop/src-tauri/binaries/cc-port-desktop-api-<target-triple>[.exe]
 ```
 
 Tauri 再把该 sidecar 打进最终安装包，使普通用户可以直接使用编译好的桌面工具。

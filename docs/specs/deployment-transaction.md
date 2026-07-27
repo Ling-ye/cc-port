@@ -21,7 +21,7 @@
 
 ## 所有权
 
-- LPM 创建或更新的目录写入 `.lpm-managed.json`。
+- CC Port 创建或更新的目录写入 `.cc-port-managed.json`。
 - 未带有效管理标记的同名目录不得被静默覆盖或卸载。
 - MCP 只管理指定 server entry，不拥有整个配置文件。
 - 被移出平台白名单的遗留安装仍允许显式卸载。
@@ -29,8 +29,8 @@
 ## 备份与状态
 
 - 备份和操作记录位于本机状态目录，不得放入资源 Git 仓库。
-- Windows 默认路径为 `%LOCALAPPDATA%\LPM\backups\<operation-id>`。
-- 其他系统使用用户状态目录；测试可通过 `LPM_STATE_HOME` 覆盖。
+- Windows 默认路径为 `%LOCALAPPDATA%\cc-port\backups\<operation-id>`。
+- 其他系统使用用户状态目录；测试可通过 `CC_PORT_STATE_HOME` 覆盖。
 - 应用顺序为：计划、备份、写入、验证、记录成功。
 - 任一事务失败时回滚该事务已写入目标，并记录失败与回滚结果；不跨资源回滚其他已完成事务。
 - 普通资源事务必须同时覆盖资源缓存、外部仓库 clone、平台目标和 MCP 所有权状态。

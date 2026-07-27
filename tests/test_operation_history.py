@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from lpm.services import operation_history as history_service
-from lpm.services.local_transaction import ChangeTarget, LocalChangeTransaction
-from lpm.services.operation_history import (
+from cc_port.services import operation_history as history_service
+from cc_port.services.local_transaction import ChangeTarget, LocalChangeTransaction
+from cc_port.services.operation_history import (
     operation_detail,
     operation_history,
     operation_history_page,
     restore_operation,
 )
-from lpm.services.operation_state import OperationRecord, OperationTarget, save_operation
+from cc_port.services.operation_state import OperationRecord, OperationTarget, save_operation
 
 
 def test_operation_history_restores_before_state_and_blocks_drift(tmp_path: Path) -> None:

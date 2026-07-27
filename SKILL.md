@@ -1,27 +1,31 @@
 ---
-name: lpm
-description: Publish, register, scan, compare, upload and download AI agent resources (skills, MCP servers, rules) across Cursor, Claude Code and other AI coding platforms through LPM. Use when the user wants to publish a local resource, register a third-party resource, scan local AI tools, compare local and remote states, batch upload resources, download resources to selected tools, check for updates, link skills to a project, or search available skills. Triggers include phrases like "publish/upload/share this skill", "scan local resources", "download my skills to Cursor", "sync skills", "add MCP server", "register MCP", "link skills", "search skills", "lpm", "发布 skill", "扫描本地资源", "下载到 Cursor", "同步技能", "搜索技能", "链接技能", "添加 MCP 服务器".
+name: cc-port
+description: Publish, register, scan, compare, upload and download AI agent resources (skills, MCP servers, rules) across Cursor, Claude Code and other AI coding platforms through CC Port. Use when the user wants to publish a local resource, register a third-party resource, scan local AI tools, compare local and remote states, batch upload resources, download resources to selected tools, check for updates, link skills to a project, or search available skills. Triggers include phrases like "publish/upload/share this skill", "scan local resources", "download my skills to Cursor", "sync skills", "add MCP server", "register MCP", "link skills", "search skills", "cc-port", "发布 skill", "扫描本地资源", "下载到 Cursor", "同步技能", "搜索技能", "链接技能", "添加 MCP 服务器".
+metadata:
+  version: "0.5.0"
 ---
 
-# LPM (LingyePluginMarketplace)
+# CC Port (cc-port)
 
-LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、规则 -- 跨多个 AI 编程平台（Cursor、Claude Code、Windsurf、Codex 等）。通过 MCP 工具（或 `lpm` CLI）完成发布、登记、安装、同步、搜索、项目级链接等操作。
+CC Port 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、规则 -- 跨多个 AI 编程平台（Cursor、Claude Code、Windsurf、Codex 等）。通过 MCP 工具（或 `cc-port` CLI）完成发布、登记、安装、同步、搜索、项目级链接等操作。
+
+[KNOWN] 当前版本为 `0.5.0`，源码仓库为 <https://github.com/Ling-ye/cc-port>。置信度：HIGH。
 
 ## 快速上手（三步）
 
 ```
-1. lpm init                              # 生成 ~/.config/lpm/config.toml
-2. 编辑 config.toml 填 owner（或设 $env:LPM_GITHUB_TOKEN 环境变量）
-3. lpm publish <skill目录> --private -y  # 发布到 GitHub 私有仓库
+1. cc-port init                              # 生成 ~/.config/cc-port/config.toml
+2. 编辑 config.toml 填 owner（或设 $env:CC_PORT_GITHUB_TOKEN 环境变量）
+3. cc-port publish <skill目录> --private -y  # 发布到 GitHub 私有仓库
 ```
 
 ## 配置
 
-所有配置从 `~/.config/lpm/config.toml` 读取（`lpm init` 生成模板）。
+所有配置从 `~/.config/cc-port/config.toml` 读取（`cc-port init` 生成模板）。
 
 | 字段 | 说明 |
 |------|------|
-| `[github].token` | GitHub PAT，也可用 `LPM_GITHUB_TOKEN` 环境变量代替（优先级更高） |
+| `[github].token` | GitHub PAT，也可用 `CC_PORT_GITHUB_TOKEN` 环境变量代替（优先级更高） |
 | `[github].owner` | 发布仓库时的 GitHub 用户名或组织名 |
 | `[github].repo_prefix` | 新建仓库的名称前缀，默认 `cursor-skill-` |
 | `[github].default_private` | 默认仓库可见性 |
@@ -37,7 +41,7 @@ LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、�
 | "把仓库改成公开/私有" | `set_skill_visibility` |
 | "登记 / 收藏这个 skill 仓库" | `add_external_skill` (kind="skill") |
 | "添加一个 MCP 服务器" | `add_mcp_server` 或 `add_external_skill` (kind="mcp") |
-| "把远端资源下载到本机工具" | CLI `lpm asset download --all --platform <tool>` |
+| "把远端资源下载到本机工具" | CLI `cc-port asset download --all --platform <tool>` |
 | "看哪些有更新" | `skill_status` |
 | "更新某个资源" | `update_skill` |
 | "删除 / 取消注册某个资源" | `remove_skill` |
@@ -51,15 +55,15 @@ LPM 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、�
 
 操作 GitHub 前先确认：
 
-1. `lpm` 已安装（`pip install -e .` 在 LPM 仓库目录下）
+1. `cc-port` 已安装（`pip install -e .` 在 CC Port 仓库目录下）
 2. `git` 在 PATH 中
 3. GitHub PAT 已配置（二选一）：
-   - 环境变量 `LPM_GITHUB_TOKEN`（推荐）
+   - 环境变量 `CC_PORT_GITHUB_TOKEN`（推荐）
    - config.toml 中的 `[github].token`
 
 token 缺失时不要静默失败 -- 指引用户设环境变量或编辑 config.toml。
 
-运行 `lpm doctor` 可一次性检查上述所有项。
+运行 `cc-port doctor` 可一次性检查上述所有项。
 
 ## 资源类型
 
@@ -89,7 +93,7 @@ token 缺失时不要静默失败 -- 指引用户设环境变量或编辑 config
 
 实际示例：
 ```
-lpm publish D:\Code\yourself-skill-master-uploadtest --private -y --tag python --category productivity
+cc-port publish D:\Code\yourself-skill-master-uploadtest --private -y --tag python --category productivity
 # -> Published create-yourself (skill) -> https://github.com/Ling-ye/cursor-skill-create-yourself.git (private, created)
 ```
 
@@ -103,34 +107,34 @@ add_mcp_server(name="github", github_url="https://github.com/...",
 
 ### 在新电脑下载全部远端资源
 
-1. clone LPM 仓库并 `pip install -e .`
-2. `lpm init` 生成配置，填好 token 和 owner
-3. `lpm asset list --scan-local` 查看远端与本地并集
-4. `lpm asset download --all --platform cursor --dry-run` 预览计划
+1. clone CC Port 仓库并 `pip install -e .`
+2. `cc-port init` 生成配置，填好 token 和 owner
+3. `cc-port asset list --scan-local` 查看远端与本地并集
+4. `cc-port asset download --all --platform cursor --dry-run` 预览计划
 5. 确认后去掉 `--dry-run` 并加 `--yes` 执行；需要多个工具时重复 `--platform`
 
 ### 项目中使用已收集的 skill
 
 ```
 cd <项目目录>
-lpm link                      # 链接所有 skill 到当前项目
-lpm link --tag python          # 只链接带 python 标签的
-lpm link --only my-skill       # 只链接指定 skill
+cc-port link                      # 链接所有 skill 到当前项目
+cc-port link --tag python          # 只链接带 python 标签的
+cc-port link --only my-skill       # 只链接指定 skill
 ```
 
-执行后 AI agent 会自动发现 `.cursor/rules/lpm-skills.md` 中索引的 skill，遇到匹配场景时主动加载。
+执行后 AI agent 会自动发现 `.cursor/rules/cc-port-skills.md` 中索引的 skill，遇到匹配场景时主动加载。
 
 ### 搜索资源
 
 ```
-lpm search python              # 本地注册表搜索
-lpm search --tag testing       # 按标签过滤
-lpm search fastapi --remote    # 同时搜索 GitHub
+cc-port search python              # 本地注册表搜索
+cc-port search --tag testing       # 按标签过滤
+cc-port search fastapi --remote    # 同时搜索 GitHub
 ```
 
-## 在其他项目中引入 LPM
+## 在其他项目中引入 CC Port
 
-LPM 可以作为 Python 库、Git Submodule 或 Cursor Skill 三种方式引入到其他项目中，按需选用或组合使用。
+CC Port 可以作为 Python 库、Git Submodule 或 Cursor Skill 三种方式引入到其他项目中，按需选用或组合使用。
 
 ### 方式一：pip install from Git（作为 Python 包）
 
@@ -138,40 +142,40 @@ LPM 可以作为 Python 库、Git Submodule 或 Cursor Skill 三种方式引入�
 
 ```bash
 # 安装最新版
-pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git
+pip install git+https://github.com/Ling-ye/cc-port.git
 
 # 锁定到特定版本/分支/commit
-pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main
-pip install git+https://github.com/Ling-ye/LingyePluginMarketplace.git@v0.4.0
+pip install git+https://github.com/Ling-ye/cc-port.git@main
+pip install git+https://github.com/Ling-ye/cc-port.git@v0.5.0
 ```
 
 在目标项目的依赖中声明：
 
 ```
 # requirements.txt
-lingyepluginmarketplace @ git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main
+cc-port @ git+https://github.com/Ling-ye/cc-port.git@main
 ```
 
 ```toml
 # pyproject.toml
 dependencies = [
-    "lingyepluginmarketplace @ git+https://github.com/Ling-ye/LingyePluginMarketplace.git@main",
+    "cc-port @ git+https://github.com/Ling-ye/cc-port.git@main",
 ]
 ```
 
-安装后代码中可 `import lpm`，`lpm` 和 `lpm-mcp` 命令行工具自动可用。
+安装后代码中可 `import cc_port`，`cc-port` 和 `cc-port-mcp` 命令行工具自动可用。
 
 ### 方式二：Git Submodule（嵌入源码）
 
-将 LPM 仓库作为子模块嵌入到目标项目中，代码可见、可编辑、版本锁定：
+将 CC Port 仓库作为子模块嵌入到目标项目中，代码可见、可编辑、版本锁定：
 
 ```bash
 cd <你的项目>
-git submodule add https://github.com/Ling-ye/LingyePluginMarketplace.git libs/lpm
-git commit -m "add LPM as submodule"
+git submodule add https://github.com/Ling-ye/cc-port.git libs/cc-port
+git commit -m "add CC Port as submodule"
 
 # 安装为可编辑包
-pip install -e libs/lpm
+pip install -e libs/cc-port
 ```
 
 团队成员 clone 时需要加 `--recurse-submodules`：
@@ -182,24 +186,24 @@ git clone --recurse-submodules <你的项目仓库>
 
 ### 方式三：作为 Cursor Skill 引入
 
-LPM 自带 `SKILL.md`，可直接作为 Cursor Skill 被 AI Agent 自动发现和使用：
+CC Port 自带 `SKILL.md`，可直接作为 Cursor Skill 被 AI Agent 自动发现和使用：
 
 ```bash
-# 通过 lpm 自身登记并链接
-lpm add https://github.com/Ling-ye/LingyePluginMarketplace.git --tag lpm --category tool-management
+# 通过 cc-port 自身登记并链接
+cc-port add https://github.com/Ling-ye/cc-port.git --tag cc-port --category tool-management
 cd <你的项目>
-lpm link --only lpm
+cc-port link --only cc-port
 ```
 
-也可以手动在项目的 `.cursor/skills/` 下创建 symlink 指向 LPM 目录，Agent 会自动读取 SKILL.md。
+也可以手动在项目的 `.cursor/skills/` 下创建 symlink 指向 CC Port 目录，Agent 会自动读取 SKILL.md。
 
 ### 推荐组合
 
 | 需求 | 方案 | 效果 |
 |------|------|------|
-| 代码中调用 LPM API | 方式一（pip install） | `import lpm`，CLI 命令可用 |
-| 需要修改 LPM 源码 | 方式二（submodule） | 源码嵌入，可直接编辑 |
-| AI Agent 自动使用 LPM | 方式三（skill） | Agent 读取 SKILL.md 自动调用 |
+| 代码中调用 CC Port API | 方式一（pip install） | `import cc_port`，CLI 命令可用 |
+| 需要修改 CC Port 源码 | 方式二（submodule） | 源码嵌入，可直接编辑 |
+| AI Agent 自动使用 CC Port | 方式三（skill） | Agent 读取 SKILL.md 自动调用 |
 | 完整集成（推荐） | 方式一 + 方式三 | 既是库又是 skill |
 
 ### 修改可见性
@@ -218,24 +222,24 @@ lpm link --only lpm
 ## CLI 命令速查
 
 ```
-lpm init [--claude-code] [-f]        # 生成配置文件
-lpm doctor                           # 检查环境
-lpm publish <path> [--private/--public --kind --mcp-config --tag --category --platform --version --author --license -y]
-lpm set-visibility <name> {public|private}
-lpm add <github-url> [--subdir --ref --name --kind --mcp-config --tag --category --platform]
-lpm collect <github-tree-url> [--type --name --platform]
-lpm upload <path> [--type --name --platform]
-lpm import-local <path> [--kind --name --tag --category --platform]
-lpm export-plugin [--name]
-lpm search [query] [--tag --kind --category --remote]
-lpm link [--project --only --tag --kind]
-lpm unlink [--project]
-lpm sync [--only NAME --kind TYPE --platform NAME]
-lpm status [--kind TYPE]
-lpm check [--kind --prune --uninstall]
-lpm list [--kind TYPE]
-lpm update <name>
-lpm remove <name> [--uninstall]
-lpm install-self [--force]
-lpm platforms
+cc-port init [--claude-code] [-f]        # 生成配置文件
+cc-port doctor                           # 检查环境
+cc-port publish <path> [--private/--public --kind --mcp-config --tag --category --platform --version --author --license -y]
+cc-port set-visibility <name> {public|private}
+cc-port add <github-url> [--subdir --ref --name --kind --mcp-config --tag --category --platform]
+cc-port collect <github-tree-url> [--type --name --platform]
+cc-port upload <path> [--type --name --platform]
+cc-port import-local <path> [--kind --name --tag --category --platform]
+cc-port export-plugin [--name]
+cc-port search [query] [--tag --kind --category --remote]
+cc-port link [--project --only --tag --kind]
+cc-port unlink [--project]
+cc-port sync [--only NAME --kind TYPE --platform NAME]
+cc-port status [--kind TYPE]
+cc-port check [--kind --prune --uninstall]
+cc-port list [--kind TYPE]
+cc-port update <name>
+cc-port remove <name> [--uninstall]
+cc-port install-self [--force]
+cc-port platforms
 ```

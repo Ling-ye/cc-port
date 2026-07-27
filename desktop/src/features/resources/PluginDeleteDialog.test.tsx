@@ -1,12 +1,12 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lpmAction } from "@/api/client";
+import { ccPortAction } from "@/api/client";
 import { createTranslator } from "@/app/i18n";
 import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { PluginDeleteDialog } from "@/features/resources/PluginDeleteDialog";
 
-vi.mock("@/api/client", () => ({ lpmAction: vi.fn() }));
+vi.mock("@/api/client", () => ({ ccPortAction: vi.fn() }));
 
 const t = createTranslator("en");
 const plan = {
@@ -49,7 +49,7 @@ afterEach(() => {
 
 describe("PluginDeleteDialog", () => {
   it("renders structured deletion details in Chinese", async () => {
-    vi.mocked(lpmAction).mockResolvedValue({
+    vi.mocked(ccPortAction).mockResolvedValue({
       ...plan,
       instances: [
         {
@@ -82,13 +82,13 @@ describe("PluginDeleteDialog", () => {
     );
 
     expect(await screen.findByText("对 demo 执行带作用域的 Claude 插件卸载。")).toBeVisible();
-    expect(screen.getByText("该实例由组织策略控制，LPM 无法卸载。")).toBeVisible();
+    expect(screen.getByText("该实例由组织策略控制，CC Port 无法卸载。")).toBeVisible();
   });
 
   it("keeps managed instances unselectable and applies the revalidated selected plan", async () => {
     const user = userEvent.setup();
     const onDone = vi.fn();
-    vi.mocked(lpmAction).mockImplementation(async (action, payload) => {
+    vi.mocked(ccPortAction).mockImplementation(async (action, payload) => {
       if (action === "plugin_delete_plan") {
         expect(payload).toEqual(payload && "instance_ids" in payload
           ? { resource_key: plan.resource_key, instance_ids: ["user-instance"] }
@@ -125,7 +125,7 @@ describe("PluginDeleteDialog", () => {
     await user.click(screen.getByRole("button", { name: "Confirm" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
-    expect(lpmAction).toHaveBeenCalledWith("plugin_delete_apply", {
+    expect(ccPortAction).toHaveBeenCalledWith("plugin_delete_apply", {
       resource_key: plan.resource_key,
       instance_ids: ["user-instance"],
       plan_hash: "delete-plan-hash",

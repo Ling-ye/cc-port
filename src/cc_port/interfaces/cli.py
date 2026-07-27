@@ -1,4 +1,4 @@
-"""LingyePluginMarketplace command-line interface (Typer + Rich)."""
+"""CC Port command-line interface (Typer + Rich)."""
 
 from __future__ import annotations
 
@@ -98,9 +98,9 @@ from ..services.state_retention import (
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="LPM (LingyePluginMarketplace): publish, register and sync skills, MCP servers and rules across AI coding platforms.",
+    help="CC Port: publish, register and sync skills, MCP servers and rules across AI coding platforms.",
 )
-resource_app = typer.Typer(help="Manage the private LPM resource repository.")
+resource_app = typer.Typer(help="Manage the private CC Port resource repository.")
 asset_app = typer.Typer(
     help="Inspect and synchronize logical resources across local AI tools and the private repository."
 )
@@ -117,7 +117,7 @@ plugin_app.add_typer(plugin_reference_app, name="reference")
 console = Console()
 VALID_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
 DEPRECATED_SYNC_MESSAGE = (
-    "Deprecated: use `lpm asset list`, `lpm asset plan`, and `lpm asset apply`. "
+    "Deprecated: use `cc-port asset list`, `cc-port asset plan`, and `cc-port asset apply`. "
     "Git workspace sync commands will be removed in the next release."
 )
 
@@ -170,13 +170,13 @@ def cmd_init(
         help="Deprecated compatibility flag; all complete platform presets are enabled.",
     ),
 ) -> None:
-    """Generate the LPM config file with sensible defaults.
+    """Generate the CC Port config file with sensible defaults.
 
     Usage:
-        lpm init                # generate config (all complete platform presets)
+        cc-port init                # generate config (all complete platform presets)
 
-    Then edit ~/.config/lpm/config.toml to fill in your token and owner.
-    Or set the LPM_GITHUB_TOKEN environment variable instead.
+    Then edit ~/.config/cc-port/config.toml to fill in your token and owner.
+    Or set the CC_PORT_GITHUB_TOKEN environment variable instead.
     """
     path = default_config_path()
     if path.exists() and not force:
@@ -202,9 +202,9 @@ def cmd_init(
     )
     console.print(f'     Or set env var: [bold]$env:{CONFIG_ENV_VAR} = "ghp_xxx"[/bold]')
     console.print(
-        "  2. Run [bold]lpm resource init[/bold] to create/connect your private resource repo"
+        "  2. Run [bold]cc-port resource init[/bold] to create/connect your private resource repo"
     )
-    console.print("  3. Run [bold]lpm doctor[/bold] to verify")
+    console.print("  3. Run [bold]cc-port doctor[/bold] to verify")
 
 
 # ---- resource repo ---- #
@@ -236,7 +236,7 @@ def cmd_resource_init(
 def cmd_resource_use(
     target: str = typer.Argument(..., help="Existing local path or Git URL for the resource repo."),
 ) -> None:
-    """Bind LPM to an existing private resource repository."""
+    """Bind CC Port to an existing private resource repository."""
     try:
         info = use_resource_repo(target, config=_load())
     except Exception as exc:
@@ -265,7 +265,7 @@ def cmd_resource_pull() -> None:
 
 @resource_app.command("push")
 def cmd_resource_push(
-    message: str = typer.Option("lpm: update resources", "--message", "-m"),
+    message: str = typer.Option("cc-port: update resources", "--message", "-m"),
 ) -> None:
     """Commit local resource changes if needed and push the private repo."""
     _print_sync_deprecation()
@@ -285,7 +285,7 @@ def cmd_resource_commit_plan() -> None:
     except Exception as exc:
         console.print(f"[red]Resource commit planning failed:[/red] {exc}")
         raise typer.Exit(1) from exc
-    table = Table(title="LPM resource commit plan")
+    table = Table(title="CC Port resource commit plan")
     table.add_column("Resource")
     table.add_column("Kind")
     table.add_column("Action")
@@ -450,7 +450,7 @@ def cmd_plugin_project_list(
     if json_output:
         _print_machine_json([asdict(item) for item in projects])
         return
-    table = Table(title="LPM plugin projects")
+    table = Table(title="CC Port plugin projects")
     table.add_column("ID", style="bold")
     table.add_column("Path")
     table.add_column("Git identity")
@@ -642,7 +642,7 @@ def cmd_asset_list(
         _print_machine_json(payload)
         return
 
-    table = Table(title=f"LPM assets ({inventory.branch or 'unconfigured branch'})")
+    table = Table(title=f"CC Port assets ({inventory.branch or 'unconfigured branch'})")
     table.add_column("Resource", style="bold")
     table.add_column("Description")
     table.add_column("Local")
@@ -718,7 +718,7 @@ def cmd_asset_plan(
     if json_output:
         _print_machine_json(asdict(plan))
         return
-    table = Table(title="LPM asset action plan")
+    table = Table(title="CC Port asset action plan")
     table.add_column("Field", style="bold")
     table.add_column("Value")
     for label, value in (
@@ -946,7 +946,7 @@ def _load_asset_batch_choices(path: Path | None) -> list[AssetBatchChoice]:
 
 
 def _print_asset_batch_plan(plan: object) -> None:
-    table = Table(title=f"LPM asset batch {getattr(plan, 'direction', '')}")
+    table = Table(title=f"CC Port asset batch {getattr(plan, 'direction', '')}")
     table.add_column("Resource", style="bold")
     table.add_column("Platform")
     table.add_column("Action")
@@ -970,7 +970,7 @@ def _print_asset_batch_plan(plan: object) -> None:
 
 
 def _print_resource_info(info: object) -> None:
-    table = Table(title="LPM resource repository")
+    table = Table(title="CC Port resource repository")
     table.add_column("Field", style="bold")
     table.add_column("Value")
     for field in (
@@ -991,7 +991,7 @@ def _print_resource_info(info: object) -> None:
 
 
 def _print_resource_sync_plan(plan: object) -> None:
-    table = Table(title="LPM resource Git synchronization")
+    table = Table(title="CC Port resource Git synchronization")
     table.add_column("Field", style="bold")
     table.add_column("Value")
     for field in (
@@ -1029,7 +1029,7 @@ def _maybe_push_resource_repo(cfg: Config, *, push: bool, no_push: bool) -> None
             "Push changes to your private resource repo now?", default=False
         )
     if not should_push:
-        console.print("[yellow]Not pushed.[/yellow] Run `lpm resource push` when ready.")
+        console.print("[yellow]Not pushed.[/yellow] Run `cc-port resource push` when ready.")
         return
     try:
         info = push_resource_repo(config=cfg)
@@ -1049,7 +1049,7 @@ def cmd_operations_list(
 ) -> None:
     """List local write operations in reverse chronological order."""
     page = operation_history_page(offset=offset, limit=limit)
-    table = Table(title="LPM operation history")
+    table = Table(title="CC Port operation history")
     table.add_column("Operation")
     table.add_column("Kind")
     table.add_column("Status")
@@ -1174,7 +1174,7 @@ def cmd_operations_prune(
 
 
 def _print_retention_plan(plan: StateRetentionPlan) -> None:
-    summary = Table(title="LPM state retention plan")
+    summary = Table(title="CC Port state retention plan")
     summary.add_column("Field")
     summary.add_column("Value")
     for field in (
@@ -1748,9 +1748,9 @@ def cmd_list(
     if kind:
         items = [i for i in items if i.kind == kind]
     if not items:
-        console.print("[yellow]Registry is empty.[/yellow] Use `lpm publish` or `lpm add`.")
+        console.print("[yellow]Registry is empty.[/yellow] Use `cc-port publish` or `cc-port add`.")
         return
-    table = Table(title=f"LPM registry ({find_registry_path()})")
+    table = Table(title=f"CC Port registry ({find_registry_path()})")
     table.add_column("Name", style="bold")
     table.add_column("Kind")
     table.add_column("Source")
@@ -1806,9 +1806,9 @@ def cmd_search(
     """Search the local registry (and optionally GitHub) for resources.
 
     Examples:
-        lpm search python
-        lpm search --tag testing --kind skill
-        lpm search fastapi --remote
+        cc-port search python
+        cc-port search --tag testing --kind skill
+        cc-port search fastapi --remote
     """
     registry = load_registry()
     items = registry.items
@@ -1873,7 +1873,7 @@ def _search_github(query: str) -> None:
             console.print("[yellow]No remote results on GitHub.[/yellow]")
             return
 
-        table = Table(title="GitHub results (add with `lpm add <url>`)")
+        table = Table(title="GitHub results (add with `cc-port add <url>`)")
         table.add_column("Repository", style="bold")
         table.add_column("Stars")
         table.add_column("Description")
@@ -1968,7 +1968,7 @@ def cmd_sync(
     if repo_gone:
         console.print(
             f"\n[yellow]{repo_gone} repo(s) appear to have been deleted.[/yellow] "
-            "Run [bold]lpm check --prune[/bold] to clean up."
+            "Run [bold]cc-port check --prune[/bold] to clean up."
         )
     if failures or repo_gone:
         raise typer.Exit(1)
@@ -2025,7 +2025,7 @@ def cmd_status(
     if not rows:
         console.print("[yellow]Registry is empty.[/yellow]")
         return
-    table = Table(title="LPM status")
+    table = Table(title="CC Port status")
     table.add_column("Name")
     table.add_column("Installed")
     table.add_column("Local")
@@ -2066,7 +2066,7 @@ def cmd_check(
         console.print("[yellow]Registry is empty.[/yellow]")
         return
 
-    table = Table(title="LPM Health Check")
+    table = Table(title="CC Port Health Check")
     table.add_column("Name", style="bold")
     table.add_column("Kind")
     table.add_column("Repo")
@@ -2094,7 +2094,7 @@ def cmd_check(
     elif unreachable:
         console.print(
             f"\n[yellow]{unreachable} unreachable item(s) found.[/yellow] "
-            "Run [bold]lpm check --prune[/bold] to remove them."
+            "Run [bold]cc-port check --prune[/bold] to remove them."
         )
 
     if unreachable and not prune:
@@ -2198,10 +2198,10 @@ def cmd_install_self(
     ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files."),
 ) -> None:
-    """Install LPM's own SKILL.md to all enabled platforms.
+    """Install CC Port's own SKILL.md to all enabled platforms.
 
     Copies the project's SKILL.md (and any companion .md files at repo root)
-    into each platform's skills directory under a ``lpm/`` subdirectory.
+    into each platform's skills directory under a ``cc-port/`` subdirectory.
     """
     cfg = _load()
     project_root = _find_project_root()
@@ -2217,15 +2217,15 @@ def cmd_install_self(
             candidates.append(p)
 
     if target:
-        target_dirs = [target.expanduser() / "lpm"]
+        target_dirs = [target.expanduser() / "cc-port"]
     else:
         target_dirs = []
         for plat in cfg.platforms.enabled():
             sp = plat.skills_path()
             if sp:
-                target_dirs.append(sp / "lpm")
+                target_dirs.append(sp / "cc-port")
         if not target_dirs:
-            target_dirs = [cfg.install.target_path / "lpm"]
+            target_dirs = [cfg.install.target_path / "cc-port"]
 
     total_copied: list[str] = []
     for dest in target_dirs:
@@ -2239,14 +2239,14 @@ def cmd_install_self(
             total_copied.append(str(out))
 
     if total_copied:
-        console.print("[green]Installed LPM skill files:[/green]")
+        console.print("[green]Installed CC Port skill files:[/green]")
         for p in total_copied:
             console.print(f"  - {p}")
         console.print(
             "\nNext: register the MCP server in your platform's MCP config. Example for Cursor:\n"
-            '  ~/.cursor/mcp.json -> {"mcpServers": {"lpm": {"command": "lpm-mcp"}}}\n'
+            '  ~/.cursor/mcp.json -> {"mcpServers": {"cc-port": {"command": "cc-port-mcp"}}}\n'
             "Example for Claude Code:\n"
-            "  claude mcp add lpm -- lpm-mcp\n"
+            "  claude mcp add cc-port -- cc-port-mcp\n"
             "Then restart your IDE."
         )
     else:
@@ -2262,7 +2262,7 @@ def cmd_install_self(
 def cmd_platforms() -> None:
     """Show configured platforms and their directories."""
     cfg = _load()
-    table = Table(title="LPM platforms")
+    table = Table(title="CC Port platforms")
     table.add_column("Platform", style="bold")
     table.add_column("Enabled")
     table.add_column("Skills Dir")
@@ -2324,7 +2324,7 @@ def cmd_link(
 ) -> None:
     """Link registry skills into a project for AI auto-discovery.
 
-    Creates .cursor/rules/lpm-skills.md (Cursor Rule index) and symlinks
+    Creates .cursor/rules/cc-port-skills.md (Cursor Rule index) and symlinks
     in .cursor/skills/ pointing to globally-installed skill directories.
     AI agents reading the rule file will automatically know which skills
     are available and when to use them.
@@ -2357,7 +2357,7 @@ def cmd_unlink(
         help="Project root directory (defaults to CWD).",
     ),
 ) -> None:
-    """Remove all LPM links and the skill index from a project."""
+    """Remove all CC Port links and the skill index from a project."""
     from ..services.linker import unlink
 
     project_path = project.resolve()
@@ -2366,13 +2366,13 @@ def cmd_unlink(
     if removed:
         console.print(f"[green]Removed {len(removed)} symlink(s):[/green] {', '.join(removed)}")
     if rule_removed:
-        console.print("[green]Removed[/green] lpm-skills.md rule file")
+        console.print("[green]Removed[/green] cc-port-skills.md rule file")
     if not removed and not rule_removed:
         console.print("[yellow]Nothing to unlink.[/yellow]")
 
 
 def _find_project_root() -> Path:
-    """Locate the LPM project root by walking up from this file."""
+    """Locate the CC Port project root by walking up from this file."""
     here = Path(__file__).resolve()
     for candidate in [here.parent, *here.parents]:
         if (candidate / "SKILL.md").is_file() and (candidate / "pyproject.toml").is_file():

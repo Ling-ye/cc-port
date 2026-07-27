@@ -1,6 +1,6 @@
 import { Activity, Languages } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { lpmAction } from "@/api/client";
+import { ccPortAction } from "@/api/client";
 import {
   createTranslator,
   displayError,
@@ -18,7 +18,7 @@ import { GuideView } from "@/features/guide/GuideView";
 import { ResourcesView } from "@/features/resources/ResourcesView";
 import type { ScanScope } from "@/features/resources/ScanLocalDialog";
 import { SettingsView } from "@/features/settings/SettingsView";
-import type { AssetInventory, DiagnosticsState, DoctorCheck } from "@/types/lpm";
+import type { AssetInventory, DiagnosticsState, DoctorCheck } from "@/types/cc-port";
 
 type RemoteInventoryStatus = Pick<
   AssetInventory,
@@ -93,7 +93,7 @@ export default function App() {
   }
 
   async function requestInventory(scope: ScanScope | null, refreshRemote: boolean) {
-    return lpmAction<AssetInventory>("asset_inventory", {
+    return ccPortAction<AssetInventory>("asset_inventory", {
       scan_local: scope !== null,
       ...(scope || {}),
       refresh_remote: refreshRemote,
@@ -185,7 +185,7 @@ export default function App() {
     setDiagnostics({ phase: "running", checks: null, error: "" });
     const operation = (async () => {
       try {
-        const result = await lpmAction<{ checks: DoctorCheck[] }>("doctor");
+        const result = await ccPortAction<{ checks: DoctorCheck[] }>("doctor");
         const hasIssues = result.checks.some(
           (check) => check.status === "warning" || check.status === "error",
         );
@@ -291,9 +291,9 @@ export default function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">L</div>
+          <div className="brand-mark">CC</div>
           <div>
-            <strong>LPM</strong>
+            <strong>CC Port</strong>
             <span>{t("brand.subtitle")}</span>
           </div>
         </div>

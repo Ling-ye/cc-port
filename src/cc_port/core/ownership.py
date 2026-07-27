@@ -1,4 +1,4 @@
-"""Ownership markers for directories managed by LPM."""
+"""Ownership markers for directories managed by CC Port."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any
 from .config import default_state_dir
 from .models import RegistryItem
 
-MANAGED_MARKER = ".lpm-managed.json"
+MANAGED_MARKER = ".cc-port-managed.json"
 MCP_OWNERSHIP_VERSION = 2
 
 
@@ -33,7 +33,7 @@ def read_managed_marker(target: Path) -> dict[str, Any] | None:
 
 def managed_resource_key(target: Path) -> str:
     marker = read_managed_marker(target)
-    if not marker or marker.get("managed_by") != "lpm":
+    if not marker or marker.get("managed_by") != "cc-port":
         return ""
     stored_key = str(marker.get("resource_key") or "")
     if stored_key:
@@ -43,7 +43,7 @@ def managed_resource_key(target: Path) -> str:
     return f"{kind}:{name}" if kind and name else ""
 
 
-def is_lpm_managed(
+def is_cc_port_managed(
     target: Path,
     *,
     resource_name: str | None = None,
@@ -53,7 +53,7 @@ def is_lpm_managed(
     if not target.is_dir():
         return False
     marker = read_managed_marker(target)
-    if not marker or marker.get("managed_by") != "lpm":
+    if not marker or marker.get("managed_by") != "cc-port":
         return False
     stored_name = str(marker.get("resource") or "")
     stored_kind = str(marker.get("kind") or "")
@@ -77,12 +77,12 @@ def write_managed_marker(
     *,
     platform: str,
 ) -> Path | None:
-    """Mark a copied directory as owned by LPM."""
+    """Mark a copied directory as owned by CC Port."""
     if not target.is_dir():
         return None
     marker = managed_marker_path(target)
     payload = {
-        "managed_by": "lpm",
+        "managed_by": "cc-port",
         "resource": entry.name,
         "kind": entry.kind,
         "resource_key": entry.resource_key,
@@ -114,7 +114,7 @@ def managed_mcp_resource_key(target: Path, server_name: str) -> str:
     return f"{kind}:{name}" if name else ""
 
 
-def is_lpm_managed_mcp(
+def is_cc_port_managed_mcp(
     target: Path,
     server_name: str,
     *,
@@ -143,7 +143,7 @@ def is_lpm_managed_mcp(
     return not resource_name or not stored_name or stored_name == resource_name
 
 
-def mark_lpm_managed_mcp(
+def mark_cc_port_managed_mcp(
     target: Path,
     server_name: str,
     *,
@@ -164,7 +164,7 @@ def mark_lpm_managed_mcp(
     return _write_mcp_ownership(state)
 
 
-def unmark_lpm_managed_mcp(target: Path, server_name: str) -> None:
+def unmark_cc_port_managed_mcp(target: Path, server_name: str) -> None:
     state = _read_mcp_ownership()
     target_key = _target_key(target)
     servers = state["targets"].get(target_key)

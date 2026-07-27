@@ -1,12 +1,12 @@
 [package]
-name = "lpm-desktop"
-version = "0.1.0"
-description = "Desktop UI for LingyePluginMarketplace"
+name = "cc-port-desktop"
+version = "0.5.0"
+description = "Desktop UI for CC Port"
 authors = ["Lingye"]
 edition = "2021"
 
 [lib]
-name = "lpm_desktop_lib"
+name = "cc_port_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

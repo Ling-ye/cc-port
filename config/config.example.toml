@@ -1,10 +1,10 @@
-# LingyePluginMarketplace configuration file.
-# Copy this to ~/.config/lpm/config.toml and fill in your values.
-# On Windows it lives at %USERPROFILE%\.config\lpm\config.toml.
+# CC Port configuration file.
+# Copy this to ~/.config/cc-port/config.toml and fill in your values.
+# On Windows it lives at %USERPROFILE%\.config\cc-port\config.toml.
 
 [github]
 # Optional GitHub API token for CLI/MCP publishing and repository management.
-# LPM_GITHUB_TOKEN may be used instead and takes precedence.
+# CC_PORT_GITHUB_TOKEN may be used instead and takes precedence.
 # The desktop app neither reads nor writes this field for repository binding.
 token = ""
 
@@ -12,8 +12,8 @@ token = ""
 owner = ""
 
 # Optional prefix prepended to every newly created repo, e.g.
-# "lpm-" produces github.com/<owner>/lpm-<name>.
-repo_prefix = "lpm-"
+# "cc-port-" produces github.com/<owner>/cc-port-<name>.
+repo_prefix = "cc-port-"
 
 # Default visibility for newly created repositories.
 default_private = true
@@ -29,7 +29,7 @@ target = "~/.cursor/skills"
 
 [resources]
 # Private data repository for your selected resources.  You can choose any
-# repo name; if local_path is empty, LPM uses ~/<repo_name>.
+# repo name; if local_path is empty, CC Port uses ~/<repo_name>.
 repo_name = "LingyeAIResources"
 repo_url = ""
 local_path = ""
@@ -39,7 +39,7 @@ branch = "main"
 credential_mode = "native"
 
 [state]
-# Wait time when another LPM process is writing the same target.
+# Wait time when another CC Port process is writing the same target.
 lock_timeout_seconds = 10
 
 # Local operation and backup cleanup defaults. Cleanup is never automatic.
@@ -48,7 +48,7 @@ keep_latest_operations = 20
 max_backup_mb = 2048
 
 # ---- Platform configuration ----
-# New configurations enable every complete writable preset. LPM may create
+# New configurations enable every complete writable preset. CC Port may create
 # these directories during sync even when the corresponding tool is absent.
 
 [platforms.codex]
