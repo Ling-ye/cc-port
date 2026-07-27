@@ -1,0 +1,18 @@
+title = "CC Port Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented fake credentials used by secret-blocking and redaction tests"
+targetRules = ["generic-api-key"]
+stopwords = [
+  "ghp_1234567890abcdef1234",
+  "sk_test_secret_1234567890",
+  "gho_1234567890abcdef",
+  "sk_test_secret_123456789",
+  "ghp_1234567890abcdefghijkl",
+  "ghp_cursor_secret_1234567890",
+  "sk_test_skill_secret_123456",
+  "ghp_1234567890abcd",
+]
