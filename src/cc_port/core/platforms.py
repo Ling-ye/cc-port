@@ -1,8 +1,8 @@
 """Platform profiles for AI coding tools.
 
-Each platform declares where skills, MCP configs, and rules should be
-installed.  The user enables one or more platforms in their config.toml
-under ``[platforms.<name>]`` sections.
+Each platform declares where skills, MCP configs, rules, prompts, and plugins
+should be installed. The user enables one or more platforms in their
+config.toml under ``[platforms.<name>]`` sections.
 
 Built-in presets cover popular tools; custom platforms can be added purely
 via config.toml without changing code.

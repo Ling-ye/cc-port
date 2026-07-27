@@ -501,6 +501,120 @@ try {
         Assert-Equal -Expected 2 -Actual @(Get-CcPortWindowsPackageArtifacts -ReleaseDirectory $packages).Count -Message "MSI and NSIS should pass"
     }
 
+    Invoke-Test "Rust release paths are remapped and restored" {
+        $testRepo = Join-Path $tempRoot "repo with spaces"
+        $hadEncoded = Test-Path Env:CARGO_ENCODED_RUSTFLAGS
+        $priorEncoded = $env:CARGO_ENCODED_RUSTFLAGS
+        $hadRustFlags = Test-Path Env:RUSTFLAGS
+        $priorRustFlags = $env:RUSTFLAGS
+        Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue
+        Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+        $state = $null
+        try {
+            $state = Enter-CcPortRustPathRemapping -RepoRoot $testRepo
+            $separator = [string][char]0x1F
+            $flags = @($env:CARGO_ENCODED_RUSTFLAGS -split $separator)
+            $fullRepo = [IO.Path]::GetFullPath($testRepo).TrimEnd("\")
+            Assert-True -Condition ($flags -contains "--remap-path-prefix=$fullRepo=cc-port") -Message "Repository path remap"
+            Assert-True -Condition ($flags -contains "--remap-path-prefix=$($fullRepo.Replace('\', '/'))=cc-port") -Message "Slash-normalized repository path remap"
+            Assert-True -Condition (-not (Test-Path Env:RUSTFLAGS)) -Message "Encoded flags should preserve spaces without RUSTFLAGS"
+        } finally {
+            if ($null -ne $state) {
+                Exit-CcPortRustPathRemapping -State $state
+            }
+            if ($hadEncoded) {
+                $env:CARGO_ENCODED_RUSTFLAGS = $priorEncoded
+            } else {
+                Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue
+            }
+            if ($hadRustFlags) {
+                $env:RUSTFLAGS = $priorRustFlags
+            } else {
+                Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Invoke-Test "Packaged binary host paths are rejected in common encodings" {
+        $sensitivePath = "C:\Users\builder-name\source"
+        $cleanBinary = Join-Path $tempRoot "clean-binary.exe"
+        $utf8Binary = Join-Path $tempRoot "utf8-path.exe"
+        $utf16Binary = Join-Path $tempRoot "utf16-path.exe"
+        [IO.File]::WriteAllBytes($cleanBinary, [Text.Encoding]::UTF8.GetBytes("release artifact"))
+        [IO.File]::WriteAllBytes($utf8Binary, [Text.Encoding]::UTF8.GetBytes("prefix $sensitivePath suffix"))
+        [IO.File]::WriteAllBytes($utf16Binary, [Text.Encoding]::Unicode.GetBytes("prefix $sensitivePath suffix"))
+
+        Assert-CcPortBinaryOmitsHostPaths -Path $cleanBinary -SensitivePaths @($sensitivePath)
+        Assert-Throws -Action {
+            Assert-CcPortBinaryOmitsHostPaths -Path $utf8Binary -SensitivePaths @($sensitivePath)
+        } -Pattern "contains a build host path" -Message "UTF-8 host path should fail"
+        Assert-Throws -Action {
+            Assert-CcPortBinaryOmitsHostPaths -Path $utf16Binary -SensitivePaths @($sensitivePath)
+        } -Pattern "contains a build host path" -Message "UTF-16 host path should fail"
+    }
+
+    Invoke-Test "Release manifest versions agree" {
+        Assert-Equal -Expected "0.5.1" -Actual (Get-CcPortReleaseVersion -RepoRoot $RepoRoot) -Message "Release version"
+    }
+
+    Invoke-Test "Release manifest mismatch is rejected" {
+        $versionRoot = Join-Path $tempRoot "version-mismatch"
+        $versionFiles = @(
+            "pyproject.toml",
+            "src\cc_port\__init__.py",
+            "desktop\package.json",
+            "desktop\package-lock.json",
+            "desktop\src-tauri\Cargo.toml",
+            "desktop\src-tauri\Cargo.lock",
+            "desktop\src-tauri\tauri.conf.json",
+            "SKILL.md",
+            "docs\releases\v0.5.1.md",
+            "docs\releases\v0.5.1.en.md"
+        )
+        foreach ($relativePath in $versionFiles) {
+            $destination = Join-Path $versionRoot $relativePath
+            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $RepoRoot $relativePath) -Destination $destination
+        }
+        [IO.File]::WriteAllText(
+            (Join-Path $versionRoot "src\cc_port\__init__.py"),
+            '__version__ = "9.9.9"'
+        )
+
+        Assert-Throws -Action {
+            Get-CcPortReleaseVersion -RepoRoot $versionRoot | Out-Null
+        } -Pattern "versions do not agree" -Message "Version mismatch should block release"
+    }
+
+    Invoke-Test "Public release bundle contains only installer and checksum" {
+        $verified = Join-Path $tempRoot "verified-public-source"
+        $msiDirectory = Join-Path $verified "msi"
+        $nsisDirectory = Join-Path $verified "nsis"
+        $publishRoot = Join-Path $tempRoot "public-output"
+        New-Item -ItemType Directory -Path $msiDirectory, $nsisDirectory | Out-Null
+        [IO.File]::WriteAllText((Join-Path $msiDirectory "CC Port_0.5.1_x64_en-US.msi"), "msi")
+        $sourceInstaller = Join-Path $nsisDirectory "CC Port_0.5.1_x64-setup.exe"
+        [IO.File]::WriteAllText($sourceInstaller, "verified installer")
+
+        $artifacts = @(Publish-CcPortPublicReleaseBundle `
+            -VerifiedReleaseDirectory $verified `
+            -PublishRoot $publishRoot `
+            -Version "0.5.1")
+        $final = Join-Path $publishRoot "v0.5.1"
+        $installerName = "cc-port_0.5.1_windows_x64_setup.exe"
+        $installer = Join-Path $final $installerName
+        $checksum = Join-Path $final "SHA256SUMS.txt"
+        $files = @(Get-ChildItem -LiteralPath $final -File | Sort-Object Name)
+        $expectedHash = (Get-FileHash -LiteralPath $sourceInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+
+        Assert-Equal -Expected 2 -Actual $files.Count -Message "Public artifact count"
+        Assert-Equal -Expected $installerName -Actual $files[0].Name -Message "Public installer name"
+        Assert-Equal -Expected "SHA256SUMS.txt" -Actual $files[1].Name -Message "Public checksum name"
+        Assert-Equal -Expected "verified installer" -Actual ([IO.File]::ReadAllText($installer)) -Message "Public installer content"
+        Assert-Equal -Expected "$expectedHash  $installerName`n" -Actual ([IO.File]::ReadAllText($checksum)) -Message "Checksum content"
+        Assert-Equal -Expected 2 -Actual $artifacts.Count -Message "Returned public artifact count"
+    }
+
     Invoke-Test "Verified release replacement" {
         $publishRoot = Join-Path $tempRoot "publish-success"
         $final = Join-Path $publishRoot "x86_64-pc-windows-msvc"
@@ -584,6 +698,11 @@ try {
                 -Message "Every release setup call must bind the non-interactive switch explicitly"
         }
         Assert-True -Condition ($source -notmatch '@setupArguments') -Message "Array splatting must not be used for named setup switches"
+        $lastExitInitialization = $source.IndexOf('$global:LASTEXITCODE = 0')
+        $firstSetupCall = $source.IndexOf('& (Join-Path $PSScriptRoot "setup.ps1")')
+        Assert-True `
+            -Condition ($lastExitInitialization -ge 0 -and $lastExitInitialization -lt $firstSetupCall) `
+            -Message "Release must initialize LASTEXITCODE before invoking setup from a fresh strict-mode session"
     }
 
     Invoke-Test "Minimal Windows PATH stays short" {

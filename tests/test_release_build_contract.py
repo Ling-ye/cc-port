@@ -115,6 +115,38 @@ def test_artifacts_are_hashed_before_the_verified_release_is_published() -> None
     assert hash_position < publish_position
 
 
+def test_release_generates_a_two_file_public_upload_bundle() -> None:
+    source = _source()
+
+    assert "Get-CcPortReleaseVersion" in source
+    assert "Publish-CcPortPublicReleaseBundle" in source
+    assert 'Join-Path $repoRoot "release\\publish"' in source
+    assert "cc-port_${Version}_windows_x64_setup.exe" in (
+        ROOT / "scripts" / "desktop-build.psm1"
+    ).read_text(encoding="utf-8")
+    assert "SHA256SUMS.txt" in source
+    assert "Uploading GitHub Release" not in source
+    assert "signtool" not in source.lower()
+
+
+def test_release_remaps_rust_build_paths_only_around_tauri_build() -> None:
+    source = _source()
+
+    enter_position = source.index("Enter-CcPortRustPathRemapping")
+    tauri_position = source.index('Description "Building Tauri MSI and NSIS bundles"')
+    exit_position = source.index("Exit-CcPortRustPathRemapping")
+    privacy_position = source.index('Description "Checking packaged binaries for host paths"')
+
+    assert enter_position < tauri_position < exit_position < privacy_position
+    assert "Assert-CcPortBinaryOmitsHostPaths" in source
+    assert "CARGO_ENCODED_RUSTFLAGS" in (
+        ROOT / "scripts" / "desktop-build.psm1"
+    ).read_text(encoding="utf-8")
+    assert "--remap-path-prefix=" in (
+        ROOT / "scripts" / "desktop-build.psm1"
+    ).read_text(encoding="utf-8")
+
+
 def test_release_declares_external_git_and_has_no_oauth_broker_gate() -> None:
     source = _source()
 
@@ -122,6 +154,22 @@ def test_release_declares_external_git_and_has_no_oauth_broker_gate() -> None:
     assert "Get-GithubOAuthBrokerBuildStatus" not in source
     assert "BUILTIN_GITHUB_OAUTH_BROKER_URL" not in source
     assert "GitHub OAuth broker" not in source
+
+
+def test_ci_scans_full_git_history_and_markdown_links() -> None:
+    source = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "permissions:\n  contents: read\n  pull-requests: read" in source
+    assert "fetch-depth: 0" in source
+    assert "GITLEAKS_VERSION: \"8.30.1\"" in source
+    assert (
+        "gitleaks git . --config .gitleaks.toml --redact --log-opts=--all"
+        in source
+    )
+    assert "Test (includes Markdown link validation)" in source
+    assert "Verify acknowledged glib advisory is absent from Windows target" in source
+    assert "--target x86_64-pc-windows-msvc" in source
+    assert "glib v0.18.5" in source
 
 
 def test_tauri_ci_stages_external_bin_placeholder_before_cargo_check() -> None:

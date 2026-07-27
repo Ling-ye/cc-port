@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from cc_port.core.config import (
+    DEFAULT_RESOURCE_REPO_NAME,
+    LEGACY_RESOURCE_REPO_NAME,
     Config,
     GitConfig,
     GithubConfig,
@@ -106,6 +108,15 @@ def test_legacy_resource_credential_mode_defaults_to_auto(tmp_path: Path) -> Non
     ]
 
 
+def test_existing_config_without_resource_name_keeps_legacy_default(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[github]\nowner = \"example\"\n", encoding="utf-8")
+
+    loaded = load_config(path)
+
+    assert loaded.resources.repo_name == LEGACY_RESOURCE_REPO_NAME
+
+
 def test_new_config_uses_private_cc_port_defaults_and_enables_complete_presets(
     tmp_path: Path,
 ) -> None:
@@ -114,6 +125,7 @@ def test_new_config_uses_private_cc_port_defaults_and_enables_complete_presets(
     assert loaded.github.owner == ""
     assert loaded.github.repo_prefix == "cc-port-"
     assert loaded.github.default_private is True
+    assert loaded.resources.repo_name == DEFAULT_RESOURCE_REPO_NAME == "cc-port-resources"
     assert loaded.resources.branch == "main"
     assert loaded.resources.credential_mode == "native"
     assert {profile.name for profile in loaded.platforms.enabled()} == {

@@ -98,7 +98,10 @@ from ..services.state_retention import (
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="CC Port: publish, register and sync skills, MCP servers and rules across AI coding platforms.",
+    help=(
+        "CC Port: publish, register and sync skills, MCP servers, rules, prompts "
+        "and plugins across AI coding platforms."
+    ),
 )
 resource_app = typer.Typer(help="Manage the private CC Port resource repository.")
 asset_app = typer.Typer(
@@ -216,7 +219,7 @@ def cmd_resource_init(
         None,
         "--name",
         "-n",
-        help="Private GitHub resource repo name. Defaults to config or LingyeAIResources.",
+        help="Private GitHub resource repo name. Defaults to config or cc-port-resources.",
     ),
 ) -> None:
     """Create/connect the private resource repo and generate its structure."""

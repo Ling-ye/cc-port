@@ -813,6 +813,316 @@ function Get-CcPortWindowsPackageArtifacts {
     return @($msi + $nsis)
 }
 
+function Enter-CcPortRustPathRemapping {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $state = [pscustomobject][ordered]@{
+        HadEncodedRustFlags = Test-Path Env:CARGO_ENCODED_RUSTFLAGS
+        EncodedRustFlags = $env:CARGO_ENCODED_RUSTFLAGS
+        HadRustFlags = Test-Path Env:RUSTFLAGS
+        RustFlags = $env:RUSTFLAGS
+        SensitivePaths = @()
+    }
+    $cargoHome = if ($env:CARGO_HOME) {
+        $env:CARGO_HOME
+    } elseif ($env:USERPROFILE) {
+        Join-Path $env:USERPROFILE ".cargo"
+    } else {
+        $null
+    }
+    $rustupHome = if ($env:RUSTUP_HOME) {
+        $env:RUSTUP_HOME
+    } elseif ($env:USERPROFILE) {
+        Join-Path $env:USERPROFILE ".rustup"
+    } else {
+        $null
+    }
+    # rustc applies the last matching prefix, so broad user-home mappings come
+    # first and the deterministic Cargo/Rustup/repository names come last.
+    $candidateMappings = @(
+        [pscustomobject]@{ Source = $env:USERPROFILE; Target = "user-home" },
+        [pscustomobject]@{ Source = $cargoHome; Target = "cargo-home" },
+        [pscustomobject]@{ Source = $rustupHome; Target = "rustup-home" },
+        [pscustomobject]@{ Source = $RepoRoot; Target = "cc-port" }
+    )
+    $seen = @{}
+    $flags = New-Object System.Collections.Generic.List[string]
+    foreach ($mapping in $candidateMappings) {
+        if ([string]::IsNullOrWhiteSpace($mapping.Source)) {
+            continue
+        }
+        $fullSource = [IO.Path]::GetFullPath([string]$mapping.Source).TrimEnd("\", "/")
+        foreach ($sourceVariant in @($fullSource, $fullSource.Replace("\", "/"))) {
+            if (-not $seen.ContainsKey($sourceVariant)) {
+                $seen[$sourceVariant] = $true
+                $flags.Add("--remap-path-prefix=$sourceVariant=$($mapping.Target)")
+            }
+        }
+    }
+    if ($flags.Count -eq 0) {
+        throw "No Rust path prefixes were available for release remapping."
+    }
+    $state.SensitivePaths = @($seen.Keys)
+
+    $separator = [string][char]0x1F
+    $encodedRemaps = $flags.ToArray() -join $separator
+    if ($state.HadEncodedRustFlags) {
+        $existing = [string]$state.EncodedRustFlags
+        $env:CARGO_ENCODED_RUSTFLAGS = if ($existing) {
+            $existing + $separator + $encodedRemaps
+        } else {
+            $encodedRemaps
+        }
+    } elseif ($state.HadRustFlags) {
+        $quotedRemaps = @($flags | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' })
+        $env:RUSTFLAGS = ([string]$state.RustFlags).TrimEnd() + " " + ($quotedRemaps -join " ")
+    } else {
+        $env:CARGO_ENCODED_RUSTFLAGS = $encodedRemaps
+    }
+    return $state
+}
+
+function Assert-CcPortBinaryOmitsHostPaths {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$SensitivePaths
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Packaged binary does not exist: $fullPath"
+    }
+    $bytes = [IO.File]::ReadAllBytes($fullPath)
+    $decoded = @(
+        [Text.Encoding]::UTF8.GetString($bytes),
+        [Text.Encoding]::Unicode.GetString($bytes),
+        [Text.Encoding]::BigEndianUnicode.GetString($bytes)
+    )
+    foreach ($sensitivePath in $SensitivePaths | Sort-Object -Unique) {
+        if ([string]::IsNullOrWhiteSpace($sensitivePath)) {
+            continue
+        }
+        foreach ($content in $decoded) {
+            if ($content.IndexOf($sensitivePath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                throw "Packaged binary contains a build host path: $fullPath"
+            }
+        }
+    }
+}
+
+function Exit-CcPortRustPathRemapping {
+    param([Parameter(Mandatory = $true)]$State)
+
+    if ($State.HadEncodedRustFlags) {
+        $env:CARGO_ENCODED_RUSTFLAGS = $State.EncodedRustFlags
+    } else {
+        Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue
+    }
+    if ($State.HadRustFlags) {
+        $env:RUSTFLAGS = $State.RustFlags
+    } else {
+        Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-CcPortTomlSectionVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Section
+    )
+
+    $content = [IO.File]::ReadAllText($Path)
+    $sectionPattern = "(?ms)^\[" + [regex]::Escape($Section) + "\]\s*\r?\n(?<body>.*?)(?=^\[|\z)"
+    $sectionMatch = [regex]::Match($content, $sectionPattern)
+    if (-not $sectionMatch.Success) {
+        throw "Version section [$Section] was not found: $Path"
+    }
+    $versionMatch = [regex]::Match(
+        $sectionMatch.Groups["body"].Value,
+        '(?m)^version\s*=\s*"(?<version>[^"]+)"\s*$'
+    )
+    if (-not $versionMatch.Success) {
+        throw "Version was not found in [$Section]: $Path"
+    }
+    return $versionMatch.Groups["version"].Value
+}
+
+function Get-CcPortCargoLockVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    $content = [IO.File]::ReadAllText($Path)
+    foreach ($block in [regex]::Split($content, '(?m)^\[\[package\]\]\s*$')) {
+        $nameMatch = [regex]::Match($block, '(?m)^name\s*=\s*"(?<name>[^"]+)"\s*$')
+        if ($nameMatch.Success -and $nameMatch.Groups["name"].Value -eq $PackageName) {
+            $versionMatch = [regex]::Match(
+                $block,
+                '(?m)^version\s*=\s*"(?<version>[^"]+)"\s*$'
+            )
+            if (-not $versionMatch.Success) {
+                throw "Version was not found for Cargo.lock package ${PackageName}: $Path"
+            }
+            return $versionMatch.Groups["version"].Value
+        }
+    }
+    throw "Cargo.lock package was not found: $PackageName ($Path)"
+}
+
+function Get-CcPortReleaseVersion {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $root = [IO.Path]::GetFullPath($RepoRoot)
+    $packageJsonPath = Join-Path $root "desktop\package.json"
+    $packageLockPath = Join-Path $root "desktop\package-lock.json"
+    $tauriConfigPath = Join-Path $root "desktop\src-tauri\tauri.conf.json"
+    $pythonInitPath = Join-Path $root "src\cc_port\__init__.py"
+    $skillPath = Join-Path $root "SKILL.md"
+    $packageJson = [IO.File]::ReadAllText($packageJsonPath) | ConvertFrom-Json
+    $packageLockText = [IO.File]::ReadAllText($packageLockPath)
+    $tauriConfig = [IO.File]::ReadAllText($tauriConfigPath) | ConvertFrom-Json
+    $packageLockVersionMatch = [regex]::Match(
+        $packageLockText,
+        '(?m)^\s{2}"version":\s*"(?<version>[^"]+)",?\s*$'
+    )
+    $packageLockRootVersionMatch = [regex]::Match(
+        $packageLockText,
+        '(?ms)^\s{4}"":\s*\{\s*\r?\n.*?^\s{6}"version":\s*"(?<version>[^"]+)",?\s*$'
+    )
+    $pythonVersionMatch = [regex]::Match(
+        [IO.File]::ReadAllText($pythonInitPath),
+        '(?m)^__version__\s*=\s*"(?<version>[^"]+)"\s*$'
+    )
+    $skillVersionMatch = [regex]::Match(
+        [IO.File]::ReadAllText($skillPath),
+        '(?m)^\s{2}version:\s*"(?<version>[^"]+)"\s*$'
+    )
+    if (-not $pythonVersionMatch.Success) {
+        throw "Python package version was not found: $pythonInitPath"
+    }
+    if (-not $skillVersionMatch.Success) {
+        throw "Skill metadata version was not found: $skillPath"
+    }
+    if (-not $packageLockVersionMatch.Success) {
+        throw "Top-level package version was not found: $packageLockPath"
+    }
+    if (-not $packageLockRootVersionMatch.Success) {
+        throw "Root package version was not found: $packageLockPath"
+    }
+
+    $versions = [ordered]@{
+        "pyproject.toml" = Get-CcPortTomlSectionVersion `
+            -Path (Join-Path $root "pyproject.toml") -Section "project"
+        "src/cc_port/__init__.py" = $pythonVersionMatch.Groups["version"].Value
+        "desktop/package.json" = [string]$packageJson.version
+        "desktop/package-lock.json" = $packageLockVersionMatch.Groups["version"].Value
+        "desktop/package-lock.json packages root" = `
+            $packageLockRootVersionMatch.Groups["version"].Value
+        "desktop/src-tauri/Cargo.toml" = Get-CcPortTomlSectionVersion `
+            -Path (Join-Path $root "desktop\src-tauri\Cargo.toml") -Section "package"
+        "desktop/src-tauri/Cargo.lock" = Get-CcPortCargoLockVersion `
+            -Path (Join-Path $root "desktop\src-tauri\Cargo.lock") -PackageName "cc-port-desktop"
+        "desktop/src-tauri/tauri.conf.json" = [string]$tauriConfig.version
+        "SKILL.md" = $skillVersionMatch.Groups["version"].Value
+    }
+    $uniqueVersions = @($versions.Values | Sort-Object -Unique)
+    if ($uniqueVersions.Count -ne 1) {
+        $details = @($versions.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })
+        throw "Release versions do not agree: $($details -join '; ')"
+    }
+    $version = [string]$uniqueVersions[0]
+    if ($version -notmatch '^\d+\.\d+\.\d+$') {
+        throw "Release version must use x.y.z format: $version"
+    }
+    foreach ($releaseNotes in @(
+        (Join-Path $root "docs\releases\v$version.md"),
+        (Join-Path $root "docs\releases\v$version.en.md")
+    )) {
+        if (-not (Test-Path -LiteralPath $releaseNotes -PathType Leaf)) {
+            throw "Release notes were not found: $releaseNotes"
+        }
+    }
+    return $version
+}
+
+function Publish-CcPortPublicReleaseBundle {
+    param(
+        [Parameter(Mandatory = $true)][string]$VerifiedReleaseDirectory,
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+
+    if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+        throw "Public release version must use x.y.z format: $Version"
+    }
+    $verified = [IO.Path]::GetFullPath($VerifiedReleaseDirectory)
+    if (-not (Test-Path -LiteralPath $verified -PathType Container)) {
+        throw "Verified release directory does not exist: $verified"
+    }
+    $packages = @(Get-CcPortWindowsPackageArtifacts -ReleaseDirectory $verified)
+    $nsis = @($packages | Where-Object { $_.Name -ilike "*-setup.exe" })
+    if ($nsis.Count -ne 1) {
+        throw "Verified release must contain exactly one NSIS installer; found $($nsis.Count)."
+    }
+
+    $root = [IO.Path]::GetFullPath($PublishRoot)
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+    }
+    $final = Join-Path $root "v$Version"
+    $staging = Join-Path $root (".v$Version.staging-" + [guid]::NewGuid().ToString("N"))
+    Assert-CcPortDirectChild -Path $final -Parent $root | Out-Null
+    Assert-CcPortDirectChild -Path $staging -Parent $root | Out-Null
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    try {
+        $installerName = "cc-port_${Version}_windows_x64_setup.exe"
+        $installerPath = Join-Path $staging $installerName
+        $checksumPath = Join-Path $staging "SHA256SUMS.txt"
+        Copy-Item -LiteralPath $nsis[0].FullName -Destination $installerPath
+        $sourceHash = (Get-FileHash -LiteralPath $nsis[0].FullName -Algorithm SHA256).Hash
+        $installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($sourceHash -ine $installerHash) {
+            throw "Public installer hash did not match the verified NSIS installer."
+        }
+        $encoding = New-Object Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText(
+            $checksumPath,
+            "$installerHash  $installerName`n",
+            $encoding
+        )
+
+        $files = @(Get-ChildItem -LiteralPath $staging -File)
+        if ($files.Count -ne 2) {
+            throw "Public release bundle must contain exactly two files; found $($files.Count)."
+        }
+        $expectedChecksum = "$installerHash  $installerName`n"
+        if ([IO.File]::ReadAllText($checksumPath) -cne $expectedChecksum) {
+            throw "Public release checksum file did not match the installer."
+        }
+
+        Publish-CcPortStagingDirectory `
+            -StagingDirectory $staging `
+            -FinalDirectory $final `
+            -ReleaseRoot $root
+
+        $artifacts = New-Object System.Collections.Generic.List[object]
+        foreach ($file in Get-ChildItem -LiteralPath $final -File | Sort-Object Name) {
+            $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            $artifacts.Add([pscustomobject][ordered]@{
+                path = $file.FullName
+                bytes = $file.Length
+                sha256 = $hash.Hash
+            })
+        }
+        return $artifacts.ToArray()
+    } finally {
+        if (Test-Path -LiteralPath $staging) {
+            Remove-CcPortSafePath -Path $staging -Parent $root
+        }
+    }
+}
+
 function Publish-CcPortStagingDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$StagingDirectory,
@@ -865,8 +1175,11 @@ function Publish-CcPortStagingDirectory {
 
 Export-ModuleMember -Function @(
     "Add-CcPortPathDirectories",
+    "Assert-CcPortBinaryOmitsHostPaths",
     "Assert-CcPortDirectChild",
     "Enable-CcPortVisualStudioEnvironment",
+    "Enter-CcPortRustPathRemapping",
+    "Exit-CcPortRustPathRemapping",
     "Get-CcPortExpectedTarget",
     "Get-CcPortContentFingerprint",
     "Get-CcPortDependencyInputFingerprint",
@@ -875,6 +1188,7 @@ Export-ModuleMember -Function @(
     "Get-CcPortNpm",
     "Get-CcPortOutputExcerpt",
     "Get-CcPortPython",
+    "Get-CcPortReleaseVersion",
     "Get-CcPortRepoRoot",
     "Get-CcPortRustHostFromTuple",
     "Get-CcPortRustHostFromVerbose",
@@ -889,6 +1203,7 @@ Export-ModuleMember -Function @(
     "Get-CcPortWindowsPackageArtifacts",
     "Install-CcPortWingetPackage",
     "Invoke-CcPortNative",
+    "Publish-CcPortPublicReleaseBundle",
     "Publish-CcPortStagingDirectory",
     "Read-CcPortJsonCache",
     "Remove-CcPortSafePath",

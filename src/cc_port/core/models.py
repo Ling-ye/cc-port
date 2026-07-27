@@ -189,7 +189,7 @@ class AmbiguousResourceNameError(ValueError):
 
 
 class RegistryItem(BaseModel):
-    """A single resource (skill, MCP server config, or rule) in registry.yaml."""
+    """A skill, MCP config, rule, prompt, or plugin in registry.yaml."""
 
     name: str = Field(..., description="Lower-case, hyphenated unique identifier (<=64 chars).")
     kind: ItemKind = Field(

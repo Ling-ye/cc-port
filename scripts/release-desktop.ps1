@@ -22,6 +22,7 @@ $script:ReleaseRunId = [guid]::NewGuid().ToString("N").Substring(0, 8)
 $script:ReleasePhases = New-Object System.Collections.Generic.List[object]
 $script:ReleaseArtifacts = New-Object System.Collections.Generic.List[object]
 $script:PendingReleaseArtifacts = @()
+$script:PendingPublicReleaseArtifacts = @()
 $script:ReleaseMetricsPath = $null
 $script:ReleaseSucceeded = $false
 $script:ReleaseError = $null
@@ -559,6 +560,7 @@ function Invoke-SidecarSmokeTest {
 
 try {
     $repoRoot = Get-CcPortRepoRoot
+    $releaseVersion = Get-CcPortReleaseVersion -RepoRoot $repoRoot
     $metricsDirectory = Join-Path $repoRoot "build\metrics"
     $metricsStem = "release-$($script:ReleaseStartedAtUtc.ToString('yyyyMMdd-HHmmss'))-$($script:ReleaseRunId)"
     $script:ReleaseMetricsPath = Join-Path $metricsDirectory "$metricsStem.json"
@@ -573,6 +575,7 @@ try {
     $tauriDirectory = Join-Path $desktopDirectory "src-tauri"
     $targetReleaseDirectory = Join-Path $tauriDirectory "target\release"
     $releaseRoot = Join-Path $repoRoot "release\desktop"
+    $publicPublishRoot = Join-Path $repoRoot "release\publish"
     $desktopName = "cc-port-desktop"
     $sidecarName = "cc-port-desktop-api"
     $expectedTarget = Get-CcPortExpectedTarget
@@ -585,6 +588,7 @@ try {
     $setupPhaseIndex = $script:ReleasePhases.Count
     try {
         Invoke-ReleaseAction -Description "Preparing build environment" -CacheStatus $(if ($Clean) { "forced" } else { $null }) -Action {
+            $global:LASTEXITCODE = 0
             if ($Clean) {
                 & (Join-Path $PSScriptRoot "setup.ps1") -NonInteractive -ForceSync
             } else {
@@ -743,11 +747,24 @@ try {
         Copy-Item -LiteralPath $sourceSidecar -Destination $targetSidecar -Force
         Assert-SidecarHashesMatch -ExpectedPath $sourceSidecar -ActualPath $targetSidecar
     }
-    Invoke-ReleaseStep -Description "Building Tauri MSI and NSIS bundles" -FilePath $npm -ArgumentList @(
-        "run", "tauri", "--", "build"
-    ) -WorkingDirectory $desktopDirectory -CacheStatus $(if ($Clean) { "forced-relink" } else { "cargo-managed" })
+    $rustPathRemappingState = Enter-CcPortRustPathRemapping -RepoRoot $repoRoot
+    try {
+        Invoke-ReleaseStep -Description "Building Tauri MSI and NSIS bundles" -FilePath $npm -ArgumentList @(
+            "run", "tauri", "--", "build"
+        ) -WorkingDirectory $desktopDirectory -CacheStatus $(if ($Clean) { "forced-relink" } else { "cargo-managed" })
+    } finally {
+        Exit-CcPortRustPathRemapping -State $rustPathRemappingState
+    }
     Invoke-ReleaseAction -Description "Verifying Tauri sidecar content" -CacheStatus $null -Action {
         Assert-SidecarHashesMatch -ExpectedPath $sourceSidecar -ActualPath $targetSidecar
+    }
+    Invoke-ReleaseAction -Description "Checking packaged binaries for host paths" -CacheStatus $null -Action {
+        Assert-CcPortBinaryOmitsHostPaths `
+            -Path (Join-Path $targetReleaseDirectory "$desktopName.exe") `
+            -SensitivePaths $rustPathRemappingState.SensitivePaths
+        Assert-CcPortBinaryOmitsHostPaths `
+            -Path $targetSidecar `
+            -SensitivePaths $rustPathRemappingState.SensitivePaths
     }
 
     if (-not (Test-Path -LiteralPath $releaseRoot -PathType Container)) {
@@ -801,9 +818,24 @@ try {
             Remove-CcPortSafePath -Path $stagingDirectory -Parent $releaseRoot
         }
     }
+    Invoke-ReleaseAction -Description "Preparing public release upload bundle" -CacheStatus $null -Action {
+        $script:PendingPublicReleaseArtifacts = @(
+            Publish-CcPortPublicReleaseBundle `
+                -VerifiedReleaseDirectory $finalDirectory `
+                -PublishRoot $publicPublishRoot `
+                -Version $releaseVersion
+        )
+    }
+    foreach ($publicArtifact in $script:PendingPublicReleaseArtifacts) {
+        $script:ReleaseArtifacts.Add($publicArtifact)
+    }
+    $publicDirectory = Join-Path $publicPublishRoot "v$releaseVersion"
     $script:ReleaseSucceeded = $true
     Write-Host ""
     Write-Host "Release complete: $finalDirectory" -ForegroundColor Green
+    Write-Host "Manual upload bundle: $publicDirectory" -ForegroundColor Green
+    Write-Host "  cc-port_${releaseVersion}_windows_x64_setup.exe"
+    Write-Host "  SHA256SUMS.txt"
 } catch {
     $script:ReleaseSucceeded = $false
     $script:ReleaseError = $_.Exception.Message

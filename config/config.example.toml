@@ -30,7 +30,7 @@ target = "~/.cursor/skills"
 [resources]
 # Private data repository for your selected resources.  You can choose any
 # repo name; if local_path is empty, CC Port uses ~/<repo_name>.
-repo_name = "LingyeAIResources"
+repo_name = "cc-port-resources"
 repo_url = ""
 local_path = ""
 branch = "main"

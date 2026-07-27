@@ -26,6 +26,9 @@ HTTPS 绑定允许 Git Credential Manager 在这次用户触发的操作中打�
 
 ## 配置语义
 
+- 新配置缺少 `resources.repo_name` 时使用 `cc-port-resources`；已有配置缺少
+  该字段时继续使用旧默认 `LingyeAIResources`。兼容加载不移动、不重命名也
+  不创建远端仓库。
 - 一键绑定设置 `resources.credential_mode = "native"`，桌面资源仓库的 Git 传输使用 GCM/系统凭据，不注入全局 GitHub API Token。
 - 简化设置页不再暴露 `credential_mode`、`branch` 或 `local_path`；这些字段仍可通过 `config.toml` 与 CLI 管理。
 - 旧配置缺少该字段时视为 `auto`，继续使用 Token 优先的兼容行为；`token` 强制要求有效 Token。
@@ -51,5 +54,7 @@ HTTPS 绑定允许 Git Credential Manager 在这次用户触发的操作中打�
 - 绑定成功后界面提示“下一次远端刷新生效”；刷新前不创建用户可维护目录或下载资源。
 - 下一次远端刷新更新受管远端镜像与 commit 快照，不写 AI 工具目录，也不调用 `resource_pull`。
 - 重新绑定不移动或删除旧兼容目录；新桌面流程不暴露或依赖这些目录。
+- 新配置使用 `cc-port-resources`，已有无字段配置仍解析为
+  `LingyeAIResources`。
 - 错误、任务记录、配置和远端 URL 不包含凭据。
 - 设置页重新绑定只调用窄接口，不得通过完整配置保存覆盖隐藏字段。
