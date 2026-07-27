@@ -159,6 +159,7 @@ def test_release_declares_external_git_and_has_no_oauth_broker_gate() -> None:
 def test_ci_scans_full_git_history_and_markdown_links() -> None:
     source = CI_WORKFLOW.read_text(encoding="utf-8")
 
+    assert "permissions:\n  contents: read\n  pull-requests: read" in source
     assert "fetch-depth: 0" in source
     assert "GITLEAKS_VERSION: \"8.30.1\"" in source
     assert (

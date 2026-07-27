@@ -137,6 +137,8 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps
 - 一条 `release-desktop.ps1` 命令完成所有门禁，生成并哈希桌面 exe、sidecar、MSI 和 NSIS，且 sidecar 冒烟通过。
 - 发布入口必须拒绝版本不一致，并生成只含规范化 NSIS 安装器和匹配校验文件的公开目录。
 - Windows Tauri CI 必须证明正式目标依赖树不包含 `glib 0.18.5`。
+- Pull Request 中的 Gitleaks 扫描必须只授予 `contents: read` 和
+  `pull-requests: read`，不得为读取扫描范围授予写权限。
 - 公开目录中的安装器哈希必须与内部已验证 NSIS 完全一致；重复运行不得混入旧文件。
 - 解包后的桌面 EXE 与 sidecar 不得包含构建用户名、用户目录、仓库绝对路径或
   CI 工作目录；NSIS 压缩层无匹配不能代替解包产物检查。
