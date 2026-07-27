@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RELEASE_SCRIPT = ROOT / "scripts" / "release-desktop.ps1"
 SETUP_SCRIPT = ROOT / "scripts" / "setup.ps1"
 PYPROJECT = ROOT / "pyproject.toml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _source() -> str:
@@ -121,3 +122,27 @@ def test_release_declares_external_git_and_has_no_oauth_broker_gate() -> None:
     assert "Get-GithubOAuthBrokerBuildStatus" not in source
     assert "BUILTIN_GITHUB_OAUTH_BROKER_URL" not in source
     assert "GitHub OAuth broker" not in source
+
+
+def test_tauri_ci_stages_external_bin_placeholder_before_cargo_check() -> None:
+    source = CI_WORKFLOW.read_text(encoding="utf-8")
+    placeholder_step = "Stage Tauri sidecar placeholder"
+    cargo_check = "cargo check --manifest-path desktop/src-tauri/Cargo.toml"
+    placeholder_start = source.index(placeholder_step)
+    cargo_check_start = source.index(cargo_check)
+    placeholder_block = source[placeholder_start:cargo_check_start]
+
+    assert (
+        '$sidecarPath = "desktop/src-tauri/binaries/'
+        'cc-port-desktop-api-x86_64-pc-windows-msvc.exe"'
+        in placeholder_block
+    )
+    assert (
+        "New-Item -ItemType Directory -Path "
+        "(Split-Path -Parent $sidecarPath) -Force | Out-Null"
+        in placeholder_block
+    )
+    assert (
+        "New-Item -ItemType File -Path $sidecarPath -Force | Out-Null"
+        in placeholder_block
+    )
