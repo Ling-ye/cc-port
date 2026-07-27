@@ -37,6 +37,7 @@
 - [KNOWN] 发布目录结构、目标三元组、缓存 schema 与事务发布语义不因项目改名而改变。置信度：HIGH。
 - [KNOWN] 文档中的安装命令、模块路径、配置路径、环境变量、可执行文件和仓库 URL 必须与新身份一致。置信度：HIGH。
 - [KNOWN] 旧命令、导入、环境变量、状态目录和所有权标记不提供读取、迁移或双写兼容层；旧数据留在原位，由新版本完全忽略。置信度：HIGH。
+- [KNOWN] GitHub Actions 的 Tauri job 目标仅为 Rust 后端检查；Tauri build script 仍会校验并复制 `externalBin`，因此 fresh checkout 必须在检查前创建新名称的零字节 sidecar 占位文件。占位文件不得提交、打包或替代发布流程构建并哈希验证的真实 sidecar。置信度：HIGH。
 
 ## 图标要求
 
@@ -60,6 +61,7 @@
 - [KNOWN] Python、NPM、Cargo、Tauri 与 Skill 元数据的组件版本均为 `0.5.0`。置信度：HIGH。
 - [KNOWN] PowerShell 构建逻辑自测使用 `CcPort` 函数名并通过。置信度：HIGH。
 - [KNOWN] sidecar 构建命令收集 `cc_port`，产物名为 `cc-port-desktop-api-{target_triple}`。置信度：HIGH。
+- [KNOWN] Tauri CI job 必须在不提交二进制文件的 fresh checkout 中通过，并保证占位文件创建发生在 `cargo check` 之前。置信度：HIGH。
 - [KNOWN] Windows 发布产物名为 `cc-port-desktop.exe`、`cc-port-desktop-api.exe`、`CC Port_0.5.0_x64_en-US.msi` 与 `CC Port_0.5.0_x64-setup.exe`。置信度：HIGH。
 - [KNOWN] 14 个 PNG 和 1 个 ICO 均可解码，尺寸与既有清单一致。置信度：HIGH。
 - [KNOWN] README、Skill 元数据、领域上下文与发布文档均声明版本 `0.5.0` 和新仓库地址。置信度：HIGH。

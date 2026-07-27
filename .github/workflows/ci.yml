@@ -70,5 +70,12 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Stage Tauri sidecar placeholder
+        shell: pwsh
+        run: |
+          $sidecarPath = "desktop/src-tauri/binaries/cc-port-desktop-api-x86_64-pc-windows-msvc.exe"
+          New-Item -ItemType Directory -Path (Split-Path -Parent $sidecarPath) -Force | Out-Null
+          New-Item -ItemType File -Path $sidecarPath -Force | Out-Null
+
       - name: Check Tauri backend
         run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
