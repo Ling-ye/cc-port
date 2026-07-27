@@ -82,7 +82,7 @@ def publish_local_skill(
         private: True = private repo, False = public, None = use config default.
         update_visibility: When True and an existing repo has a different
             visibility than requested, flip it via the GitHub API.
-        kind: Resource type to publish (skill, mcp, rule).
+        kind: Resource type to publish (skill, mcp, rule, prompt, plugin).
         mcp_config: MCP server configuration dict (only for kind=mcp).
     """
     skill_dir = Path(path).expanduser().resolve()

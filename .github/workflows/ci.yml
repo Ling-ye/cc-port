@@ -10,6 +10,26 @@ on:
     branches: [main]
 
 jobs:
+  secrets:
+    name: Full-history secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks and scan changed commits
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+      - name: Scan all Git history
+        run: gitleaks git . --config .gitleaks.toml --redact --log-opts=--all
+
   python:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -38,7 +58,7 @@ jobs:
       - name: Lint
         run: ruff check src/cc_port tests
 
-      - name: Test
+      - name: Test (includes Markdown link validation)
         run: pytest -q
 
   desktop:
@@ -79,6 +99,14 @@ jobs:
           $sidecarPath = "desktop/src-tauri/binaries/cc-port-desktop-api-x86_64-pc-windows-msvc.exe"
           New-Item -ItemType Directory -Path (Split-Path -Parent $sidecarPath) -Force | Out-Null
           New-Item -ItemType File -Path $sidecarPath -Force | Out-Null
+
+      - name: Verify acknowledged glib advisory is absent from Windows target
+        shell: pwsh
+        run: |
+          $tree = cargo tree --manifest-path desktop/src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
+          if ($tree | Select-String -SimpleMatch "glib v0.18.5") {
+            throw "GHSA-wrw7-89jp-8q8g entered the supported Windows target graph."
+          }
 
       - name: Check Tauri backend
         run: cargo check --manifest-path desktop/src-tauri/Cargo.toml

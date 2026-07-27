@@ -2,7 +2,7 @@
 
 > Safely sync Skills, MCP servers, Rules, Prompts, and Plugins across Codex, Claude Code, Cursor, Windsurf, and OpenCode through a private Git repository you control.
 
-[中文](README.md) · [Download for Windows](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.0) · [Quick start](docs/getting-started.md) · [Report an issue](https://github.com/Ling-ye/cc-port/issues)
+[中文](README.md) · [Download for Windows](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.1) · [Quick start](docs/getting-started.en.md) · [Report an issue](https://github.com/Ling-ye/cc-port/issues)
 
 [![CI](https://github.com/Ling-ye/cc-port/actions/workflows/ci.yml/badge.svg)](https://github.com/Ling-ye/cc-port/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -29,12 +29,12 @@ CC Port compares a remote repository snapshot with every local platform instance
 ## Get started in five steps
 
 1. Install [Git for Windows](https://git-scm.com/download/win) and make sure Git Credential Manager is available.
-2. Download `cc-port_0.5.0_windows_x64_setup.exe` from the [v0.5.0 Public Beta release](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.0).
+2. Download `cc-port_0.5.1_windows_x64_setup.exe` from the [v0.5.1 Public Beta release](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.1).
 3. Create an empty private GitHub repository for your AI coding resources.
 4. Start CC Port, paste the repository HTTPS URL into Settings, and verify the connection.
 5. Scan local resources, then choose which items to upload or install from the Resources page.
 
-The installer includes both the desktop application and its Python sidecar. End users do not need Python, Node.js, or Rust. See the [quick-start guide](docs/getting-started.md) for setup and uninstall details.
+The installer includes both the desktop application and its Python sidecar. End users do not need Python, Node.js, or Rust. See the [quick-start guide](docs/getting-started.en.md) for setup and uninstall details.
 
 ## Safety boundaries
 
@@ -79,28 +79,28 @@ Advanced users can add custom platform paths in `config.toml`. See the [configur
 - **CLI:** scripting, batch operations, history recovery, and state maintenance.
 - **MCP server:** exposes CC Port capabilities to compatible AI coding tools.
 
-All three interfaces share the same Python core. See the [architecture](docs/architecture.md) for boundaries and sync state machines.
+All three interfaces share the same Python core. See the [architecture (Chinese)](docs/architecture.md) for boundaries and sync state machines.
 
 ## Current limitations
 
 - The Public Beta officially supports Windows 10/11 x64 only.
-- The v0.5.0 installer is unsigned, so Windows SmartScreen may show an unknown-publisher warning.
+- The v0.5.1 installer is unsigned, so Windows SmartScreen may show an unknown-publisher warning.
 - Git for Windows and Git Credential Manager are required on the target computer.
 - The desktop app does not create, delete, or change the visibility of GitHub repositories.
 - Automatic updates are not available yet; download upgrades from Releases.
 - The desktop app focuses on resource management. Some recovery and maintenance features remain CLI/Desktop API only.
 
-For installation, sign-in, or sync failures, see [troubleshooting](docs/troubleshooting.md).
+For installation, sign-in, or sync failures, see [troubleshooting](docs/troubleshooting.en.md).
 
 ## Documentation
 
-- [Quick start](docs/getting-started.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Development guide](docs/development.md)
-- [Architecture](docs/architecture.md)
-- [Desktop packaging and release](docs/packaging-and-deployment.md)
-- [v0.5.0 release notes](docs/releases/v0.5.0.md)
-- [Behavior specifications](docs/specs/)
+- [Quick start](docs/getting-started.en.md)
+- [Troubleshooting](docs/troubleshooting.en.md)
+- [v0.5.1 release notes](docs/releases/v0.5.1.en.md)
+- [Development guide (Chinese)](docs/development.md)
+- [Architecture (Chinese)](docs/architecture.md)
+- [Desktop packaging and release (Chinese)](docs/packaging-and-deployment.md)
+- [Behavior specifications (Chinese)](docs/specs/)
 - [Changelog](CHANGELOG.md)
 
 ## Contributing

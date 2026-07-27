@@ -87,7 +87,10 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 & .\scripts\release-desktop.ps1
 ```
 
-该脚本验证依赖、运行完整质量门禁、构建并冒烟测试 sidecar、生成 MSI 与 NSIS 安装器，并在所有检查通过后更新 `release/desktop/`。
+该脚本验证版本与依赖、运行完整质量门禁、构建并冒烟测试 sidecar、生成
+MSI 与 NSIS 安装器，并在所有检查通过后更新 `release/desktop/`。供人工
+上传的规范化安装器与 `SHA256SUMS.txt` 单独写入
+`release/publish/v<version>/`；脚本不签名或上传。
 
 完整缓存、回滚、指标和故障处理规则见[桌面打包与发布](packaging-and-deployment.md)。
 

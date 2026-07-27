@@ -1,15 +1,15 @@
 ---
 name: cc-port
-description: Publish, register, scan, compare, upload and download AI agent resources (skills, MCP servers, rules) across Cursor, Claude Code and other AI coding platforms through CC Port. Use when the user wants to publish a local resource, register a third-party resource, scan local AI tools, compare local and remote states, batch upload resources, download resources to selected tools, check for updates, link skills to a project, or search available skills. Triggers include phrases like "publish/upload/share this skill", "scan local resources", "download my skills to Cursor", "sync skills", "add MCP server", "register MCP", "link skills", "search skills", "cc-port", "发布 skill", "扫描本地资源", "下载到 Cursor", "同步技能", "搜索技能", "链接技能", "添加 MCP 服务器".
+description: Publish, register, scan, compare, upload and download AI agent resources (skills, MCP servers, rules, prompts and plugins) across Cursor, Claude Code and other AI coding platforms through CC Port. Use when the user wants to publish a local resource, register a third-party resource, scan local AI tools, compare local and remote states, batch upload resources, download resources to selected tools, check for updates, link skills to a project, or search available skills. Triggers include phrases like "publish/upload/share this skill", "scan local resources", "download my skills to Cursor", "sync skills", "add MCP server", "register MCP", "link skills", "search skills", "cc-port", "发布 skill", "扫描本地资源", "下载到 Cursor", "同步技能", "搜索技能", "链接技能", "添加 MCP 服务器".
 metadata:
-  version: "0.5.0"
+  version: "0.5.1"
 ---
 
 # CC Port (cc-port)
 
-CC Port 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置、规则 -- 跨多个 AI 编程平台（Cursor、Claude Code、Windsurf、Codex 等）。通过 MCP 工具（或 `cc-port` CLI）完成发布、登记、安装、同步、搜索、项目级链接等操作。
+CC Port 管理 AI 编程助手的五类资源 -- skill、MCP 服务器配置、rule、prompt、plugin -- 跨多个 AI 编程平台（Cursor、Claude Code、Windsurf、Codex 等）。通过 MCP 工具（或 `cc-port` CLI）完成发布、登记、安装、同步、搜索、项目级链接等操作。
 
-当前版本为 `0.5.0`，源码仓库为 <https://github.com/Ling-ye/cc-port>。
+当前版本为 `0.5.1`，源码仓库为 <https://github.com/Ling-ye/cc-port>。
 
 ## 快速上手（三步）
 
@@ -27,7 +27,7 @@ CC Port 管理 AI 编程助手的资源注册表 -- skills、MCP 服务器配置
 |------|------|
 | `[github].token` | GitHub PAT，也可用 `CC_PORT_GITHUB_TOKEN` 环境变量代替（优先级更高） |
 | `[github].owner` | 发布仓库时的 GitHub 用户名或组织名 |
-| `[github].repo_prefix` | 新建仓库的名称前缀，默认 `cursor-skill-` |
+| `[github].repo_prefix` | 新建仓库的名称前缀，默认 `cc-port-` |
 | `[github].default_private` | 默认仓库可见性 |
 | `[platforms.cursor]` | Cursor 平台的 skills 目录、mcp.json 路径 |
 | `[platforms.claude-code]` | Claude Code 平台配置（可选启用） |
@@ -93,8 +93,8 @@ token 缺失时不要静默失败 -- 指引用户设环境变量或编辑 config
 
 实际示例：
 ```
-cc-port publish D:\Code\yourself-skill-master-uploadtest --private -y --tag python --category productivity
-# -> Published create-yourself (skill) -> https://github.com/Ling-ye/cursor-skill-create-yourself.git (private, created)
+cc-port publish D:\path\to\example-skill --private -y --tag python --category productivity
+# -> Published example-skill (skill) -> https://github.com/example/cc-port-example-skill.git (private, created)
 ```
 
 ### 登记 MCP 服务器
@@ -146,7 +146,7 @@ pip install git+https://github.com/Ling-ye/cc-port.git
 
 # 锁定到特定版本/分支/commit
 pip install git+https://github.com/Ling-ye/cc-port.git@main
-pip install git+https://github.com/Ling-ye/cc-port.git@v0.5.0
+pip install git+https://github.com/Ling-ye/cc-port.git@v0.5.1
 ```
 
 在目标项目的依赖中声明：

@@ -4,10 +4,21 @@
 
 ## [Unreleased]
 
-### Documentation
+## [0.5.1] - 2026-07-27
 
-- 重写中英文项目首页、快速开始、故障排查和开发指南。
-- 增加开源治理、Issue 和 Pull Request 模板。
+### Changed
+
+- 新配置的默认资源仓库名改为 `cc-port-resources`；已有配置保持旧默认值。
+- 桌面发布增加版本一致性校验，并生成只含 NSIS 安装器和校验文件的人工上传目录。
+- 增加英文快速开始、故障排查和发布说明，修正 GitHub Release 可用的绝对链接。
+
+### Security
+
+- CI 增加完整 Git 历史的 Gitleaks 检查和 Markdown 链接检查。
+- 将 `serde_with` 锁定版本升级至 3.21.0，修复其集合分配上限安全公告。
+- Rust 发布构建重映射用户、工具链与仓库路径，避免桌面 EXE 泄露构建用户名。
+- CI 验证 `glib 0.18.5` 不进入正式支持的 Windows 目标依赖图；该依赖仅由
+  未正式发行的 Linux GTK/WebKit 目标引用。
 
 ## [0.5.0] - 2026-07-27
 
@@ -29,6 +40,11 @@
 - MCP 环境变量字面值在收集时替换为占位符。
 - 未由 CC Port 管理的同名目标默认阻断覆盖和卸载。
 
+### Documentation
+
+- 重写中英文项目首页、快速开始、故障排查和开发指南。
+- 增加开源治理、Issue 和 Pull Request 模板。
+
 ### Known limitations
 
 - 安装器尚未代码签名，Windows SmartScreen 可能显示未知发布者。
@@ -36,5 +52,6 @@
 - 需要外部 Git for Windows 和 Git Credential Manager。
 - 没有自动更新。
 
-[Unreleased]: https://github.com/Ling-ye/cc-port/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Ling-ye/cc-port/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.1
 [0.5.0]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.0

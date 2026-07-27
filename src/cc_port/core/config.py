@@ -29,7 +29,8 @@ DEFAULT_REPO_PREFIX = "cc-port-"
 LEGACY_REPO_PREFIX = "cursor-skill-"
 DEFAULT_GITHUB_PRIVATE = True
 LEGACY_GITHUB_PRIVATE = False
-DEFAULT_RESOURCE_REPO_NAME = "LingyeAIResources"
+DEFAULT_RESOURCE_REPO_NAME = "cc-port-resources"
+LEGACY_RESOURCE_REPO_NAME = "LingyeAIResources"
 DEFAULT_RESOURCE_BRANCH = "main"
 DEFAULT_RESOURCE_CREDENTIAL_MODE = "native"
 LEGACY_RESOURCE_CREDENTIAL_MODE = "auto"
@@ -157,6 +158,9 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
     credential_default = (
         LEGACY_RESOURCE_CREDENTIAL_MODE if existing_config else DEFAULT_RESOURCE_CREDENTIAL_MODE
     )
+    resource_repo_name_default = (
+        LEGACY_RESOURCE_REPO_NAME if existing_config else DEFAULT_RESOURCE_REPO_NAME
+    )
 
     cfg = Config(
         github=GithubConfig(
@@ -173,8 +177,8 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
         ),
         resources=ResourcesConfig(
             repo_name=str(
-                resources_data.get("repo_name", DEFAULT_RESOURCE_REPO_NAME)
-                or DEFAULT_RESOURCE_REPO_NAME
+                resources_data.get("repo_name", resource_repo_name_default)
+                or resource_repo_name_default
             ),
             repo_url=str(resources_data.get("repo_url", "") or ""),
             local_path=str(resources_data.get("local_path", "") or ""),

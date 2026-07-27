@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cc-port"
-version = "0.5.0"
-description = "CC Port: multi-platform registry, publisher and installer for AI coding agent resources (skills, MCP servers, rules) across AI coding platforms."
+version = "0.5.1"
+description = "CC Port: multi-platform registry, publisher and installer for AI coding agent resources (skills, MCP servers, rules, prompts and plugins)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

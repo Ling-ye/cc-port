@@ -1,7 +1,7 @@
 """CC Port MCP server.
 
-Exposes the same operations as the CLI as MCP tools, so an AI coding agent
-can publish, register, and sync skills, MCP servers, and rules directly from chat.
+Exposes the same operations as the CLI as MCP tools, so an AI coding agent can
+publish, register, and sync skills, MCP servers, rules, prompts, and plugins.
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ mcp = FastMCP("CC Port")
 
 @mcp.tool()
 def list_items(kind: str | None = None) -> dict[str, Any]:
-    """List all items (skills, MCP servers, rules) registered in registry.yaml.
+    """List all items registered in registry.yaml.
 
     Args:
-        kind: Optional filter by resource type: "skill", "mcp", or "rule".
+        kind: Optional filter: "skill", "mcp", "rule", "prompt", or "plugin".
     """
     cfg = load_config()
     registry = load_registry()
@@ -108,7 +108,7 @@ def publish_local_skill(
             calling unless they have explicitly stated their preference.
         update_visibility: If the GitHub repo already exists with a different
             visibility, set this to True to flip it.
-        kind: Resource type: "skill", "mcp", or "rule".
+        kind: Resource type: "skill", "mcp", "rule", "prompt", or "plugin".
         mcp_config: MCP server configuration dict (required when kind="mcp").
         platforms: Optional installation platform allowlist.
     """
