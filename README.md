@@ -66,10 +66,22 @@ CC Port 将远端仓库快照与每个平台的本地实例逐项比较。上传
 | --- | --- | --- |
 | Codex | 稳定 | Skill |
 | Claude Code | 稳定 | Skill、MCP、Plugin |
-| Cursor | 稳定 | Skill、MCP |
+| Cursor | 稳定 | Skill、MCP、Prompt |
 | Windsurf | 实验性 | Skill、MCP |
 | OpenCode | 实验性 | Skill、MCP、Rule、Prompt、Plugin |
 | Cline、Gemini CLI | 仅发现 | 暂无完整可写平台预设 |
+
+### Cursor Prompt 命令
+
+Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
+`~/.cursor/commands/<name>.md`；设置平台安装别名后，文件名改用该别名。私有资源仓库
+仍以 `prompts/<name>/` 保存可移植内容。下载到这个文件式目标时，远端 Prompt
+必须是一个 Markdown 文件，或目录根级恰好包含一个非符号链接 `.md` 文件；零个或
+多个根级 Markdown 文件都会阻断计划，不会任意选择。
+
+已有自定义平台若没有设置 `prompts_dir`，仍按旧行为使用
+`rules_dir/<install-name>`，避免现有配置被静默迁移。完整规则见
+[Cursor Prompt 命令安装规格](docs/specs/cursor-prompt-commands.md)。
 
 高级用户可以在 `config.toml` 中添加自定义平台路径。具体字段见[配置示例](config/config.example.toml)。
 

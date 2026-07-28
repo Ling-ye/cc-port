@@ -281,6 +281,53 @@ def test_clone_with_legacy_branch_keeps_branch_clone(monkeypatch, tmp_path) -> N
     ]
 
 
+def test_configure_host_autocrlf_disabled_checkout_is_repo_local_and_rewrites_index(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, cwd=None, check=True, extra_env=None):
+        calls.append(args)
+        if args == ["rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, stdout="abc123\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_ops, "_run", fake_run)
+
+    git_ops.configure_host_autocrlf_disabled_checkout(tmp_path)
+
+    assert calls == [
+        ["config", "--local", "core.autocrlf", "false"],
+        ["config", "--local", "core.eol", "lf"],
+        ["rev-parse", "HEAD"],
+        ["read-tree", "--empty"],
+        ["read-tree", "--reset", "abc123"],
+        ["checkout-index", "--all", "--force"],
+    ]
+
+
+def test_host_autocrlf_disabled_checkout_keeps_repository_attributes_authoritative(
+    tmp_path,
+) -> None:
+    if git_ops.discover_git_executable().path is None:
+        pytest.skip("Git is not installed")
+    git_ops.init_repo(tmp_path)
+    (tmp_path / ".gitattributes").write_text(
+        "*.md text eol=crlf\n",
+        encoding="utf-8",
+    )
+    payload = tmp_path / "prompt.md"
+    payload.write_bytes(b"first\nsecond\n")
+    git_ops.add_all(tmp_path)
+    git_ops.commit(tmp_path, "seed attributes")
+    payload.write_bytes(b"first\nsecond\n")
+
+    git_ops.configure_host_autocrlf_disabled_checkout(tmp_path)
+
+    assert payload.read_bytes() == b"first\r\nsecond\r\n"
+
+
 def test_clone_with_missing_commit_fails_without_default_branch_fallback(
     monkeypatch,
     tmp_path,

@@ -2271,6 +2271,7 @@ def cmd_platforms() -> None:
     table.add_column("Skills Dir")
     table.add_column("MCP Config")
     table.add_column("Rules Dir")
+    table.add_column("Prompts Dir")
     table.add_column("Plugins Dir")
     for plat in cfg.platforms.profiles:
         table.add_row(
@@ -2279,6 +2280,7 @@ def cmd_platforms() -> None:
             plat.skills_dir or "-",
             plat.mcp_json or "-",
             plat.rules_dir or "-",
+            plat.prompts_dir or "-",
             plat.plugins_dir or "-",
         )
     console.print(table)

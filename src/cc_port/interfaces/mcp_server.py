@@ -44,6 +44,7 @@ def list_items(kind: str | None = None) -> dict[str, Any]:
                 "enabled": p.enabled,
                 "skills_dir": p.skills_dir,
                 "mcp_json": p.mcp_json,
+                "prompts_dir": p.prompts_dir,
                 "plugins_dir": p.plugins_dir,
             }
             for p in cfg.platforms.profiles
@@ -78,6 +79,7 @@ def list_platforms() -> dict[str, Any]:
                 "skills_dir": p.skills_dir,
                 "mcp_json": p.mcp_json,
                 "rules_dir": p.rules_dir,
+                "prompts_dir": p.prompts_dir,
                 "plugins_dir": p.plugins_dir,
             }
             for p in cfg.platforms.profiles

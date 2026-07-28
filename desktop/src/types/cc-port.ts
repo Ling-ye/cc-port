@@ -271,6 +271,7 @@ export interface PlatformProfile {
   skills_dir: string;
   mcp_json: string;
   rules_dir: string;
+  prompts_dir: string;
   plugins_dir: string;
 }
 

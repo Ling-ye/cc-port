@@ -66,10 +66,26 @@ Do not open a public issue for a vulnerability. Follow the [security policy](SEC
 | --- | --- | --- |
 | Codex | Stable | Skill |
 | Claude Code | Stable | Skill, MCP, Plugin |
-| Cursor | Stable | Skill, MCP |
+| Cursor | Stable | Skill, MCP, Prompt |
 | Windsurf | Experimental | Skill, MCP |
 | OpenCode | Experimental | Skill, MCP, Rule, Prompt, Plugin |
 | Cline, Gemini CLI | Discovery only | No complete writable preset yet |
+
+### Cursor Prompt commands
+
+The Cursor preset installs Prompt `<name>` as the global custom command
+`~/.cursor/commands/<name>.md`; a platform install alias replaces `<name>` in
+that filename. The private resource repository continues to store portable
+content under `prompts/<name>/`. For downloads to this file-style target, the
+remote Prompt must be a Markdown file or a directory containing exactly one
+non-symlink `.md` file at its root. Zero or multiple root-level Markdown files
+block the plan instead of being selected arbitrarily.
+
+Existing custom platforms without `prompts_dir` retain the legacy
+`rules_dir/<install-name>` behavior, so existing configurations are not
+silently migrated. See the
+[Cursor Prompt command specification](docs/specs/cursor-prompt-commands.md)
+(Chinese) for the complete contract.
 
 Advanced users can add custom platform paths in `config.toml`. See the [configuration example](config/config.example.toml).
 

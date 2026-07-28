@@ -32,6 +32,7 @@ DEFAULT_EXCLUDED_FILES = {
     "Thumbs.db",
 }
 DEFAULT_EXCLUDED_FILE_NAMES = {item.lower() for item in DEFAULT_EXCLUDED_FILES}
+MANAGED_MARKER_SUFFIX = ".cc-port-managed.json"
 DEFAULT_EXCLUDED_SUFFIXES = {
     ".7z",
     ".dll",
@@ -68,6 +69,7 @@ def is_resource_path_excluded(path: Path) -> bool:
     name = path.name.lower()
     return (
         name in DEFAULT_EXCLUDED_FILE_NAMES
+        or name.endswith(MANAGED_MARKER_SUFFIX)
         or path.suffix.lower() in DEFAULT_EXCLUDED_SUFFIXES
         or is_sensitive_env_file(path)
     )

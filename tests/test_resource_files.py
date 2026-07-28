@@ -26,6 +26,10 @@ def test_copy_policy_uses_entries_relative_to_resource_root(tmp_path: Path) -> N
     (source / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
     (source / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
     (source / ".env.example").write_text("TOKEN=\n", encoding="utf-8")
+    (source / ".demo.md.cc-port-managed.json").write_text(
+        '{"managed_by":"cc-port"}\n',
+        encoding="utf-8",
+    )
     generated = source / "temp"
     generated.mkdir()
     (generated / "output.txt").write_text("generated\n", encoding="utf-8")
@@ -36,7 +40,14 @@ def test_copy_policy_uses_entries_relative_to_resource_root(tmp_path: Path) -> N
     assert (target / "SKILL.md").is_file()
     assert (target / ".env.example").is_file()
     assert not (target / ".env").exists()
+    assert not (target / ".demo.md.cc-port-managed.json").exists()
     assert not (target / "temp").exists()
+
+
+def test_file_ownership_sidecars_are_excluded_case_insensitively() -> None:
+    assert is_resource_path_excluded(Path(".demo.md.cc-port-managed.json"))
+    assert is_resource_path_excluded(Path(".DEMO.MD.CC-PORT-MANAGED.JSON"))
+    assert not is_resource_path_excluded(Path("demo.md"))
 
 
 def test_copy_policy_excludes_symbolic_links(tmp_path: Path) -> None:

@@ -79,6 +79,7 @@ def discover_resources(
     root_path: Path | str | None = None,
     registry_path: Path | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
+    file_kind_hint: ItemKind | None = None,
 ) -> list[DiscoveredResource]:
     """Discover resource candidates without modifying any source directory."""
     roots = _roots_for_scope(scope=scope, root_path=root_path)
@@ -100,6 +101,7 @@ def discover_resources(
                 source=scope,
                 max_depth=max_depth,
                 seen=seen,
+                file_kind_hint=file_kind_hint,
             )
         )
 
@@ -173,6 +175,7 @@ def _scan_root(
     source: str,
     max_depth: int,
     seen: set[tuple[str, str]],
+    file_kind_hint: ItemKind | None,
 ) -> list[DiscoveredResource]:
     out: list[DiscoveredResource] = []
     stack: list[tuple[Path, int]] = [(root, 0)]
@@ -200,7 +203,12 @@ def _scan_root(
                 if child.is_dir():
                     stack.append((child, depth + 1))
                 elif child.is_file():
-                    candidate = _candidate_from_file(child, tool=_infer_tool(child, default=tool), source=source)
+                    candidate = _candidate_from_file(
+                        child,
+                        tool=_infer_tool(child, default=tool),
+                        source=source,
+                        kind_hint=file_kind_hint,
+                    )
                     if candidate is not None:
                         _add_candidate(out, candidate, seen)
     return out
@@ -249,8 +257,14 @@ def _candidate_from_directory(path: Path, *, tool: str, source: str) -> Discover
     return None
 
 
-def _candidate_from_file(path: Path, *, tool: str, source: str) -> DiscoveredResource | None:
-    kind = _file_kind(path)
+def _candidate_from_file(
+    path: Path,
+    *,
+    tool: str,
+    source: str,
+    kind_hint: ItemKind | None = None,
+) -> DiscoveredResource | None:
+    kind = _file_kind(path, kind_hint=kind_hint)
     if kind is None:
         return None
     name_hint = _slug(path.stem if path.stem else path.name.lstrip("."))
@@ -296,9 +310,11 @@ def _resource(
     )
 
 
-def _file_kind(path: Path) -> ItemKind | None:
+def _file_kind(path: Path, *, kind_hint: ItemKind | None = None) -> ItemKind | None:
     lower = path.name.lower()
     suffix = path.suffix.lower()
+    if kind_hint == "prompt" and suffix == ".md":
+        return "prompt"
     if lower in {"mcp.json", "mcp.yaml", "mcp.yml"}:
         return "mcp"
     if lower in RULE_FILE_NAMES:

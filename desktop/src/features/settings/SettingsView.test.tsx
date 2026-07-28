@@ -46,6 +46,7 @@ function settings(repoUrl = "", repoName = "LingyeAIResources"): ConfigSettings 
         skills_dir: `~/.${name}/skills`,
         mcp_json: `~/.${name}/mcp.json`,
         rules_dir: `~/.${name}/rules`,
+        prompts_dir: `~/.${name}/commands`,
         plugins_dir: "",
       })),
     },

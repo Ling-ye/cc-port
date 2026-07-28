@@ -850,6 +850,7 @@ def _platforms_with_presets(profiles: list[PlatformProfile]) -> list[PlatformPro
             skills_dir=p.skills_dir,
             mcp_json=p.mcp_json,
             rules_dir=p.rules_dir,
+            prompts_dir=p.prompts_dir,
             plugins_dir=p.plugins_dir,
         )
         for p in profiles
@@ -871,6 +872,7 @@ def _platform_to_json(profile: PlatformProfile) -> JsonDict:
         "skills_dir": profile.skills_dir,
         "mcp_json": profile.mcp_json,
         "rules_dir": profile.rules_dir,
+        "prompts_dir": profile.prompts_dir,
         "plugins_dir": profile.plugins_dir,
     }
 

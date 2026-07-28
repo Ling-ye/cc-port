@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import cc_port.services.env_manager as env_manager
+from cc_port.core.config import Config
+from cc_port.core.platforms import PlatformProfile, PlatformsConfig
 
 
 def test_discovery_finds_resources_and_marks_mcp_secret_fields(tmp_path: Path) -> None:
@@ -40,6 +42,70 @@ def test_discovery_finds_resources_and_marks_mcp_secret_fields(tmp_path: Path) -
     assert [(item.name, item.secret_keys) for item in result.mcp_servers] == [
         ("github", ["GITHUB_TOKEN"])
     ]
+
+
+def test_discovery_finds_prompt_in_configured_cursor_directory(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    prompts = home / "custom-prompt-assets"
+    prompts.mkdir(parents=True)
+    prompt = prompts / "local-only.md"
+    prompt.write_text("# Local command\n", encoding="utf-8")
+    config = Config(
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="cursor",
+                    enabled=True,
+                    prompts_dir="~/custom-prompt-assets",
+                )
+            ]
+        )
+    )
+
+    result = env_manager.discover_environment(home=home, config=config)
+
+    matches = [
+        item
+        for item in result.resources
+        if item.tool == "cursor" and item.kind == "prompt"
+    ]
+    assert [(item.name_hint, item.path) for item in matches] == [
+        ("local-only", prompt.resolve())
+    ]
+
+
+def test_configured_default_commands_directory_is_not_scanned_twice(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    commands = home / ".cursor" / "commands"
+    commands.mkdir(parents=True)
+    prompt = commands / "deduplicated.md"
+    prompt.write_text("# Deduplicated command\n", encoding="utf-8")
+    config = Config(
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="cursor",
+                    enabled=True,
+                    prompts_dir="~/.cursor/commands",
+                )
+            ]
+        )
+    )
+
+    result = env_manager.discover_environment(home=home, config=config)
+
+    matches = [
+        item
+        for item in result.resources
+        if item.tool == "cursor"
+        and item.kind == "prompt"
+        and item.path == prompt.resolve()
+    ]
+    assert len(matches) == 1
 
 
 def test_removed_environment_mutation_api_is_not_exposed() -> None:

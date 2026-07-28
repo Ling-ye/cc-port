@@ -15,6 +15,7 @@ from cc_port.core.config import (
     resource_repo_auth_token,
     write_config,
 )
+from cc_port.core.platforms import PlatformProfile, PlatformsConfig
 
 
 def test_state_policy_round_trips_through_config(tmp_path: Path) -> None:
@@ -39,6 +40,29 @@ def test_state_policy_round_trips_through_config(tmp_path: Path) -> None:
     assert loaded.state.retention_days == 14
     assert loaded.state.keep_latest_operations == 7
     assert loaded.state.max_backup_mb == 512
+
+
+def test_cursor_prompt_commands_directory_round_trips_through_config(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    write_config(
+        Config(
+            platforms=PlatformsConfig(
+                profiles=[
+                    PlatformProfile(
+                        name="cursor",
+                        prompts_dir="D:/Users/demo/.cursor/commands",
+                    )
+                ]
+            )
+        ),
+        path,
+    )
+
+    loaded = load_config(path)
+
+    assert loaded.platforms.get("cursor").prompts_dir == "D:/Users/demo/.cursor/commands"
 
 
 def test_plugin_projects_round_trip_without_entering_registry(tmp_path: Path) -> None:
@@ -136,6 +160,11 @@ def test_new_config_uses_private_cc_port_defaults_and_enables_complete_presets(
         "opencode",
     }
     assert all(
-        profile.skills_dir or profile.mcp_json or profile.rules_dir or profile.plugins_dir
+        profile.skills_dir
+        or profile.mcp_json
+        or profile.rules_dir
+        or profile.prompts_dir
+        or profile.plugins_dir
         for profile in loaded.platforms.enabled()
     )
+    assert loaded.platforms.get("cursor").prompts_dir == "~/.cursor/commands"

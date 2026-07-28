@@ -407,8 +407,24 @@ describe("ResourcesView unified inventory", () => {
         return {
           config: {
             platforms: [
-              { name: "cursor", enabled: true, skills_dir: "", mcp_json: "", rules_dir: "", plugins_dir: "" },
-              { name: "codex", enabled: false, skills_dir: "", mcp_json: "", rules_dir: "", plugins_dir: "" },
+              {
+                name: "cursor",
+                enabled: true,
+                skills_dir: "",
+                mcp_json: "",
+                rules_dir: "",
+                prompts_dir: "",
+                plugins_dir: "",
+              },
+              {
+                name: "codex",
+                enabled: false,
+                skills_dir: "",
+                mcp_json: "",
+                rules_dir: "",
+                prompts_dir: "",
+                plugins_dir: "",
+              },
             ],
           },
         };

@@ -93,6 +93,8 @@ def discover_environment(
         _discover_tool_resources(
             tools,
             registry_path_override=registry_path_override,
+            config=config,
+            home=effective_home,
         )
         if scan_global
         else []
@@ -146,23 +148,50 @@ def _discover_tool_resources(
     tools: list[DiscoveredTool],
     *,
     registry_path_override: Path | None,
+    config: Config | None,
+    home: Path,
 ) -> list[DiscoveredResource]:
     resources: list[DiscoveredResource] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, ItemKind, str]] = set()
+
+    def add_from_path(
+        *,
+        tool_id: str,
+        path: Path,
+        file_kind_hint: ItemKind | None = None,
+    ) -> None:
+        if not path.is_dir():
+            return
+        for resource in discover_resources(
+            scope="directory",
+            root_path=path,
+            registry_path=registry_path_override,
+            file_kind_hint=file_kind_hint,
+        ):
+            identity = (
+                tool_id,
+                resource.kind,
+                str(resource.path.resolve()).casefold(),
+            )
+            if resource.kind == "mcp" or identity in seen:
+                continue
+            resource.tool = tool_id
+            seen.add(identity)
+            resources.append(resource)
+
     for tool in tools:
         for path in [tool.root_path, *tool.resource_paths]:
-            if not path.is_dir():
-                continue
-            for resource in discover_resources(
-                scope="directory",
-                root_path=path,
-                registry_path=registry_path_override,
-            ):
-                if resource.kind == "mcp" or resource.id in seen:
-                    continue
-                resource.tool = tool.id
-                seen.add(resource.id)
-                resources.append(resource)
+            add_from_path(tool_id=tool.id, path=path)
+
+    if config is not None:
+        for profile in config.platforms.enabled():
+            if profile.prompts_dir:
+                add_from_path(
+                    tool_id=profile.name,
+                    path=_expand_home(profile.prompts_dir, home=home),
+                    file_kind_hint="prompt",
+                )
+
     return sorted(
         resources,
         key=lambda item: (item.tool, item.kind, item.name_hint, str(item.path)),

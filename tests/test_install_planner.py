@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from cc_port.core.config import Config, InstallConfig, PlatformsConfig, ResourcesConfig
 from cc_port.core.models import Registry, RegistryItem
+from cc_port.core.ownership import is_cc_port_managed, managed_marker_path
 from cc_port.core.platforms import PlatformProfile
 from cc_port.core.registry import save_registry
 from cc_port.services import installer, resource_manager
 from cc_port.services.install_planner import copy_resource_tree, load_resource_manifest
 from cc_port.services.mcp_installer import inject_mcp_server
+from cc_port.services.operation_state import load_operation
 
 
 def _config(root: Path, install: Path, *, platforms: list[PlatformProfile] | None = None) -> Config:
@@ -234,6 +238,334 @@ def test_sync_installs_plugin_to_platform_plugin_dir(tmp_path: Path) -> None:
     assert result.action == installer.SyncAction.INSTALLED
     assert result.platforms_installed == ["opencode"]
     assert (plugin_target / "demo-plugin" / "plugin.json").is_file()
+
+
+def test_sync_updates_and_uninstalls_file_prompt_with_marker(tmp_path: Path) -> None:
+    root = tmp_path / "resources"
+    source = root / "prompts" / "demo-prompt"
+    install = tmp_path / "install"
+    commands = tmp_path / "cursor" / "commands"
+    source.mkdir(parents=True)
+    payload = source / "command.md"
+    payload.write_text("remote-v1", encoding="utf-8")
+    (source / "notes.txt").write_text("ignored metadata", encoding="utf-8")
+    entry = RegistryItem(
+        name="demo-prompt",
+        kind="prompt",
+        source="local",
+        path="prompts/demo-prompt",
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="cursor",
+                enabled=True,
+                prompts_dir=str(commands),
+            )
+        ],
+    )
+
+    first = installer.sync_one(entry, config=cfg, registry_root=root)
+    target = commands / "demo-prompt.md"
+    marker = managed_marker_path(target)
+
+    assert first.action == installer.SyncAction.INSTALLED
+    assert first.operation_status == "succeeded"
+    assert target.read_text(encoding="utf-8") == "remote-v1"
+    assert marker.is_file()
+    assert is_cc_port_managed(target, resource_key=entry.resource_key)
+    operation_paths = {
+        Path(item.path)
+        for item in load_operation(first.operation_id).targets
+    }
+    assert target.absolute() in operation_paths
+    assert marker.absolute() in operation_paths
+
+    payload.write_text("remote-v2", encoding="utf-8")
+    second = installer.sync_one(entry, config=cfg, registry_root=root)
+
+    assert second.action == installer.SyncAction.INSTALLED
+    assert second.operation_status == "succeeded"
+    assert target.read_text(encoding="utf-8") == "remote-v2"
+    assert is_cc_port_managed(target, resource_key=entry.resource_key)
+
+    removed = installer.uninstall_one(
+        entry,
+        config=cfg,
+        platform_filter="cursor",
+    )
+
+    assert removed is True
+    assert not target.exists()
+    assert not marker.exists()
+    assert (install / "demo-prompt").is_dir()
+
+
+def test_sync_file_prompt_rejects_multiple_root_markdown_payloads(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "prompts" / "ambiguous-prompt"
+    install = tmp_path / "install"
+    commands = tmp_path / "cursor" / "commands"
+    source.mkdir(parents=True)
+    (source / "one.md").write_text("one", encoding="utf-8")
+    (source / "two.md").write_text("two", encoding="utf-8")
+    entry = RegistryItem(
+        name="ambiguous-prompt",
+        kind="prompt",
+        source="local",
+        path="prompts/ambiguous-prompt",
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="cursor",
+                enabled=True,
+                prompts_dir=str(commands),
+            )
+        ],
+    )
+
+    result = installer.sync_one(entry, config=cfg, registry_root=root)
+    target = commands / "ambiguous-prompt.md"
+
+    assert result.action == installer.SyncAction.FAILED
+    assert result.operation_status == "rolled_back"
+    assert result.rolled_back is True
+    assert "exactly one root-level non-symlink .md file" in result.detail
+    assert not (install / "ambiguous-prompt").exists()
+    assert not target.exists()
+    assert not managed_marker_path(target).exists()
+
+
+def test_sync_prompt_keeps_legacy_directory_target(tmp_path: Path) -> None:
+    root = tmp_path / "resources"
+    source = root / "prompts" / "legacy-prompt"
+    install = tmp_path / "install"
+    rules = tmp_path / "legacy" / "rules"
+    source.mkdir(parents=True)
+    (source / "one.md").write_text("one", encoding="utf-8")
+    (source / "two.md").write_text("two", encoding="utf-8")
+    entry = RegistryItem(
+        name="legacy-prompt",
+        kind="prompt",
+        source="local",
+        path="prompts/legacy-prompt",
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="legacy",
+                enabled=True,
+                rules_dir=str(rules),
+            )
+        ],
+    )
+
+    result = installer.sync_one(entry, config=cfg, registry_root=root)
+    target = rules / "legacy-prompt"
+
+    assert result.action == installer.SyncAction.INSTALLED
+    assert (target / "one.md").is_file()
+    assert (target / "two.md").is_file()
+    assert is_cc_port_managed(target, resource_key=entry.resource_key)
+
+    assert installer.uninstall_one(
+        entry,
+        config=cfg,
+        platform_filter="legacy",
+    )
+    assert not target.exists()
+
+
+def test_sync_file_prompt_replaces_dangling_symlink_only_when_forced(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "prompts" / "demo-prompt"
+    install = tmp_path / "install"
+    commands = tmp_path / "cursor" / "commands"
+    source.mkdir(parents=True)
+    (source / "command.md").write_text("safe prompt", encoding="utf-8")
+    entry = RegistryItem(
+        name="demo-prompt",
+        kind="prompt",
+        source="local",
+        path="prompts/demo-prompt",
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="cursor",
+                enabled=True,
+                prompts_dir=str(commands),
+            )
+        ],
+    )
+    target = commands / "demo-prompt.md"
+    outside = tmp_path / "outside.md"
+    target.parent.mkdir(parents=True)
+    try:
+        target.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+
+    blocked = installer.sync_one(entry, config=cfg, registry_root=root)
+
+    assert blocked.action == installer.SyncAction.FAILED
+    assert target.is_symlink()
+    assert not outside.exists()
+
+    installed = installer.sync_one(
+        entry,
+        config=cfg,
+        registry_root=root,
+        force_unmanaged=True,
+    )
+
+    assert installed.action == installer.SyncAction.INSTALLED
+    assert target.is_file()
+    assert not target.is_symlink()
+    assert target.read_text(encoding="utf-8") == "safe prompt"
+    assert not outside.exists()
+
+
+def test_sync_file_prompt_directory_replacement_rolls_back_adjacent_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "prompts" / "demo-prompt"
+    install = tmp_path / "install"
+    commands = tmp_path / "cursor" / "commands"
+    source.mkdir(parents=True)
+    (source / "command.md").write_text("safe prompt", encoding="utf-8")
+    entry = RegistryItem(
+        name="demo-prompt",
+        kind="prompt",
+        source="local",
+        path="prompts/demo-prompt",
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="cursor",
+                enabled=True,
+                prompts_dir=str(commands),
+            )
+        ],
+    )
+    target = commands / "demo-prompt.md"
+    target.mkdir(parents=True)
+    sentinel = target / "keep.txt"
+    sentinel.write_text("keep me", encoding="utf-8")
+    marker = managed_marker_path(target, file_target=True)
+
+    def fail_verification(*_args, **_kwargs) -> None:
+        raise RuntimeError("simulated verification failure")
+
+    monkeypatch.setattr(installer, "_verify_resource_install", fail_verification)
+
+    result = installer.sync_one(
+        entry,
+        config=cfg,
+        registry_root=root,
+        force_unmanaged=True,
+    )
+
+    assert result.action == installer.SyncAction.FAILED
+    assert result.operation_status == "rolled_back"
+    assert result.rolled_back is True
+    assert target.is_dir()
+    assert sentinel.read_text(encoding="utf-8") == "keep me"
+    assert not marker.exists()
+
+
+def test_uninstall_file_prompt_removes_marker_when_command_is_already_missing(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "prompts" / "demo-prompt"
+    install = tmp_path / "install"
+    commands = tmp_path / "cursor" / "commands"
+    source.mkdir(parents=True)
+    (source / "command.md").write_text("prompt", encoding="utf-8")
+    entry = RegistryItem(
+        name="demo-prompt",
+        kind="prompt",
+        source="local",
+        path="prompts/demo-prompt",
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="cursor",
+                enabled=True,
+                prompts_dir=str(commands),
+            )
+        ],
+    )
+    installed = installer.sync_one(entry, config=cfg, registry_root=root)
+    target = commands / "demo-prompt.md"
+    marker = managed_marker_path(target)
+    assert installed.action == installer.SyncAction.INSTALLED
+    target.unlink()
+    assert marker.is_file()
+
+    removed = installer.uninstall_one(
+        entry,
+        config=cfg,
+        platform_filter="cursor",
+    )
+
+    assert removed is True
+    assert not marker.exists()
+
+
+def test_sync_file_prompt_accepts_markdown_file_resource(tmp_path: Path) -> None:
+    root = tmp_path / "resources"
+    source = root / "prompts" / "single.md"
+    install = tmp_path / "install"
+    commands = tmp_path / "cursor" / "commands"
+    source.parent.mkdir(parents=True)
+    source.write_text("single file prompt", encoding="utf-8")
+    entry = RegistryItem(
+        name="single",
+        kind="prompt",
+        source="local",
+        path="prompts/single.md",
+    )
+    cfg = _config(
+        root,
+        install,
+        platforms=[
+            PlatformProfile(
+                name="cursor",
+                enabled=True,
+                prompts_dir=str(commands),
+            )
+        ],
+    )
+
+    result = installer.sync_one(entry, config=cfg, registry_root=root)
+    target = commands / "single.md"
+
+    assert result.action == installer.SyncAction.INSTALLED
+    assert target.read_text(encoding="utf-8") == "single file prompt"
+    assert is_cc_port_managed(target, resource_key=entry.resource_key)
 
 
 def test_mcp_injection_uses_state_backups_and_preserves_other_servers(

@@ -73,6 +73,14 @@ CC Port 不会替你创建、删除仓库或改变仓库可见性。
 
 CC Port 不会把“远端缺失”解释为删除命令，也不会静默覆盖没有 CC Port 所有权标记的同名本地内容。
 
+### Cursor Prompt 命令
+
+Cursor Prompt 默认安装到 `~/.cursor/commands/<name>.md`，并可在 Cursor 中以
+`/<name>` 调用。远端仓库仍把它保存为 `prompts/<name>/`；从该目录下载到 Cursor
+时，目录根级必须恰好有一个非符号链接 `.md` 文件，否则操作计划会阻断。设置安装
+别名会改变本地命令文件名。自定义平台没有配置 `prompts_dir` 时，继续使用旧的
+`rules_dir/<install-name>` 目标。
+
 ## 升级与卸载
 
 当前版本没有自动更新。升级时从 [Releases](https://github.com/Ling-ye/cc-port/releases) 下载新安装器并覆盖安装。

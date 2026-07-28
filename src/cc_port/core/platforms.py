@@ -27,6 +27,7 @@ class PlatformProfile:
     skills_dir: str = ""
     mcp_json: str = ""
     rules_dir: str = ""
+    prompts_dir: str = ""
     plugins_dir: str = ""
 
     def skills_path(self) -> Path | None:
@@ -38,6 +39,9 @@ class PlatformProfile:
     def rules_path(self) -> Path | None:
         return Path(self.rules_dir).expanduser() if self.rules_dir else None
 
+    def prompts_path(self) -> Path | None:
+        return Path(self.prompts_dir).expanduser() if self.prompts_dir else None
+
     def plugins_path(self) -> Path | None:
         return Path(self.plugins_dir).expanduser() if self.plugins_dir else None
 
@@ -47,9 +51,15 @@ class PlatformProfile:
         if kind == "skill":
             base = self.skills_path()
             return base / item_name if base else None
-        if kind in {"rule", "prompt"}:
+        if kind == "rule":
             base = self.rules_path()
             return base / item_name if base else None
+        if kind == "prompt":
+            base = self.prompts_path()
+            if base:
+                return base / f"{item_name}.md"
+            legacy_base = self.rules_path()
+            return legacy_base / item_name if legacy_base else None
         if kind == "mcp":
             return self.mcp_json_path()
         if kind == "plugin":
@@ -73,6 +83,7 @@ PLATFORM_PRESETS: dict[str, PlatformProfile] = {
         skills_dir=adapter.skills_dir,
         mcp_json=adapter.mcp_json,
         rules_dir=adapter.rules_dir,
+        prompts_dir=adapter.prompts_dir,
         plugins_dir=adapter.plugins_dir,
     )
     for adapter in TOOL_ADAPTERS
@@ -93,6 +104,7 @@ def build_platform(name: str, overrides: dict[str, Any] | None = None) -> Platfo
         skills_dir=preset.skills_dir,
         mcp_json=preset.mcp_json,
         rules_dir=preset.rules_dir,
+        prompts_dir=preset.prompts_dir,
         plugins_dir=preset.plugins_dir,
     )
     if overrides:
@@ -104,6 +116,8 @@ def build_platform(name: str, overrides: dict[str, Any] | None = None) -> Platfo
             base.mcp_json = str(overrides["mcp_json"] or "")
         if "rules_dir" in overrides:
             base.rules_dir = str(overrides["rules_dir"] or "")
+        if "prompts_dir" in overrides:
+            base.prompts_dir = str(overrides["prompts_dir"] or "")
         if "plugins_dir" in overrides:
             base.plugins_dir = str(overrides["plugins_dir"] or "")
     return base

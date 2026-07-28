@@ -39,6 +39,7 @@ from ..core.models import (
 from ..core.ownership import (
     is_cc_port_managed,
     is_cc_port_managed_mcp,
+    managed_marker_path,
     managed_mcp_resource_key,
     managed_resource_key,
     mark_cc_port_managed_mcp,
@@ -99,6 +100,8 @@ ASSET_PLAN_DIR = "asset-plans"
 ASSET_PLAN_SCHEMA_VERSION = 1
 REMOTE_CACHE_DIR = "remotes"
 REMOTE_SNAPSHOT_DIR = "snapshots"
+REMOTE_SNAPSHOT_FORMAT_FILE = ".cc-port-snapshot-format"
+REMOTE_SNAPSHOT_FORMAT_VERSION = "host-autocrlf-disabled-v1"
 REMOTE_WRITE_ACTIONS = {"upload", "copy-to-remote", "set-platform-install-name"}
 LOCAL_WRITE_ACTIONS = {"download", "copy-to-local", "align-plugin-state"}
 RESOURCE_PARENT_BY_KIND: dict[ItemKind, str] = {
@@ -560,7 +563,12 @@ def _discover_inventory_environment(
     scan_global: bool,
     project_ids: list[str] | None,
 ) -> EnvDiscoveryResult:
-    if cfg.plugin_projects or not scan_global or project_ids is not None:
+    if (
+        cfg.plugin_projects
+        or not scan_global
+        or project_ids is not None
+        or _requires_configured_prompt_discovery(cfg)
+    ):
         return discover_environment(
             config=cfg,
             scan_global=scan_global,
@@ -569,6 +577,24 @@ def _discover_inventory_environment(
     # Preserve the public zero-argument discovery seam used by existing
     # integrations while v7 scan filters remain opt-in.
     return discover_environment()
+
+
+def _requires_configured_prompt_discovery(cfg: Config) -> bool:
+    for profile in cfg.platforms.enabled():
+        configured_path = profile.prompts_path()
+        if configured_path is None or not configured_path.is_dir():
+            continue
+        adapter = tool_adapter_by_id(profile.name)
+        default_path = (
+            Path(adapter.prompts_dir).expanduser()
+            if adapter is not None and adapter.prompts_dir
+            else None
+        )
+        if default_path is None or os.path.normcase(
+            str(configured_path.absolute())
+        ) != os.path.normcase(str(default_path.absolute())):
+            return True
+    return False
 
 
 def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow]:
@@ -2723,10 +2749,13 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
     state_root = default_state_dir() / ASSET_STATE_DIR
     transport = state_root / REMOTE_CACHE_DIR / cache_key
     try:
+        _assert_internal_path(transport, state_root)
         with resource_repo_write_lock(
             transport,
             timeout_seconds=cfg.state.lock_timeout_seconds,
         ):
+            if transport.is_symlink():
+                _remove_internal_path(transport, state_root)
             transport_is_repo = git_ops.is_repo(transport)
             if not transport_is_repo and not refresh:
                 cached = _latest_cached_snapshot(state_root / REMOTE_SNAPSHOT_DIR / cache_key)
@@ -2743,7 +2772,7 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                     )
                     return RemoteSnapshot(
                         root=cached,
-                        registry=load_registry(cached / DEFAULT_REGISTRY_FILENAME),
+                        registry=_load_snapshot_registry(cached),
                         commit="" if cached.name == "unborn" else cached.name,
                         branch=branch,
                         repo_url=repo_url,
@@ -2795,20 +2824,20 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                 git_ops.checkout_branch_at(transport, branch, remote_commit)
             else:
                 git_ops.checkout_local_branch(transport, branch)
+            git_ops.configure_host_autocrlf_disabled_checkout(transport)
 
-            snapshot_root = (
-                state_root / REMOTE_SNAPSHOT_DIR / cache_key / (remote_commit or "unborn")
-            )
-            if not snapshot_root.exists():
-                snapshot_root.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(
+            snapshot_cache_root = state_root / REMOTE_SNAPSHOT_DIR / cache_key
+            _assert_internal_path(snapshot_cache_root, state_root)
+            if snapshot_cache_root.is_symlink():
+                _remove_internal_path(snapshot_cache_root, state_root)
+            snapshot_root = snapshot_cache_root / (remote_commit or "unborn")
+            if not snapshot_root.exists() or not _snapshot_format_is_current(snapshot_root):
+                _materialize_remote_snapshot(
                     transport,
                     snapshot_root,
-                    symlinks=True,
-                    ignore=lambda _directory, names: {".git"} & set(names),
+                    snapshot_cache_root,
                 )
-            registry_path = snapshot_root / DEFAULT_REGISTRY_FILENAME
-            registry = load_registry(registry_path)
+            registry = _load_snapshot_registry(snapshot_root)
             return RemoteSnapshot(
                 root=snapshot_root,
                 registry=registry,
@@ -2832,7 +2861,7 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
             )
             return RemoteSnapshot(
                 root=cached,
-                registry=load_registry(cached / DEFAULT_REGISTRY_FILENAME),
+                registry=_load_snapshot_registry(cached),
                 commit="" if cached.name == "unborn" else cached.name,
                 branch=branch,
                 repo_url=repo_url,
@@ -2885,12 +2914,117 @@ def _configured_remote_url(cfg: Config) -> str:
 
 
 def _latest_cached_snapshot(root: Path) -> Path | None:
-    if not root.is_dir():
+    if root.is_symlink() or not root.is_dir():
         return None
-    candidates = [path for path in root.iterdir() if path.is_dir()]
+    candidates = [
+        path
+        for path in root.iterdir()
+        if path.is_dir()
+        and not path.is_symlink()
+        and (path.name == "unborn" or git_ops.is_full_commit_sha(path.name))
+        and _snapshot_format_is_current(path)
+        and _snapshot_registry_path(path) is not None
+    ]
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _snapshot_format_is_current(root: Path) -> bool:
+    marker = root / REMOTE_SNAPSHOT_FORMAT_FILE
+    if not marker.is_file() or marker.is_symlink():
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == REMOTE_SNAPSHOT_FORMAT_VERSION
+    except OSError:
+        return False
+
+
+def _write_snapshot_format(root: Path) -> None:
+    marker = root / REMOTE_SNAPSHOT_FORMAT_FILE
+    fd, temporary = tempfile.mkstemp(prefix=f".{marker.name}.", dir=root)
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(f"{REMOTE_SNAPSHOT_FORMAT_VERSION}\n".encode())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, marker)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _snapshot_copy_ignore(_directory: str, names: list[str]) -> set[str]:
+    """Keep repository-controlled files out of internal snapshot control paths."""
+    return {".git", REMOTE_SNAPSHOT_FORMAT_FILE} & set(names)
+
+
+def _snapshot_registry_path(root: Path) -> Path | None:
+    candidate = _safe_snapshot_member_path(
+        root,
+        root / DEFAULT_REGISTRY_FILENAME,
+    )
+    if candidate is None or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _load_snapshot_registry(root: Path) -> Registry:
+    registry_path = _snapshot_registry_path(root)
+    if registry_path is None:
+        raise AssetSyncError(
+            "The remote snapshot registry must be a regular non-symlink file "
+            "inside the snapshot."
+        )
+    return load_registry(registry_path)
+
+
+def _materialize_remote_snapshot(
+    transport: Path,
+    snapshot_root: Path,
+    snapshot_cache_root: Path,
+) -> None:
+    """Build a complete snapshot before replacing an older cache entry."""
+    snapshot_cache_root.mkdir(parents=True, exist_ok=True)
+    nonce = uuid.uuid4().hex
+    temporary = snapshot_cache_root / f".{snapshot_root.name}.{nonce}.tmp"
+    backup = snapshot_cache_root / f".{snapshot_root.name}.{nonce}.old"
+    _assert_internal_path(temporary, snapshot_cache_root)
+    _assert_internal_path(backup, snapshot_cache_root)
+    backup_created = False
+    published = False
+    try:
+        shutil.copytree(
+            transport,
+            temporary,
+            symlinks=True,
+            ignore=_snapshot_copy_ignore,
+        )
+        _write_snapshot_format(temporary)
+        if _snapshot_registry_path(temporary) is None:
+            raise AssetSyncError(
+                "The remote snapshot registry must be a regular non-symlink file "
+                "inside the snapshot."
+            )
+        if snapshot_root.exists() or snapshot_root.is_symlink():
+            os.replace(snapshot_root, backup)
+            backup_created = True
+        try:
+            os.replace(temporary, snapshot_root)
+            published = True
+        except Exception:
+            if backup_created and not snapshot_root.exists():
+                os.replace(backup, snapshot_root)
+                backup_created = False
+            raise
+        if backup_created:
+            _remove_internal_path(backup, snapshot_cache_root)
+            backup_created = False
+    finally:
+        if temporary.exists() or temporary.is_symlink():
+            _remove_internal_path(temporary, snapshot_cache_root)
+        if published and backup_created:
+            _remove_internal_path(backup, snapshot_cache_root)
 
 
 def _platform_contexts(
@@ -2949,7 +3083,7 @@ def _expected_row(
     remote_path = _remote_content_path(snapshot.root, entry)
     remote_writable = _is_private_repo_asset(entry)
     read_only = not remote_writable
-    remote_content = _entry_content_fingerprint(entry, remote_path)
+    remote_content = _platform_content_fingerprint(entry, remote_path, target)
     remote_asset = _remote_asset_fingerprint(snapshot.root, entry)
     reference_commit = ""
     if read_only and entry.repo:
@@ -2962,7 +3096,7 @@ def _expected_row(
         install_name,
     )
     metadata_differences: list[str] = []
-    if local_exists:
+    if local_exists and not target.is_symlink():
         local_metadata = _derive_metadata(
             entry.kind,
             target,
@@ -3180,7 +3314,7 @@ def _discovered_rows(
         if identity in seen_local_paths:
             continue
         context = contexts.get(candidate.tool) or _detected_context(candidate.tool, candidate.kind)
-        marker_key = managed_resource_key(candidate.path) if candidate.path.is_dir() else ""
+        marker_key = managed_resource_key(candidate.path)
         key = _safe_resource_key(marker_key, candidate.kind, candidate.name_hint)
         entry = snapshot.registry.get(key.name, key.kind)
         row = _local_candidate_row(
@@ -3579,7 +3713,11 @@ def _local_candidate_row(
 ) -> AssetPlatformRow:
     remote_exists = entry is not None
     remote_path = _remote_content_path(snapshot.root, entry) if entry else None
-    remote_content = _entry_content_fingerprint(entry, remote_path) if entry else ""
+    remote_content = (
+        _platform_content_fingerprint(entry, remote_path, local_path)
+        if entry
+        else ""
+    )
     remote_asset = _remote_asset_fingerprint(snapshot.root, entry) if entry else ""
     read_only = bool(entry and not _is_private_repo_asset(entry))
     reference_commit = (
@@ -3698,14 +3836,33 @@ def _expected_local_state(
             else False
         )
         return exists, fingerprint, "managed" if managed else "unmanaged" if exists else "missing"
-    exists = target.exists() and not target.is_symlink()
-    fingerprint = resource_hash_path(target) if exists else ""
+    exists = target.exists() or target.is_symlink()
+    fingerprint = resource_hash_path(target) if exists and not target.is_symlink() else ""
     managed = (
-        is_cc_port_managed(target, resource_key=entry.resource_key)
-        if exists and target.is_dir()
+        is_cc_port_managed(
+            target,
+            resource_key=entry.resource_key,
+            file_target=entry.kind == "prompt" and _is_file_prompt_target(target),
+        )
+        if exists
         else False
     )
     return exists, fingerprint, "managed" if managed else "unmanaged" if exists else "missing"
+
+
+def _platform_content_fingerprint(
+    entry: RegistryItem,
+    remote_path: Path | None,
+    local_target: Path | None,
+) -> str:
+    if (
+        entry.kind == "prompt"
+        and local_target is not None
+        and _is_file_prompt_target(local_target)
+    ):
+        payload, _problem = _prompt_payload_path(remote_path)
+        return resource_hash_path(payload) if payload is not None else ""
+    return _entry_content_fingerprint(entry, remote_path)
 
 
 def _entry_content_fingerprint(entry: RegistryItem | None, path: Path | None) -> str:
@@ -3743,11 +3900,29 @@ def _remote_asset_fingerprint(root: Path, entry: RegistryItem | None) -> str:
 def _remote_content_path(root: Path, entry: RegistryItem | None) -> Path | None:
     if entry is None or not entry.path:
         return None
-    target = (root / entry.path).absolute()
-    root_abs = root.absolute()
-    if target != root_abs and root_abs not in target.parents:
+    return _safe_snapshot_member_path(root, root / entry.path)
+
+
+def _safe_snapshot_member_path(root: Path, target: Path) -> Path | None:
+    """Return a snapshot member only when no path component is a symlink."""
+    root_abs = root.expanduser().absolute()
+    target_abs = target.expanduser().absolute()
+    if root_abs.is_symlink():
         return None
-    return target
+    try:
+        relative = target_abs.relative_to(root_abs)
+        root_resolved = root_abs.resolve(strict=False)
+        target_resolved = target_abs.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if target_resolved != root_resolved and root_resolved not in target_resolved.parents:
+        return None
+    current = root_abs
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            return None
+    return target_abs
 
 
 def _asset_status(
@@ -4013,6 +4188,24 @@ def _download_plan_blocker_refs(
                 "The target is unmanaged; explicitly confirm overwrite to continue.",
             )
         )
+    marker_problem = _file_prompt_marker_problem(row)
+    if marker_problem:
+        blockers.append(
+            ui_message(
+                "asset.blocker.prompt_marker_unsafe",
+                marker_problem,
+                detail=marker_problem,
+            )
+        )
+    prompt_problem = _file_prompt_payload_problem(row)
+    if prompt_problem:
+        blockers.append(
+            ui_message(
+                "asset.blocker.prompt_payload_ambiguous",
+                prompt_problem,
+                detail=prompt_problem,
+            )
+        )
     return blockers
 
 
@@ -4061,6 +4254,24 @@ def _copy_to_local_blocker_refs(
             ui_message(
                 "asset.blocker.copy_local_platform_not_ready",
                 "The platform must be configured and enabled before copying locally.",
+            )
+        )
+    marker_problem = _file_prompt_marker_problem(row)
+    if marker_problem:
+        blockers.append(
+            ui_message(
+                "asset.blocker.prompt_marker_unsafe",
+                marker_problem,
+                detail=marker_problem,
+            )
+        )
+    prompt_problem = _file_prompt_payload_problem(row)
+    if prompt_problem:
+        blockers.append(
+            ui_message(
+                "asset.blocker.prompt_payload_ambiguous",
+                prompt_problem,
+                detail=prompt_problem,
             )
         )
     if new_name and registry.get(new_name, row.kind) is not None:
@@ -4169,11 +4380,15 @@ def _copy_local_target_state(
             else False
         )
     else:
-        exists = target.exists()
-        fingerprint = resource_hash_path(target) if exists else ""
+        exists = target.exists() or target.is_symlink()
+        fingerprint = resource_hash_path(target) if exists and not target.is_symlink() else ""
         managed = (
-            is_cc_port_managed(target, resource_key=f"{row.kind}:{new_name}")
-            if exists and target.is_dir()
+            is_cc_port_managed(
+                target,
+                resource_key=f"{row.kind}:{new_name}",
+                file_target=row.kind == "prompt" and _is_file_prompt_target(target),
+            )
+            if exists
             else False
         )
     return target, exists, fingerprint, managed
@@ -4259,6 +4474,16 @@ def _apply_local_asset_action(
             "The platform no longer has a target for this resource kind.",
         )
     target = target.expanduser().absolute()
+    marker = (
+        managed_marker_path(target, file_target=True)
+        if _is_file_prompt_target(target)
+        else None
+    )
+    if marker is not None and marker.is_symlink():
+        raise _StaleAssetTarget(
+            "stale-local-target",
+            "The Prompt ownership sidecar is a symbolic link.",
+        )
     current_exists, current_fingerprint, current_managed = _current_target_assertion(
         entry.kind,
         target,
@@ -4292,6 +4517,15 @@ def _apply_local_asset_action(
         targets.append(
             ChangeTarget(
                 path=mcp_ownership_path(),
+                change_action=plan.action,
+                resource=plan.target_resource_key,
+                platform=plan.platform,
+            )
+        )
+    elif _is_file_prompt_target(target):
+        targets.append(
+            ChangeTarget(
+                path=managed_marker_path(target, file_target=True),
                 change_action=plan.action,
                 resource=plan.target_resource_key,
                 platform=plan.platform,
@@ -4340,9 +4574,26 @@ def _apply_local_asset_action(
             source = _remote_content_path(snapshot.root, entry)
             if source is None or not source.exists() or source.is_symlink():
                 raise AssetSyncError("The remote asset content is unavailable or unsafe.")
+            verification_source = _installable_asset_source(source, target, entry.kind)
             _copy_asset_content(source, target, entry.kind)
-            write_managed_marker(target, marker_entry, platform=plan.platform)
-            if resource_hash_path(source) != resource_hash_path(target):
+            if marker is not None and marker.is_symlink():
+                raise AssetSyncError("The Prompt ownership sidecar became a symbolic link.")
+            written_marker = write_managed_marker(
+                target,
+                marker_entry,
+                platform=plan.platform,
+                file_target=marker is not None,
+            )
+            if (
+                written_marker is None
+                or not is_cc_port_managed(
+                    target,
+                    resource_key=marker_entry.resource_key,
+                    file_target=marker is not None,
+                )
+            ):
+                raise AssetSyncError("Downloaded asset ownership verification failed.")
+            if resource_hash_path(verification_source) != resource_hash_path(target):
                 raise AssetSyncError("Downloaded asset verification failed.")
         record = transaction.complete(
             message=f"Applied {plan.action} for {plan.target_resource_key}."
@@ -5214,6 +5465,7 @@ def _clone_remote_for_write(repo_url: str, destination: Path, cfg: Config) -> No
             token=resource_repo_auth_token(cfg),
         )
         git_ops.checkout_local_branch(destination, branch)
+    git_ops.configure_host_autocrlf_disabled_checkout(destination)
 
 
 def _find_planned_local_row(
@@ -5554,22 +5806,91 @@ def _current_target_assertion(
             is_cc_port_managed_mcp(target, install_name, resource_key=resource_key) if exists else False
         )
         return exists, fingerprint, managed
-    exists = target.exists()
-    fingerprint = resource_hash_path(target) if exists else ""
+    exists = target.exists() or target.is_symlink()
+    fingerprint = resource_hash_path(target) if exists and not target.is_symlink() else ""
     managed = (
-        is_cc_port_managed(target, resource_key=resource_key) if exists and target.is_dir() else False
+        is_cc_port_managed(
+            target,
+            resource_key=resource_key,
+            file_target=kind == "prompt" and _is_file_prompt_target(target),
+        )
+        if exists
+        else False
     )
     return exists, fingerprint, managed
 
 
 def _copy_asset_content(source: Path, destination: Path, kind: ItemKind) -> None:
+    if destination.is_symlink():
+        _remove_asset_path(destination)
+    if kind == "prompt" and _is_file_prompt_target(destination):
+        payload = _installable_asset_source(source, destination, kind)
+        copy_resource_tree(payload, destination)
+        return
     if source.is_file() and kind in {"rule", "prompt", "plugin"}:
-        if destination.exists():
+        if destination.exists() or destination.is_symlink():
             _remove_asset_path(destination)
         destination.mkdir(parents=True, exist_ok=True)
         copy_resource_tree(source, destination / source.name)
         return
     copy_resource_tree(source, destination)
+
+
+def _installable_asset_source(source: Path, destination: Path, kind: ItemKind) -> Path:
+    if kind != "prompt" or not _is_file_prompt_target(destination):
+        return source
+    payload, problem = _prompt_payload_path(source)
+    if payload is None:
+        raise AssetSyncError(problem or "The Prompt has no installable Markdown payload.")
+    return payload
+
+
+def _file_prompt_payload_problem(row: AssetPlatformRow) -> str:
+    if (
+        row.kind != "prompt"
+        or row.target_path is None
+        or not _is_file_prompt_target(row.target_path)
+        or row.remote_path is None
+    ):
+        return ""
+    _payload, problem = _prompt_payload_path(row.remote_path)
+    return problem
+
+
+def _file_prompt_marker_problem(row: AssetPlatformRow) -> str:
+    if (
+        row.kind != "prompt"
+        or row.target_path is None
+        or not _is_file_prompt_target(row.target_path)
+    ):
+        return ""
+    marker = managed_marker_path(row.target_path, file_target=True)
+    return "The Prompt ownership sidecar must not be a symbolic link." if marker.is_symlink() else ""
+
+
+def _prompt_payload_path(source: Path | None) -> tuple[Path | None, str]:
+    if source is None or not source.exists() or source.is_symlink():
+        return None, "The Prompt payload is unavailable or unsafe."
+    if source.is_file():
+        if source.suffix.lower() == ".md":
+            return source, ""
+        return None, "The Prompt payload must be a Markdown file."
+    markdown = sorted(
+        item
+        for item in source.iterdir()
+        if item.is_file() and not item.is_symlink() and item.suffix.lower() == ".md"
+    )
+    if len(markdown) != 1:
+        return (
+            None,
+            "A file-based Prompt requires exactly one root Markdown payload; "
+            f"found {len(markdown)}.",
+        )
+    return markdown[0], ""
+
+
+def _is_file_prompt_target(path: Path) -> bool:
+    return path.suffix.lower() == ".md"
 
 
 def _remove_asset_path(path: Path) -> None:
@@ -5856,12 +6177,24 @@ def _cleanup_expired_asset_plans(cfg: Config) -> None:
 
 
 def _remove_internal_path(path: Path, allowed_root: Path) -> None:
-    resolved = path.absolute()
-    root = allowed_root.absolute()
-    if resolved == root or root not in resolved.parents:
-        raise ValueError(f"Refusing to remove path outside internal state: {resolved}")
-    if resolved.exists():
-        shutil.rmtree(resolved, ignore_errors=True)
+    target = _checked_internal_path(path, allowed_root)
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def _assert_internal_path(path: Path, allowed_root: Path) -> None:
+    _checked_internal_path(path, allowed_root)
+
+
+def _checked_internal_path(path: Path, allowed_root: Path) -> Path:
+    root = allowed_root.expanduser().resolve(strict=False)
+    raw = path.expanduser().absolute()
+    target = raw.parent.resolve(strict=False) / raw.name
+    if target == root or root not in target.parents:
+        raise ValueError(f"Refusing to access path outside internal state: {target}")
+    return target
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:

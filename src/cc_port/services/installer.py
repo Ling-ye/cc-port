@@ -14,8 +14,10 @@ from ..core.models import Registry, RegistryItem
 from ..core.ownership import (
     is_cc_port_managed,
     is_cc_port_managed_mcp,
+    managed_marker_path,
     mark_cc_port_managed_mcp,
     mcp_ownership_path,
+    remove_managed_marker,
     unmark_cc_port_managed_mcp,
     write_managed_marker,
 )
@@ -212,13 +214,20 @@ def _install_rule_to_platform(
     *,
     force_unmanaged: bool = False,
 ) -> Path | None:
-    """Copy rule files to a platform's rules_dir."""
+    """Copy a rule or prompt to its platform-native target."""
     target_dir = platform.resolve_install_path(
-        "rule",
+        entry.kind,
         entry.install_target_name(platform.name),
     )
     if target_dir is None:
         return None
+    if _is_file_prompt_target(entry, target_dir):
+        return _install_prompt_file_to_platform(
+            source_path,
+            target_dir,
+            entry,
+            force_unmanaged=force_unmanaged,
+        )
     try:
         if source_path.resolve() == target_dir.resolve():
             return target_dir
@@ -239,6 +248,80 @@ def _install_rule_to_platform(
         _remove_path(target_dir)
     copy_resource_tree(source_path, target_dir)
     return target_dir
+
+
+def _install_prompt_file_to_platform(
+    source_path: Path,
+    target_file: Path,
+    entry: RegistryItem,
+    *,
+    force_unmanaged: bool,
+) -> Path:
+    payload = _prompt_payload_path(source_path)
+    marker = managed_marker_path(target_file, file_target=True)
+    if marker.is_symlink():
+        raise RuntimeError(
+            f"Prompt ownership sidecar must not be a symbolic link: {marker}"
+        )
+    try:
+        if payload.resolve() == target_file.resolve():
+            return target_file
+    except OSError:
+        pass
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    if target_file.exists() or target_file.is_symlink():
+        managed = is_cc_port_managed(
+            target_file,
+            resource_key=entry.resource_key,
+            file_target=True,
+        )
+        if not force_unmanaged and not managed:
+            raise RuntimeError(
+                f"Target exists and is not managed by CC Port: {target_file}"
+            )
+        if (
+            managed
+            and not target_file.is_symlink()
+            and resource_hash_path(payload) == resource_hash_path(target_file)
+        ):
+            return target_file
+        _remove_path(target_file)
+    shutil.copy2(payload, target_file)
+    return target_file
+
+
+def _prompt_payload_path(source_path: Path) -> Path:
+    """Return the single Markdown payload for a file-style prompt target."""
+    if source_path.is_symlink():
+        raise RuntimeError(
+            f"File-style prompt source must not be a symbolic link: {source_path}"
+        )
+    if source_path.is_file():
+        if source_path.suffix.lower() == ".md":
+            return source_path
+        raise RuntimeError(
+            f"File-style prompt source must be a Markdown file: {source_path}"
+        )
+    if not source_path.is_dir():
+        raise RuntimeError(f"File-style prompt source is unavailable: {source_path}")
+
+    candidates = sorted(
+        path
+        for path in source_path.iterdir()
+        if path.suffix.lower() == ".md"
+        and path.is_file()
+        and not path.is_symlink()
+    )
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "File-style prompt source must contain exactly one root-level "
+            f"non-symlink .md file: {source_path}"
+        )
+    return candidates[0]
+
+
+def _is_file_prompt_target(entry: RegistryItem, target: Path) -> bool:
+    return entry.kind == "prompt" and target.suffix.lower() == ".md"
 
 
 def _install_plugin_to_platform(
@@ -331,11 +414,21 @@ def _distribute_to_platforms(
             )
 
         if result_path is not None:
+            file_target = _is_file_prompt_target(entry, result_path)
             if (
                 entry.kind != "mcp"
-                and not is_cc_port_managed(result_path, resource_key=entry.resource_key)
+                and not is_cc_port_managed(
+                    result_path,
+                    resource_key=entry.resource_key,
+                    file_target=file_target,
+                )
             ):
-                write_managed_marker(result_path, entry, platform=plat.name)
+                write_managed_marker(
+                    result_path,
+                    entry,
+                    platform=plat.name,
+                    file_target=file_target,
+                )
             installed_on.append(plat.name)
 
     return installed_on
@@ -522,10 +615,14 @@ def _sync_one_unsafe(
                     platforms_installed=platforms_installed,
                 )
 
-            if install_path.exists():
+            if install_path.exists() or install_path.is_symlink():
                 _remove_path(install_path)
             install_path.parent.mkdir(parents=True, exist_ok=True)
-            if source_path.is_dir():
+            if source_path.is_file() and entry.kind == "prompt":
+                install_path.mkdir(parents=True)
+                payload = _prompt_payload_path(source_path)
+                shutil.copy2(payload, install_path / payload.name)
+            elif source_path.is_dir():
                 copy_resource_tree(source_path, install_path)
             else:
                 install_path.parent.mkdir(parents=True, exist_ok=True)
@@ -818,10 +915,15 @@ def _preview_sync_item(
             )
 
     for platform_name, target_path in target_pairs:
+        file_target = _is_file_prompt_target(entry, target_path)
         unmanaged_directory = (
             entry.kind != "mcp"
-            and target_path.exists()
-            and not is_cc_port_managed(target_path, resource_key=entry.resource_key)
+            and (target_path.exists() or target_path.is_symlink())
+            and not is_cc_port_managed(
+                target_path,
+                resource_key=entry.resource_key,
+                file_target=file_target,
+            )
         )
         unmanaged_mcp = False
         if entry.kind == "mcp" and target_path.exists():
@@ -985,7 +1087,7 @@ def _uninstall_one_unsafe(
 
     if platform_filter is None:
         for p in {install_path, clone_path}:
-            if p.exists():
+            if p.exists() or p.is_symlink():
                 _remove_path(p)
                 removed = True
 
@@ -1048,6 +1150,15 @@ def _resource_change_targets(
                 platform=platform,
             )
         )
+        if _is_file_prompt_target(entry, path):
+            targets.append(
+                ChangeTarget(
+                    path=managed_marker_path(path, file_target=True),
+                    change_action=change_action,
+                    resource=entry.resource_key,
+                    platform=platform,
+                )
+            )
     if entry.kind == "mcp" and platform_targets:
         targets.append(
             ChangeTarget(
@@ -1103,10 +1214,17 @@ def _verify_resource_install(
             if platform
             else None
         )
+        expected_hash = cache_hash
+        if target is not None and _is_file_prompt_target(entry, target):
+            expected_hash = resource_hash_path(_prompt_payload_path(cache_path))
         if (
             target is None
-            or not is_cc_port_managed(target, resource_key=entry.resource_key)
-            or resource_hash_path(target) != cache_hash
+            or not is_cc_port_managed(
+                target,
+                resource_key=entry.resource_key,
+                file_target=_is_file_prompt_target(entry, target),
+            )
+            or resource_hash_path(target) != expected_hash
         ):
             raise RuntimeError(
                 f"Install verification failed for {entry.name} on {platform_name}."
@@ -1149,7 +1267,11 @@ def _verify_resource_uninstall(
             entry.kind,
             entry.install_target_name(platform.name),
         )
-        if target and is_cc_port_managed(target, resource_key=entry.resource_key):
+        if target and is_cc_port_managed(
+            target,
+            resource_key=entry.resource_key,
+            file_target=_is_file_prompt_target(entry, target),
+        ):
             raise RuntimeError(
                 f"Uninstall verification failed for {entry.name} on {platform.name}."
             )
@@ -1177,9 +1299,14 @@ def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile
         if removed:
             unmark_cc_port_managed_mcp(mcp_path, server_name)
         return removed
-    elif entry.kind in {"rule", "prompt"}:
+    elif entry.kind == "rule":
         target = platform.resolve_install_path(
             "rule",
+            entry.install_target_name(platform.name),
+        )
+    elif entry.kind == "prompt":
+        target = platform.resolve_install_path(
+            "prompt",
             entry.install_target_name(platform.name),
         )
     elif entry.kind == "plugin":
@@ -1190,10 +1317,31 @@ def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile
     else:
         target = None
 
-    if target and target.exists():
-        if not is_cc_port_managed(target, resource_key=entry.resource_key):
+    if target is None:
+        return False
+    file_prompt = _is_file_prompt_target(entry, target)
+    marker = managed_marker_path(target, file_target=True) if file_prompt else None
+    if marker is not None and marker.is_symlink():
+        return False
+    target_exists = target.exists() or target.is_symlink()
+    if not target_exists and file_prompt:
+        if not is_cc_port_managed(
+            target,
+            resource_key=entry.resource_key,
+            file_target=True,
+        ):
+            return False
+        return remove_managed_marker(target, file_target=True)
+    if target_exists:
+        if not is_cc_port_managed(
+            target,
+            resource_key=entry.resource_key,
+            file_target=file_prompt,
+        ):
             return False
         _remove_path(target)
+        if marker is not None:
+            _remove_path(marker)
         return True
     return False
 
@@ -1291,7 +1439,7 @@ def _materialize_subdir(clone_path: Path, subdir: str, install_path: Path) -> No
 
 def _remove_path(path: Path) -> None:
     """Remove a file or directory, including read-only files left by git clones."""
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path, onerror=_make_writable_and_retry)

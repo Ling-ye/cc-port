@@ -1,4 +1,4 @@
-"""Ownership markers for directories managed by CC Port."""
+"""Ownership markers for files and directories managed by CC Port."""
 
 from __future__ import annotations
 
@@ -16,13 +16,21 @@ MANAGED_MARKER = ".cc-port-managed.json"
 MCP_OWNERSHIP_VERSION = 2
 
 
-def managed_marker_path(target: Path) -> Path:
+def managed_marker_path(target: Path, *, file_target: bool = False) -> Path:
+    if file_target or _uses_file_marker(target):
+        return target.with_name(f".{target.name}{MANAGED_MARKER}")
     return target / MANAGED_MARKER
 
 
-def read_managed_marker(target: Path) -> dict[str, Any] | None:
-    marker = managed_marker_path(target)
-    if not marker.is_file():
+def read_managed_marker(
+    target: Path,
+    *,
+    file_target: bool = False,
+) -> dict[str, Any] | None:
+    if target.is_symlink():
+        return None
+    marker = managed_marker_path(target, file_target=file_target)
+    if marker.is_symlink() or not marker.is_file():
         return None
     try:
         value = json.loads(marker.read_text(encoding="utf-8"))
@@ -31,8 +39,8 @@ def read_managed_marker(target: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def managed_resource_key(target: Path) -> str:
-    marker = read_managed_marker(target)
+def managed_resource_key(target: Path, *, file_target: bool = False) -> str:
+    marker = read_managed_marker(target, file_target=file_target)
     if not marker or marker.get("managed_by") != "cc-port":
         return ""
     stored_key = str(marker.get("resource_key") or "")
@@ -49,10 +57,11 @@ def is_cc_port_managed(
     resource_name: str | None = None,
     resource_kind: str | None = None,
     resource_key: str | None = None,
+    file_target: bool = False,
 ) -> bool:
-    if not target.is_dir():
+    if target.is_symlink():
         return False
-    marker = read_managed_marker(target)
+    marker = read_managed_marker(target, file_target=file_target)
     if not marker or marker.get("managed_by") != "cc-port":
         return False
     stored_name = str(marker.get("resource") or "")
@@ -76,11 +85,17 @@ def write_managed_marker(
     entry: RegistryItem,
     *,
     platform: str,
+    file_target: bool = False,
 ) -> Path | None:
-    """Mark a copied directory as owned by CC Port."""
-    if not target.is_dir():
+    """Mark a copied file or directory as owned by CC Port."""
+    if target.is_symlink() or (
+        not target.is_dir() and not (file_target or _uses_file_marker(target))
+    ):
         return None
-    marker = managed_marker_path(target)
+    marker = managed_marker_path(target, file_target=file_target)
+    if marker.is_symlink():
+        return None
+    marker.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "managed_by": "cc-port",
         "resource": entry.name,
@@ -89,11 +104,43 @@ def write_managed_marker(
         "platform": platform,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    marker.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    _write_marker_atomic(marker, payload)
     return marker
+
+
+def remove_managed_marker(target: Path, *, file_target: bool = False) -> bool:
+    """Remove the ownership marker for *target*, if one exists."""
+    if target.is_symlink():
+        return False
+    marker = managed_marker_path(target, file_target=file_target)
+    existed = marker.is_file() or marker.is_symlink()
+    if existed:
+        marker.unlink()
+    return existed
+
+
+def _uses_file_marker(target: Path) -> bool:
+    if target.is_symlink():
+        return bool(target.suffix)
+    if target.is_file():
+        return True
+    if target.exists():
+        return False
+    return bool(target.suffix)
+
+
+def _write_marker_atomic(marker: Path, payload: dict[str, Any]) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=f".{marker.name}.", dir=marker.parent)
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, marker)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def mcp_ownership_path() -> Path:

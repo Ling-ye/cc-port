@@ -667,6 +667,23 @@ def clone(
         _cleanup_askpass(env)
 
 
+def configure_host_autocrlf_disabled_checkout(path: Path) -> None:
+    """Disable host-level line-ending conversion in one internal worktree.
+
+    Repository-local settings override host ``core.autocrlf`` defaults without
+    changing user or global Git configuration. Repository ``.gitattributes``
+    and clean/smudge filters remain authoritative. Rewriting from the index
+    also migrates worktrees that were checked out before these settings existed.
+    """
+    _run(["config", "--local", "core.autocrlf", "false"], cwd=path)
+    _run(["config", "--local", "core.eol", "lf"], cwd=path)
+    commit_id = head_commit(path)
+    if commit_id is not None:
+        _run(["read-tree", "--empty"], cwd=path)
+        _run(["read-tree", "--reset", commit_id], cwd=path)
+        _run(["checkout-index", "--all", "--force"], cwd=path)
+
+
 def pull(path: Path, ref: str | None = None, token: str | None = None) -> None:
     """Fast-forward a local branch from its remote.
 

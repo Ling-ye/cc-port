@@ -361,6 +361,7 @@ def test_platform_toggle_preserves_hidden_and_custom_configuration(
                     name="cursor",
                     enabled=True,
                     skills_dir="D:/custom/cursor/skills",
+                    prompts_dir="D:/custom/cursor/commands",
                 ),
                 PlatformProfile(
                     name="private-tool",
@@ -379,6 +380,7 @@ def test_platform_toggle_preserves_hidden_and_custom_configuration(
     assert result["ok"] is True
     assert updated.platforms.get("cursor").enabled is False
     assert updated.platforms.get("cursor").skills_dir == "D:/custom/cursor/skills"
+    assert updated.platforms.get("cursor").prompts_dir == "D:/custom/cursor/commands"
     assert updated.platforms.get("private-tool").enabled is True
     assert updated.github.repo_prefix == "keep-"
     assert updated.git.executable == "D:/Git/bin/git.exe"

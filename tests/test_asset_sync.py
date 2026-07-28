@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -17,11 +18,15 @@ from cc_port.core.models import (
     RegistryItem,
     ResourceKey,
 )
-from cc_port.core.ownership import managed_resource_key
+from cc_port.core.ownership import (
+    managed_marker_path,
+    managed_resource_key,
+    write_managed_marker,
+)
 from cc_port.core.platforms import PlatformProfile, PlatformsConfig
 from cc_port.core.registry import load_registry, save_registry
 from cc_port.infrastructure import git_ops
-from cc_port.services import asset_sync
+from cc_port.services import asset_sync, env_manager
 from cc_port.services.asset_sync import RemoteSnapshot
 from cc_port.services.env_manager import DiscoveredTool, EnvDiscoveryResult
 from cc_port.services.plugin_management import DiscoveredPlugin
@@ -43,6 +48,7 @@ def _config(
     repo_url: str = "",
     skills_dir: Path | None = None,
     rules_dir: Path | None = None,
+    prompts_dir: Path | None = None,
 ) -> Config:
     return Config(
         git=GitConfig(executable=str(GIT)),
@@ -59,6 +65,7 @@ def _config(
                     enabled=True,
                     skills_dir=str(skills_dir or tmp_path / "cursor" / "skills"),
                     rules_dir=str(rules_dir or tmp_path / "cursor" / "rules"),
+                    prompts_dir=str(prompts_dir or tmp_path / "cursor" / "commands"),
                     mcp_json=str(tmp_path / "cursor" / "mcp.json"),
                 )
             ]
@@ -106,7 +113,7 @@ def _snapshot(root: Path, registry: Registry, *, commit: str = "abc123") -> Remo
     )
 
 
-def _empty_discovery() -> EnvDiscoveryResult:
+def _empty_discovery(**_kwargs: object) -> EnvDiscoveryResult:
     return EnvDiscoveryResult(tools=[], resources=[], mcp_servers=[])
 
 
@@ -205,7 +212,7 @@ def _push_concurrent_change(
     _run_git(clone, "push", "origin", "main")
 
 
-def test_inventory_uses_platform_rows_and_blocks_rule_prompt_target_collision(
+def test_cursor_rule_and_prompt_use_distinct_native_targets(
     tmp_path: Path,
 ) -> None:
     remote = tmp_path / "remote"
@@ -229,8 +236,10 @@ def test_inventory_uses_platform_rows_and_blocks_rule_prompt_target_collision(
     )
 
     assert {row.resource_key for row in inventory.rows} == {"rule:demo", "prompt:demo"}
-    assert {row.status for row in inventory.rows} == {"target-conflict"}
-    assert all(row.available_actions == ["set-platform-install-name"] for row in inventory.rows)
+    assert {row.status for row in inventory.rows} == {"remote-only"}
+    by_key = {row.resource_key: row for row in inventory.rows}
+    assert by_key["rule:demo"].target_path == tmp_path / "cursor" / "rules" / "demo"
+    assert by_key["prompt:demo"].target_path == tmp_path / "cursor" / "commands" / "demo.md"
 
 
 def test_logical_inventory_preserves_unknown_local_and_unavailable_remote_snapshot(
@@ -494,7 +503,356 @@ def test_platform_install_alias_resolves_collision(tmp_path: Path) -> None:
     by_key = {row.resource_key: row for row in inventory.rows}
     assert by_key["rule:demo"].status == "remote-only"
     assert by_key["prompt:demo"].status == "remote-only"
-    assert by_key["prompt:demo"].target_path.name == "demo-prompt"
+    assert by_key["prompt:demo"].target_path.name == "demo-prompt.md"
+
+
+def test_cursor_prompt_download_writes_managed_command_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    prompt_dir = remote / "prompts" / "demo"
+    prompt_dir.mkdir(parents=True)
+    prompt_text = "# Demo command\n\nReturn CURSOR_PROMPT_NONCE_42 only.\n"
+    (prompt_dir / "demo.md").write_text(prompt_text, encoding="utf-8")
+    snapshot = _snapshot(
+        remote,
+        Registry(
+            items=[
+                RegistryItem(
+                    name="demo",
+                    kind="prompt",
+                    source="local",
+                    path="prompts/demo",
+                    platforms=["cursor"],
+                )
+            ]
+        ),
+    )
+    cfg = _config(tmp_path)
+    target = tmp_path / "cursor" / "commands" / "demo.md"
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        config=cfg,
+    )
+    result = asset_sync.apply_asset_action_plan(plan.operation_id, config=cfg)
+
+    assert result.status == "succeeded"
+    assert target.read_text(encoding="utf-8") == prompt_text
+    assert managed_resource_key(target) == "prompt:demo"
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        remote_snapshot=snapshot,
+    )
+    row = next(row for row in inventory.rows if row.resource_key == "prompt:demo")
+    assert row.status == "same"
+    assert row.ownership == "managed"
+
+
+def test_cursor_prompt_download_rolls_back_file_and_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    prompt_dir = remote / "prompts" / "demo"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "demo.md").write_text("remote prompt\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="demo",
+        kind="prompt",
+        source="local",
+        path="prompts/demo",
+        platforms=["cursor"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    cfg = _config(tmp_path)
+    target = tmp_path / "cursor" / "commands" / "demo.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("local prompt\n", encoding="utf-8")
+    marker = write_managed_marker(target, entry, platform="cursor")
+    assert marker is not None
+    marker_before = marker.read_bytes()
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        config=cfg,
+    )
+    original_write_marker = asset_sync.write_managed_marker
+
+    def corrupt_marker_then_fail(
+        marker_target: Path,
+        marker_entry: RegistryItem,
+        *,
+        platform: str,
+        file_target: bool = False,
+    ) -> Path | None:
+        marker_path = original_write_marker(
+            marker_target,
+            marker_entry,
+            platform=platform,
+            file_target=file_target,
+        )
+        assert marker_path is not None
+        marker_path.write_text('{"corrupted": true}\n', encoding="utf-8")
+        raise RuntimeError("simulated marker failure")
+
+    monkeypatch.setattr(asset_sync, "write_managed_marker", corrupt_marker_then_fail)
+
+    with pytest.raises(RuntimeError, match="simulated marker failure"):
+        asset_sync.apply_asset_action_plan(plan.operation_id, config=cfg)
+
+    assert target.read_text(encoding="utf-8") == "local prompt\n"
+    assert managed_marker_path(target).read_bytes() == marker_before
+    assert managed_resource_key(target) == "prompt:demo"
+
+
+def test_cursor_prompt_download_rolls_back_when_marker_is_not_persisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    prompt_dir = remote / "prompts" / "demo"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "demo.md").write_text("remote prompt\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="demo",
+        kind="prompt",
+        source="local",
+        path="prompts/demo",
+        platforms=["cursor"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    cfg = _config(tmp_path)
+    target = tmp_path / "cursor" / "commands" / "demo.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("unmanaged local prompt\n", encoding="utf-8")
+    marker = managed_marker_path(target, file_target=True)
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        overwrite_unmanaged=True,
+        config=cfg,
+    )
+    monkeypatch.setattr(
+        asset_sync,
+        "write_managed_marker",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(
+        asset_sync.AssetSyncError,
+        match="ownership verification failed",
+    ):
+        asset_sync.apply_asset_action_plan(plan.operation_id, config=cfg)
+
+    assert target.read_text(encoding="utf-8") == "unmanaged local prompt\n"
+    assert not marker.exists()
+
+
+def test_cursor_prompt_directory_replacement_rolls_back_adjacent_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    prompt_dir = remote / "prompts" / "demo"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "demo.md").write_text("remote prompt\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="demo",
+        kind="prompt",
+        source="local",
+        path="prompts/demo",
+        platforms=["cursor"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    cfg = _config(tmp_path)
+    target = tmp_path / "cursor" / "commands" / "demo.md"
+    target.mkdir(parents=True)
+    sentinel = target / "keep.txt"
+    sentinel.write_text("keep me\n", encoding="utf-8")
+    marker = managed_marker_path(target, file_target=True)
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        overwrite_unmanaged=True,
+        config=cfg,
+    )
+    original_write_marker = asset_sync.write_managed_marker
+
+    def write_marker_then_fail(
+        marker_target: Path,
+        marker_entry: RegistryItem,
+        *,
+        platform: str,
+        file_target: bool = False,
+    ) -> Path | None:
+        marker_path = original_write_marker(
+            marker_target,
+            marker_entry,
+            platform=platform,
+            file_target=file_target,
+        )
+        assert marker_path == marker
+        raise RuntimeError("simulated post-marker failure")
+
+    monkeypatch.setattr(asset_sync, "write_managed_marker", write_marker_then_fail)
+
+    with pytest.raises(RuntimeError, match="simulated post-marker failure"):
+        asset_sync.apply_asset_action_plan(plan.operation_id, config=cfg)
+
+    assert target.is_dir()
+    assert sentinel.read_text(encoding="utf-8") == "keep me\n"
+    assert not marker.exists()
+
+
+def test_cursor_prompt_download_blocks_ambiguous_remote_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    prompt_dir = remote / "prompts" / "demo"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "first.md").write_text("first\n", encoding="utf-8")
+    (prompt_dir / "second.md").write_text("second\n", encoding="utf-8")
+    snapshot = _snapshot(
+        remote,
+        Registry(
+            items=[
+                RegistryItem(
+                    name="demo",
+                    kind="prompt",
+                    source="local",
+                    path="prompts/demo",
+                    platforms=["cursor"],
+                )
+            ]
+        ),
+    )
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        config=_config(tmp_path),
+    )
+
+    assert plan.blocked is True
+    assert "exactly one" in " ".join(plan.blockers).lower()
+
+
+def test_cursor_prompt_download_requires_confirmation_for_dangling_target_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    prompt_dir = remote / "prompts" / "demo"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "demo.md").write_text("safe prompt\n", encoding="utf-8")
+    snapshot = _snapshot(
+        remote,
+        Registry(
+            items=[
+                RegistryItem(
+                    name="demo",
+                    kind="prompt",
+                    source="local",
+                    path="prompts/demo",
+                    platforms=["cursor"],
+                )
+            ]
+        ),
+    )
+    cfg = _config(tmp_path)
+    target = tmp_path / "cursor" / "commands" / "demo.md"
+    outside = tmp_path / "outside.md"
+    target.parent.mkdir(parents=True)
+    try:
+        target.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+
+    blocked = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        config=cfg,
+    )
+
+    assert blocked.blocked is True
+    assert "unmanaged" in " ".join(blocked.blockers).lower()
+    assert target.is_symlink()
+    assert not outside.exists()
+
+    confirmed = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        overwrite_unmanaged=True,
+        config=cfg,
+    )
+    result = asset_sync.apply_asset_action_plan(confirmed.operation_id, config=cfg)
+
+    assert result.status == "succeeded"
+    assert target.is_file()
+    assert not target.is_symlink()
+    assert target.read_text(encoding="utf-8") == "safe prompt\n"
+    assert not outside.exists()
+
+
+def test_prompt_remote_asset_fingerprint_includes_non_payload_files(tmp_path: Path) -> None:
+    remote = tmp_path / "remote"
+    prompt_dir = remote / "prompts" / "demo"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "demo.md").write_text("same prompt\n", encoding="utf-8")
+    notes = prompt_dir / "notes.txt"
+    notes.write_text("first\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="demo",
+        kind="prompt",
+        source="local",
+        path="prompts/demo",
+        platforms=["cursor"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    cfg = _config(tmp_path)
+
+    before = asset_sync.build_asset_inventory(
+        config=cfg,
+        remote_snapshot=snapshot,
+    ).rows[0]
+    notes.write_text("second\n", encoding="utf-8")
+    after = asset_sync.build_asset_inventory(
+        config=cfg,
+        remote_snapshot=snapshot,
+    ).rows[0]
+
+    assert before.remote_content_fingerprint == after.remote_content_fingerprint
+    assert before.remote_asset_fingerprint != after.remote_asset_fingerprint
 
 
 def test_detected_unconfigured_platform_is_visible_but_cannot_write_local_target(
@@ -724,6 +1082,441 @@ def test_upload_rejects_when_target_asset_changed_after_plan(
     result = asset_sync.apply_asset_action_plan(plan.operation_id, config=cfg)
 
     assert result.status == "stale-target"
+
+
+def test_cursor_prompt_upload_and_copy_to_remote_keep_directory_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed, bare = _seed_bare_remote(tmp_path)
+    command = tmp_path / "cursor" / "commands" / "demo.md"
+    command.parent.mkdir(parents=True)
+    command.write_text("local prompt\n", encoding="utf-8")
+    cfg = _config(tmp_path, repo_url=str(bare))
+    monkeypatch.setattr(
+        asset_sync,
+        "discover_environment",
+        lambda **kwargs: env_manager.discover_environment(
+            home=tmp_path / "isolated-home",
+            **kwargs,
+        ),
+    )
+
+    upload = asset_sync.build_asset_action_plan(
+        "upload",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        config=cfg,
+    )
+    upload_result = asset_sync.apply_asset_action_plan(upload.operation_id, config=cfg)
+
+    assert upload_result.status == "succeeded"
+    verify_upload = tmp_path / "verify-prompt-upload"
+    subprocess.run(
+        [str(GIT), "clone", "--branch", "main", str(bare), str(verify_upload)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    stored = load_registry(verify_upload / "registry.yaml").get("demo", "prompt")
+    assert stored is not None
+    assert stored.path == "prompts/demo"
+    assert (verify_upload / "prompts" / "demo" / "demo.md").read_text(
+        encoding="utf-8"
+    ) == "local prompt\n"
+
+    copied = asset_sync.build_asset_action_plan(
+        "copy-to-remote",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        new_name="demo-copy",
+        config=cfg,
+    )
+    copied_result = asset_sync.apply_asset_action_plan(copied.operation_id, config=cfg)
+
+    assert copied_result.status == "succeeded"
+    verify_copy = tmp_path / "verify-prompt-copy"
+    subprocess.run(
+        [str(GIT), "clone", "--branch", "main", str(bare), str(verify_copy)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    copied_entry = load_registry(verify_copy / "registry.yaml").get(
+        "demo-copy",
+        "prompt",
+    )
+    assert copied_entry is not None
+    assert copied_entry.path == "prompts/demo-copy"
+    assert (verify_copy / "prompts" / "demo-copy" / "demo.md").read_text(
+        encoding="utf-8"
+    ) == "local prompt\n"
+
+
+def test_remote_refresh_disables_host_autocrlf_and_preserves_fixture_blob_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = tmp_path / "prompt-seed"
+    seed.mkdir()
+    _run_git(seed, "init", "-b", "main")
+    prompt_bytes = b"first line\nsecond line\n"
+    prompt_path = seed / "prompts" / "demo" / "demo.md"
+    prompt_path.parent.mkdir(parents=True)
+    prompt_path.write_bytes(prompt_bytes)
+    save_registry(
+        Registry(
+            items=[
+                RegistryItem(
+                    name="demo",
+                    kind="prompt",
+                    source="local",
+                    path="prompts/demo",
+                    platforms=["cursor"],
+                )
+            ]
+        ),
+        seed / "registry.yaml",
+    )
+    _run_git(seed, "add", "registry.yaml", "prompts/demo/demo.md")
+    _run_git(
+        seed,
+        "-c",
+        "user.name=CC Port Test",
+        "-c",
+        "user.email=cc-port@example.test",
+        "commit",
+        "-m",
+        "seed prompt",
+    )
+    commit = _run_git(seed, "rev-parse", "HEAD")
+    blob_bytes = subprocess.run(
+        [str(GIT), "show", f"{commit}:prompts/demo/demo.md"],
+        cwd=seed,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert blob_bytes == prompt_bytes
+    bare = tmp_path / "prompt-remote.git"
+    subprocess.run(
+        [str(GIT), "clone", "--bare", str(seed), str(bare)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    global_config = tmp_path / "autocrlf-global.gitconfig"
+    global_config.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    cfg = _config(tmp_path, repo_url=str(bare))
+    write_clone = tmp_path / "asset-write-clone"
+    asset_sync._clone_remote_for_write(str(bare), write_clone, cfg)
+    assert (write_clone / "prompts" / "demo" / "demo.md").read_bytes() == blob_bytes
+    assert _run_git(
+        write_clone,
+        "config",
+        "--local",
+        "--get",
+        "core.autocrlf",
+    ) == "false"
+
+    state_root = asset_sync.default_state_dir() / asset_sync.ASSET_STATE_DIR
+    cache_key = hashlib.sha256(f"{bare}\0main".encode()).hexdigest()[:24]
+    transport = state_root / asset_sync.REMOTE_CACHE_DIR / cache_key
+    transport.parent.mkdir(parents=True)
+    subprocess.run(
+        [str(GIT), "clone", "--branch", "main", str(bare), str(transport)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    transport_prompt = transport / "prompts" / "demo" / "demo.md"
+    assert transport_prompt.read_bytes() == prompt_bytes.replace(b"\n", b"\r\n")
+
+    snapshot_root = (
+        state_root / asset_sync.REMOTE_SNAPSHOT_DIR / cache_key / commit
+    )
+    snapshot_root.parent.mkdir(parents=True)
+    shutil.copytree(
+        transport,
+        snapshot_root,
+        symlinks=True,
+        ignore=lambda _directory, names: {".git"} & set(names),
+    )
+    local_prompt = tmp_path / "cursor" / "commands" / "demo.md"
+    local_prompt.parent.mkdir(parents=True)
+    local_prompt.write_bytes(prompt_bytes)
+    stale_snapshot = RemoteSnapshot(
+        root=snapshot_root,
+        registry=load_registry(snapshot_root / "registry.yaml"),
+        commit=commit,
+        branch="main",
+        repo_url=str(bare),
+    )
+    stale_row = asset_sync.build_asset_inventory(
+        config=cfg,
+        remote_snapshot=stale_snapshot,
+    ).rows[0]
+    assert stale_row.status == "content-different"
+
+    refreshed = asset_sync._refresh_remote_snapshot(cfg, refresh=True)
+
+    assert refreshed.root == snapshot_root
+    assert refreshed.available, refreshed.warning
+    assert transport_prompt.read_bytes() == blob_bytes
+    assert _run_git(
+        transport,
+        "config",
+        "--local",
+        "--get",
+        "core.autocrlf",
+    ) == "false"
+    assert (refreshed.root / "prompts" / "demo" / "demo.md").read_bytes() == blob_bytes
+    assert (
+        refreshed.root / asset_sync.REMOTE_SNAPSHOT_FORMAT_FILE
+    ).read_text(encoding="utf-8").strip() == asset_sync.REMOTE_SNAPSHOT_FORMAT_VERSION
+    refreshed_row = asset_sync.build_asset_inventory(
+        config=cfg,
+        remote_snapshot=refreshed,
+    ).rows[0]
+    assert refreshed_row.status == "same"
+    assert global_config.read_text(encoding="utf-8") == "[core]\n\tautocrlf = true\n"
+
+
+def test_snapshot_format_writer_atomically_replaces_existing_hardlink(
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must stay unchanged\n", encoding="utf-8")
+    marker = snapshot / asset_sync.REMOTE_SNAPSHOT_FORMAT_FILE
+    try:
+        marker.hardlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"Hard links are unavailable: {exc}")
+
+    asset_sync._write_snapshot_format(snapshot)
+
+    assert outside.read_text(encoding="utf-8") == "must stay unchanged\n"
+    assert marker.read_text(encoding="utf-8").strip() == (
+        asset_sync.REMOTE_SNAPSHOT_FORMAT_VERSION
+    )
+
+
+def test_snapshot_materialization_excludes_remote_control_path(
+    tmp_path: Path,
+) -> None:
+    transport = tmp_path / "transport"
+    transport.mkdir()
+    (transport / "registry.yaml").write_text(
+        "version: 7\nitems: []\n",
+        encoding="utf-8",
+    )
+    remote_marker = transport / asset_sync.REMOTE_SNAPSHOT_FORMAT_FILE
+    remote_marker.mkdir()
+    (remote_marker / "poison.txt").write_text("remote-controlled\n", encoding="utf-8")
+    snapshot_cache = tmp_path / "snapshots"
+    snapshot = snapshot_cache / ("b" * 40)
+
+    asset_sync._materialize_remote_snapshot(
+        transport,
+        snapshot,
+        snapshot_cache,
+    )
+
+    marker = snapshot / asset_sync.REMOTE_SNAPSHOT_FORMAT_FILE
+    assert marker.is_file()
+    assert marker.read_text(encoding="utf-8").strip() == (
+        asset_sync.REMOTE_SNAPSHOT_FORMAT_VERSION
+    )
+    assert not (marker / "poison.txt").exists()
+
+
+def test_snapshot_materialization_does_not_follow_remote_control_symlink(
+    tmp_path: Path,
+) -> None:
+    transport = tmp_path / "transport"
+    transport.mkdir()
+    (transport / "registry.yaml").write_text(
+        "version: 7\nitems: []\n",
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must stay unchanged\n", encoding="utf-8")
+    remote_marker = transport / asset_sync.REMOTE_SNAPSHOT_FORMAT_FILE
+    try:
+        remote_marker.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+    snapshot_cache = tmp_path / "snapshots"
+    snapshot = snapshot_cache / ("c" * 40)
+
+    asset_sync._materialize_remote_snapshot(
+        transport,
+        snapshot,
+        snapshot_cache,
+    )
+
+    marker = snapshot / asset_sync.REMOTE_SNAPSHOT_FORMAT_FILE
+    assert outside.read_text(encoding="utf-8") == "must stay unchanged\n"
+    assert marker.is_file()
+    assert not marker.is_symlink()
+    assert marker.read_text(encoding="utf-8").strip() == (
+        asset_sync.REMOTE_SNAPSHOT_FORMAT_VERSION
+    )
+
+
+def test_snapshot_materialization_rejects_symlink_registry(
+    tmp_path: Path,
+) -> None:
+    transport = tmp_path / "transport"
+    transport.mkdir()
+    outside = tmp_path / "outside-registry.yaml"
+    outside.write_text("version: 7\nitems: []\n", encoding="utf-8")
+    try:
+        (transport / "registry.yaml").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+    snapshot_cache = tmp_path / "snapshots"
+    snapshot = snapshot_cache / ("d" * 40)
+
+    with pytest.raises(
+        asset_sync.AssetSyncError,
+        match="regular non-symlink file",
+    ):
+        asset_sync._materialize_remote_snapshot(
+            transport,
+            snapshot,
+            snapshot_cache,
+        )
+
+    assert outside.read_text(encoding="utf-8") == "version: 7\nitems: []\n"
+    assert not snapshot.exists()
+    assert list(snapshot_cache.iterdir()) == []
+
+
+def test_snapshot_materialization_requires_regular_registry_file(
+    tmp_path: Path,
+) -> None:
+    transport = tmp_path / "transport"
+    (transport / "registry.yaml").mkdir(parents=True)
+    snapshot_cache = tmp_path / "snapshots"
+    snapshot = snapshot_cache / ("e" * 40)
+
+    with pytest.raises(
+        asset_sync.AssetSyncError,
+        match="regular non-symlink file",
+    ):
+        asset_sync._materialize_remote_snapshot(
+            transport,
+            snapshot,
+            snapshot_cache,
+        )
+
+    assert not snapshot.exists()
+    assert list(snapshot_cache.iterdir()) == []
+
+
+def test_remote_content_path_rejects_ancestor_symlink_escape(
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "demo").mkdir(parents=True)
+    try:
+        (snapshot / "prompts").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+    entry = RegistryItem(
+        name="demo",
+        kind="prompt",
+        source="local",
+        path="prompts/demo",
+    )
+
+    assert asset_sync._remote_content_path(snapshot, entry) is None
+
+
+def test_remote_content_path_rejects_terminal_symlink_inside_snapshot(
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    prompt_root = snapshot / "prompts"
+    real = snapshot / "real-demo"
+    prompt_root.mkdir(parents=True)
+    real.mkdir()
+    try:
+        (prompt_root / "demo").symlink_to(real, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+    entry = RegistryItem(
+        name="demo",
+        kind="prompt",
+        source="local",
+        path="prompts/demo",
+    )
+
+    assert asset_sync._remote_content_path(snapshot, entry) is None
+
+
+def test_snapshot_migration_copy_failure_preserves_legacy_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = tmp_path / "transport"
+    transport.mkdir()
+    (transport / "registry.yaml").write_text("version: 7\nitems: []\n", encoding="utf-8")
+    snapshot_cache = tmp_path / "snapshots"
+    snapshot = snapshot_cache / ("a" * 40)
+    snapshot.mkdir(parents=True)
+    legacy = snapshot / "legacy-only.txt"
+    legacy.write_text("preserve me\n", encoding="utf-8")
+
+    def fail_copytree(*_args, **_kwargs):
+        raise OSError("simulated snapshot copy failure")
+
+    monkeypatch.setattr(asset_sync.shutil, "copytree", fail_copytree)
+
+    with pytest.raises(OSError, match="simulated snapshot copy failure"):
+        asset_sync._materialize_remote_snapshot(
+            transport,
+            snapshot,
+            snapshot_cache,
+        )
+
+    assert legacy.read_text(encoding="utf-8") == "preserve me\n"
+    assert list(snapshot_cache.iterdir()) == [snapshot]
+
+
+def test_remote_refresh_replaces_symlink_transport_without_touching_target_repo(
+    tmp_path: Path,
+) -> None:
+    seed, bare = _seed_bare_remote(tmp_path)
+    config_before = (seed / ".git" / "config").read_bytes()
+    index_before = (seed / ".git" / "index").read_bytes()
+    head_before = _run_git(seed, "rev-parse", "HEAD")
+    cfg = _config(tmp_path, repo_url=str(bare))
+    state_root = asset_sync.default_state_dir() / asset_sync.ASSET_STATE_DIR
+    cache_key = hashlib.sha256(f"{bare}\0main".encode()).hexdigest()[:24]
+    transport = state_root / asset_sync.REMOTE_CACHE_DIR / cache_key
+    transport.parent.mkdir(parents=True)
+    try:
+        transport.symlink_to(seed, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+
+    refreshed = asset_sync._refresh_remote_snapshot(cfg, refresh=True)
+
+    assert refreshed.available, refreshed.warning
+    assert transport.is_dir()
+    assert not transport.is_symlink()
+    assert (seed / ".git" / "config").read_bytes() == config_before
+    assert (seed / ".git" / "index").read_bytes() == index_before
+    assert _run_git(seed, "rev-parse", "HEAD") == head_before
 
 
 def test_remote_push_race_revalidates_and_retries_once(

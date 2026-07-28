@@ -86,6 +86,15 @@ CC Port does not interpret a missing remote resource as a deletion request and
 does not silently overwrite same-name local content that lacks CC Port ownership
 metadata.
 
+### Cursor Prompt commands
+
+Cursor Prompts install to `~/.cursor/commands/<name>.md` by default and can be
+invoked in Cursor as `/<name>`. The repository still stores each Prompt under
+`prompts/<name>/`. A download from that directory to Cursor requires exactly
+one non-symlink root-level `.md` file; otherwise the operation plan is blocked.
+An install alias changes the local command filename. Custom platforms without
+`prompts_dir` continue to use the legacy `rules_dir/<install-name>` target.
+
 ## Upgrade and uninstall
 
 CC Port does not currently update itself. Download a newer installer from

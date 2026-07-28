@@ -47,6 +47,7 @@ class ToolAdapter:
     skills_dir: str = ""
     mcp_json: str = ""
     rules_dir: str = ""
+    prompts_dir: str = ""
     plugins_dir: str = ""
 
     def install_mechanism(self, kind: ItemKind) -> str:
@@ -110,11 +111,12 @@ TOOL_ADAPTERS: tuple[ToolAdapter, ...] = (
         ),
         discovery_root="~/.cursor",
         config_files=("mcp.json",),
-        resource_dirs=("skills", "rules", "prompts", "plugins"),
+        resource_dirs=("skills", "commands", "rules", "prompts", "plugins"),
         mcp_config_files=("mcp.json",),
         default_enabled=True,
         skills_dir="~/.cursor/skills",
         mcp_json="~/.cursor/mcp.json",
+        prompts_dir="~/.cursor/commands",
     ),
     ToolAdapter(
         id="windsurf",
