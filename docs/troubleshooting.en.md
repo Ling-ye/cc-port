@@ -2,10 +2,10 @@
 
 ## Windows SmartScreen blocks the installer
 
-The v0.5.1 installer is not code-signed. First confirm:
+The v0.5.2 installer is not code-signed. First confirm:
 
 1. The file came from `https://github.com/Ling-ye/cc-port/releases`.
-2. Its name is `cc-port_0.5.1_windows_x64_setup.exe`.
+2. Its name is `cc-port_0.5.2_windows_x64_setup.exe`.
 3. Its SHA-256 matches `SHA256SUMS.txt` from the Release.
 
 After verifying those details, select **More info** in SmartScreen to continue.
