@@ -26,12 +26,12 @@ credential management for Git for Windows before starting CC Port.
 
 ## 2. Install CC Port
 
-1. Open the [CC Port v0.5.1 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.1).
-2. Download `cc-port_0.5.1_windows_x64_setup.exe`.
+1. Open the [CC Port v0.5.2 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.2).
+2. Download `cc-port_0.5.2_windows_x64_setup.exe`.
 3. Verify its hash against `SHA256SUMS.txt` from the same Release.
 4. Run the installer and follow its prompts.
 
-The v0.5.1 installer is not code-signed. Windows SmartScreen may show an
+The v0.5.2 installer is not code-signed. Windows SmartScreen may show an
 unknown-publisher warning. After confirming that the file came from
 `github.com/Ling-ye/cc-port` and that its SHA-256 matches, select **More info**
 to continue.
