@@ -47,6 +47,7 @@ from ..services.asset_sync import (
     apply_plugin_delete_plan,
     build_asset_action_plan,
     build_asset_batch_plan,
+    build_asset_content_diff,
     build_asset_inventory,
     build_plugin_delete_plan,
 )
@@ -400,6 +401,14 @@ def _asset_inventory(payload: JsonDict) -> Any:
     response = asdict(inventory)
     response.pop("rows", None)
     return response
+
+
+def _asset_content_diff(payload: JsonDict) -> Any:
+    return build_asset_content_diff(
+        _required_str(payload, "resource_key"),
+        _required_str(payload, "local_instance_id"),
+        config=load_config(),
+    )
 
 
 def _plugin_projects_list(_: JsonDict) -> Any:
@@ -1104,6 +1113,7 @@ ACTIONS: dict[str, Handler] = {
     "sync": _sync,
     "resource_inventory": _resource_inventory,
     "asset_inventory": _asset_inventory,
+    "asset_content_diff": _asset_content_diff,
     "asset_action_plan": _asset_action_plan,
     "asset_action_apply": _asset_action_apply,
     "asset_batch_plan": _asset_batch_plan,

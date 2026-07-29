@@ -341,6 +341,41 @@ describe("ResourcesView unified inventory", () => {
     expect(screen.getByText("managed")).toBeVisible();
   });
 
+  it("loads and renders an on-demand content diff for the selected local instance", async () => {
+    const user = userEvent.setup();
+    vi.mocked(ccPortAction).mockResolvedValue({
+      resource_key: "skill:demo",
+      local_instance_id: "expected-cursor-demo",
+      platform: "cursor",
+      remote_commit: "1234567890abcdef",
+      files: [{
+        path: "SKILL.md",
+        status: "modified",
+        diff: "--- remote/SKILL.md\n+++ local/SKILL.md\n@@ -1 +1 @@\n-remote line\n+local line",
+        binary: false,
+        truncated: false,
+      }],
+      added_files: 0,
+      deleted_files: 0,
+      modified_files: 1,
+      binary_files: 0,
+      truncated: false,
+    });
+    renderView();
+
+    await user.click(screen.getByRole("button", { name: "View content diff" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "demo: remote vs local" });
+    expect(within(dialog).getByText("Remote is the baseline; local changes are highlighted.")).toBeVisible();
+    expect(within(dialog).getByText("SKILL.md")).toBeVisible();
+    expect(within(dialog).getByText("-remote line")).toHaveClass("diff-deleted");
+    expect(within(dialog).getByText("+local line")).toHaveClass("diff-added");
+    expect(ccPortAction).toHaveBeenCalledWith("asset_content_diff", {
+      resource_key: "skill:demo",
+      local_instance_id: "expected-cursor-demo",
+    });
+  });
+
   it("orders detail diagnosis before source metadata, local instances, and destructive actions", () => {
     renderView([resource({
       kind: "plugin",

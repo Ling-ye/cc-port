@@ -364,6 +364,75 @@ def test_logical_inventory_merges_remote_and_discovered_local_union(
     assert logical["skill:remote"].description == "Remote description"
 
 
+def test_asset_content_diff_reports_changed_files_on_demand(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    remote_skill = remote / "skills" / "demo"
+    local_skill = tmp_path / "cursor" / "skills" / "demo"
+    _skill(remote_skill, name="demo", description="Remote", body="remote body")
+    _skill(local_skill, name="demo", description="Local", body="local body")
+    (remote_skill / "remote-only.txt").write_text("remote\n", encoding="utf-8")
+    (local_skill / "local-only.txt").write_text("local\n", encoding="utf-8")
+    (remote_skill / "image.bin").write_bytes(b"\x00remote")
+    (local_skill / "image.bin").write_bytes(b"\x00local")
+    (remote_skill / "node_modules").mkdir()
+    (remote_skill / "node_modules" / "ignored.js").write_text(
+        "remote dependency",
+        encoding="utf-8",
+    )
+    snapshot = _snapshot(
+        remote,
+        Registry(
+            items=[
+                RegistryItem(
+                    name="demo",
+                    kind="skill",
+                    source="local",
+                    path="skills/demo",
+                )
+            ]
+        ),
+    )
+    cfg = _config(tmp_path, skills_dir=local_skill.parent)
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        remote_snapshot=snapshot,
+    )
+    row = next(item for item in inventory.rows if item.local_exists)
+    monkeypatch.setattr(
+        asset_sync,
+        "_refresh_remote_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    result = asset_sync.build_asset_content_diff(
+        "skill:demo",
+        row.local_instance_id,
+        config=cfg,
+    )
+
+    assert result.remote_commit == "abc123"
+    assert result.added_files == 1
+    assert result.deleted_files == 1
+    assert result.modified_files == 2
+    assert result.binary_files == 1
+    assert result.truncated is False
+    by_path = {item.path: item for item in result.files}
+    assert set(by_path) == {
+        "SKILL.md",
+        "image.bin",
+        "local-only.txt",
+        "remote-only.txt",
+    }
+    assert "-remote body" in by_path["SKILL.md"].diff
+    assert "+local body" in by_path["SKILL.md"].diff
+    assert by_path["image.bin"].binary is True
+
+
 def test_logical_inventory_folds_identical_instances_and_preserves_variants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

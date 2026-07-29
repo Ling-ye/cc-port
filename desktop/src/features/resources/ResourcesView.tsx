@@ -2,6 +2,7 @@ import {
   Cloud,
   Download,
   ExternalLink,
+  FileDiff,
   FolderInput,
   FolderOpen,
   Github,
@@ -35,6 +36,8 @@ import type {
   AssetBatchChoice,
   AssetBatchPlan,
   AssetBatchResult,
+  AssetContentDiff,
+  AssetDiffFile,
   AssetInventory,
   AssetLocalStatus,
   AssetRemoteStatus,
@@ -535,6 +538,11 @@ function ResourceDetail({
   onChanged: () => Promise<void> | void;
 }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
+  useEffect(() => {
+    setDeleteOpen(false);
+    setDiffOpen(false);
+  }, [resource?.resource_key]);
   if (!resource) {
     return <aside className="panel asset-unified-detail"><EmptyState text={t("assets.noSelection")} /></aside>;
   }
@@ -574,6 +582,13 @@ function ResourceDetail({
             </div>
           </div>
         ) : null}
+        {resource.status === "content-different"
+          && resource.remote.exists
+          && resource.local_instances.length ? (
+            <button className="secondary asset-view-diff" type="button" onClick={() => setDiffOpen(true)}>
+              <FileDiff size={15} />{t("assets.viewContentDiff")}
+            </button>
+          ) : null}
       </section>
 
       <section className="asset-detail-section asset-source-sync-section">
@@ -650,7 +665,147 @@ function ResourceDetail({
           }}
         />
       ) : null}
+      {diffOpen ? (
+        <AssetContentDiffDialog
+          resource={resource}
+          t={t}
+          onClose={() => setDiffOpen(false)}
+        />
+      ) : null}
     </aside>
+  );
+}
+
+function AssetContentDiffDialog({
+  resource,
+  t,
+  onClose,
+}: {
+  resource: AssetResourceRow;
+  t: TFunction;
+  onClose: () => void;
+}) {
+  const defaultInstance = resource.local_instances.find((item) => item.status === "content-different")
+    ?? resource.local_instances[0];
+  const [instanceId, setInstanceId] = useState(defaultInstance?.id || "");
+  const [result, setResult] = useState<AssetContentDiff | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setBusy(true);
+    setError("");
+    setResult(null);
+    void ccPortAction<AssetContentDiff>("asset_content_diff", {
+      resource_key: resource.resource_key,
+      local_instance_id: instanceId,
+    }).then((value) => {
+      if (active) setResult(value);
+    }).catch((reason) => {
+      if (active) setError(displayError(reason, t));
+    }).finally(() => {
+      if (active) setBusy(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [instanceId, resource.resource_key, t]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="modal asset-content-diff-modal" role="dialog" aria-modal="true" aria-labelledby="asset-content-diff-title">
+        <div className="modal-head">
+          <FileDiff size={19} />
+          <h2 id="asset-content-diff-title">{t("assets.contentDiffTitle", { name: resource.name })}</h2>
+          <button className="icon-button modal-close" type="button" onClick={onClose} aria-label={t("common.close")}>
+            <X size={17} />
+          </button>
+        </div>
+        <div className="asset-content-diff-toolbar">
+          <label>
+            <span>{t("assets.compareLocalInstance")}</span>
+            <select value={instanceId} onChange={(event) => setInstanceId(event.target.value)}>
+              {resource.local_instances.map((instance) => (
+                <option key={instance.id} value={instance.id}>
+                  {instance.platform} / {instance.install_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <small>{t("assets.diffDirection")}</small>
+        </div>
+        {busy ? (
+          <div className="asset-content-diff-loading">
+            <RefreshCcw size={17} className="spin" />{t("assets.loadingContentDiff")}
+          </div>
+        ) : null}
+        {error ? <Banner tone="danger" text={error} /> : null}
+        {result ? (
+          <div className="asset-content-diff-result">
+            <div className="asset-content-diff-summary">
+              <span>{t("assets.diffAdded", { count: result.added_files })}</span>
+              <span>{t("assets.diffDeleted", { count: result.deleted_files })}</span>
+              <span>{t("assets.diffModified", { count: result.modified_files })}</span>
+              {result.binary_files ? <span>{t("assets.diffBinary", { count: result.binary_files })}</span> : null}
+            </div>
+            {result.truncated ? <div className="asset-diff-warning">{t("assets.diffTruncated")}</div> : null}
+            <div className="asset-content-diff-files">
+              {result.files.map((file, index) => (
+                <details className="asset-content-diff-file" key={file.path} open={index === 0}>
+                  <summary>
+                    <span>{file.path}</span>
+                    <span className={`asset-diff-file-status status-${file.status}`}>
+                      {t(`assets.diffStatus.${file.status}` as Parameters<TFunction>[0])}
+                    </span>
+                  </summary>
+                  {file.binary ? (
+                    <div className="asset-binary-diff">{t("assets.binaryContentDiffers")}</div>
+                  ) : (
+                    <AssetUnifiedDiff file={file} />
+                  )}
+                  {file.truncated ? <small className="asset-file-diff-truncated">{t("assets.fileDiffTruncated")}</small> : null}
+                </details>
+              ))}
+              {!result.files.length ? <EmptyState text={t("assets.noTextDifferences")} /> : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function AssetUnifiedDiff({ file }: { file: AssetDiffFile }) {
+  return (
+    <pre className="asset-unified-diff">
+      {file.diff.split("\n").map((line, index) => {
+        const kind = line.startsWith("@@")
+          ? "hunk"
+          : line.startsWith("+++") || line.startsWith("---")
+            ? "header"
+            : line.startsWith("+")
+              ? "added"
+              : line.startsWith("-")
+                ? "deleted"
+                : "context";
+        return <span className={`diff-${kind}`} key={`${index}-${line}`}>{line || " "}</span>;
+      })}
+    </pre>
   );
 }
 

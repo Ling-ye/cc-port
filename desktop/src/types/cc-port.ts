@@ -435,6 +435,27 @@ export interface AssetResourceRow {
   plugin_observed_version?: string;
 }
 
+export interface AssetDiffFile {
+  path: string;
+  status: "added" | "deleted" | "modified";
+  diff: string;
+  binary: boolean;
+  truncated: boolean;
+}
+
+export interface AssetContentDiff {
+  resource_key: string;
+  local_instance_id: string;
+  platform: string;
+  remote_commit: string;
+  files: AssetDiffFile[];
+  added_files: number;
+  deleted_files: number;
+  modified_files: number;
+  binary_files: number;
+  truncated: boolean;
+}
+
 export interface AssetBatchChoice {
   resource_key: string;
   platform?: string;

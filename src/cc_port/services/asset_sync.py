@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -112,6 +113,10 @@ RESOURCE_PARENT_BY_KIND: dict[ItemKind, str] = {
     "plugin": "plugins",
 }
 DERIVED_METADATA_FIELDS = ("description", "version", "author", "license")
+ASSET_DIFF_MAX_FILES = 200
+ASSET_DIFF_MAX_FILE_BYTES = 1_000_000
+ASSET_DIFF_MAX_FILE_CHARS = 60_000
+ASSET_DIFF_MAX_TOTAL_CHARS = 240_000
 
 
 @dataclass
@@ -254,6 +259,36 @@ class AssetResourceRow:
     plugin_source_id: str = ""
     plugin_selector: str = ""
     plugin_observed_version: str = ""
+
+
+@dataclass
+class AssetDiffFile:
+    path: str
+    status: Literal["added", "deleted", "modified"]
+    diff: str
+    binary: bool = False
+    truncated: bool = False
+
+
+@dataclass
+class AssetContentDiff:
+    resource_key: str
+    local_instance_id: str
+    platform: str
+    remote_commit: str
+    files: list[AssetDiffFile]
+    added_files: int
+    deleted_files: int
+    modified_files: int
+    binary_files: int
+    truncated: bool = False
+
+
+@dataclass
+class _AssetDiffBlob:
+    data: bytes
+    size: int
+    truncated: bool = False
 
 
 @dataclass
@@ -555,6 +590,270 @@ def build_asset_inventory(
     )
     inventory.resources = _aggregate_resource_rows(inventory)
     return inventory
+
+
+def build_asset_content_diff(
+    resource_key: str,
+    local_instance_id: str,
+    *,
+    config: Config | None = None,
+) -> AssetContentDiff:
+    """Build a bounded, read-only remote-to-local content diff on demand."""
+    cfg = config or load_config()
+    snapshot = _refresh_remote_snapshot(cfg, refresh=False)
+    inventory = build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        refresh_remote=False,
+        remote_snapshot=snapshot,
+    )
+    matching_rows = [
+        row for row in inventory.rows if row.resource_key == resource_key
+    ]
+    if not matching_rows:
+        raise ValueError(f"Resource is not available: {resource_key}")
+    row = next(
+        (
+            candidate
+            for candidate in matching_rows
+            if candidate.local_instance_id == local_instance_id
+            and candidate.local_exists
+        ),
+        None,
+    )
+    if row is None:
+        raise ValueError(
+            f"Local instance is not available: {local_instance_id}"
+        )
+    if not row.remote_exists:
+        raise ValueError(f"Remote content is not available: {resource_key}")
+
+    remote_files, local_files, source_truncated = _asset_diff_file_maps(row)
+    files: list[AssetDiffFile] = []
+    total_chars = 0
+    response_truncated = source_truncated
+    for path in sorted(set(remote_files) | set(local_files)):
+        remote_blob = remote_files.get(path)
+        local_blob = local_files.get(path)
+        if (
+            remote_blob is not None
+            and local_blob is not None
+            and remote_blob.size == local_blob.size
+            and not remote_blob.truncated
+            and not local_blob.truncated
+            and remote_blob.data == local_blob.data
+        ):
+            continue
+        status: Literal["added", "deleted", "modified"] = (
+            "added"
+            if remote_blob is None
+            else "deleted"
+            if local_blob is None
+            else "modified"
+        )
+        file_diff = _asset_diff_file(path, status, remote_blob, local_blob)
+        remaining = ASSET_DIFF_MAX_TOTAL_CHARS - total_chars
+        if remaining <= 0:
+            file_diff.diff = ""
+            file_diff.truncated = True
+            response_truncated = True
+        elif len(file_diff.diff) > remaining:
+            file_diff.diff = file_diff.diff[:remaining]
+            file_diff.truncated = True
+            response_truncated = True
+        total_chars += len(file_diff.diff)
+        response_truncated = response_truncated or file_diff.truncated
+        files.append(file_diff)
+
+    return AssetContentDiff(
+        resource_key=resource_key,
+        local_instance_id=local_instance_id,
+        platform=row.platform,
+        remote_commit=snapshot.commit,
+        files=files,
+        added_files=sum(item.status == "added" for item in files),
+        deleted_files=sum(item.status == "deleted" for item in files),
+        modified_files=sum(item.status == "modified" for item in files),
+        binary_files=sum(item.binary for item in files),
+        truncated=response_truncated,
+    )
+
+
+def _asset_diff_file_maps(
+    row: AssetPlatformRow,
+) -> tuple[dict[str, _AssetDiffBlob], dict[str, _AssetDiffBlob], bool]:
+    if row.kind == "mcp":
+        remote_config = (
+            sanitize_mcp_config_for_storage(row.entry.mcp_config)
+            if row.entry and row.entry.mcp_config is not None
+            else None
+        )
+        local_config = (
+            sanitize_mcp_config_for_storage(
+                _read_mcp_server(row.local_path, row.install_name)
+            )
+            if row.local_path is not None
+            else None
+        )
+        if remote_config is None or local_config is None:
+            raise ValueError("MCP configuration is not available for comparison.")
+        return (
+            {"mcp.json": _asset_diff_json_blob(remote_config)},
+            {"mcp.json": _asset_diff_json_blob(local_config)},
+            False,
+        )
+
+    remote_source = row.remote_path
+    local_source = row.local_path
+    if (
+        row.kind == "plugin"
+        and row.entry is not None
+        and row.entry.plugin is not None
+        and row.entry.plugin.track == "content"
+    ):
+        remote_source = _plugin_remote_content_source(
+            remote_source,
+            row.entry.plugin,
+        )
+    if row.kind == "prompt" and local_source is not None and local_source.is_file():
+        remote_source, problem = _prompt_payload_path(remote_source)
+        if remote_source is None:
+            raise ValueError(problem or "Remote Prompt content is not available.")
+        remote_blob = _asset_diff_read_file(remote_source)
+        local_blob = _asset_diff_read_file(local_source)
+        return (
+            {"prompt.md": remote_blob},
+            {"prompt.md": local_blob},
+            remote_blob.truncated or local_blob.truncated,
+        )
+    if remote_source is None or not remote_source.exists():
+        raise ValueError("Remote content is not available for comparison.")
+    if local_source is None or not local_source.exists():
+        raise ValueError("Local content is not available for comparison.")
+    if remote_source.is_file() and local_source.is_file():
+        remote_blob = _asset_diff_read_file(remote_source)
+        local_blob = _asset_diff_read_file(local_source)
+        display_name = (
+            remote_source.name
+            if remote_source.name == local_source.name
+            else "content"
+        )
+        return (
+            {display_name: remote_blob},
+            {display_name: local_blob},
+            remote_blob.truncated or local_blob.truncated,
+        )
+    remote_files, remote_truncated = _asset_diff_collect_files(remote_source)
+    local_files, local_truncated = _asset_diff_collect_files(local_source)
+    return remote_files, local_files, remote_truncated or local_truncated
+
+
+def _asset_diff_json_blob(value: object) -> _AssetDiffBlob:
+    data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return _AssetDiffBlob(data=data, size=len(data))
+
+
+def _asset_diff_collect_files(
+    root: Path,
+) -> tuple[dict[str, _AssetDiffBlob], bool]:
+    if root.is_symlink():
+        raise ValueError("Symbolic-link content cannot be compared safely.")
+    if root.is_file():
+        blob = _asset_diff_read_file(root)
+        return {root.name: blob}, blob.truncated
+
+    files: dict[str, _AssetDiffBlob] = {}
+    truncated = False
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(directory)
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if not (current / name).is_symlink()
+            and not is_resource_path_excluded((current / name).relative_to(root))
+        )
+        for name in sorted(filenames):
+            item = current / name
+            relative = item.relative_to(root)
+            if (
+                not item.is_file()
+                or item.is_symlink()
+                or is_resource_path_excluded(relative)
+            ):
+                continue
+            if len(files) >= ASSET_DIFF_MAX_FILES:
+                return files, True
+            blob = _asset_diff_read_file(item)
+            files[relative.as_posix()] = blob
+            truncated = truncated or blob.truncated
+    return files, truncated
+
+
+def _asset_diff_read_file(path: Path) -> _AssetDiffBlob:
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        data = handle.read(ASSET_DIFF_MAX_FILE_BYTES + 1)
+    truncated = len(data) > ASSET_DIFF_MAX_FILE_BYTES
+    if truncated:
+        data = data[:ASSET_DIFF_MAX_FILE_BYTES]
+    return _AssetDiffBlob(data=data, size=size, truncated=truncated)
+
+
+def _asset_diff_file(
+    path: str,
+    status: Literal["added", "deleted", "modified"],
+    remote_blob: _AssetDiffBlob | None,
+    local_blob: _AssetDiffBlob | None,
+) -> AssetDiffFile:
+    remote_data = remote_blob.data if remote_blob is not None else b""
+    local_data = local_blob.data if local_blob is not None else b""
+    binary = _asset_diff_is_binary(remote_data) or _asset_diff_is_binary(local_data)
+    truncated = bool(
+        (remote_blob and remote_blob.truncated)
+        or (local_blob and local_blob.truncated)
+    )
+    if binary:
+        return AssetDiffFile(
+            path=path,
+            status=status,
+            diff="",
+            binary=True,
+            truncated=truncated,
+        )
+
+    remote_text = remote_data.decode("utf-8")
+    local_text = local_data.decode("utf-8")
+    lines = list(
+        difflib.unified_diff(
+            remote_text.splitlines(),
+            local_text.splitlines(),
+            fromfile=f"remote/{path}",
+            tofile=f"local/{path}",
+            lineterm="",
+        )
+    )
+    diff = "\n".join(lines)
+    if not diff and remote_data != local_data:
+        diff = "No visible line changes; encoding or line endings differ."
+    if len(diff) > ASSET_DIFF_MAX_FILE_CHARS:
+        diff = diff[:ASSET_DIFF_MAX_FILE_CHARS]
+        truncated = True
+    return AssetDiffFile(
+        path=path,
+        status=status,
+        diff=diff,
+        truncated=truncated,
+    )
+
+
+def _asset_diff_is_binary(data: bytes) -> bool:
+    if b"\x00" in data:
+        return True
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
 
 
 def _discover_inventory_environment(

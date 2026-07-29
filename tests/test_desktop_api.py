@@ -24,6 +24,8 @@ from cc_port.services.asset_sync import (
     AssetActionResult,
     AssetBatchPlan,
     AssetBatchResult,
+    AssetContentDiff,
+    AssetDiffFile,
     AssetInventory,
 )
 from cc_port.services.local_resources import ImportLocalResult
@@ -518,6 +520,49 @@ def test_desktop_asset_inventory_plan_and_apply(monkeypatch) -> None:
         ("plan", ("download", "skill", "demo", "cursor")),
         ("apply", "plan-1"),
     ]
+
+
+def test_desktop_asset_content_diff_forwards_selected_instance(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_diff(
+        resource_key: str,
+        local_instance_id: str,
+        **_kwargs,
+    ) -> AssetContentDiff:
+        calls.append((resource_key, local_instance_id))
+        return AssetContentDiff(
+            resource_key=resource_key,
+            local_instance_id=local_instance_id,
+            platform="cursor",
+            remote_commit="abc123",
+            files=[
+                AssetDiffFile(
+                    path="SKILL.md",
+                    status="modified",
+                    diff="-remote\n+local",
+                )
+            ],
+            added_files=0,
+            deleted_files=0,
+            modified_files=1,
+            binary_files=0,
+        )
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(desktop_api, "build_asset_content_diff", fake_diff)
+
+    result = desktop_api.run_action(
+        "asset_content_diff",
+        {
+            "resource_key": "skill:demo",
+            "local_instance_id": "instance-1",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["files"][0]["path"] == "SKILL.md"
+    assert calls == [("skill:demo", "instance-1")]
 
 
 def test_desktop_asset_batch_plan_and_apply(monkeypatch) -> None:
