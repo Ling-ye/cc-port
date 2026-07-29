@@ -23,12 +23,12 @@ git config --global --get-all credential.helper
 
 ## 2. 安装 CC Port
 
-1. 打开 [CC Port v0.5.2 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.2)。
-2. 下载 `cc-port_0.5.2_windows_x64_setup.exe`。
+1. 打开 [CC Port v0.5.3 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.3)。
+2. 下载 `cc-port_0.5.3_windows_x64_setup.exe`。
 3. 对照同一 Release 中的 `SHA256SUMS.txt` 验证文件哈希。
 4. 双击安装器并按提示完成安装。
 
-v0.5.2 尚未代码签名。Windows SmartScreen 可能显示“未知发布者”；确认下载地址为 `github.com/Ling-ye/cc-port` 且 SHA-256 一致后，选择“更多信息”继续安装。
+v0.5.3 尚未代码签名。Windows SmartScreen 可能显示“未知发布者”；确认下载地址为 `github.com/Ling-ye/cc-port` 且 SHA-256 一致后，选择“更多信息”继续安装。
 
 安装包已包含桌面程序与 Python sidecar，不需要额外安装 Python、Node.js 或 Rust。
 

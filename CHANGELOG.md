@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-29
+
+### Added
+
+- 资源详情为 `content-different` 项增加按需内容 diff：以远端为基准，按文件展示本地新增、缺失和修改，支持在多个本地实例间切换，并对二进制或过大的结果给出提示。
+
 ## [0.5.2] - 2026-07-28
 
 ### Added
@@ -83,7 +89,8 @@
 - 需要外部 Git for Windows 和 Git Credential Manager。
 - 没有自动更新。
 
-[Unreleased]: https://github.com/Ling-ye/cc-port/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/Ling-ye/cc-port/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.3
 [0.5.2]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.2
 [0.5.1]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.1
 [0.5.0]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.0
