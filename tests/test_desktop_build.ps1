@@ -554,7 +554,7 @@ try {
     }
 
     Invoke-Test "Release manifest versions agree" {
-        Assert-Equal -Expected "0.5.2" -Actual (Get-CcPortReleaseVersion -RepoRoot $RepoRoot) -Message "Release version"
+        Assert-Equal -Expected "0.5.3" -Actual (Get-CcPortReleaseVersion -RepoRoot $RepoRoot) -Message "Release version"
     }
 
     Invoke-Test "Release manifest mismatch is rejected" {
@@ -568,8 +568,8 @@ try {
             "desktop\src-tauri\Cargo.lock",
             "desktop\src-tauri\tauri.conf.json",
             "SKILL.md",
-            "docs\releases\v0.5.2.md",
-            "docs\releases\v0.5.2.en.md"
+            "docs\releases\v0.5.3.md",
+            "docs\releases\v0.5.3.en.md"
         )
         foreach ($relativePath in $versionFiles) {
             $destination = Join-Path $versionRoot $relativePath
@@ -592,16 +592,16 @@ try {
         $nsisDirectory = Join-Path $verified "nsis"
         $publishRoot = Join-Path $tempRoot "public-output"
         New-Item -ItemType Directory -Path $msiDirectory, $nsisDirectory | Out-Null
-        [IO.File]::WriteAllText((Join-Path $msiDirectory "CC Port_0.5.2_x64_en-US.msi"), "msi")
-        $sourceInstaller = Join-Path $nsisDirectory "CC Port_0.5.2_x64-setup.exe"
+        [IO.File]::WriteAllText((Join-Path $msiDirectory "CC Port_0.5.3_x64_en-US.msi"), "msi")
+        $sourceInstaller = Join-Path $nsisDirectory "CC Port_0.5.3_x64-setup.exe"
         [IO.File]::WriteAllText($sourceInstaller, "verified installer")
 
         $artifacts = @(Publish-CcPortPublicReleaseBundle `
             -VerifiedReleaseDirectory $verified `
             -PublishRoot $publishRoot `
-            -Version "0.5.2")
-        $final = Join-Path $publishRoot "v0.5.2"
-        $installerName = "cc-port_0.5.2_windows_x64_setup.exe"
+            -Version "0.5.3")
+        $final = Join-Path $publishRoot "v0.5.3"
+        $installerName = "cc-port_0.5.3_windows_x64_setup.exe"
         $installer = Join-Path $final $installerName
         $checksum = Join-Path $final "SHA256SUMS.txt"
         $files = @(Get-ChildItem -LiteralPath $final -File | Sort-Object Name)
