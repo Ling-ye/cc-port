@@ -23,6 +23,7 @@ from cc_port.services.asset_sync import (
     AssetActionPlan,
     AssetActionResult,
     AssetBatchPlan,
+    AssetBatchResourceCheck,
     AssetBatchResult,
     AssetContentDiff,
     AssetDiffFile,
@@ -580,6 +581,14 @@ def test_desktop_asset_batch_plan_and_apply(monkeypatch) -> None:
             executable_count=0,
             blocked_count=0,
             skipped_count=0,
+            checked_resources=[
+                AssetBatchResourceCheck(
+                    resource_key="skill:demo",
+                    local_status="single",
+                    remote_status="missing",
+                    status="local-only",
+                )
+            ],
         )
 
     def fake_batch_apply(direction: str, **kwargs) -> AssetBatchResult:
@@ -610,11 +619,35 @@ def test_desktop_asset_batch_plan_and_apply(monkeypatch) -> None:
     )
 
     assert planned["data"]["plan_hash"] == "batch-hash"
+    assert planned["data"]["checked_resources"] == [
+        {
+            "resource_key": "skill:demo",
+            "local_status": "single",
+                "remote_status": "missing",
+                "status": "local-only",
+                "local_instances": [],
+            }
+        ]
     assert applied["data"]["status"] == "succeeded"
     assert calls == [
         ("plan", ("download", ["skill:demo"], ["cursor"])),
         ("apply", ("download", "batch-hash")),
     ]
+
+
+def test_desktop_batch_choice_parses_link_target_confirmation() -> None:
+    choices = desktop_api._asset_batch_choices(
+        [
+            {
+                "resource_key": "skill:demo",
+                "local_instance_id": "linked-demo",
+                "link_target_confirmed": True,
+            }
+        ]
+    )
+
+    assert len(choices) == 1
+    assert choices[0].link_target_confirmed is True
 
 
 def test_desktop_resource_commit_plan_serializes_resource_blockers(

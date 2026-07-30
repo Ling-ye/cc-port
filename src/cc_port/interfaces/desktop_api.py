@@ -313,9 +313,41 @@ def _upload_discovered_resources(payload: JsonDict) -> JsonDict:
 
     for selection, candidate in zip(selections, candidates, strict=True):
         name = _optional_str(selection.get("name")) or candidate.name_hint
+        if candidate.blockers or candidate.content_path is None:
+            results.append(
+                {
+                    "id": candidate.id,
+                    "name": name,
+                    "kind": candidate.kind,
+                    "path": candidate.path,
+                    "ok": False,
+                    "error": "; ".join(candidate.blockers)
+                    or "The local resource path cannot be read safely.",
+                }
+            )
+            continue
+        if (
+            candidate.path_kind in {"symlink", "junction"}
+            and not candidate.link_target_trusted
+            and not bool(selection.get("link_target_confirmed", False))
+        ):
+            results.append(
+                {
+                    "id": candidate.id,
+                    "name": name,
+                    "kind": candidate.kind,
+                    "path": candidate.path,
+                    "ok": False,
+                    "error": (
+                        "Confirm this external link target before uploading its contents: "
+                        f"{candidate.content_path}"
+                    ),
+                }
+            )
+            continue
         try:
             result = import_local_resource(
-                candidate.path,
+                candidate.content_path,
                 kind=candidate.kind,
                 name=name,
                 overwrite=overwrite,
@@ -471,6 +503,7 @@ def _asset_action_plan(payload: JsonDict) -> Any:
         new_name=_optional_str(payload.get("new_name")) or "",
         new_install_name=_optional_str(payload.get("new_install_name")) or "",
         overwrite_unmanaged=bool(payload.get("overwrite_unmanaged", False)),
+        link_target_confirmed=bool(payload.get("link_target_confirmed", False)),
         config=load_config(),
     )
 
@@ -1066,6 +1099,7 @@ def _asset_batch_choices(value: Any) -> list[AssetBatchChoice]:
                 overwrite_unmanaged=bool(item.get("overwrite_unmanaged", False)),
                 plugin_track=str(item.get("plugin_track") or "").strip(),
                 ownership_confirmed=bool(item.get("ownership_confirmed", False)),
+                link_target_confirmed=bool(item.get("link_target_confirmed", False)),
                 reference_origin={
                     str(key): str(value)
                     for key, value in (item.get("reference_origin") or {}).items()
@@ -1094,7 +1128,15 @@ def _discovery_selections(value: Any) -> list[JsonDict]:
         elif isinstance(item, dict):
             resource_id = str(item.get("id") or "").strip()
             if resource_id:
-                out.append({"id": resource_id, "name": _optional_str(item.get("name")) or ""})
+                out.append(
+                    {
+                        "id": resource_id,
+                        "name": _optional_str(item.get("name")) or "",
+                        "link_target_confirmed": bool(
+                            item.get("link_target_confirmed", False)
+                        ),
+                    }
+                )
     return out
 
 

@@ -11,7 +11,13 @@ import frontmatter
 from ..core.models import ItemKind
 from ..core.registry import load_registry
 from ..core.validator import RULE_FILE_NAMES, RULE_FILE_SUFFIXES, parse_skill
-from .install_planner import load_resource_manifest
+from .install_planner import MANIFEST_FILENAMES, load_resource_manifest
+from .local_path_probe import (
+    LocalPathProbe,
+    is_known_canonical_link_target,
+    probe_local_path,
+    resource_tree_issues,
+)
 from .publisher import _slug
 
 DiscoveryScope = str
@@ -56,12 +62,19 @@ class DiscoveredResource:
     kind: ItemKind
     name_hint: str
     path: Path
+    content_path: Path | None = None
+    path_kind: str = "regular"
+    link_health: str = "ready"
+    link_target: str = ""
+    reparse_tag: str = ""
+    link_target_trusted: bool = True
     description: str = ""
     size: int = 0
     mtime: float = 0
     exists_in_registry: bool = False
     status: str = "ready"
     warnings: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -91,12 +104,13 @@ def discover_resources(
     seen: set[tuple[str, str]] = set()
 
     for tool, root in roots:
-        if not root.exists():
+        root_probe = probe_local_path(root)
+        if not root_probe.ready:
             continue
         effective_tool = _infer_tool(root, default=tool)
         candidates.extend(
             _scan_root(
-                root.resolve(),
+                root.absolute(),
                 tool=effective_tool,
                 source=scope,
                 max_depth=max_depth,
@@ -182,50 +196,164 @@ def _scan_root(
 
     while stack:
         current, depth = stack.pop()
-        if current != root and current.is_symlink():
+        probe = probe_local_path(current)
+        if not probe.ready:
+            blocked = _blocked_resource_from_probe(
+                current,
+                probe,
+                tool=tool,
+                source=source,
+                kind_hint=file_kind_hint,
+            )
+            if blocked is not None:
+                _add_candidate(out, blocked, seen)
             continue
-        if current.is_dir():
+        content_path = probe.content_path
+        if content_path is None:
+            continue
+        try:
+            content_is_dir = content_path.is_dir()
+            content_is_file = content_path.is_file()
+        except OSError:
+            continue
+        if content_is_dir:
             if _is_excluded_dir(current, root=root):
                 continue
-            candidate = _candidate_from_directory(current, tool=tool, source=source)
+            candidate = _candidate_from_directory(
+                current,
+                content_path=content_path,
+                probe=probe,
+                tool=tool,
+                source=source,
+            )
             if candidate is not None:
                 _add_candidate(out, candidate, seen)
+                continue
+            if current != root and probe.is_link:
                 continue
             if depth >= max_depth:
                 continue
             try:
-                children = sorted(current.iterdir(), key=lambda p: p.name.lower())
+                children = sorted(content_path.iterdir(), key=lambda p: p.name.lower())
             except OSError:
                 continue
             for child in reversed(children):
-                if child.is_symlink():
+                logical_child = current / child.name
+                child_probe = probe_local_path(logical_child)
+                if not child_probe.ready:
+                    blocked = _blocked_resource_from_probe(
+                        logical_child,
+                        child_probe,
+                        tool=_infer_tool(logical_child, default=tool),
+                        source=source,
+                        kind_hint=file_kind_hint,
+                    )
+                    if blocked is not None:
+                        _add_candidate(out, blocked, seen)
                     continue
-                if child.is_dir():
-                    stack.append((child, depth + 1))
-                elif child.is_file():
+                child_content = child_probe.content_path
+                if child_content is None:
+                    continue
+                try:
+                    child_is_dir = child_content.is_dir()
+                    child_is_file = child_content.is_file()
+                except OSError:
+                    continue
+                if child_probe.is_link and child_is_dir:
+                    candidate = _candidate_from_directory(
+                        logical_child,
+                        content_path=child_content,
+                        probe=child_probe,
+                        tool=_infer_tool(logical_child, default=tool),
+                        source=source,
+                    )
+                    if candidate is not None:
+                        _add_candidate(out, candidate, seen)
+                    continue
+                if child_probe.is_link and child_is_file:
                     candidate = _candidate_from_file(
-                        child,
-                        tool=_infer_tool(child, default=tool),
+                        logical_child,
+                        content_path=child_content,
+                        probe=child_probe,
+                        tool=_infer_tool(logical_child, default=tool),
                         source=source,
                         kind_hint=file_kind_hint,
                     )
                     if candidate is not None:
                         _add_candidate(out, candidate, seen)
+                    continue
+                if child_is_dir:
+                    stack.append((logical_child, depth + 1))
+                elif child_is_file:
+                    candidate = _candidate_from_file(
+                        logical_child,
+                        content_path=child_content,
+                        probe=child_probe,
+                        tool=_infer_tool(logical_child, default=tool),
+                        source=source,
+                        kind_hint=file_kind_hint,
+                    )
+                    if candidate is not None:
+                        _add_candidate(out, candidate, seen)
+        elif content_is_file:
+            candidate = _candidate_from_file(
+                current,
+                content_path=content_path,
+                probe=probe,
+                tool=_infer_tool(current, default=tool),
+                source=source,
+                kind_hint=file_kind_hint,
+            )
+            if candidate is not None:
+                _add_candidate(out, candidate, seen)
     return out
 
 
-def _candidate_from_directory(path: Path, *, tool: str, source: str) -> DiscoveredResource | None:
-    manifest_candidate = _candidate_from_manifest(path, tool=tool, source=source)
+def _candidate_from_directory(
+    path: Path,
+    *,
+    content_path: Path,
+    probe: LocalPathProbe,
+    tool: str,
+    source: str,
+) -> DiscoveredResource | None:
+    manifest_candidate = _candidate_from_manifest(
+        path,
+        content_path=content_path,
+        probe=probe,
+        tool=tool,
+        source=source,
+    )
     if manifest_candidate is not None:
         return manifest_candidate
 
-    skill_md = path / "SKILL.md"
-    if skill_md.is_file() and not skill_md.is_symlink():
+    skill_md = content_path / "SKILL.md"
+    skill_probe = probe_local_path(skill_md)
+    if skill_probe.health != "missing" and (
+        not skill_probe.ready or skill_probe.path_kind != "regular"
+    ):
+        return _resource(
+            path=path,
+            content_path=content_path,
+            probe=probe,
+            marker=content_path,
+            tool=tool,
+            source=source,
+            kind="skill",
+            name_hint=_slug(path.name),
+            description="",
+            warnings=[],
+        )
+    if (
+        skill_probe.ready
+        and skill_probe.content_path is not None
+        and skill_probe.content_path.is_file()
+    ):
         warnings: list[str] = []
         name_hint = _slug(path.name)
         description = ""
         try:
-            meta = parse_skill(path)
+            meta = parse_skill(content_path)
             name_hint = _slug(meta.name)
             description = meta.description
         except Exception as exc:  # noqa: BLE001 - discovery reports invalid metadata as a warning
@@ -233,6 +361,8 @@ def _candidate_from_directory(path: Path, *, tool: str, source: str) -> Discover
 
         return _resource(
             path=path,
+            content_path=content_path,
+            probe=probe,
             marker=skill_md,
             tool=tool,
             source=source,
@@ -242,10 +372,31 @@ def _candidate_from_directory(path: Path, *, tool: str, source: str) -> Discover
             warnings=warnings,
         )
 
-    for marker in (path / ".claude-plugin" / "plugin.json", path / ".codex-plugin" / "plugin.json"):
-        if marker.is_file() and not marker.is_symlink():
+    for marker in (
+        content_path / ".claude-plugin" / "plugin.json",
+        content_path / ".codex-plugin" / "plugin.json",
+    ):
+        marker_probe = probe_local_path(marker)
+        if marker_probe.health == "missing":
+            continue
+        if not marker_probe.ready or marker_probe.path_kind != "regular":
             return _resource(
                 path=path,
+                content_path=content_path,
+                probe=probe,
+                marker=content_path,
+                tool=tool,
+                source=source,
+                kind="plugin",
+                name_hint=_slug(path.name),
+                description="",
+                warnings=[],
+            )
+        if marker_probe.content_path is not None and marker_probe.content_path.is_file():
+            return _resource(
+                path=path,
+                content_path=content_path,
+                probe=probe,
                 marker=marker,
                 tool=tool,
                 source=source,
@@ -260,6 +411,8 @@ def _candidate_from_directory(path: Path, *, tool: str, source: str) -> Discover
 def _candidate_from_file(
     path: Path,
     *,
+    content_path: Path,
+    probe: LocalPathProbe,
     tool: str,
     source: str,
     kind_hint: ItemKind | None = None,
@@ -268,10 +421,12 @@ def _candidate_from_file(
     if kind is None:
         return None
     name_hint = _slug(path.stem if path.stem else path.name.lstrip("."))
-    description = _file_description(path)
+    description = _file_description(content_path)
     return _resource(
         path=path,
-        marker=path,
+        content_path=content_path,
+        probe=probe,
+        marker=content_path,
         tool=tool,
         source=source,
         kind=kind,
@@ -284,6 +439,8 @@ def _candidate_from_file(
 def _resource(
     *,
     path: Path,
+    content_path: Path,
+    probe: LocalPathProbe,
     marker: Path,
     tool: str,
     source: str,
@@ -293,20 +450,32 @@ def _resource(
     warnings: list[str],
 ) -> DiscoveredResource:
     stat = marker.stat()
-    resolved = path.resolve()
-    status = "warning" if warnings else "ready"
+    logical_path = path.expanduser().absolute()
+    tree_issues = resource_tree_issues(content_path) if content_path.is_dir() else []
+    blockers = [
+        f"Nested link or unreadable entry at {item.relative_path}: {item.detail}"
+        for item in tree_issues
+    ]
+    status = "blocked" if blockers else "warning" if warnings else "ready"
     return DiscoveredResource(
-        id=_candidate_id(tool=tool, source=source, kind=kind, path=resolved),
+        id=_candidate_id(tool=tool, source=source, kind=kind, path=logical_path),
         tool=tool,
         source=source,
         kind=kind,
         name_hint=name_hint,
-        path=resolved,
+        path=logical_path,
+        content_path=content_path,
+        path_kind=probe.path_kind,
+        link_health=probe.health,
+        link_target=probe.raw_target,
+        reparse_tag=probe.reparse_tag_hex,
+        link_target_trusted=not probe.is_link or is_known_canonical_link_target(probe),
         description=description,
         size=stat.st_size,
         mtime=stat.st_mtime,
         status=status,
         warnings=warnings,
+        blockers=blockers,
     )
 
 
@@ -380,13 +549,14 @@ def _read_text_preview(path: Path, *, max_chars: int) -> tuple[str, bool, str]:
 
 
 def _preview_path(candidate: DiscoveredResource) -> Path:
-    if candidate.kind == "skill" and candidate.path.is_dir():
-        return candidate.path / "SKILL.md"
-    if candidate.path.is_file():
-        return candidate.path
+    content_path = candidate.content_path or candidate.path
+    if candidate.kind == "skill" and content_path.is_dir():
+        return content_path / "SKILL.md"
+    if content_path.is_file():
+        return content_path
     files = [
         p
-        for p in candidate.path.iterdir()
+        for p in content_path.iterdir()
         if p.is_file() and (p.name.lower() in RULE_FILE_NAMES or p.suffix.lower() in RULE_FILE_SUFFIXES)
     ]
     if not files:
@@ -436,7 +606,9 @@ def _mark_conflicts(
             candidate.warnings.append(
                 "Another discovered resource has the same inferred kind and name."
             )
-        if candidate.warnings:
+        if candidate.blockers:
+            candidate.status = "blocked"
+        elif candidate.warnings:
             candidate.status = (
                 "conflict"
                 if key in registry_keys or counts[key] > 1
@@ -481,13 +653,40 @@ def _infer_tool(path: Path, *, default: str) -> str:
     return default
 
 
-def _candidate_from_manifest(path: Path, *, tool: str, source: str) -> DiscoveredResource | None:
+def _candidate_from_manifest(
+    path: Path,
+    *,
+    content_path: Path,
+    probe: LocalPathProbe,
+    tool: str,
+    source: str,
+) -> DiscoveredResource | None:
+    for manifest_name in MANIFEST_FILENAMES:
+        manifest_path = content_path / manifest_name
+        manifest_probe = probe_local_path(manifest_path)
+        if manifest_probe.health == "missing":
+            continue
+        if not manifest_probe.ready or manifest_probe.path_kind != "regular":
+            return _resource(
+                path=path,
+                content_path=content_path,
+                probe=probe,
+                marker=content_path,
+                tool=tool,
+                source=source,
+                kind="plugin",
+                name_hint=_slug(path.name),
+                description="",
+                warnings=[],
+            )
     try:
-        manifest = load_resource_manifest(path)
+        manifest = load_resource_manifest(content_path)
     except ValueError as exc:
         return _resource(
             path=path,
-            marker=path,
+            content_path=content_path,
+            probe=probe,
+            marker=content_path,
             tool=tool,
             source=source,
             kind="plugin",
@@ -502,6 +701,8 @@ def _candidate_from_manifest(path: Path, *, tool: str, source: str) -> Discovere
         return None
     return _resource(
         path=path,
+        content_path=content_path,
+        probe=probe,
         marker=manifest.path,
         tool=tool,
         source=source,
@@ -510,6 +711,50 @@ def _candidate_from_manifest(path: Path, *, tool: str, source: str) -> Discovere
         description="",
         warnings=[],
     )
+
+
+def _blocked_resource_from_probe(
+    path: Path,
+    probe: LocalPathProbe,
+    *,
+    tool: str,
+    source: str,
+    kind_hint: ItemKind | None,
+) -> DiscoveredResource | None:
+    kind = kind_hint or _kind_from_parent(path)
+    if kind is None:
+        return None
+    logical_path = path.expanduser().absolute()
+    problem = probe.problem or f"The local resource path cannot be read safely: {logical_path}"
+    return DiscoveredResource(
+        id=_candidate_id(tool=tool, source=source, kind=kind, path=logical_path),
+        tool=tool,
+        source=source,
+        kind=kind,
+        name_hint=_slug(logical_path.stem or logical_path.name),
+        path=logical_path,
+        content_path=None,
+        path_kind=probe.path_kind,
+        link_health=probe.health,
+        link_target=probe.raw_target,
+        reparse_tag=probe.reparse_tag_hex,
+        link_target_trusted=False,
+        status="blocked",
+        blockers=[problem],
+    )
+
+
+def _kind_from_parent(path: Path) -> ItemKind | None:
+    parent = path.parent.name.lower()
+    if parent == "skills":
+        return "skill"
+    if parent == "rules":
+        return "rule"
+    if parent in PROMPT_DIR_NAMES:
+        return "prompt"
+    if parent == "plugins":
+        return "plugin"
+    return None
 
 
 def _kind_from_manifest_buckets(buckets: dict[str, list[str]]) -> ItemKind | None:

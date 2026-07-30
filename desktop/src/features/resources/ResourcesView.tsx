@@ -35,10 +35,12 @@ import { PluginDeleteDialog } from "@/features/resources/PluginDeleteDialog";
 import type {
   AssetBatchChoice,
   AssetBatchPlan,
+  AssetBatchResourceCheck,
   AssetBatchResult,
   AssetContentDiff,
   AssetDiffFile,
   AssetInventory,
+  AssetLocalInstance,
   AssetLocalStatus,
   AssetRemoteStatus,
   AssetResourceRow,
@@ -620,6 +622,12 @@ function ResourceDetail({
               <div><strong>{instance.platform}</strong><StatusPill value={instance.status} label={assetStatusLabel(instance.status, t)} /></div>
               <small>{instance.install_name}</small>
               <small>{instance.path || "-"}</small>
+              {instance.path_kind && instance.path_kind !== "regular" ? (
+                <>
+                  <small>{t("assets.pathType")}: {localPathKindLabel(instance.path_kind, t)}{instance.reparse_tag ? ` (${instance.reparse_tag})` : ""}</small>
+                  <small>{t("assets.linkTarget")}: {instance.content_path || instance.link_target || "-"}</small>
+                </>
+              ) : null}
               <small>{instance.ownership}</small>
               {resource.kind === "plugin" ? (
                 <>
@@ -831,7 +839,8 @@ function BatchDialog({
   const [targetPlatforms, setTargetPlatforms] = useState<string[]>([]);
   const [choices, setChoices] = useState<Record<string, AssetBatchChoice>>({});
   const [plan, setPlan] = useState<AssetBatchPlan | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [checkedResources, setCheckedResources] = useState<AssetBatchResourceCheck[]>([]);
+  const [busy, setBusy] = useState(direction === "upload");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -894,6 +903,8 @@ function BatchDialog({
     if (direction === "download" && !targetPlatforms.length) return;
     setBusy(true);
     setError("");
+    setPlan(null);
+    setCheckedResources([]);
     try {
       const next = await runTask({
         kind: `asset-batch-${direction}-plan`,
@@ -913,6 +924,7 @@ function BatchDialog({
         retryPolicy: "safe-read",
       });
       setPlan(next);
+      setCheckedResources(next.checked_resources);
     } catch (reason) {
       setError(displayError(reason, t));
     } finally {
@@ -942,6 +954,7 @@ function BatchDialog({
       });
       if (result.status === "stale-plan" && result.stale_plan) {
         setPlan(result.stale_plan);
+        setCheckedResources(result.stale_plan.checked_resources);
         setError(t("assets.stalePlan"));
         return;
       }
@@ -963,6 +976,22 @@ function BatchDialog({
   const selectedResources = resourceKeys
     .map((key) => inventory?.resources.find((item) => item.resource_key === key))
     .filter((item): item is AssetResourceRow => Boolean(item));
+  const checkedResourcesByKey = new Map(
+    checkedResources.map((item) => [item.resource_key, item]),
+  );
+  const checking = direction === "upload" && busy && !plan;
+  const choiceResources = selectedResources.filter((resource) => {
+    if (direction === "download") return true;
+    const checkedResource = checkedResourcesByKey.get(resource.resource_key);
+    return checkedResource
+      ? needsUploadChoiceEditor(resource, checkedResource)
+      : false;
+  });
+  const canApply = Boolean(
+    plan
+    && !plan.blocked_count
+    && (plan.executable_count || plan.items.some((item) => item.disposition === "manual")),
+  );
   const planGroups = plan
     ? (["create", "update", "rename", "unchanged", "skip", "manual", "blocked"] as const)
         .map((disposition) => ({
@@ -1007,22 +1036,49 @@ function BatchDialog({
           </div>
         ) : null}
 
-        <div className="asset-batch-choices">
-          {selectedResources.map((resource) => (
-            <BatchChoiceEditor
-              key={resource.resource_key}
-              resource={resource}
-              direction={direction}
-              platforms={targetPlatforms}
-              choices={choices}
-              t={t}
-              onChange={updateChoice}
-              onToggleSeparate={toggleSeparateVariants}
-            />
-          ))}
-        </div>
+        {checking ? (
+          <div className="asset-status-checking" role="status" aria-live="polite">
+            <RefreshCcw className="spin" size={22} />
+            <div>
+              <strong>{t("assets.checkingStatuses")}</strong>
+              <small>{t("assets.checkingStatusesHint")}</small>
+            </div>
+          </div>
+        ) : null}
 
-        {plan ? (
+        {!checking && checkedResources.length ? (
+          <section className="asset-batch-checks" aria-label={t("assets.statusCheckResult")}>
+            <h3>{t("assets.statusCheckResult")}</h3>
+            {checkedResources.map((item) => (
+              <div className="asset-batch-check" key={item.resource_key}>
+                <strong>{item.resource_key}</strong>
+                <span><small>{t("assets.localColumn")}</small>{localStatusLabel(item.local_status, t)}</span>
+                <span><small>{t("assets.remoteColumn")}</small>{remoteStatusLabel(item.remote_status, t)}</span>
+                <StatusPill value={item.status} label={assetStatusLabel(item.status, t)} />
+              </div>
+            ))}
+          </section>
+        ) : null}
+
+        {!checking && choiceResources.length ? (
+          <div className="asset-batch-choices">
+            {choiceResources.map((resource) => (
+              <BatchChoiceEditor
+                key={resource.resource_key}
+                resource={resource}
+                direction={direction}
+                platforms={targetPlatforms}
+                choices={choices}
+                checkedResource={checkedResourcesByKey.get(resource.resource_key)}
+                t={t}
+                onChange={updateChoice}
+                onToggleSeparate={toggleSeparateVariants}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {!checking && plan ? (
           <div className="asset-plan-review">
             <p>{t("assets.batchPlanReady", {
               executable: plan.executable_count,
@@ -1039,7 +1095,7 @@ function BatchDialog({
                       <span>{item.platform || "-"}</span>
                       <span>{batchDispositionLabel(item.disposition, t)}</span>
                       <small>{translateMessage(item.reason_ref, t, item.reason) || item.target_resource_key}</small>
-                      {item.plan?.target_exists && !item.plan.target_managed ? (
+                      {direction === "download" && item.plan?.target_exists && !item.plan.target_managed ? (
                         <label className="checkline">
                           <input
                             type="checkbox"
@@ -1059,21 +1115,33 @@ function BatchDialog({
 
         {error ? <Banner tone="danger" text={error} /> : null}
         <div className="modal-actions">
-          <button className="secondary" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
-          <button
-            className="secondary"
-            onClick={() => void createPlan()}
-            disabled={busy || (direction === "download" && !targetPlatforms.length)}
-          >
-            {busy ? t("common.working") : plan ? t("assets.refreshPlan") : t("assets.createPlan")}
-          </button>
-          <button
-            className="primary"
-            onClick={() => void applyPlan()}
-            disabled={busy || !plan || (!plan.executable_count && !plan.items.some((item) => item.disposition === "manual")) || Boolean(plan.blocked_count)}
-          >
-            {t("assets.applyBatch")}
-          </button>
+          <button className="secondary" onClick={onClose} disabled={busy && !checking}>{t("common.cancel")}</button>
+          {!checking ? (
+            <button
+              className="secondary"
+              onClick={() => void createPlan()}
+              disabled={busy || (direction === "download" && !targetPlatforms.length)}
+            >
+              {busy
+                ? t("common.working")
+                : direction === "upload"
+                  ? checkedResources.length
+                    ? t("assets.recheckStatuses")
+                    : t("assets.checkStatuses")
+                  : plan
+                    ? t("assets.refreshPlan")
+                    : t("assets.createPlan")}
+            </button>
+          ) : null}
+          {!checking && canApply ? (
+            <button
+              className="primary"
+              onClick={() => void applyPlan()}
+              disabled={busy}
+            >
+              {direction === "upload" ? t("assets.uploadToRemote") : t("assets.applyBatch")}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>
@@ -1085,6 +1153,7 @@ function BatchChoiceEditor({
   direction,
   platforms,
   choices,
+  checkedResource,
   t,
   onChange,
   onToggleSeparate,
@@ -1093,6 +1162,7 @@ function BatchChoiceEditor({
   direction: "upload" | "download";
   platforms: string[];
   choices: Record<string, AssetBatchChoice>;
+  checkedResource?: AssetBatchResourceCheck;
   t: TFunction;
   onChange: (
     resourceKey: string,
@@ -1103,9 +1173,11 @@ function BatchChoiceEditor({
   onToggleSeparate: (resource: AssetResourceRow, enabled: boolean) => void;
 }) {
   const targetRows = direction === "download" ? (platforms.length ? platforms : [""]) : [""];
-  const canSeparate = direction === "upload" && resource.local_status === "variants";
-  const separate = canSeparate && resource.local_instances.length > 1
-    && resource.local_instances.every((instance) => (
+  const localInstances = checkedResource?.local_instances ?? resource.local_instances;
+  const canSeparate = direction === "upload" && checkedResource?.local_status === "variants";
+  const showResolution = direction === "download" || isUploadConflict(checkedResource);
+  const separate = canSeparate && localInstances.length > 1
+    && localInstances.every((instance) => (
       choices[batchChoiceId(resource.resource_key, "", instance.id)]?.resolution === "rename"
     ));
   return (
@@ -1116,12 +1188,15 @@ function BatchChoiceEditor({
           <input
             type="checkbox"
             checked={separate}
-            onChange={(event) => onToggleSeparate(resource, event.target.checked)}
+            onChange={(event) => onToggleSeparate(
+              { ...resource, local_instances: localInstances },
+              event.target.checked,
+            )}
           />
           <span>{t("assets.separateVariants")}</span>
         </label>
       ) : null}
-      {separate ? resource.local_instances.map((instance) => {
+      {separate ? localInstances.map((instance) => {
         const id = batchChoiceId(resource.resource_key, "", instance.id);
         const choice = choices[id];
         return (
@@ -1139,29 +1214,57 @@ function BatchChoiceEditor({
                 )}
               />
             </label>
+            {requiresLinkTargetConfirmation(instance) ? (
+              <LinkTargetConfirmation
+                instance={instance}
+                checked={Boolean(choice.link_target_confirmed)}
+                t={t}
+                onChange={(checked) => onChange(
+                  resource.resource_key,
+                  "",
+                  { link_target_confirmed: checked },
+                  instance.id,
+                )}
+              />
+            ) : null}
           </div>
         );
       }) : targetRows.map((platform) => {
         const id = batchChoiceId(resource.resource_key, platform);
         const choice = choices[id] ?? { resource_key: resource.resource_key, platform, resolution: "overwrite" as const };
+        const selectedInstance = localInstances.find(
+          (instance) => instance.id === choice.local_instance_id,
+        ) ?? localInstances[0];
         return (
           <div className="asset-choice-fields" key={id}>
             {platform ? <strong>{platform}</strong> : null}
-            {direction === "upload" && resource.local_instances.length > 1 ? (
+            {direction === "upload" && checkedResource?.local_status === "variants" ? (
               <label>
                 <span>{t("assets.sourceInstance")}</span>
                 <select
                   value={choice.local_instance_id || ""}
                   onChange={(event) => onChange(resource.resource_key, platform, { local_instance_id: event.target.value })}
                 >
-                  <option value="">{resource.local_status === "variants" ? "-" : resource.local_instances[0]?.platform || "-"}</option>
-                  {resource.local_instances.map((instance) => (
+                  <option value="">{checkedResource.local_status === "variants" ? "-" : localInstances[0]?.platform || "-"}</option>
+                  {localInstances.map((instance) => (
                     <option value={instance.id} key={instance.id}>{instance.platform} / {instance.install_name}</option>
                   ))}
                 </select>
               </label>
             ) : null}
-            {direction === "upload" && resource.kind === "plugin" && !resource.remote.exists && resource.plugin_track === "content" ? (
+            {direction === "upload" && requiresLinkTargetConfirmation(selectedInstance) ? (
+              <LinkTargetConfirmation
+                instance={selectedInstance}
+                checked={Boolean(choice.link_target_confirmed)}
+                t={t}
+                onChange={(checked) => onChange(
+                  resource.resource_key,
+                  platform,
+                  { link_target_confirmed: checked },
+                )}
+              />
+            ) : null}
+            {direction === "upload" && resource.kind === "plugin" && checkedResource?.remote_status === "missing" && resource.plugin_track === "content" ? (
               <div className="plugin-ownership-choice">
                 <label>
                   <span>{t("plugin.firstUploadChoice")}</span>
@@ -1210,17 +1313,19 @@ function BatchChoiceEditor({
                 ) : null}
               </div>
             ) : null}
-            <label>
-              <span>{t("assets.resolution")}</span>
-              <select
-                value={choice.resolution || "overwrite"}
-                onChange={(event) => onChange(resource.resource_key, platform, { resolution: event.target.value as "overwrite" | "rename" })}
-              >
-                <option value="overwrite">{t("assets.overwrite")}</option>
-                <option value="rename">{t("assets.rename")}</option>
-              </select>
-            </label>
-            {choice.resolution === "rename" ? (
+            {showResolution ? (
+              <label>
+                <span>{t("assets.resolution")}</span>
+                <select
+                  value={choice.resolution || "overwrite"}
+                  onChange={(event) => onChange(resource.resource_key, platform, { resolution: event.target.value as "overwrite" | "rename" })}
+                >
+                  <option value="overwrite">{t("assets.overwrite")}</option>
+                  <option value="rename">{t("assets.rename")}</option>
+                </select>
+              </label>
+            ) : null}
+            {showResolution && choice.resolution === "rename" ? (
               <label>
                 <span>{t("assets.newName")}</span>
                 <input value={choice.new_name || ""} onChange={(event) => onChange(resource.resource_key, platform, { new_name: event.target.value })} />
@@ -1231,6 +1336,80 @@ function BatchChoiceEditor({
       })}
     </div>
   );
+}
+
+function isUploadConflict(check: AssetBatchResourceCheck | undefined): boolean {
+  return Boolean(
+    check
+    && (check.remote_status === "present" || check.remote_status === "read-only")
+    && (check.status === "content-different" || check.status === "metadata-only"),
+  );
+}
+
+function needsUploadChoiceEditor(
+  resource: AssetResourceRow,
+  check: AssetBatchResourceCheck,
+): boolean {
+  return isUploadConflict(check)
+    || check.local_status === "variants"
+    || Boolean(check.local_instances?.some(requiresLinkTargetConfirmation))
+    || (
+      resource.kind === "plugin"
+      && check.remote_status === "missing"
+      && resource.plugin_track === "content"
+    );
+}
+
+function requiresLinkTargetConfirmation(
+  instance: AssetLocalInstance | undefined,
+): boolean {
+  return Boolean(
+    instance
+    && (instance.path_kind === "symlink" || instance.path_kind === "junction")
+    && !instance.link_target_trusted,
+  );
+}
+
+function LinkTargetConfirmation({
+  instance,
+  checked,
+  t,
+  onChange,
+}: {
+  instance: AssetLocalInstance;
+  checked: boolean;
+  t: TFunction;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="asset-link-target-confirmation">
+      <small>{localPathKindLabel(instance.path_kind || "regular", t)}{instance.reparse_tag ? ` (${instance.reparse_tag})` : ""}</small>
+      <code>{instance.path || "-"}</code>
+      <span aria-hidden="true">→</span>
+      <code>{instance.content_path || instance.link_target || "-"}</code>
+      <label className="checkline">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        <span>{t("assets.confirmExternalLinkTarget")}</span>
+      </label>
+    </div>
+  );
+}
+
+function localPathKindLabel(kind: string, t: TFunction): string {
+  const labels: Record<string, string> = {
+    symlink: t("assets.pathKindSymlink"),
+    junction: t("assets.pathKindJunction"),
+    "wsl-symlink": t("assets.pathKindWslSymlink"),
+    "reparse-point": t("assets.pathKindReparsePoint"),
+    unreadable: t("assets.pathKindUnreadable"),
+    missing: t("assets.pathKindMissing"),
+    regular: t("assets.pathKindRegular"),
+  };
+  return labels[kind] ?? kind;
 }
 
 function StatusPill({ value, label }: { value: string; label: string }) {

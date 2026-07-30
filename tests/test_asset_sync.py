@@ -509,6 +509,11 @@ def test_logical_inventory_folds_identical_instances_and_preserves_variants(
         resource_keys=["skill:demo"],
         config=cfg,
     )
+    assert len(batch.checked_resources) == 1
+    assert batch.checked_resources[0].resource_key == "skill:demo"
+    assert batch.checked_resources[0].local_status == "variants"
+    assert batch.checked_resources[0].remote_status == "missing"
+    assert batch.checked_resources[0].status == "local-only"
     assert batch.blocked_count == 1
     assert "select a source instance" in batch.items[0].reason
     assert batch.items[0].reason_ref is not None
@@ -540,6 +545,162 @@ def test_logical_inventory_folds_identical_instances_and_preserves_variants(
         "skill:demo-cursor",
         "skill:demo-codex",
     }
+
+
+def test_external_root_symlink_requires_confirmation_before_upload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = tmp_path / "external" / "demo"
+    logical = tmp_path / "cursor" / "skills" / "demo"
+    _skill(canonical, name="demo", description="Demo", body="body")
+    logical.parent.mkdir(parents=True)
+    try:
+        logical.symlink_to(canonical, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Native symlink creation is unavailable: {exc}")
+    discovered = env_manager.discover_environment(
+        config=_config(tmp_path, skills_dir=logical.parent),
+        home=tmp_path / "home",
+    )
+    monkeypatch.setattr(asset_sync, "discover_environment", lambda **_kwargs: discovered)
+    snapshot = _snapshot(tmp_path / "remote", Registry())
+    cfg = _config(tmp_path, skills_dir=logical.parent)
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        remote_snapshot=snapshot,
+    )
+    row = next(item for item in inventory.rows if item.resource_key == "skill:demo")
+
+    blocked = asset_sync.build_asset_action_plan(
+        "upload",
+        kind="skill",
+        name="demo",
+        platform="cursor",
+        local_instance_id=row.local_instance_id,
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    confirmed = asset_sync.build_asset_action_plan(
+        "upload",
+        kind="skill",
+        name="demo",
+        platform="cursor",
+        local_instance_id=row.local_instance_id,
+        link_target_confirmed=True,
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+
+    assert row.path_kind == "symlink"
+    assert row.local_path == logical.absolute()
+    assert row.local_content_path == canonical.resolve()
+    assert row.link_target_trusted is False
+    assert any(
+        ref.code == "asset.blocker.link_target_confirmation_required"
+        for ref in blocked.blocker_refs
+    )
+    assert not any(
+        ref.code == "asset.blocker.link_target_confirmation_required"
+        for ref in confirmed.blocker_refs
+    )
+
+
+def test_upload_snapshot_materializes_ordinary_files(tmp_path: Path) -> None:
+    canonical = tmp_path / "canonical"
+    logical = tmp_path / "logical"
+    _skill(canonical, name="demo", description="Demo", body="body")
+    expected = asset_sync.resource_hash_path(canonical)
+
+    with asset_sync._ordinary_upload_snapshot(
+        canonical,
+        logical_path=logical,
+        expected_fingerprint=expected,
+    ) as snapshot:
+        assert snapshot.is_dir()
+        assert snapshot.is_symlink() is False
+        assert (snapshot / "SKILL.md").read_text(encoding="utf-8").endswith("body\n")
+
+
+def test_planned_local_source_rejects_link_retarget_with_same_content(
+    tmp_path: Path,
+) -> None:
+    logical = tmp_path / "skills" / "demo"
+    first = tmp_path / "first" / "demo"
+    second = tmp_path / "second" / "demo"
+    _skill(first, name="demo", description="Demo", body="same")
+    _skill(second, name="demo", description="Demo", body="same")
+    fingerprint = asset_sync.resource_hash_path(first)
+    row = asset_sync.AssetPlatformRow(
+        resource_key="skill:demo",
+        kind="skill",
+        name="demo",
+        platform="cursor",
+        local_instance_id="linked-demo",
+        local_locator="discovered-resource",
+        install_name="demo",
+        configured=True,
+        enabled=True,
+        detected=True,
+        supported=True,
+        remote_exists=False,
+        local_exists=True,
+        remote_writable=False,
+        read_only_reference=False,
+        remote_path=None,
+        local_path=logical,
+        target_path=logical,
+        ownership="unmanaged",
+        status="local-only",
+        remote_commit="abc123",
+        local_fingerprint=fingerprint,
+        local_content_path=second,
+        path_kind="symlink",
+        link_health="ready",
+        link_target=str(second),
+        reparse_tag="0xA000000C",
+        link_target_trusted=False,
+    )
+    plan = asset_sync.AssetActionPlan(
+        operation_id="plan",
+        action="upload",
+        resource_key="skill:demo",
+        target_resource_key="skill:demo",
+        kind="skill",
+        name="demo",
+        platform="cursor",
+        local_instance_id="linked-demo",
+        local_locator="discovered-resource",
+        remote_commit="abc123",
+        remote_target_exists=False,
+        remote_target_fingerprint="",
+        local_source_fingerprint=fingerprint,
+        target_path=logical,
+        target_exists=True,
+        target_fingerprint=fingerprint,
+        target_managed=False,
+        source_path=logical,
+        source_content_path=first,
+        source_path_kind="symlink",
+        source_link_health="ready",
+        source_link_target=str(first),
+        source_reparse_tag="0xA000000C",
+        link_target_confirmed=True,
+    )
+
+    assert asset_sync._planned_local_source_matches(row, plan) is False
+    assert [
+        ref.code for ref in asset_sync._upload_plan_blocker_refs(row)
+    ] == ["asset.blocker.link_target_confirmation_required"]
+    assert asset_sync._upload_plan_blocker_refs(
+        row,
+        link_target_confirmed=True,
+    ) == []
 
 
 def test_platform_install_alias_resolves_collision(tmp_path: Path) -> None:

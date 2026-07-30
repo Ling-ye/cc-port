@@ -12,6 +12,7 @@ import yaml
 from ..core.config import Config
 from ..core.models import ItemKind
 from ..core.tool_adapters import TOOL_ADAPTERS
+from .local_path_probe import probe_local_path
 from .mcp_installer import list_mcp_servers
 from .plugin_management import DiscoveredPlugin, discover_plugins
 from .publisher import _slug
@@ -160,7 +161,12 @@ def _discover_tool_resources(
         path: Path,
         file_kind_hint: ItemKind | None = None,
     ) -> None:
-        if not path.is_dir():
+        path_probe = probe_local_path(path)
+        if (
+            not path_probe.ready
+            or path_probe.content_path is None
+            or not path_probe.content_path.is_dir()
+        ):
             return
         for resource in discover_resources(
             scope="directory",
@@ -171,7 +177,7 @@ def _discover_tool_resources(
             identity = (
                 tool_id,
                 resource.kind,
-                str(resource.path.resolve()).casefold(),
+                str(resource.path.expanduser().absolute()).casefold(),
             )
             if resource.kind == "mcp" or identity in seen:
                 continue

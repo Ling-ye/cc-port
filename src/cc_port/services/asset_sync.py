@@ -12,7 +12,9 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +59,12 @@ from ..core.validator import validate_item
 from ..infrastructure import git_ops
 from .env_manager import EnvDiscoveryResult, discover_environment
 from .install_planner import copy_resource_tree
+from .local_path_probe import (
+    LocalPathProbe,
+    is_known_canonical_link_target,
+    probe_local_path,
+    resource_tree_issues,
+)
 from .local_transaction import (
     ChangeTarget,
     LocalChangeTransaction,
@@ -158,6 +166,12 @@ class AssetPlatformRow:
     remote_content_fingerprint: str = ""
     remote_asset_fingerprint: str = ""
     local_fingerprint: str = ""
+    local_content_path: Path | None = None
+    path_kind: str = "regular"
+    link_health: str = "ready"
+    link_target: str = ""
+    reparse_tag: str = ""
+    link_target_trusted: bool = True
     metadata_differences: list[str] = field(default_factory=list)
     diff_summary: list[str] = field(default_factory=list)
     diff_summary_refs: list[UiMessageRef] = field(default_factory=list)
@@ -219,6 +233,12 @@ class AssetLocalInstance:
     observed_version: str = ""
     enabled: bool | None = None
     writable: bool = True
+    content_path: Path | None = None
+    path_kind: str = "regular"
+    link_health: str = "ready"
+    link_target: str = ""
+    reparse_tag: str = ""
+    link_target_trusted: bool = True
 
 
 @dataclass
@@ -310,6 +330,13 @@ class AssetActionPlan:
     target_exists: bool
     target_fingerprint: str
     target_managed: bool
+    source_path: Path | None = None
+    source_content_path: Path | None = None
+    source_path_kind: str = "regular"
+    source_link_health: str = "ready"
+    source_link_target: str = ""
+    source_reparse_tag: str = ""
+    link_target_confirmed: bool = False
     overwrite_unmanaged: bool = False
     new_name: str = ""
     new_install_name: str = ""
@@ -352,6 +379,7 @@ class AssetBatchChoice:
     overwrite_unmanaged: bool = False
     plugin_track: str = ""
     ownership_confirmed: bool = False
+    link_target_confirmed: bool = False
     reference_origin: dict[str, str] = field(default_factory=dict)
     plugin_dependencies: dict[str, str] = field(default_factory=dict)
 
@@ -375,6 +403,15 @@ class AssetBatchPlanItem:
 
 
 @dataclass
+class AssetBatchResourceCheck:
+    resource_key: str
+    local_status: str
+    remote_status: str
+    status: str
+    local_instances: list[AssetLocalInstance] = field(default_factory=list)
+
+
+@dataclass
 class AssetBatchPlan:
     direction: str
     resource_keys: list[str]
@@ -386,6 +423,7 @@ class AssetBatchPlan:
     blocked_count: int
     skipped_count: int
     status: str = "planned"
+    checked_resources: list[AssetBatchResourceCheck] = field(default_factory=list)
 
 
 @dataclass
@@ -683,6 +721,7 @@ def _asset_diff_file_maps(
     row: AssetPlatformRow,
 ) -> tuple[dict[str, _AssetDiffBlob], dict[str, _AssetDiffBlob], bool]:
     if row.kind == "mcp":
+        local_mcp_path = row.local_content_path or row.local_path
         remote_config = (
             sanitize_mcp_config_for_storage(row.entry.mcp_config)
             if row.entry and row.entry.mcp_config is not None
@@ -690,9 +729,9 @@ def _asset_diff_file_maps(
         )
         local_config = (
             sanitize_mcp_config_for_storage(
-                _read_mcp_server(row.local_path, row.install_name)
+                _read_mcp_server(local_mcp_path, row.install_name)
             )
-            if row.local_path is not None
+            if local_mcp_path is not None
             else None
         )
         if remote_config is None or local_config is None:
@@ -704,7 +743,7 @@ def _asset_diff_file_maps(
         )
 
     remote_source = row.remote_path
-    local_source = row.local_path
+    local_source = row.local_content_path or row.local_path
     if (
         row.kind == "plugin"
         and row.entry is not None
@@ -998,11 +1037,13 @@ def _local_instance_summary(row: AssetPlatformRow) -> AssetLocalInstance:
     description = ""
     if row.plugin_data:
         description = str(row.plugin_data.get("description") or "")
-    elif row.local_path is not None:
+    elif row.local_content_path is not None or row.local_path is not None:
+        content_path = row.local_content_path or row.local_path
+        assert content_path is not None
         metadata = _derive_metadata(
             row.kind,
-            row.local_path,
-            mcp_config=_read_mcp_server(row.local_path, row.install_name)
+            content_path,
+            mcp_config=_read_mcp_server(content_path, row.install_name)
             if row.kind == "mcp"
             else None,
         )
@@ -1029,6 +1070,12 @@ def _local_instance_summary(row: AssetPlatformRow) -> AssetLocalInstance:
         observed_version=row.plugin_observed_version,
         enabled=row.plugin_enabled,
         writable=row.plugin_writable,
+        content_path=row.local_content_path,
+        path_kind=row.path_kind,
+        link_health=row.link_health,
+        link_target=row.link_target,
+        reparse_tag=row.reparse_tag,
+        link_target_trusted=row.link_target_trusted,
     )
 
 
@@ -1163,6 +1210,7 @@ def build_asset_action_plan(
     new_name: str = "",
     new_install_name: str = "",
     overwrite_unmanaged: bool = False,
+    link_target_confirmed: bool = False,
     config: Config | None = None,
     _remote_snapshot: RemoteSnapshot | None = None,
     _inventory: AssetInventory | None = None,
@@ -1232,7 +1280,11 @@ def build_asset_action_plan(
             _download_plan_blocker_refs(row, overwrite_unmanaged),
         )
     elif action == "upload":
-        _extend_messages(blockers, blocker_refs, _upload_plan_blocker_refs(row))
+        _extend_messages(
+            blockers,
+            blocker_refs,
+            _upload_plan_blocker_refs(row, link_target_confirmed),
+        )
     elif action == "copy-to-local":
         _extend_messages(
             blockers,
@@ -1271,7 +1323,12 @@ def build_asset_action_plan(
         _extend_messages(
             blockers,
             blocker_refs,
-            _copy_to_remote_blocker_refs(row, snapshot.registry, normalized_new_name),
+            _copy_to_remote_blocker_refs(
+                row,
+                snapshot.registry,
+                normalized_new_name,
+                link_target_confirmed,
+            ),
         )
         target_entry = (
             snapshot.registry.get(normalized_new_name, kind) if normalized_new_name else None
@@ -1352,6 +1409,13 @@ def build_asset_action_plan(
         target_exists=target_exists,
         target_fingerprint=target_fingerprint,
         target_managed=target_managed,
+        source_path=row.local_path,
+        source_content_path=row.local_content_path or row.local_path,
+        source_path_kind=row.path_kind,
+        source_link_health=row.link_health,
+        source_link_target=row.link_target,
+        source_reparse_tag=row.reparse_tag,
+        link_target_confirmed=link_target_confirmed,
         overwrite_unmanaged=overwrite_unmanaged,
         new_name=normalized_new_name,
         new_install_name=normalized_install_name,
@@ -1454,6 +1518,7 @@ def build_asset_batch_plan(
     rows_by_key: dict[str, list[AssetPlatformRow]] = {}
     for row in inventory.rows:
         rows_by_key.setdefault(row.resource_key, []).append(row)
+    resources_by_key = {item.resource_key: item for item in inventory.resources}
     choice_items = choices or []
     choice_map = {(item.resource_key, item.platform): item for item in choice_items}
     items: list[AssetBatchPlanItem] = []
@@ -1560,6 +1625,17 @@ def build_asset_batch_plan(
         ),
         blocked_count=sum(item.disposition == "blocked" for item in items),
         skipped_count=sum(item.disposition in {"skip", "unchanged"} for item in items),
+        checked_resources=[
+            AssetBatchResourceCheck(
+                resource_key=resource_key,
+                local_status=resources_by_key[resource_key].local_status,
+                remote_status=resources_by_key[resource_key].remote_status,
+                status=resources_by_key[resource_key].status,
+                local_instances=list(resources_by_key[resource_key].local_instances),
+            )
+            for resource_key in keys
+            if resource_key in resources_by_key
+        ],
     )
     plan.plan_hash = _asset_batch_plan_hash(plan)
     return plan
@@ -2267,8 +2343,31 @@ def _build_batch_upload_item(
     snapshot: RemoteSnapshot,
     inventory: AssetInventory,
 ) -> AssetBatchPlanItem:
-    local_rows = [row for row in rows if row.local_exists and row.local_fingerprint]
+    physical_local_rows = [row for row in rows if row.local_exists]
+    local_rows = [row for row in physical_local_rows if row.local_fingerprint]
     if not local_rows:
+        if physical_local_rows:
+            blocked_row = sorted(
+                physical_local_rows,
+                key=lambda row: (row.platform, row.local_instance_id),
+            )[0]
+            reason_ref = (
+                blocked_row.blocker_refs[0]
+                if blocked_row.blocker_refs
+                else ui_message(
+                    "asset.blocker.local_fingerprint_missing",
+                    "The local source cannot be fingerprinted safely.",
+                )
+            )
+            return _batch_non_action_item(
+                resource_key,
+                action="upload",
+                disposition="blocked",
+                platform=blocked_row.platform,
+                local_instance_id=blocked_row.local_instance_id,
+                reason=reason_ref.fallback,
+                reason_ref=reason_ref,
+            )
         return _batch_non_action_item(
             resource_key,
             action="upload",
@@ -2426,6 +2525,7 @@ def _build_batch_upload_item(
         platform=selected.platform,
         local_instance_id=selected.local_instance_id,
         new_name=new_name,
+        link_target_confirmed=bool(choice and choice.link_target_confirmed),
         config=cfg,
         _remote_snapshot=snapshot,
         _inventory=inventory,
@@ -2891,6 +2991,30 @@ def _asset_batch_plan_hash(plan: AssetBatchPlan) -> str:
         "resource_keys": plan.resource_keys,
         "target_platforms": plan.target_platforms,
         "remote_commit": plan.remote_commit,
+        "checked_resources": [
+            {
+                "resource_key": item.resource_key,
+                "local_status": item.local_status,
+                "remote_status": item.remote_status,
+                "status": item.status,
+                "local_instances": [
+                    {
+                        "id": instance.id,
+                        "platform": instance.platform,
+                        "install_name": instance.install_name,
+                        "path": str(instance.path) if instance.path is not None else "",
+                        "fingerprint": instance.fingerprint,
+                        "path_kind": instance.path_kind,
+                        "link_health": instance.link_health,
+                        "link_target": instance.link_target,
+                        "reparse_tag": instance.reparse_tag,
+                        "link_target_trusted": instance.link_target_trusted,
+                    }
+                    for instance in item.local_instances
+                ],
+            }
+            for item in plan.checked_resources
+        ],
         "items": [
             {
                 "resource_key": item.resource_key,
@@ -2919,6 +3043,17 @@ def _batch_plan_assertions(plan: AssetActionPlan | None) -> dict[str, Any]:
         "remote_target_exists": plan.remote_target_exists,
         "remote_target_fingerprint": plan.remote_target_fingerprint,
         "local_source_fingerprint": plan.local_source_fingerprint,
+        "source_path": str(plan.source_path) if plan.source_path is not None else "",
+        "source_content_path": (
+            str(plan.source_content_path)
+            if plan.source_content_path is not None
+            else ""
+        ),
+        "source_path_kind": plan.source_path_kind,
+        "source_link_health": plan.source_link_health,
+        "source_link_target": plan.source_link_target,
+        "source_reparse_tag": plan.source_reparse_tag,
+        "link_target_confirmed": plan.link_target_confirmed,
         "target_exists": plan.target_exists,
         "target_path": str(plan.target_path) if plan.target_path is not None else "",
         "target_fingerprint": plan.target_fingerprint,
@@ -2998,6 +3133,8 @@ def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
     if key.kind != str(data.get("kind") or "") or key.name != str(data.get("name") or ""):
         raise AssetPlanInvalid("Asset action plan resource fields are inconsistent.")
     target_path_value = str(data.get("target_path") or "")
+    source_path_value = str(data.get("source_path") or "")
+    source_content_path_value = str(data.get("source_content_path") or "")
     return AssetActionPlan(
         operation_id=operation_id,
         action=action,  # type: ignore[arg-type]
@@ -3016,6 +3153,17 @@ def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
         target_exists=bool(data.get("target_exists", False)),
         target_fingerprint=str(data.get("target_fingerprint") or ""),
         target_managed=bool(data.get("target_managed", False)),
+        source_path=Path(source_path_value) if source_path_value else None,
+        source_content_path=(
+            Path(source_content_path_value)
+            if source_content_path_value
+            else None
+        ),
+        source_path_kind=str(data.get("source_path_kind") or "regular"),
+        source_link_health=str(data.get("source_link_health") or "ready"),
+        source_link_target=str(data.get("source_link_target") or ""),
+        source_reparse_tag=str(data.get("source_reparse_tag") or ""),
+        link_target_confirmed=bool(data.get("link_target_confirmed", False)),
         overwrite_unmanaged=bool(data.get("overwrite_unmanaged", False)),
         new_name=str(data.get("new_name") or ""),
         new_install_name=str(data.get("new_install_name") or ""),
@@ -3388,18 +3536,33 @@ def _expected_row(
     if read_only and entry.repo:
         reference_commit = _reference_commit(entry, cfg, reference_commits)
 
-    local_exists, local_fingerprint, ownership = _expected_local_state(
+    (
+        local_exists,
+        local_fingerprint,
+        ownership,
+        local_probe,
+        local_tree_blockers,
+    ) = _expected_local_state(
         entry,
         context.profile,
         target,
         install_name,
     )
+    local_content_path = (
+        local_probe.content_path
+        if local_probe is not None and local_probe.ready
+        else target if entry.kind == "mcp" and local_exists else None
+    )
     metadata_differences: list[str] = []
-    if local_exists and not target.is_symlink():
+    if local_fingerprint and local_content_path is not None:
         local_metadata = _derive_metadata(
             entry.kind,
-            target,
-            mcp_config=_read_mcp_server(target, install_name) if entry.kind == "mcp" else None,
+            local_content_path,
+            mcp_config=(
+                _read_mcp_server(local_content_path, install_name)
+                if entry.kind == "mcp"
+                else None
+            ),
         )
         metadata_differences = _metadata_differences(entry, local_metadata)
     status = _asset_status(
@@ -3419,6 +3582,29 @@ def _expected_row(
     )
     blockers: list[str] = []
     blocker_refs: list[UiMessageRef] = []
+    if local_probe is not None and not local_probe.ready and local_probe.health != "missing":
+        problem = local_probe.problem or "The local path cannot be read safely."
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.wsl_link_unsupported"
+                if local_probe.health == "unsupported-wsl"
+                else "asset.blocker.local_path_unsafe",
+                problem,
+                detail=problem,
+            ),
+        )
+    for problem in local_tree_blockers:
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.nested_link_unsafe",
+                problem,
+                detail=problem,
+            ),
+        )
     if not context.configured:
         _append_message(
             blockers,
@@ -3477,6 +3663,7 @@ def _expected_row(
         read_only_reference=read_only,
         remote_path=remote_path,
         local_path=target if local_exists else None,
+        local_content_path=local_content_path,
         target_path=target,
         ownership=ownership,
         status=status,
@@ -3485,6 +3672,15 @@ def _expected_row(
         remote_content_fingerprint=remote_content,
         remote_asset_fingerprint=remote_asset,
         local_fingerprint=local_fingerprint,
+        path_kind=local_probe.path_kind if local_probe is not None else "regular",
+        link_health=local_probe.health if local_probe is not None else "ready",
+        link_target=local_probe.raw_target if local_probe is not None else "",
+        reparse_tag=local_probe.reparse_tag_hex if local_probe is not None else "",
+        link_target_trusted=(
+            not local_probe.is_link or is_known_canonical_link_target(local_probe)
+            if local_probe is not None
+            else True
+        ),
         metadata_differences=metadata_differences,
         diff_summary=_diff_summary(status, metadata_differences),
         diff_summary_refs=_diff_summary_refs(status, metadata_differences),
@@ -3613,9 +3809,24 @@ def _discovered_rows(
         if identity in seen_local_paths:
             continue
         context = contexts.get(candidate.tool) or _detected_context(candidate.tool, candidate.kind)
-        marker_key = managed_resource_key(candidate.path)
+        marker_key = (
+            managed_resource_key(candidate.path)
+            if candidate.content_path is not None
+            else ""
+        )
         key = _safe_resource_key(marker_key, candidate.kind, candidate.name_hint)
         entry = snapshot.registry.get(key.name, key.kind)
+        local_content_path = (
+            candidate.content_path
+            or candidate.path
+            if candidate.link_health == "ready" and not candidate.blockers
+            else None
+        )
+        local_fingerprint = (
+            _safe_local_resource_fingerprint(local_content_path)
+            if local_content_path is not None and not candidate.blockers
+            else ""
+        )
         row = _local_candidate_row(
             snapshot,
             cfg,
@@ -3625,11 +3836,19 @@ def _discovered_rows(
             local_instance_id=candidate.id,
             locator="discovered-resource",
             local_path=candidate.path,
+            local_content_path=local_content_path,
             install_name=candidate.path.name,
-            local_fingerprint=resource_hash_path(candidate.path),
+            local_fingerprint=local_fingerprint,
             ownership="managed" if marker_key else "unmanaged",
             entry=entry,
             reference_commits=reference_commits,
+            path_kind=candidate.path_kind,
+            link_health=candidate.link_health,
+            link_target=candidate.link_target,
+            reparse_tag=candidate.reparse_tag,
+            link_target_trusted=candidate.link_target_trusted,
+            discovery_warnings=candidate.warnings,
+            discovery_blockers=candidate.blockers,
         )
         rows.append(row)
         seen_local_paths.add(identity)
@@ -4004,16 +4223,25 @@ def _local_candidate_row(
     local_instance_id: str,
     locator: str,
     local_path: Path,
+    local_content_path: Path | None = None,
     install_name: str,
     local_fingerprint: str,
     ownership: str,
     entry: RegistryItem | None,
     reference_commits: dict[tuple[str, str], str],
+    path_kind: str = "regular",
+    link_health: str = "ready",
+    link_target: str = "",
+    reparse_tag: str = "",
+    link_target_trusted: bool = True,
+    discovery_warnings: list[str] | None = None,
+    discovery_blockers: list[str] | None = None,
 ) -> AssetPlatformRow:
+    effective_local_path = local_content_path or local_path
     remote_exists = entry is not None
     remote_path = _remote_content_path(snapshot.root, entry) if entry else None
     remote_content = (
-        _platform_content_fingerprint(entry, remote_path, local_path)
+        _platform_content_fingerprint(entry, remote_path, effective_local_path)
         if entry
         else ""
     )
@@ -4024,10 +4252,18 @@ def _local_candidate_row(
         if entry and read_only and entry.repo
         else ""
     )
-    local_metadata = _derive_metadata(
-        key.kind,
-        local_path,
-        mcp_config=_read_mcp_server(local_path, install_name) if key.kind == "mcp" else None,
+    local_metadata = (
+        _derive_metadata(
+            key.kind,
+            effective_local_path,
+            mcp_config=(
+                _read_mcp_server(effective_local_path, install_name)
+                if key.kind == "mcp"
+                else None
+            ),
+        )
+        if local_fingerprint
+        else {}
     )
     metadata_differences = _metadata_differences(entry, local_metadata) if entry else []
     status = _asset_status(
@@ -4039,8 +4275,17 @@ def _local_candidate_row(
         read_only=read_only,
     )
     supported = not context.supported_kinds or key.kind in context.supported_kinds
-    blockers: list[str] = []
+    blockers: list[str] = list(discovery_blockers or [])
     blocker_refs: list[UiMessageRef] = []
+    for blocker in discovery_blockers or []:
+        message_key = (
+            "asset.blocker.wsl_link_unsupported"
+            if link_health == "unsupported-wsl"
+            else "asset.blocker.nested_link_unsafe"
+            if blocker.startswith("Nested link or unreadable entry")
+            else "asset.blocker.local_path_unsafe"
+        )
+        blocker_refs.append(ui_message(message_key, blocker, detail=blocker))
     if not context.configured:
         _append_message(
             blockers,
@@ -4086,6 +4331,7 @@ def _local_candidate_row(
         read_only_reference=read_only,
         remote_path=remote_path,
         local_path=local_path,
+        local_content_path=local_content_path,
         target_path=local_path,
         ownership=ownership,
         status=status,
@@ -4094,12 +4340,22 @@ def _local_candidate_row(
         remote_content_fingerprint=remote_content,
         remote_asset_fingerprint=remote_asset,
         local_fingerprint=local_fingerprint,
+        path_kind=path_kind,
+        link_health=link_health,
+        link_target=link_target,
+        reparse_tag=reparse_tag,
+        link_target_trusted=link_target_trusted,
         metadata_differences=metadata_differences,
         diff_summary=_diff_summary(status, metadata_differences),
         diff_summary_refs=_diff_summary_refs(status, metadata_differences),
         blockers=_unique_strings(blockers),
         blocker_refs=_unique_message_refs(blocker_refs),
-        warnings=list(getattr(entry, "warnings", [])) if entry else [],
+        warnings=_unique_strings(
+            [
+                *(list(getattr(entry, "warnings", [])) if entry else []),
+                *(discovery_warnings or []),
+            ]
+        ),
         entry=entry,
     )
 
@@ -4118,7 +4374,7 @@ def _expected_local_state(
     platform: PlatformProfile,
     target: Path,
     install_name: str,
-) -> tuple[bool, str, str]:
+) -> tuple[bool, str, str, LocalPathProbe | None, list[str]]:
     if entry.kind == "mcp":
         config = _read_mcp_server(target, install_name)
         exists = config is not None
@@ -4134,19 +4390,49 @@ def _expected_local_state(
             if exists
             else False
         )
-        return exists, fingerprint, "managed" if managed else "unmanaged" if exists else "missing"
-    exists = target.exists() or target.is_symlink()
-    fingerprint = resource_hash_path(target) if exists and not target.is_symlink() else ""
+        return (
+            exists,
+            fingerprint,
+            "managed" if managed else "unmanaged" if exists else "missing",
+            None,
+            [],
+        )
+    probe = probe_local_path(target)
+    exists = probe.health != "missing"
+    tree_blockers: list[str] = []
+    if probe.ready and probe.content_path is not None and probe.content_path.is_dir():
+        tree_blockers = [
+            f"Nested link or unreadable entry at {item.relative_path}: {item.detail}"
+            for item in resource_tree_issues(probe.content_path)
+        ]
+    fingerprint = (
+        _safe_local_resource_fingerprint(probe.content_path)
+        if probe.ready and probe.content_path is not None and not tree_blockers
+        else ""
+    )
     managed = (
         is_cc_port_managed(
             target,
             resource_key=entry.resource_key,
             file_target=entry.kind == "prompt" and _is_file_prompt_target(target),
         )
-        if exists
+        if probe.ready
         else False
     )
-    return exists, fingerprint, "managed" if managed else "unmanaged" if exists else "missing"
+    return (
+        exists,
+        fingerprint,
+        "managed" if managed else "unmanaged" if exists else "missing",
+        probe,
+        tree_blockers,
+    )
+
+
+def _safe_local_resource_fingerprint(path: Path) -> str:
+    try:
+        return resource_hash_path(path)
+    except (OSError, RuntimeError):
+        return ""
 
 
 def _platform_content_fingerprint(
@@ -4508,7 +4794,10 @@ def _download_plan_blocker_refs(
     return blockers
 
 
-def _upload_plan_blocker_refs(row: AssetPlatformRow) -> list[UiMessageRef]:
+def _upload_plan_blocker_refs(
+    row: AssetPlatformRow,
+    link_target_confirmed: bool = False,
+) -> list[UiMessageRef]:
     blockers: list[UiMessageRef] = []
     if not row.local_exists:
         blockers.append(
@@ -4526,6 +4815,18 @@ def _upload_plan_blocker_refs(row: AssetPlatformRow) -> list[UiMessageRef]:
             ui_message(
                 "asset.blocker.local_fingerprint_missing",
                 "The local source cannot be fingerprinted safely.",
+            )
+        )
+    if (
+        row.path_kind in {"symlink", "junction"}
+        and not row.link_target_trusted
+        and not link_target_confirmed
+    ):
+        blockers.append(
+            ui_message(
+                "asset.blocker.link_target_confirmation_required",
+                "Confirm this external link target before uploading its contents.",
+                target=str(row.local_content_path or row.link_target),
             )
         )
     return blockers
@@ -4587,6 +4888,7 @@ def _copy_to_remote_blocker_refs(
     row: AssetPlatformRow,
     registry: Registry,
     new_name: str,
+    link_target_confirmed: bool = False,
 ) -> list[UiMessageRef]:
     blockers: list[UiMessageRef] = []
     if not row.local_exists:
@@ -4598,6 +4900,18 @@ def _copy_to_remote_blocker_refs(
             ui_message(
                 "asset.blocker.local_fingerprint_missing",
                 "The local source cannot be fingerprinted safely.",
+            )
+        )
+    if (
+        row.path_kind in {"symlink", "junction"}
+        and not row.link_target_trusted
+        and not link_target_confirmed
+    ):
+        blockers.append(
+            ui_message(
+                "asset.blocker.link_target_confirmation_required",
+                "Confirm this external link target before uploading its contents.",
+                target=str(row.local_content_path or row.link_target),
             )
         )
     if new_name and registry.get(new_name, row.kind) is not None:
@@ -5464,10 +5778,7 @@ def _apply_remote_asset_action(
                     remote_snapshot=current_snapshot,
                 )
                 source_row = _find_planned_local_row(inventory, plan)
-                if (
-                    not source_row.local_exists
-                    or source_row.local_fingerprint != plan.local_source_fingerprint
-                ):
+                if not _planned_local_source_matches(source_row, plan):
                     raise _StaleAssetTarget(
                         "stale-local-source",
                         "The local source changed after planning.",
@@ -5619,10 +5930,7 @@ def _apply_remote_asset_batch(
                             "The target remote asset changed after planning.",
                         )
                     source_row = _find_planned_local_row(inventory, plan)
-                    if (
-                        not source_row.local_exists
-                        or source_row.local_fingerprint != plan.local_source_fingerprint
-                    ):
+                    if not _planned_local_source_matches(source_row, plan):
                         raise _StaleAssetTarget(
                             "stale-local-source",
                             "The local source changed after planning.",
@@ -5787,16 +6095,42 @@ def _find_planned_local_row(
     return matches[0]
 
 
+def _planned_local_source_matches(
+    row: AssetPlatformRow,
+    plan: AssetActionPlan,
+) -> bool:
+    content_path = row.local_content_path or row.local_path
+    return (
+        row.local_exists
+        and row.local_fingerprint == plan.local_source_fingerprint
+        and _same_local_path(row.local_path, plan.source_path)
+        and _same_local_path(content_path, plan.source_content_path)
+        and row.path_kind == plan.source_path_kind
+        and row.link_health == plan.source_link_health
+        and row.link_target == plan.source_link_target
+        and row.reparse_tag == plan.source_reparse_tag
+    )
+
+
+def _same_local_path(left: Path | None, right: Path | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return os.path.normcase(str(left.expanduser().absolute())) == os.path.normcase(
+        str(right.expanduser().absolute())
+    )
+
+
 def _validate_remote_batch_source(row: AssetPlatformRow, kind: ItemKind) -> None:
     if kind == "plugin" and row.plugin_data:
         spec = PluginSpec.model_validate(row.plugin_data.get("plugin"))
         if spec.track == "reference":
             return
-        if row.local_path is not None and "cache" in {
-            part.lower() for part in row.local_path.parts
+        plugin_source_path = row.local_content_path or row.local_path
+        if plugin_source_path is not None and "cache" in {
+            part.lower() for part in plugin_source_path.parts
         }:
             raise AssetSyncError("Plugin cache content is never an uploadable source.")
-    source = row.local_path
+    source = row.local_content_path or row.local_path
     if source is None:
         raise AssetSyncError("The local source is unavailable.")
     if kind == "mcp":
@@ -5893,7 +6227,7 @@ def _mutate_remote_asset(
 
     if source_row is None or source_row.local_path is None:
         raise _StaleAssetTarget("stale-local-source", "The local source is unavailable.")
-    local_path = source_row.local_path
+    local_path = source_row.local_content_path or source_row.local_path
     local_mcp_config = (
         _read_mcp_server(local_path, source_row.install_name) if target_key.kind == "mcp" else None
     )
@@ -5929,7 +6263,12 @@ def _mutate_remote_asset(
             encoding="utf-8",
         )
     else:
-        _copy_asset_content(local_path, destination, target_key.kind)
+        with _ordinary_upload_snapshot(
+            local_path,
+            logical_path=source_row.local_path,
+            expected_fingerprint=plan.local_source_fingerprint,
+        ) as snapshot_path:
+            _copy_asset_content(snapshot_path, destination, target_key.kind)
 
     derived = _derive_metadata(
         target_key.kind,
@@ -6133,6 +6472,43 @@ def _copy_asset_content(source: Path, destination: Path, kind: ItemKind) -> None
         copy_resource_tree(source, destination / source.name)
         return
     copy_resource_tree(source, destination)
+
+
+@contextmanager
+def _ordinary_upload_snapshot(
+    source: Path,
+    *,
+    logical_path: Path,
+    expected_fingerprint: str,
+) -> Iterator[Path]:
+    issues = resource_tree_issues(source)
+    if issues:
+        raise _StaleAssetTarget(
+            "stale-local-source",
+            "The local source now contains nested links or unreadable entries.",
+        )
+    if _safe_local_resource_fingerprint(source) != expected_fingerprint:
+        raise _StaleAssetTarget(
+            "stale-local-source",
+            "The local source changed after planning.",
+        )
+    with tempfile.TemporaryDirectory(
+        prefix="cc-port-upload-source-",
+        ignore_cleanup_errors=True,
+    ) as temporary:
+        snapshot_path = Path(temporary) / (logical_path.name or "resource")
+        copy_resource_tree(source, snapshot_path)
+        if resource_tree_issues(source):
+            raise _StaleAssetTarget(
+                "stale-local-source",
+                "The local source changed while its upload snapshot was created.",
+            )
+        if _safe_local_resource_fingerprint(source) != expected_fingerprint:
+            raise _StaleAssetTarget(
+                "stale-local-source",
+                "The local source changed while its upload snapshot was created.",
+            )
+        yield snapshot_path
 
 
 def _installable_asset_source(source: Path, destination: Path, kind: ItemKind) -> Path:

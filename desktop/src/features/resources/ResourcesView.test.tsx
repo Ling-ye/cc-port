@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ccPortAction } from "@/api/client";
@@ -6,6 +6,7 @@ import { createTranslator } from "@/app/i18n";
 import { TaskCenterProvider } from "@/app/TaskCenterContext";
 import { ResourcesView } from "@/features/resources/ResourcesView";
 import type {
+  AssetActionPlan,
   AssetBatchPlan,
   AssetBatchResult,
   AssetInventory,
@@ -110,6 +111,7 @@ function renderView(
 }
 
 function batchPlan(direction: "upload" | "download", disposition: "create" | "update" | "blocked" = "update"): AssetBatchPlan {
+  const remoteMissing = direction === "upload" && disposition === "create";
   return {
     direction,
     resource_keys: ["skill:demo"],
@@ -133,6 +135,42 @@ function batchPlan(direction: "upload" | "download", disposition: "create" | "up
     blocked_count: disposition === "blocked" ? 1 : 0,
     skipped_count: 0,
     status: disposition === "blocked" ? "blocked" : "ready",
+    checked_resources: [{
+      resource_key: "skill:demo",
+      local_status: "single",
+      remote_status: remoteMissing ? "missing" : "present",
+      status: remoteMissing ? "local-only" : "content-different",
+    }],
+  };
+}
+
+function actionPlan(action: "upload" | "download"): AssetActionPlan {
+  return {
+    operation_id: "operation-1",
+    action,
+    resource_key: "skill:demo",
+    target_resource_key: "skill:demo",
+    kind: "skill",
+    name: "demo",
+    platform: "cursor",
+    local_instance_id: "expected-cursor-demo",
+    local_locator: "expected",
+    remote_commit: "1234567890abcdef",
+    remote_target_exists: action === "download",
+    remote_target_fingerprint: "remote",
+    local_source_fingerprint: "local",
+    target_path: "C:/Users/test/.cursor/skills/demo",
+    target_exists: true,
+    target_fingerprint: "unmanaged-local",
+    target_managed: false,
+    overwrite_unmanaged: false,
+    new_name: "",
+    new_install_name: "",
+    warnings: [],
+    blockers: [],
+    blocked: false,
+    created_at: "2026-07-29T00:00:00Z",
+    schema_version: 1,
   };
 }
 
@@ -142,8 +180,7 @@ afterEach(() => {
 });
 
 describe("ResourcesView unified inventory", () => {
-  it("uses the shared full-width pill contract for Chinese and English asset labels", async () => {
-    const user = userEvent.setup();
+  it("uses the shared full-width pill contract for Chinese and English asset labels", () => {
     const longStatus = resource({
       resource_key: "prompt:demo",
       kind: "prompt",
@@ -163,10 +200,6 @@ describe("ResourcesView unified inventory", () => {
     for (const label of document.querySelectorAll(".kind, .asset-status, .asset-source-state")) {
       expect(label).toHaveClass("asset-pill");
     }
-
-    await user.click(screen.getByRole("checkbox", { name: "demo" }));
-    await user.click(screen.getByRole("button", { name: "上传到仓库" }));
-    expect(within(screen.getByRole("dialog")).getByText("提示词")).toHaveClass("asset-pill");
 
     cleanup();
     renderView([longStatus], {
@@ -238,6 +271,187 @@ describe("ResourcesView unified inventory", () => {
     await user.click(screen.getByRole("button", { name: "上传到仓库" }));
 
     expect(await screen.findByText("存在多个本地版本，请选择来源实例。")).toBeVisible();
+  });
+
+  it("shows only progress and cancel while upload status checking is pending", async () => {
+    const user = userEvent.setup();
+    const plan = batchPlan("upload");
+    let resolvePlan!: (value: AssetBatchPlan) => void;
+    const pendingPlan = new Promise<AssetBatchPlan>((resolve) => {
+      resolvePlan = resolve;
+    });
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
+      if (action === "asset_batch_plan") return pendingPlan;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    renderView();
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(await within(dialog).findByRole("status")).toHaveTextContent(
+      "Checking the latest local and remote status",
+    );
+    expect(dialog.querySelector(".asset-batch-choice-card")).toBeNull();
+    expect(within(dialog).queryByText("Conflict resolution")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Check status" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Upload to remote repository" }))
+      .not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+
+    await act(async () => resolvePlan(plan));
+
+    expect(await within(dialog).findByRole("region", { name: "Local and remote status" }))
+      .toBeVisible();
+    expect(within(dialog).getByText("Conflict resolution")).toBeVisible();
+  });
+
+  it("checks fresh local and remote state before a local-only upload without showing conflict resolution", async () => {
+    const user = userEvent.setup();
+    const localOnly = resource({
+      status: "local-only",
+      remote_status: "missing",
+      remote: {
+        exists: false,
+        status: "missing",
+        writable: true,
+        read_only: false,
+        commit: "",
+        path: null,
+        description: "",
+      },
+    });
+    const plan = batchPlan("upload", "create");
+    plan.items[0].plan = actionPlan("upload");
+    const result: AssetBatchResult = {
+      status: "succeeded",
+      plan_hash: plan.plan_hash,
+      results: [],
+      stale_plan: null,
+    };
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
+      if (action === "asset_batch_plan") return plan;
+      if (action === "asset_batch_apply") return result;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    const { onChanged } = renderView([localOnly]);
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
+
+    const status = await screen.findByRole("region", { name: "Local and remote status" });
+    expect(within(status).getByText("1 instance")).toBeVisible();
+    expect(within(status).getByText("missing")).toBeVisible();
+    expect(screen.getByRole("dialog").querySelector(".asset-batch-choice-card")).toBeNull();
+    expect(screen.queryByText("Conflict resolution")).not.toBeInTheDocument();
+    expect(screen.queryByText("Replace the existing local target with the remote asset."))
+      .not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Upload to remote repository" }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(ccPortAction).toHaveBeenNthCalledWith(1, "asset_batch_plan", expect.objectContaining({
+      direction: "upload",
+      resource_keys: ["skill:demo"],
+    }));
+    expect(ccPortAction).toHaveBeenNthCalledWith(2, "asset_batch_apply", expect.objectContaining({
+      direction: "upload",
+      plan_hash: plan.plan_hash,
+    }));
+  });
+
+  it("uses the checked link instance and requires confirmation for an external target", async () => {
+    const user = userEvent.setup();
+    const blocked = batchPlan("upload", "blocked");
+    blocked.items[0].reason = "Confirm this external link target before uploading its contents.";
+    blocked.items[0].reason_ref = {
+      code: "asset.blocker.link_target_confirmation_required",
+      fallback: blocked.items[0].reason,
+    };
+    blocked.checked_resources[0].local_instances = [{
+      ...resource().local_instances[0],
+      id: "fresh-linked-demo",
+      path: "C:/Users/test/.claude/skills/demo",
+      content_path: "D:/shared/skills/demo",
+      path_kind: "symlink",
+      link_health: "ready",
+      link_target: "D:/shared/skills/demo",
+      reparse_tag: "0xA000000C",
+      link_target_trusted: false,
+    }];
+    const ready = batchPlan("upload", "update");
+    ready.checked_resources = blocked.checked_resources;
+    vi.mocked(ccPortAction)
+      .mockResolvedValueOnce(blocked)
+      .mockResolvedValueOnce(ready);
+    renderView();
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
+
+    const confirmation = await screen.findByRole("checkbox", {
+      name: "I verified this external link target and want to upload its contents.",
+    });
+    expect(screen.getByText("D:/shared/skills/demo")).toBeVisible();
+    expect(screen.getByText(/Windows symbolic link/)).toBeVisible();
+
+    await user.click(confirmation);
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+
+    await waitFor(() => expect(ccPortAction).toHaveBeenNthCalledWith(
+      2,
+      "asset_batch_plan",
+      expect.objectContaining({
+        choices: [
+          expect.objectContaining({
+            resource_key: "skill:demo",
+            link_target_confirmed: true,
+          }),
+        ],
+      }),
+    ));
+  });
+
+  it("keeps required first-upload plugin choices without mislabeling them as conflicts", async () => {
+    const user = userEvent.setup();
+    const plugin = resource({
+      resource_key: "plugin:demo",
+      kind: "plugin",
+      status: "local-only",
+      remote_status: "missing",
+      remote: {
+        exists: false,
+        status: "missing",
+        writable: true,
+        read_only: false,
+        commit: "",
+        path: null,
+        description: "",
+      },
+      plugin_track: "content",
+      plugin_platform: "claude-code",
+    });
+    const plan = batchPlan("upload", "blocked");
+    plan.resource_keys = ["plugin:demo"];
+    plan.items[0].resource_key = "plugin:demo";
+    plan.items[0].target_resource_key = "plugin:demo";
+    plan.checked_resources = [{
+      resource_key: "plugin:demo",
+      local_status: "single",
+      remote_status: "missing",
+      status: "local-only",
+    }];
+    vi.mocked(ccPortAction).mockResolvedValue(plan);
+    renderView([plugin]);
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
+
+    expect(await screen.findByLabelText("First upload classification")).toBeVisible();
+    expect(screen.queryByText("Conflict resolution")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upload to remote repository" }))
+      .not.toBeInTheDocument();
   });
 
   it("shows compact remote and local source status and refreshes only on demand", async () => {
@@ -431,6 +645,7 @@ describe("ResourcesView unified inventory", () => {
   it("selects enabled target tools, reviews a download plan, and applies the same plan hash", async () => {
     const user = userEvent.setup();
     const plan = batchPlan("download");
+    plan.items[0].plan = actionPlan("download");
     const result: AssetBatchResult = {
       status: "succeeded",
       plan_hash: "plan-hash",
@@ -478,6 +693,8 @@ describe("ResourcesView unified inventory", () => {
     await user.click(cursor);
     await user.click(screen.getByRole("button", { name: "Create safety plan" }));
     expect(await screen.findByText("Content differs.")).toBeVisible();
+    expect(screen.getByText("Replace the existing local target with the remote asset."))
+      .toBeVisible();
     await user.click(screen.getByRole("button", { name: "Apply batch" }));
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
@@ -509,7 +726,8 @@ describe("ResourcesView unified inventory", () => {
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
     await user.click(screen.getByRole("button", { name: "Upload to repository" }));
     expect(await screen.findByText("Content differs.")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Apply batch" }));
+    expect(screen.getByText("Conflict resolution")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Upload to remote repository" }));
 
     expect(await screen.findByText(/Assets changed after review/)).toBeVisible();
     expect(screen.getByText("Choose a source instance.")).toBeVisible();
@@ -530,7 +748,9 @@ describe("ResourcesView unified inventory", () => {
         },
       ],
     });
-    vi.mocked(ccPortAction).mockResolvedValue(batchPlan("upload"));
+    const plan = batchPlan("upload");
+    plan.checked_resources[0].local_status = "variants";
+    vi.mocked(ccPortAction).mockResolvedValue(plan);
     renderView([variants]);
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
@@ -538,7 +758,7 @@ describe("ResourcesView unified inventory", () => {
     await screen.findByText("Content differs.");
     await user.click(screen.getByRole("checkbox", { name: "Rename and upload every local variant" }));
     expect(screen.getAllByLabelText("New asset name")).toHaveLength(2);
-    await user.click(screen.getByRole("button", { name: "Create safety plan" }));
+    await user.click(screen.getByRole("button", { name: "Check again" }));
 
     await waitFor(() => expect(ccPortAction).toHaveBeenLastCalledWith(
       "asset_batch_plan",

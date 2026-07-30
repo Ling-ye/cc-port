@@ -375,13 +375,6 @@ try {
         throw "WinGet is required to install missing system tools. Install or repair App Installer from $(Get-CcPortWingetHelpUrl), then rerun the same command."
     }
 
-    if (-not $NonInteractive) {
-        $answer = Read-Host "Continue with these actions? [y/N]"
-        if ($answer -notmatch '^(?i:y|yes)$') {
-            throw "Environment setup cancelled by the user."
-        }
-    }
-
     foreach ($packageId in $packages.Keys) {
         Write-CcPortSection "Installing $($packages[$packageId])"
         $override = $null

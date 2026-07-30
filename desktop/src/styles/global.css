@@ -2754,6 +2754,7 @@ button {
 .asset-detail-diff,
 .asset-instance-list,
 .asset-platform-picker,
+.asset-batch-checks,
 .asset-batch-choices,
 .asset-plan-review,
 .asset-plan-items {
@@ -2967,6 +2968,7 @@ button {
 
 .asset-instance-card,
 .asset-batch-choice-card,
+.asset-batch-check,
 .asset-plan-item {
   display: grid;
   gap: 7px;
@@ -2974,6 +2976,60 @@ button {
   border: 1px solid #dde5e9;
   border-radius: 8px;
   background: #fbfcfd;
+}
+
+.asset-status-checking {
+  display: flex;
+  min-height: 150px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid #dbe5ea;
+  border-radius: 9px;
+  background: #f2f6f8;
+  color: #52606b;
+}
+
+.asset-status-checking > div {
+  display: grid;
+  gap: 4px;
+}
+
+.asset-status-checking strong {
+  color: #2f3d46;
+}
+
+.asset-status-checking small {
+  color: #697781;
+}
+
+.asset-batch-checks {
+  padding: 12px;
+  border: 1px solid #dbe5ea;
+  border-radius: 9px;
+  background: #f8fbfc;
+}
+
+.asset-batch-checks h3 {
+  margin: 0;
+  color: #384650;
+  font-size: 14px;
+}
+
+.asset-batch-check {
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, .6fr) minmax(120px, .6fr) auto;
+  align-items: center;
+}
+
+.asset-batch-check span {
+  display: grid;
+  gap: 2px;
+}
+
+.asset-batch-check small {
+  color: #697781;
+  font-size: 11px;
 }
 
 .asset-plan-group {
@@ -3023,6 +3079,26 @@ button {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 1fr));
   gap: 8px;
+}
+
+.asset-link-target-confirmation {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid #d4a72c;
+  border-radius: 7px;
+  background: #fff9e8;
+}
+
+.asset-link-target-confirmation code {
+  overflow-wrap: anywhere;
+}
+
+.asset-link-target-confirmation .checkline {
+  grid-column: 1 / -1;
 }
 
 .asset-plan-item {

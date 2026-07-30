@@ -319,6 +319,15 @@ export type AssetAction =
   | "align-plugin-state"
   | "plugin-delete";
 
+export type LocalPathKind =
+  | "regular"
+  | "symlink"
+  | "junction"
+  | "wsl-symlink"
+  | "reparse-point"
+  | "unreadable"
+  | "missing";
+
 export interface AssetPlatformRow {
   resource_key: string;
   kind: ResourceKind;
@@ -345,6 +354,12 @@ export interface AssetPlatformRow {
   remote_content_fingerprint: string;
   remote_asset_fingerprint: string;
   local_fingerprint: string;
+  local_content_path?: string | null;
+  path_kind?: LocalPathKind;
+  link_health?: string;
+  link_target?: string;
+  reparse_tag?: string;
+  link_target_trusted?: boolean;
   metadata_differences: string[];
   diff_summary: string[];
   diff_summary_refs?: UiMessageRef[];
@@ -395,6 +410,12 @@ export interface AssetLocalInstance {
   observed_version?: string;
   enabled?: boolean | null;
   writable?: boolean;
+  content_path?: string | null;
+  path_kind?: LocalPathKind;
+  link_health?: string;
+  link_target?: string;
+  reparse_tag?: string;
+  link_target_trusted?: boolean;
 }
 
 export interface AssetRemoteState {
@@ -465,6 +486,7 @@ export interface AssetBatchChoice {
   overwrite_unmanaged?: boolean;
   plugin_track?: PluginTrack | "skip" | "";
   ownership_confirmed?: boolean;
+  link_target_confirmed?: boolean;
   reference_origin?: Record<string, string>;
   plugin_dependencies?: Record<string, string>;
 }
@@ -486,6 +508,14 @@ export interface AssetBatchPlanItem {
   plan?: AssetActionPlan | null;
 }
 
+export interface AssetBatchResourceCheck {
+  resource_key: string;
+  local_status: AssetLocalStatus;
+  remote_status: AssetRemoteStatus;
+  status: AssetStatus;
+  local_instances?: AssetLocalInstance[];
+}
+
 export interface AssetBatchPlan {
   direction: "upload" | "download";
   resource_keys: string[];
@@ -497,6 +527,7 @@ export interface AssetBatchPlan {
   blocked_count: number;
   skipped_count: number;
   status: string;
+  checked_resources: AssetBatchResourceCheck[];
 }
 
 export interface AssetBatchResult {
@@ -524,6 +555,13 @@ export interface AssetActionPlan {
   target_exists: boolean;
   target_fingerprint: string;
   target_managed: boolean;
+  source_path?: string | null;
+  source_content_path?: string | null;
+  source_path_kind?: LocalPathKind;
+  source_link_health?: string;
+  source_link_target?: string;
+  source_reparse_tag?: string;
+  link_target_confirmed?: boolean;
   overwrite_unmanaged: boolean;
   new_name: string;
   new_install_name: string;
@@ -641,12 +679,19 @@ export interface DiscoveredResource {
   kind: ResourceKind;
   name_hint: string;
   path: string;
+  content_path?: string | null;
+  path_kind?: LocalPathKind;
+  link_health?: string;
+  link_target?: string;
+  reparse_tag?: string;
+  link_target_trusted?: boolean;
   description: string;
   size: number;
   mtime: number;
   exists_in_registry: boolean;
-  status: "ready" | "warning" | "conflict";
+  status: "ready" | "warning" | "conflict" | "blocked";
   warnings: string[];
+  blockers?: string[];
 }
 
 export interface DiscoveryReadResult {

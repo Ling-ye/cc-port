@@ -663,9 +663,9 @@ try {
         Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $publishRoot -Force | Where-Object Name -like ".*.backup-*").Count -Message "Rollback backup cleanup"
     }
 
-    Invoke-Test "Setup exposes cancel and missing WinGet paths" {
+    Invoke-Test "Setup proceeds without confirmation and exposes missing WinGet path" {
         $source = [IO.File]::ReadAllText((Join-Path $RepoRoot "scripts\setup.ps1"))
-        Assert-True -Condition ($source -match 'Read-Host\s+"Continue with these actions') -Message "Interactive confirmation is missing"
+        Assert-True -Condition ($source -notmatch 'Read-Host') -Message "Setup must not prompt for y/n confirmation"
         Assert-True -Condition ($source -match 'WinGet is required to install missing system tools') -Message "Missing WinGet guidance is missing"
     }
 

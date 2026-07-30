@@ -157,7 +157,11 @@ fn run_cc_port_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
 
     for candidate in &candidates {
         match run_candidate(candidate, payload) {
-            Ok(output) if output.status.success() => return Ok(output.stdout),
+            Ok(output)
+                if output.status.success() || is_structured_sidecar_response(&output.stdout) =>
+            {
+                return Ok(output.stdout);
+            }
             Ok(output) => {
                 let mut msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 if msg.is_empty() {
@@ -184,6 +188,13 @@ fn run_cc_port_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
         candidates.len(),
         detail
     ))
+}
+
+fn is_structured_sidecar_response(stdout: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(stdout)
+        .ok()
+        .and_then(|value| value.get("ok").and_then(Value::as_bool))
+        .is_some()
 }
 
 fn run_candidate(candidate: &Candidate, payload: &str) -> std::io::Result<Output> {
@@ -269,7 +280,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::CcPortBridgeError;
+    use super::{is_structured_sidecar_response, CcPortBridgeError};
 
     #[test]
     fn bridge_errors_serialize_stable_code_and_external_detail() {
@@ -278,5 +289,17 @@ mod tests {
 
         assert_eq!(json["code"], "bridge.open_path_failed");
         assert_eq!(json["detail"], "Path does not exist: C:\\x");
+    }
+
+    #[test]
+    fn structured_backend_error_is_not_misclassified_as_sidecar_failure() {
+        assert!(is_structured_sidecar_response(
+            br#"{"ok":false,"error":{"code":"OSError","message":"access denied"}}"#
+        ));
+        assert!(is_structured_sidecar_response(
+            br#"{"ok":true,"data":{"items":[]}}"#
+        ));
+        assert!(!is_structured_sidecar_response(b"not json"));
+        assert!(!is_structured_sidecar_response(br#"{"error":"missing ok"}"#));
     }
 }
