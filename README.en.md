@@ -42,6 +42,7 @@ The installer includes both the desktop application and its Python sidecar. End 
 - **Credentials stay with the OS:** the desktop app uses Git Credential Manager and does not read or store a GitHub token.
 - **Plan before write:** desktop and CLI write operations expose targets, actions, and blockers first.
 - **Unmanaged content is protected:** ownership metadata distinguishes CC Port-managed items from manually maintained files.
+- **Dangling links replace only the link itself:** when a download target is a root-level dangling native Windows symlink, CC Port removes that link and writes regular content only after explicit unmanaged-target confirmation; it never follows or modifies the link target.
 - **Recoverable writes:** installation, removal, deployment, and recovery use persistent transactions, backups, and rollback.
 - **MCP secret placeholders:** literal MCP environment values are replaced with `${SECRET_NAME}` placeholders during collection.
 - **Missing is not deletion:** an absent remote item never triggers implicit deletion.
