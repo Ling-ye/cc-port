@@ -1,6 +1,6 @@
 [package]
 name = "cc-port-desktop"
-version = "0.5.3"
+version = "0.5.4"
 description = "Desktop UI for CC Port"
 authors = ["Lingye"]
 edition = "2021"

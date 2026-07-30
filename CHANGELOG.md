@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-07-30
+
+### Added
+
+- 本地资产扫描覆盖所有已启用平台配置的 `skills_dir`、`mcp_json` 和
+  `plugins_dir`，可通过 `\\wsl.localhost\...` 路径发现 Claude Code
+  的普通 WSL Skill、MCP 配置和内容型 Plugin。
+- 根级 Windows 原生符号链接和目录联接可以作为上传来源；逻辑安装路径与
+  解引用后的内容路径分开处理，远端只接收普通文件快照。
+
+### Changed
+
+- 打开批量上传对话框时刷新远端快照并重新扫描本地实例；检查完成前只显示进度
+  和取消入口，检查结果随计划返回，不再用旧资源清单推断冲突。
+- 上传方向只在本地和远端都存在且内容或元数据不同时显示覆盖或重命名；
+  本地新增资源不再误报为冲突，也不再显示下载方向的替换确认。
+
+### Security
+
+- 上传计划及执行阶段同时校验链接类型、目标、reparse tag、内容指纹和
+  `plan_hash`，链接重定向后拒绝旧计划。
+- 资源内部的嵌套链接、悬空链接、循环链接、未知重解析点和 WSL LX
+  符号链接按单个资源阻断；远端仓库快照继续拒绝任何符号链接。
+
 ## [0.5.3] - 2026-07-29
 
 ### Added
@@ -89,7 +113,8 @@
 - 需要外部 Git for Windows 和 Git Credential Manager。
 - 没有自动更新。
 
-[Unreleased]: https://github.com/Ling-ye/cc-port/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/Ling-ye/cc-port/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4
 [0.5.3]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.3
 [0.5.2]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.2
 [0.5.1]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.1

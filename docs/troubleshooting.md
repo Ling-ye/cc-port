@@ -2,10 +2,10 @@
 
 ## 安装器被 Windows SmartScreen 拦截
 
-v0.5.3 安装器尚未代码签名。请先确认：
+v0.5.4 安装器尚未代码签名。请先确认：
 
 1. 文件来自 `https://github.com/Ling-ye/cc-port/releases`。
-2. 文件名为 `cc-port_0.5.3_windows_x64_setup.exe`。
+2. 文件名为 `cc-port_0.5.4_windows_x64_setup.exe`。
 3. SHA-256 与 Release 中的 `SHA256SUMS.txt` 一致。
 
 确认后，在 SmartScreen 窗口中选择“更多信息”继续。哈希不一致时立即删除文件，不要运行。受企业策略管理的电脑可能禁止绕过未签名程序；这类环境不在当前 Public Beta 支持范围。
