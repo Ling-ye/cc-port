@@ -2,7 +2,7 @@
 
 > 把分散在 Codex、Claude Code、Cursor、Windsurf 和 OpenCode 的 Skill、MCP、Rule、Prompt、Plugin，安全同步到你自己的私有 Git 仓库。
 
-[English](README.en.md) · [下载 Windows 安装器](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.3) · [快速开始](docs/getting-started.md) · [报告问题](https://github.com/Ling-ye/cc-port/issues)
+[English](README.en.md) · [下载 Windows 安装器](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4) · [快速开始](docs/getting-started.md) · [报告问题](https://github.com/Ling-ye/cc-port/issues)
 
 [![CI](https://github.com/Ling-ye/cc-port/actions/workflows/ci.yml/badge.svg)](https://github.com/Ling-ye/cc-port/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -41,7 +41,7 @@ WSL 创建的 LX 符号链接与 Windows 原生符号链接不是同一种 repar
 ## 五步开始
 
 1. 安装 [Git for Windows](https://git-scm.com/download/win)，并确认 Git Credential Manager 可用。
-2. 从 [v0.5.3 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.3) 下载 `cc-port_0.5.3_windows_x64_setup.exe`。
+2. 从 [v0.5.4 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4) 下载 `cc-port_0.5.4_windows_x64_setup.exe`。
 3. 在 GitHub 创建一个空的私有仓库，作为你自己的资源仓库。
 4. 启动 CC Port，在“设置”中粘贴仓库的 HTTPS 地址并完成验证。
 5. 扫描本机资源，在资源页逐项选择上传到仓库或安装到目标工具。
@@ -56,6 +56,7 @@ WSL 创建的 LX 符号链接与 Windows 原生符号链接不是同一种 repar
 - **凭据交给系统**：桌面端通过 Git Credential Manager 使用系统凭据，不读取或保存 GitHub Token。
 - **先计划再写入**：桌面端和 CLI 在写操作前展示目标、动作与阻断原因。
 - **不覆盖未接管内容**：所有权标记用于区分 CC Port 管理项与手工维护项。
+- **悬空链接只替换链接本身**：下载目标是根级 Windows 原生悬空符号链接时，只有明确确认覆盖未接管目标后才会删除链接本身并写入普通内容，不会跟随或修改链接指向的位置。
 - **可恢复写入**：安装、卸载、部署和恢复使用持久化事务、备份与失败回滚。
 - **MCP 密钥占位**：采集 MCP 配置时，环境变量字面值会替换为 `${SECRET_NAME}` 占位符。
 - **缺失不等于删除**：远端缺少某项资源不会触发隐式删除。
@@ -110,7 +111,7 @@ Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
 ## 当前限制
 
 - Public Beta 仅正式支持 Windows 10/11 x64。
-- v0.5.3 安装器尚未代码签名，Windows SmartScreen 可能显示“未知发布者”。
+- v0.5.4 安装器尚未代码签名，Windows SmartScreen 可能显示“未知发布者”。
 - 目标电脑必须安装 Git for Windows，并配置 Git Credential Manager。
 - 桌面端不会替你创建、删除仓库或修改仓库可见性。
 - 当前没有自动更新；升级时请从 Releases 下载新版本。
@@ -125,7 +126,7 @@ Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
 - [开发指南](docs/development.md)
 - [架构](docs/architecture.md)
 - [桌面打包与发布](docs/packaging-and-deployment.md)
-- [v0.5.3 发布说明](docs/releases/v0.5.3.md)
+- [v0.5.4 发布说明](docs/releases/v0.5.4.md)
 - [功能规格](docs/specs/)
 - [变更记录](CHANGELOG.md)
 

@@ -29,6 +29,7 @@ from cc_port.infrastructure import git_ops
 from cc_port.services import asset_sync, env_manager
 from cc_port.services.asset_sync import RemoteSnapshot
 from cc_port.services.env_manager import DiscoveredTool, EnvDiscoveryResult
+from cc_port.services.local_path_probe import LocalPathProbe
 from cc_port.services.plugin_management import DiscoveredPlugin
 from cc_port.services.resource_commit import ResourceCommitBlocked
 from cc_port.services.resource_discovery import DiscoveredResource
@@ -1188,6 +1189,7 @@ def test_cursor_prompt_download_requires_confirmation_for_dangling_target_symlin
         overwrite_unmanaged=True,
         config=cfg,
     )
+    assert confirmed.blocked is False
     result = asset_sync.apply_asset_action_plan(confirmed.operation_id, config=cfg)
 
     assert result.status == "succeeded"
@@ -1195,6 +1197,80 @@ def test_cursor_prompt_download_requires_confirmation_for_dangling_target_symlin
     assert not target.is_symlink()
     assert target.read_text(encoding="utf-8") == "safe prompt\n"
     assert not outside.exists()
+
+
+def test_dangling_native_symlink_blocker_is_action_specific(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    prompt_dir = remote / "prompts" / "demo"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "demo.md").write_text("safe prompt\n", encoding="utf-8")
+    snapshot = _snapshot(
+        remote,
+        Registry(
+            items=[
+                RegistryItem(
+                    name="demo",
+                    kind="prompt",
+                    source="local",
+                    path="prompts/demo",
+                    platforms=["cursor"],
+                )
+            ]
+        ),
+    )
+    cfg = _config(tmp_path)
+    target = (tmp_path / "cursor" / "commands" / "demo.md").absolute()
+    real_probe = asset_sync.probe_local_path
+
+    def probe(candidate: Path | str) -> LocalPathProbe:
+        logical = Path(candidate).expanduser().absolute()
+        if logical == target:
+            return LocalPathProbe(
+                logical_path=logical,
+                content_path=None,
+                path_kind="symlink",
+                health="dangling",
+                raw_target=str(tmp_path / "outside.md"),
+                problem="The link target does not exist.",
+            )
+        return real_probe(candidate)
+
+    monkeypatch.setattr(asset_sync, "probe_local_path", probe)
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
+
+    blocked_download = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        config=cfg,
+    )
+    confirmed_download = asset_sync.build_asset_action_plan(
+        "download",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        overwrite_unmanaged=True,
+        config=cfg,
+    )
+    blocked_upload = asset_sync.build_asset_action_plan(
+        "upload",
+        kind="prompt",
+        name="demo",
+        platform="cursor",
+        link_target_confirmed=True,
+        config=cfg,
+    )
+
+    assert blocked_download.blocked is True
+    assert "unmanaged" in " ".join(blocked_download.blockers).lower()
+    assert confirmed_download.blocked is False
+    assert blocked_upload.blocked is True
+    assert "fingerprinted safely" in " ".join(blocked_upload.blockers).lower()
 
 
 def test_prompt_remote_asset_fingerprint_includes_non_payload_files(tmp_path: Path) -> None:

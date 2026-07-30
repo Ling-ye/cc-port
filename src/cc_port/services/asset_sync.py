@@ -3604,7 +3604,12 @@ def _expected_row(
     )
     blockers: list[str] = []
     blocker_refs: list[UiMessageRef] = []
-    if local_probe is not None and not local_probe.ready and local_probe.health != "missing":
+    if (
+        local_probe is not None
+        and not local_probe.ready
+        and local_probe.health != "missing"
+        and not _is_replaceable_dangling_target_symlink(local_probe)
+    ):
         problem = local_probe.problem or "The local path cannot be read safely."
         _append_message(
             blockers,
@@ -3710,6 +3715,11 @@ def _expected_row(
         blocker_refs=_unique_message_refs(blocker_refs),
         entry=entry,
     )
+
+
+def _is_replaceable_dangling_target_symlink(probe: LocalPathProbe) -> bool:
+    """Leave native dangling symlink replacement to download confirmation."""
+    return probe.path_kind == "symlink" and probe.health == "dangling"
 
 
 def _expected_plugin_rows(
