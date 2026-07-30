@@ -103,7 +103,15 @@ def discover_environment(
     # Plugin candidates are owned by platform adapters so cache installations can
     # never be mistaken for uploadable source content by the generic scanner.
     resources = [resource for resource in resources if resource.kind != "plugin"]
-    mcp_servers = _discover_mcp_servers(tools) if scan_global else []
+    mcp_servers = (
+        _discover_mcp_servers(
+            tools,
+            config=config,
+            home=effective_home,
+        )
+        if scan_global
+        else []
+    )
     plugins = discover_plugins(
         config or Config(),
         home=effective_home,
@@ -191,6 +199,11 @@ def _discover_tool_resources(
 
     if config is not None:
         for profile in config.platforms.enabled():
+            if profile.skills_dir:
+                add_from_path(
+                    tool_id=profile.name,
+                    path=_expand_home(profile.skills_dir, home=home),
+                )
             if profile.prompts_dir:
                 add_from_path(
                     tool_id=profile.name,
@@ -204,23 +217,51 @@ def _discover_tool_resources(
     )
 
 
-def _discover_mcp_servers(tools: list[DiscoveredTool]) -> list[DiscoveredMcpServer]:
+def _discover_mcp_servers(
+    tools: list[DiscoveredTool],
+    *,
+    config: Config | None = None,
+    home: Path,
+) -> list[DiscoveredMcpServer]:
     servers: list[DiscoveredMcpServer] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add_from_path(*, tool_id: str, path: Path) -> None:
+        try:
+            normalized_path = str(path.resolve()).casefold()
+        except OSError:
+            normalized_path = str(path.absolute()).casefold()
+        for name, raw_config in _read_mcp_servers(path).items():
+            if not isinstance(raw_config, dict):
+                continue
+            normalized_name = _slug(name)
+            identity = (tool_id, normalized_path, normalized_name)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            servers.append(
+                DiscoveredMcpServer(
+                    id=f"{tool_id}:{path}:{name}",
+                    tool=tool_id,
+                    name=normalized_name,
+                    config_path=path,
+                    config=dict(raw_config),
+                    secret_keys=_secret_env_keys(raw_config),
+                )
+            )
+
     for tool in tools:
         for path in tool.mcp_config_paths:
-            for name, raw_config in _read_mcp_servers(path).items():
-                if not isinstance(raw_config, dict):
-                    continue
-                servers.append(
-                    DiscoveredMcpServer(
-                        id=f"{tool.id}:{path}:{name}",
-                        tool=tool.id,
-                        name=_slug(name),
-                        config_path=path,
-                        config=dict(raw_config),
-                        secret_keys=_secret_env_keys(raw_config),
-                    )
-                )
+            add_from_path(tool_id=tool.id, path=path)
+
+    if config is not None:
+        for profile in config.platforms.enabled():
+            if not profile.mcp_json:
+                continue
+            path = _expand_home(profile.mcp_json, home=home)
+            if path.is_file():
+                add_from_path(tool_id=profile.name, path=path)
+
     return sorted(servers, key=lambda item: (item.tool, item.name))
 
 

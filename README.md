@@ -36,6 +36,8 @@ CC Port 将远端仓库快照与每个平台的本地实例逐项比较。上传
 
 WSL 创建的 LX 符号链接与 Windows 原生符号链接不是同一种 reparse point，Windows 桌面服务不会尝试经由 WSL 桥接读取它。遇到此类阻断时，请在 Windows 中重建原生链接，或用资源安装器的复制模式（例如 `npx skills add ... --copy`）重新安装。
 
+本地资产扫描会同时检查所有已启用平台配置的 `skills_dir`、`mcp_json` 和 `plugins_dir`，因此 Claude Code 安装在 WSL 时，可以分别配置为 `\\wsl.localhost\<发行版>\home\<用户>\.claude\skills`、`\\wsl.localhost\<发行版>\home\<用户>\.claude.json` 和 `\\wsl.localhost\<发行版>\home\<用户>\.claude\plugins`。普通 WSL 路径中的 Skill、MCP 和内容型 Plugin 都可以下载并进入上传计划；首次上传内容型 Plugin 仍要求确认其为自有源码。目录中的 Linux 符号链接仍按 WSL LX 链接单项阻断。配置路径与平台默认目录相同时会自动去重，不会重复展示资源。
+
 ## 五步开始
 
 1. 安装 [Git for Windows](https://git-scm.com/download/win)，并确认 Git Credential Manager 可用。

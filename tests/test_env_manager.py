@@ -76,6 +76,126 @@ def test_discovery_finds_prompt_in_configured_cursor_directory(
     ]
 
 
+def test_discovery_finds_skill_in_configured_claude_directory(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    skills = tmp_path / "wsl-claude-skills"
+    skill = skills / "local-only"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: local-only\ndescription: WSL Claude skill\n---\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-code",
+                    enabled=True,
+                    skills_dir=str(skills),
+                )
+            ]
+        )
+    )
+
+    result = env_manager.discover_environment(home=home, config=config)
+
+    matches = [
+        item
+        for item in result.resources
+        if item.tool == "claude-code" and item.kind == "skill"
+    ]
+    assert [(item.name_hint, item.path) for item in matches] == [
+        ("local-only", skill.resolve())
+    ]
+
+
+def test_discovery_finds_mcp_in_configured_claude_file(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    mcp_json = tmp_path / "wsl-claude" / "mcp.json"
+    mcp_json.parent.mkdir(parents=True)
+    mcp_json.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "wsl-local": {
+                        "command": "printf",
+                        "args": ["ready"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = Config(
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-code",
+                    enabled=True,
+                    mcp_json=str(mcp_json),
+                )
+            ]
+        )
+    )
+
+    result = env_manager.discover_environment(home=home, config=config)
+
+    matches = [
+        item
+        for item in result.mcp_servers
+        if item.tool == "claude-code" and item.name == "wsl-local"
+    ]
+    assert [(item.config_path, item.config) for item in matches] == [
+        (
+            mcp_json.resolve(),
+            {"command": "printf", "args": ["ready"]},
+        )
+    ]
+
+
+def test_discovery_finds_plugin_in_configured_claude_directory(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    plugin = tmp_path / "wsl-claude-plugins" / "local-only"
+    manifest = plugin / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "local-only",
+                "version": "1.0.0",
+                "description": "WSL Claude plugin",
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = Config(
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-code",
+                    enabled=True,
+                    plugins_dir=str(plugin.parent),
+                )
+            ]
+        )
+    )
+
+    result = env_manager.discover_environment(home=home, config=config)
+
+    matches = [
+        item
+        for item in result.plugins
+        if item.platform == "claude-code" and item.plugin_id == "local-only"
+    ]
+    assert [(item.track, item.path, item.origin_source) for item in matches] == [
+        ("content", plugin.resolve(), "local-only")
+    ]
+
+
 def test_configured_default_commands_directory_is_not_scanned_twice(
     tmp_path: Path,
 ) -> None:
@@ -104,6 +224,40 @@ def test_configured_default_commands_directory_is_not_scanned_twice(
         if item.tool == "cursor"
         and item.kind == "prompt"
         and item.path == prompt.resolve()
+    ]
+    assert len(matches) == 1
+
+
+def test_configured_default_skills_directory_is_not_scanned_twice(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    skill = home / ".claude" / "skills" / "deduplicated"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: deduplicated\ndescription: Deduplicated skill\n---\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-code",
+                    enabled=True,
+                    skills_dir="~/.claude/skills",
+                )
+            ]
+        )
+    )
+
+    result = env_manager.discover_environment(home=home, config=config)
+
+    matches = [
+        item
+        for item in result.resources
+        if item.tool == "claude-code"
+        and item.kind == "skill"
+        and item.path == skill.resolve()
     ]
     assert len(matches) == 1
 

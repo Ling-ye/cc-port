@@ -309,6 +309,149 @@ def test_inventory_refreshes_remote_and_scans_local_in_parallel(
     assert inventory.remote_commit == "abc123"
 
 
+def test_inventory_scans_configured_custom_skills_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skills = tmp_path / "wsl-claude-skills"
+    local = skills / "local-only"
+    _skill(
+        local,
+        name="local-only",
+        description="WSL Claude skill",
+        body="local",
+    )
+    cfg = Config(
+        git=GitConfig(executable=str(GIT)),
+        install=InstallConfig(target=str(tmp_path / "install-cache")),
+        resources=ResourcesConfig(
+            local_path=str(tmp_path / "legacy-workspace"),
+            branch="main",
+        ),
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-code",
+                    enabled=True,
+                    skills_dir=str(skills),
+                )
+            ]
+        ),
+    )
+    snapshot = _snapshot(tmp_path / "remote", Registry(items=[]))
+    calls: list[dict[str, object]] = []
+
+    def discover(**kwargs: object) -> EnvDiscoveryResult:
+        calls.append(kwargs)
+        return env_manager.discover_environment(
+            home=tmp_path / "home",
+            **kwargs,
+        )
+
+    monkeypatch.setattr(asset_sync, "discover_environment", discover)
+
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        remote_snapshot=snapshot,
+    )
+
+    row = next(item for item in inventory.rows if item.resource_key == "skill:local-only")
+    assert row.platform == "claude-code"
+    assert row.local_path == local.resolve()
+    assert row.status == "local-only"
+    assert calls == [
+        {
+            "config": cfg,
+            "scan_global": True,
+            "project_ids": None,
+        }
+    ]
+
+
+def test_inventory_scans_configured_custom_claude_mcp_and_plugins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claude = tmp_path / "wsl-claude"
+    mcp_json = claude / "mcp.json"
+    mcp_json.parent.mkdir(parents=True)
+    mcp_json.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "wsl-local": {
+                        "command": "printf",
+                        "args": ["ready"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    plugin = claude / "plugins" / "local-only"
+    manifest = plugin / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "local-only",
+                "version": "1.0.0",
+                "description": "WSL Claude plugin",
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = Config(
+        git=GitConfig(executable=str(GIT)),
+        install=InstallConfig(target=str(tmp_path / "install-cache")),
+        resources=ResourcesConfig(
+            local_path=str(tmp_path / "legacy-workspace"),
+            branch="main",
+        ),
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-code",
+                    enabled=True,
+                    mcp_json=str(mcp_json),
+                    plugins_dir=str(plugin.parent),
+                )
+            ]
+        ),
+    )
+    snapshot = _snapshot(tmp_path / "remote", Registry(items=[]))
+
+    def discover(**kwargs: object) -> EnvDiscoveryResult:
+        return env_manager.discover_environment(
+            home=tmp_path / "home",
+            **kwargs,
+        )
+
+    monkeypatch.setattr(asset_sync, "discover_environment", discover)
+
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        remote_snapshot=snapshot,
+    )
+
+    mcp = next(item for item in inventory.rows if item.resource_key == "mcp:wsl-local")
+    assert mcp.platform == "claude-code"
+    assert mcp.local_path == mcp_json.resolve()
+    assert mcp.status == "local-only"
+
+    plugin_row = next(
+        item
+        for item in inventory.rows
+        if item.resource_key == "plugin:claude-code-local-local-only"
+    )
+    assert plugin_row.platform == "claude-code"
+    assert plugin_row.local_path == plugin.resolve()
+    assert plugin_row.status == "local-only"
+    assert plugin_row.plugin_track == "content"
+
+
 def test_logical_inventory_merges_remote_and_discovered_local_union(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -334,7 +477,7 @@ def test_logical_inventory_merges_remote_and_discovered_local_union(
     monkeypatch.setattr(
         asset_sync,
         "discover_environment",
-        lambda: EnvDiscoveryResult(
+        lambda **_kwargs: EnvDiscoveryResult(
             tools=[],
             resources=[
                 DiscoveredResource(
@@ -456,7 +599,7 @@ def test_logical_inventory_folds_identical_instances_and_preserves_variants(
         ),
     )
 
-    def discovery() -> EnvDiscoveryResult:
+    def discovery(**_kwargs: object) -> EnvDiscoveryResult:
         return EnvDiscoveryResult(
             tools=[],
             resources=[
@@ -1118,7 +1261,11 @@ def test_detected_unconfigured_platform_is_visible_but_cannot_write_local_target
         resources=[],
         mcp_servers=[],
     )
-    monkeypatch.setattr(asset_sync, "discover_environment", lambda: discovery)
+    monkeypatch.setattr(
+        asset_sync,
+        "discover_environment",
+        lambda **_kwargs: discovery,
+    )
 
     inventory = asset_sync.build_asset_inventory(
         config=_config(tmp_path),
@@ -1962,7 +2109,11 @@ def test_remote_batch_excludes_invalid_source_and_commits_valid_items(
         ],
         mcp_servers=[],
     )
-    monkeypatch.setattr(asset_sync, "discover_environment", lambda: discovery)
+    monkeypatch.setattr(
+        asset_sync,
+        "discover_environment",
+        lambda **_kwargs: discovery,
+    )
     snapshot = asset_sync._refresh_remote_snapshot(cfg, refresh=True)
     inventory = asset_sync.build_asset_inventory(
         config=cfg,

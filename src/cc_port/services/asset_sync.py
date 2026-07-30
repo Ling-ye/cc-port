@@ -905,7 +905,7 @@ def _discover_inventory_environment(
         cfg.plugin_projects
         or not scan_global
         or project_ids is not None
-        or _requires_configured_prompt_discovery(cfg)
+        or _requires_configured_resource_discovery(cfg)
     ):
         return discover_environment(
             config=cfg,
@@ -917,21 +917,43 @@ def _discover_inventory_environment(
     return discover_environment()
 
 
-def _requires_configured_prompt_discovery(cfg: Config) -> bool:
+def _requires_configured_resource_discovery(cfg: Config) -> bool:
     for profile in cfg.platforms.enabled():
-        configured_path = profile.prompts_path()
-        if configured_path is None or not configured_path.is_dir():
-            continue
         adapter = tool_adapter_by_id(profile.name)
-        default_path = (
-            Path(adapter.prompts_dir).expanduser()
-            if adapter is not None and adapter.prompts_dir
-            else None
+        configured_paths = (
+            (
+                profile.skills_path(),
+                adapter.skills_dir if adapter is not None else "",
+                "dir",
+            ),
+            (
+                profile.prompts_path(),
+                adapter.prompts_dir if adapter is not None else "",
+                "dir",
+            ),
+            (
+                profile.mcp_json_path(),
+                adapter.mcp_json if adapter is not None else "",
+                "file",
+            ),
+            (
+                profile.plugins_path(),
+                adapter.plugins_dir if adapter is not None else "",
+                "dir",
+            ),
         )
-        if default_path is None or os.path.normcase(
-            str(configured_path.absolute())
-        ) != os.path.normcase(str(default_path.absolute())):
-            return True
+        for configured_path, default_value, path_type in configured_paths:
+            if configured_path is None or not (
+                configured_path.is_file()
+                if path_type == "file"
+                else configured_path.is_dir()
+            ):
+                continue
+            default_path = Path(default_value).expanduser() if default_value else None
+            if default_path is None or os.path.normcase(
+                str(configured_path.absolute())
+            ) != os.path.normcase(str(default_path.absolute())):
+                return True
     return False
 
 

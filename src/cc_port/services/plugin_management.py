@@ -203,6 +203,7 @@ def discover_plugins(
         found.extend(_discover_codex(effective_home))
         found.extend(_discover_claude(effective_home))
         found.extend(_discover_opencode(effective_home))
+        found.extend(_discover_configured_content_plugins(config, home=effective_home))
     for project in selected:
         root = project.path_value
         if not root.is_dir():
@@ -211,6 +212,32 @@ def discover_plugins(
         found.extend(_discover_claude(effective_home, project=project))
         found.extend(_discover_opencode(effective_home, project=project))
     return _dedupe_plugins(found)
+
+
+def _discover_configured_content_plugins(
+    config: Config,
+    *,
+    home: Path,
+) -> list[DiscoveredPlugin]:
+    manifest_by_platform = {
+        "codex": ".codex-plugin/plugin.json",
+        "claude-code": ".claude-plugin/plugin.json",
+    }
+    found: list[DiscoveredPlugin] = []
+    for profile in config.platforms.enabled():
+        manifest_rel = manifest_by_platform.get(profile.name)
+        if manifest_rel is None or not profile.plugins_dir:
+            continue
+        plugins_root = _expand_home(profile.plugins_dir, home=home)
+        found.extend(
+            _content_directories(
+                plugins_root,
+                profile.name,
+                "user",
+                manifest_rel,
+            )
+        )
+    return found
 
 
 def _discover_codex(home: Path, project: PluginProjectConfig | None = None) -> list[DiscoveredPlugin]:
@@ -715,6 +742,14 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _expand_home(value: str, *, home: Path) -> Path:
+    if value == "~":
+        return home
+    if value.startswith(("~/", "~\\")):
+        return (home / value[2:]).resolve()
+    return Path(value).expanduser().resolve()
 
 
 def _optional_bool(value: object, *, default: bool) -> bool:
