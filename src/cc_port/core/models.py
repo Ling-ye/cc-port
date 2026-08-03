@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 from typing import Any, Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 ITEM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+RESOURCE_KIND_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 # Keep old name as alias for backward compatibility
 SKILL_NAME_RE = ITEM_NAME_RE
@@ -92,7 +94,7 @@ class PluginInstallation(BaseModel):
 
 
 class PluginSpec(BaseModel):
-    """Registry v7 dual-track plugin contract."""
+    """Resolved CC Port plugin behavior; never persisted in registry.yaml."""
 
     track: PluginTrack
     platform: PluginPlatform
@@ -146,10 +148,125 @@ class PluginSpec(BaseModel):
         return self
 
 
+class ExternalSource(BaseModel):
+    """Portable source reference stored in registry v1."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    locator: str
+    revision: str = ""
+    subpath: str = ""
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not RESOURCE_KIND_RE.fullmatch(normalized):
+            raise ValueError(
+                "source type must use 1-64 lower-case letters, digits, '.', '_' or '-'."
+            )
+        return normalized
+
+    @field_validator("locator")
+    @classmethod
+    def _validate_locator(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("source locator is required.")
+        parsed = urlparse(normalized)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("source locator must not contain credentials.")
+        return normalized.rstrip("/")
+
+    @field_validator("revision")
+    @classmethod
+    def _normalize_revision(cls, value: str) -> str:
+        return (value or "").strip()
+
+    @field_validator("subpath")
+    @classmethod
+    def _validate_subpath(cls, value: str) -> str:
+        raw = (value or "").strip()
+        if (
+            "\\" in raw
+            or raw.startswith("/")
+            or raw.endswith("/")
+            or re.match(r"^[a-zA-Z]:", raw)
+        ):
+            raise ValueError("source subpath must use POSIX relative path syntax.")
+        normalized = raw
+        if normalized and any(part in {"", ".", ".."} for part in normalized.split("/")):
+            raise ValueError("source subpath must be a safe relative POSIX path.")
+        return normalized
+
+
+class RegistryResource(BaseModel):
+    """One tool-neutral resource declaration in registry v1."""
+
+    model_config = ConfigDict(extra="allow")
+
+    kind: str
+    name: str
+    path: str = ""
+    source: ExternalSource | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not RESOURCE_KIND_RE.fullmatch(normalized):
+            raise ValueError(
+                "resource kind must use 1-64 lower-case letters, digits, '.', '_' or '-'."
+            )
+        return normalized
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not ITEM_NAME_RE.fullmatch(normalized):
+            raise ValueError(
+                f"Invalid name {value!r}: must be 1-64 chars of [a-z0-9-] "
+                "starting with [a-z0-9]."
+            )
+        return normalized
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        raw = (value or "").strip()
+        if not raw:
+            return ""
+        if "\\" in raw or raw.startswith("/") or raw.endswith("/"):
+            raise ValueError("path must be a repository-relative POSIX path.")
+        if re.match(r"^[a-zA-Z]:", raw) or any(ord(char) < 32 for char in raw):
+            raise ValueError("path must be a portable repository-relative path.")
+        parts = raw.split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("path must not contain empty, '.' or '..' segments.")
+        return raw
+
+    @model_validator(mode="after")
+    def _validate_location(self) -> RegistryResource:
+        if bool(self.path) == bool(self.source):
+            raise ValueError("resource must contain exactly one of path or source.")
+        if self.kind in {"skill", "mcp", "rule", "prompt", "plugin"} and self.model_extra:
+            raise ValueError(
+                f"known resource kind {self.kind!r} contains unsupported fields: "
+                + ", ".join(sorted(self.model_extra))
+            )
+        return self
+
+    @property
+    def resource_key(self) -> str:
+        return f"{self.kind}:{self.name}"
+
+
 class ResourceKey(BaseModel):
     """Stable composite identity for a registry resource."""
 
-    kind: ItemKind
+    kind: str
     name: str
 
     @field_validator("name")
@@ -160,6 +277,14 @@ class ResourceKey(BaseModel):
                 f"Invalid name {v!r}: must be 1-64 chars of [a-z0-9-] starting with [a-z0-9]."
             )
         return v
+
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not RESOURCE_KIND_RE.fullmatch(normalized):
+            raise ValueError("Invalid resource kind.")
+        return normalized
 
     @property
     def value(self) -> str:
@@ -188,11 +313,11 @@ class AmbiguousResourceNameError(ValueError):
         )
 
 
-class RegistryItem(BaseModel):
-    """A skill, MCP config, rule, prompt, or plugin in registry.yaml."""
+class ResolvedResource(BaseModel):
+    """Runtime resource resolved from registry, content, and cc-port.yaml."""
 
     name: str = Field(..., description="Lower-case, hyphenated unique identifier (<=64 chars).")
-    kind: ItemKind = Field(
+    kind: str = Field(
         default="skill",
         description="Resource type: skill | mcp | rule | prompt | plugin.",
     )
@@ -225,7 +350,12 @@ class RegistryItem(BaseModel):
     )
     plugin: PluginSpec | None = Field(
         default=None,
-        description="Registry v7 dual-track plugin metadata. Omitted for legacy plugin entries.",
+        description="CC Port plugin behavior resolved from the optional overlay.",
+    )
+    external_source: ExternalSource | None = Field(
+        default=None,
+        exclude=True,
+        description="Portable registry v1 source used by the resolved runtime view.",
     )
 
     # --- Rich metadata (v3) ---
@@ -274,14 +404,23 @@ class RegistryItem(BaseModel):
             )
         return v
 
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not RESOURCE_KIND_RE.fullmatch(normalized):
+            raise ValueError("Invalid resource kind.")
+        return normalized
+
     @field_validator("repo")
     @classmethod
     def _validate_repo(cls, v: str) -> str:
         v = v.strip().rstrip("/")
         if not v:
             return ""
-        if not (v.startswith("https://github.com/") or v.startswith("git@github.com:")):
-            raise ValueError(f"Repo URL must be a GitHub HTTPS or SSH URL, got {v!r}.")
+        parsed = urlparse(v)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("Repo URL must not contain credentials.")
         return v
 
     @field_validator("path")
@@ -344,12 +483,17 @@ class RegistryItem(BaseModel):
         return normalized
 
     @model_validator(mode="after")
-    def _validate_mcp_config(self) -> RegistryItem:
+    def _validate_mcp_config(self) -> ResolvedResource:
         is_plugin_reference = bool(
             self.kind == "plugin" and self.plugin and self.plugin.track == "reference"
         )
-        if self.source == "external" and not self.repo and not is_plugin_reference:
-            raise ValueError("external items require a repo URL.")
+        if (
+            self.source == "external"
+            and not self.repo
+            and self.external_source is None
+            and not is_plugin_reference
+        ):
+            raise ValueError("external items require a portable source reference.")
         if self.source in {"local", "owned"} and not self.repo and not self.path:
             raise ValueError("local/owned items require either path or repo.")
         if self.kind == "mcp" and self.mcp_config is not None:
@@ -385,24 +529,91 @@ class RegistryItem(BaseModel):
         return not self.platforms or platform_name in self.platforms
 
 
-# Backward-compatible alias
-SkillEntry = RegistryItem
+# Internal compatibility aliases while consumers migrate to ResolvedResource.
+RegistryItem = ResolvedResource
+SkillEntry = ResolvedResource
 
 
-class Registry(BaseModel):
-    """Top-level registry document (supports v1 through v7 formats)."""
+class CcPortPluginSettings(BaseModel):
+    """CC Port-only plugin installation intent stored outside registry.yaml."""
 
-    version: int = 7
-    items: list[RegistryItem] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
 
-    def __init__(self, **data: Any) -> None:
-        # Accept ``skills=`` kwarg as alias for ``items=`` for backward compat.
-        if "skills" in data and "items" not in data:
-            data["items"] = data.pop("skills")
-        super().__init__(**data)
+    platform: PluginPlatform
+    plugin_id: str
+    installations: list[PluginInstallation] = Field(default_factory=list)
+    dependencies: dict[str, str] = Field(default_factory=dict)
+
+
+class CcPortResourceSettings(BaseModel):
+    """Optional CC Port behavior for a portable registry resource."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    platforms: list[str] = Field(default_factory=list)
+    install_name: str = ""
+    install_names: dict[str, str] = Field(default_factory=dict)
+    plugin: CcPortPluginSettings | None = None
+
+    @field_validator("install_name")
+    @classmethod
+    def _validate_install_name(cls, value: str) -> str:
+        normalized = (value or "").strip()
+        if normalized and not ITEM_NAME_RE.fullmatch(normalized):
+            raise ValueError("install_name must be a safe single path segment.")
+        return normalized
+
+    @field_validator("install_names")
+    @classmethod
+    def _validate_install_names(cls, values: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for platform, name in values.items():
+            platform_name = str(platform).strip()
+            install_name = str(name).strip()
+            if not platform_name or not ITEM_NAME_RE.fullmatch(install_name):
+                raise ValueError("install_names requires safe platform and install names.")
+            normalized[platform_name] = install_name
+        return normalized
+
+
+class CcPortSettings(BaseModel):
+    """Optional cc-port.yaml overlay."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 1
+    resources: dict[str, CcPortResourceSettings] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _validate_plugin_distribution_identity(self) -> Registry:
+    def _validate_version_and_keys(self) -> CcPortSettings:
+        if self.version != 1:
+            raise ValueError(f"Unsupported cc-port.yaml version: {self.version}.")
+        for key in self.resources:
+            ResourceKey.parse(key)
+        return self
+
+
+class RegistryCatalog(BaseModel):
+    """Tool-neutral registry v1 catalog plus a non-persisted CC Port overlay."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    version: int = 1
+    resources: list[RegistryResource] = Field(default_factory=list)
+    cc_port: CcPortSettings = Field(default_factory=CcPortSettings, exclude=True)
+    _resolved_items: dict[str, RegistryItem] = PrivateAttr(default_factory=dict)
+
+    def __init__(self, **data: Any) -> None:
+        runtime_items = data.pop("items", data.pop("skills", None))
+        super().__init__(**data)
+        if runtime_items is not None:
+            self.resources = []
+            for raw in runtime_items:
+                entry = raw if isinstance(raw, RegistryItem) else RegistryItem.model_validate(raw)
+                self.upsert(entry)
+
+    @model_validator(mode="after")
+    def _validate_plugin_distribution_identity(self) -> RegistryCatalog:
         identities: dict[tuple[str, str, str, str], str] = {}
         for item in self.items:
             spec = item.plugin
@@ -421,15 +632,54 @@ class Registry(BaseModel):
             existing = identities.get(identity)
             if existing is not None and existing != item.resource_key:
                 raise ValueError(
-                    "active v7 plugins with the same platform and source must share one resource key."
+                    "Plugins with the same platform and source must share one resource key."
                 )
             identities[identity] = item.resource_key
         return self
 
+    @model_validator(mode="after")
+    def _validate_portable_identity(self) -> RegistryCatalog:
+        if self.version != 1:
+            raise ValueError(f"Unsupported registry version: {self.version}.")
+        keys: set[str] = set()
+        paths: dict[str, str] = {}
+        for resource in self.resources:
+            if resource.resource_key in keys:
+                raise ValueError(f"Duplicate resource identity: {resource.resource_key}.")
+            keys.add(resource.resource_key)
+            if resource.path:
+                existing = paths.get(resource.path)
+                if existing is not None:
+                    raise ValueError(
+                        f"Resources {existing} and {resource.resource_key} share path "
+                        f"{resource.path!r}."
+                    )
+                paths[resource.path] = resource.resource_key
+        return self
+
+    @property
+    def items(self) -> list[RegistryItem]:
+        active_keys = {resource.resource_key for resource in self.resources}
+        for key in list(self._resolved_items):
+            if key not in active_keys:
+                self._resolved_items.pop(key, None)
+        resolved: list[RegistryItem] = []
+        for resource in sorted(self.resources, key=lambda item: (item.kind, item.name)):
+            entry = self._resolved_items.get(resource.resource_key)
+            if entry is None:
+                entry = self._resolved_item(resource)
+                self._resolved_items[resource.resource_key] = entry
+            resolved.append(entry)
+        return resolved
+
     @property
     def skills(self) -> list[RegistryItem]:
-        """Backward-compatible accessor: returns all items (regardless of kind)."""
+        """Resolved resources for the legacy internal service surface."""
         return self.items
+
+    def reset_resolved(self) -> None:
+        """Rebuild runtime views after replacing the CC Port overlay."""
+        self._resolved_items.clear()
 
     def get(self, name: str, kind: ItemKind | None = None) -> RegistryItem | None:
         matches = [
@@ -448,21 +698,140 @@ class Registry(BaseModel):
         return self.get(parsed.name, parsed.kind)
 
     def upsert(self, entry: RegistryItem) -> None:
-        for i, item in enumerate(self.items):
-            if item.name == entry.name and item.kind == entry.kind:
-                self.items[i] = entry
-                return
-        self.items.append(entry)
-        self.items.sort(key=lambda item: (item.kind, item.name))
+        resource = self._portable_resource(entry)
+        entry.external_source = resource.source
+        for index, current in enumerate(self.resources):
+            if current.resource_key == resource.resource_key:
+                self.resources[index] = resource
+                break
+        else:
+            self.resources.append(resource)
+        self.resources.sort(key=lambda item: (item.kind, item.name))
+        settings = self._portable_settings(entry)
+        if settings is None:
+            self.cc_port.resources.pop(entry.resource_key, None)
+        else:
+            self.cc_port.resources[entry.resource_key] = settings
+        self._resolved_items[entry.resource_key] = entry
 
     def remove(self, name: str, kind: ItemKind | None = None) -> RegistryItem | None:
         entry = self.get(name, kind)
         if entry is None:
             return None
-        for i, item in enumerate(self.items):
-            if item.name == entry.name and item.kind == entry.kind:
-                return self.items.pop(i)
+        for index, resource in enumerate(self.resources):
+            if resource.resource_key == entry.resource_key:
+                self.resources.pop(index)
+                self._resolved_items.pop(entry.resource_key, None)
+                return entry
         return None
 
     def filter_by_kind(self, kind: ItemKind) -> list[RegistryItem]:
         return [item for item in self.items if item.kind == kind]
+
+    def _resolved_item(self, resource: RegistryResource) -> RegistryItem:
+        settings = self.cc_port.resources.get(resource.resource_key, CcPortResourceSettings())
+        source = resource.source
+        plugin: PluginSpec | None = None
+        if settings.plugin is not None:
+            origin_type: PluginOriginType = (
+                source.type
+                if source is not None and source.type in {"marketplace", "npm", "git", "local"}
+                else "local"
+            )  # type: ignore[assignment]
+            origin = PluginOrigin(
+                type=origin_type,
+                marketplace=(
+                    source.locator.split("/", 1)[0]
+                    if source and origin_type == "marketplace"
+                    else ""
+                ),
+                source=(
+                    source.locator if source and origin_type in {"marketplace", "local"} else ""
+                ),
+                package=(source.locator if source and origin_type == "npm" else ""),
+                repo=(source.locator if source and origin_type == "git" else ""),
+                selector=(source.revision if source else ""),
+            )
+            plugin = PluginSpec(
+                track="content" if resource.path else "reference",
+                platform=settings.plugin.platform,
+                plugin_id=settings.plugin.plugin_id,
+                origin=origin,
+                installations=list(settings.plugin.installations),
+                dependencies=dict(settings.plugin.dependencies),
+            )
+        repo = source.locator if source is not None and source.type == "git" else ""
+        return RegistryItem(
+            name=resource.name,
+            kind=resource.kind,
+            repo=repo,
+            source="local" if resource.path else "external",
+            path=resource.path,
+            subdir=source.subpath if source else "",
+            ref=source.revision if source else "",
+            install_dir=settings.install_name,
+            platform_install_dirs=dict(settings.install_names),
+            platforms=list(settings.platforms),
+            plugin=plugin,
+            external_source=source,
+        )
+
+    @staticmethod
+    def _portable_resource(entry: RegistryItem) -> RegistryResource:
+        if entry.path:
+            return RegistryResource(kind=entry.kind, name=entry.name, path=entry.path)
+        source = entry.external_source
+        if source is None and entry.plugin is not None:
+            origin = entry.plugin.origin
+            locator = (
+                f"{origin.marketplace}/{entry.plugin.plugin_id}"
+                if origin.type == "marketplace"
+                else origin.package
+                if origin.type == "npm"
+                else origin.repo
+                if origin.type == "git"
+                else origin.source
+            )
+            source = ExternalSource(
+                type=origin.type,
+                locator=locator,
+                revision=origin.selector,
+            )
+        if source is None and entry.repo:
+            source = ExternalSource(
+                type="git",
+                locator=entry.repo,
+                revision=entry.ref,
+                subpath=entry.subdir,
+            )
+        if source is None:
+            raise ValueError(f"Resource {entry.resource_key} has neither path nor source.")
+        return RegistryResource(kind=entry.kind, name=entry.name, source=source)
+
+    @staticmethod
+    def _portable_settings(entry: RegistryItem) -> CcPortResourceSettings | None:
+        plugin_settings = None
+        if entry.plugin is not None:
+            plugin_settings = CcPortPluginSettings(
+                platform=entry.plugin.platform,
+                plugin_id=entry.plugin.plugin_id,
+                installations=list(entry.plugin.installations),
+                dependencies=dict(entry.plugin.dependencies),
+            )
+        if not (
+            entry.platforms
+            or entry.install_dir
+            or entry.platform_install_dirs
+            or plugin_settings is not None
+        ):
+            return None
+        return CcPortResourceSettings(
+            platforms=list(entry.platforms),
+            install_name=entry.install_dir,
+            install_names=dict(entry.platform_install_dirs),
+            plugin=plugin_settings,
+        )
+
+
+# Internal compatibility alias while consumers migrate to RegistryCatalog.
+Registry = RegistryCatalog

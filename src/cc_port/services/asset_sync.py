@@ -15,12 +15,13 @@ import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 import frontmatter
+import yaml
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -72,6 +73,7 @@ from .local_transaction import (
 )
 from .mcp_installer import inject_mcp_server, list_mcp_servers
 from .plugin_management import plugin_resource_name
+from .registry_audit import RegistryHealthSummary, audit_registry_root
 from .resource_commit import commit_resource_changes_unlocked
 from .resource_repo import ensure_structure, resource_root
 from .resource_repo_lock import resource_repo_write_lock
@@ -110,7 +112,8 @@ ASSET_PLAN_SCHEMA_VERSION = 1
 REMOTE_CACHE_DIR = "remotes"
 REMOTE_SNAPSHOT_DIR = "snapshots"
 REMOTE_SNAPSHOT_FORMAT_FILE = ".cc-port-snapshot-format"
-REMOTE_SNAPSHOT_FORMAT_VERSION = "host-autocrlf-disabled-v1"
+REMOTE_SNAPSHOT_REGISTRY_HEALTH_FILE = ".cc-port-registry-health.json"
+REMOTE_SNAPSHOT_FORMAT_VERSION = "host-autocrlf-disabled-v2"
 REMOTE_WRITE_ACTIONS = {"upload", "copy-to-remote", "set-platform-install-name"}
 LOCAL_WRITE_ACTIONS = {"download", "copy-to-local", "align-plugin-state"}
 RESOURCE_PARENT_BY_KIND: dict[ItemKind, str] = {
@@ -130,19 +133,20 @@ ASSET_DIFF_MAX_TOTAL_CHARS = 240_000
 @dataclass
 class RemoteSnapshot:
     root: Path
-    registry: Registry
+    registry: Registry | None
     commit: str
     branch: str
     repo_url: str
     available: bool = True
     warning: str = ""
     warning_ref: UiMessageRef | None = None
+    registry_health: RegistryHealthSummary | None = None
 
 
 @dataclass
 class AssetPlatformRow:
     resource_key: str
-    kind: ItemKind
+    kind: str
     name: str
     platform: str
     local_instance_id: str
@@ -208,6 +212,7 @@ class AssetInventory:
     remote_warning_ref: UiMessageRef | None = None
     legacy_write_blocker_ref: UiMessageRef | None = None
     resources: list[AssetResourceRow] = field(default_factory=list)
+    registry_health: RegistryHealthSummary | None = None
 
 
 @dataclass
@@ -255,7 +260,7 @@ class AssetRemoteState:
 @dataclass
 class AssetResourceRow:
     resource_key: str
-    kind: ItemKind
+    kind: str
     name: str
     description: str
     description_source: str
@@ -544,12 +549,32 @@ def build_asset_inventory(
                 scan_global=scan_global,
                 project_ids=project_ids,
             )
+    if snapshot.registry is None:
+        snapshot = replace(
+            snapshot,
+            registry=Registry(),
+            warning=(
+                snapshot.warning
+                or (snapshot.registry_health.message if snapshot.registry_health else "")
+                or "The remote registry is unavailable."
+            ),
+        )
+    assert snapshot.registry is not None
+    registry_entries = snapshot.registry.items
+    known_entries = [
+        entry for entry in registry_entries if entry.kind in RESOURCE_PARENT_BY_KIND
+    ]
+    unknown_entries = [
+        entry for entry in registry_entries if entry.kind not in RESOURCE_PARENT_BY_KIND
+    ]
+    for entry in known_entries:
+        _hydrate_remote_metadata(snapshot.root, entry)
     contexts = _platform_contexts(cfg, discovery)
     reference_commits: dict[tuple[str, str], str] = {}
     rows: list[AssetPlatformRow] = []
     seen_local_paths: set[tuple[str, str, str, str]] = set()
 
-    for entry in snapshot.registry.items:
+    for entry in known_entries:
         if entry.kind == "plugin" and entry.plugin is not None:
             plugin_rows = _expected_plugin_rows(entry, snapshot, cfg, contexts)
             rows.extend(plugin_rows)
@@ -625,8 +650,14 @@ def build_asset_inventory(
         legacy_write_blocker=blocker,
         legacy_write_blocker_ref=blocker_ref,
         rows=rows,
+        registry_health=snapshot.registry_health,
     )
     inventory.resources = _aggregate_resource_rows(inventory)
+    inventory.resources.extend(
+        _unknown_registry_resource(entry, inventory, snapshot.root)
+        for entry in unknown_entries
+    )
+    inventory.resources.sort(key=lambda item: (item.kind, item.name))
     return inventory
 
 
@@ -913,7 +944,7 @@ def _discover_inventory_environment(
             project_ids=project_ids,
         )
     # Preserve the public zero-argument discovery seam used by existing
-    # integrations while v7 scan filters remain opt-in.
+    # integrations while configured scan filters remain opt-in.
     return discover_environment()
 
 
@@ -1053,6 +1084,67 @@ def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow
         )
     resources.sort(key=lambda item: (item.kind, item.name))
     return resources
+
+
+def _unknown_registry_resource(
+    entry: RegistryItem,
+    inventory: AssetInventory,
+    snapshot_root: Path,
+) -> AssetResourceRow:
+    """Expose portable unknown kinds without allowing CC Port write operations."""
+    available = inventory.remote_available
+    warning_ref = ui_message(
+        "asset.warning.unsupported_registry_kind",
+        f"Resource kind {entry.kind!r} is not supported by CC Port and is read-only.",
+        kind=entry.kind,
+    )
+    remote_status = "read-only" if available else "unavailable"
+    diff_summary_ref = ui_message(
+        "asset.platform_diff.read_only_reference",
+        "The item is tracked as a portable read-only registry resource.",
+    )
+    return AssetResourceRow(
+        resource_key=entry.resource_key,
+        kind=entry.kind,
+        name=entry.name,
+        description="",
+        description_source="none",
+        local_status="not-scanned" if not inventory.scanned_local else "missing",
+        remote_status=remote_status,
+        status="read-only-reference" if available else "uncomparable",
+        remote=AssetRemoteState(
+            exists=True,
+            status=remote_status,
+            writable=False,
+            read_only=True,
+            commit=inventory.remote_commit,
+            path=_remote_content_path(snapshot_root, entry),
+            description="",
+        ),
+        local_instances=[],
+        diff_summary=[diff_summary_ref.fallback],
+        diff_summary_refs=[diff_summary_ref],
+        warnings=[warning_ref.fallback],
+        warning_refs=[warning_ref],
+        available_actions=[],
+    )
+
+
+def _hydrate_remote_metadata(root: Path, entry: RegistryItem) -> None:
+    """Derive display/install metadata from current content without persisting it."""
+    if entry.kind not in RESOURCE_PARENT_BY_KIND:
+        return
+    content_path = _remote_content_path(root, entry)
+    if content_path is None:
+        return
+    mcp_config = _read_portable_mcp_resource(content_path) if entry.kind == "mcp" else None
+    derived = _derive_metadata(entry.kind, content_path, mcp_config=mcp_config)
+    for field_name in DERIVED_METADATA_FIELDS:
+        value = derived.get(field_name)
+        if value not in (None, ""):
+            setattr(entry, field_name, str(value))
+    if entry.kind == "mcp" and isinstance(derived.get("mcp_config"), dict):
+        entry.mcp_config = derived["mcp_config"]
 
 
 def _local_instance_summary(row: AssetPlatformRow) -> AssetLocalInstance:
@@ -1255,6 +1347,7 @@ def build_asset_action_plan(
         refresh_remote=False,
         remote_snapshot=snapshot,
     )
+    registry = snapshot.registry or Registry()
     key = ResourceKey(kind=kind, name=name)
     candidates = [
         row for row in inventory.rows if row.resource_key == str(key) and row.platform == platform
@@ -1311,7 +1404,7 @@ def build_asset_action_plan(
         _extend_messages(
             blockers,
             blocker_refs,
-            _copy_to_local_blocker_refs(row, snapshot.registry, normalized_new_name),
+            _copy_to_local_blocker_refs(row, registry, normalized_new_name),
         )
         target_path, target_exists, target_fingerprint, target_managed = _copy_local_target_state(
             cfg,
@@ -1347,13 +1440,13 @@ def build_asset_action_plan(
             blocker_refs,
             _copy_to_remote_blocker_refs(
                 row,
-                snapshot.registry,
+                registry,
                 normalized_new_name,
                 link_target_confirmed,
             ),
         )
         target_entry = (
-            snapshot.registry.get(normalized_new_name, kind) if normalized_new_name else None
+            registry.get(normalized_new_name, kind) if normalized_new_name else None
         )
         remote_target_exists = target_entry is not None
         remote_target_fingerprint = (
@@ -1367,7 +1460,7 @@ def build_asset_action_plan(
             blocker_refs,
             _install_alias_plan_blocker_refs(
                 row,
-                snapshot.registry,
+                registry,
                 cfg,
                 normalized_install_name,
             )
@@ -1750,7 +1843,7 @@ def add_plugin_reference(
     push: bool = True,
     config: Config | None = None,
 ) -> PluginReferenceResult:
-    """Add or merge one v7 reference plugin without copying local plugin files."""
+    """Add or merge one reference plugin without copying local plugin files."""
     cfg = config or load_config()
     project_identity: PluginProjectIdentity | None = None
     if scope in {"project", "local"}:
@@ -1917,9 +2010,11 @@ def build_plugin_delete_plan(
     if key.kind != "plugin":
         raise ValueError("Plugin deletion only accepts plugin resource keys.")
     snapshot = _refresh_remote_snapshot(cfg, refresh=True)
+    if snapshot.registry is None:
+        raise ValueError("Plugin deletion is blocked because the remote registry is unavailable.")
     entry = snapshot.registry.get(key.name, "plugin")
     if entry is None or entry.plugin is None:
-        raise ValueError("Plugin deletion requires an active Registry v7 plugin entry.")
+        raise ValueError("Plugin deletion requires an active plugin entry.")
     inventory = build_asset_inventory(
         config=cfg,
         scan_local=True,
@@ -3239,15 +3334,22 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                         f"snapshot from {cached_at}.",
                         cached_at=cached_at,
                     )
+                    registry, registry_health = _snapshot_registry_state(
+                        cached,
+                        commit="" if cached.name == "unborn" else cached.name,
+                        repo_url=repo_url,
+                        branch=branch,
+                    )
                     return RemoteSnapshot(
                         root=cached,
-                        registry=_load_snapshot_registry(cached),
+                        registry=registry,
                         commit="" if cached.name == "unborn" else cached.name,
                         branch=branch,
                         repo_url=repo_url,
                         available=False,
                         warning=warning_ref.fallback,
                         warning_ref=warning_ref,
+                        registry_health=registry_health,
                     )
                 warning_ref = ui_message(
                     "asset.remote.refresh_skipped_legacy",
@@ -3301,18 +3403,31 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                 _remove_internal_path(snapshot_cache_root, state_root)
             snapshot_root = snapshot_cache_root / (remote_commit or "unborn")
             if not snapshot_root.exists() or not _snapshot_format_is_current(snapshot_root):
+                source_registry_health = audit_registry_root(
+                    transport,
+                    remote_commit=remote_commit or "",
+                    repo_url=repo_url,
+                    branch=branch,
+                ).health
                 _materialize_remote_snapshot(
                     transport,
                     snapshot_root,
                     snapshot_cache_root,
+                    registry_health=source_registry_health,
                 )
-            registry = _load_snapshot_registry(snapshot_root)
+            registry, registry_health = _snapshot_registry_state(
+                snapshot_root,
+                commit=remote_commit or "",
+                repo_url=repo_url,
+                branch=branch,
+            )
             return RemoteSnapshot(
                 root=snapshot_root,
                 registry=registry,
                 commit=remote_commit or "",
                 branch=branch,
                 repo_url=repo_url,
+                registry_health=registry_health,
             )
     except Exception as exc:
         cached = _latest_cached_snapshot(state_root / REMOTE_SNAPSHOT_DIR / cache_key)
@@ -3328,15 +3443,22 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
                 cached_at=cached_at,
                 detail=str(exc),
             )
+            registry, registry_health = _snapshot_registry_state(
+                cached,
+                commit="" if cached.name == "unborn" else cached.name,
+                repo_url=repo_url,
+                branch=branch,
+            )
             return RemoteSnapshot(
                 root=cached,
-                registry=_load_snapshot_registry(cached),
+                registry=registry,
                 commit="" if cached.name == "unborn" else cached.name,
                 branch=branch,
                 repo_url=repo_url,
                 available=False,
                 warning=warning_ref.fallback,
                 warning_ref=warning_ref,
+                registry_health=registry_health,
             )
         warning_ref = ui_message(
             "asset.remote.refresh_failed_legacy",
@@ -3359,8 +3481,13 @@ def _local_compatibility_snapshot(
     warning_ref: UiMessageRef | None = None,
 ) -> RemoteSnapshot:
     root = resource_root(cfg)
-    registry = load_registry(root / DEFAULT_REGISTRY_FILENAME)
     commit = git_ops.head_commit(root) if git_ops.is_repo(root) else ""
+    registry, registry_health = _snapshot_registry_state(
+        root,
+        commit=commit or "",
+        repo_url=repo_url,
+        branch=cfg.resources.branch or "main",
+    )
     return RemoteSnapshot(
         root=root,
         registry=registry,
@@ -3370,6 +3497,7 @@ def _local_compatibility_snapshot(
         available=False,
         warning=warning,
         warning_ref=warning_ref,
+        registry_health=registry_health,
     )
 
 
@@ -3392,7 +3520,6 @@ def _latest_cached_snapshot(root: Path) -> Path | None:
         and not path.is_symlink()
         and (path.name == "unborn" or git_ops.is_full_commit_sha(path.name))
         and _snapshot_format_is_current(path)
-        and _snapshot_registry_path(path) is not None
     ]
     if not candidates:
         return None
@@ -3401,7 +3528,13 @@ def _latest_cached_snapshot(root: Path) -> Path | None:
 
 def _snapshot_format_is_current(root: Path) -> bool:
     marker = root / REMOTE_SNAPSHOT_FORMAT_FILE
-    if not marker.is_file() or marker.is_symlink():
+    health = root / REMOTE_SNAPSHOT_REGISTRY_HEALTH_FILE
+    if (
+        not marker.is_file()
+        or marker.is_symlink()
+        or not health.is_file()
+        or health.is_symlink()
+    ):
         return False
     try:
         return marker.read_text(encoding="utf-8").strip() == REMOTE_SNAPSHOT_FORMAT_VERSION
@@ -3411,7 +3544,7 @@ def _snapshot_format_is_current(root: Path) -> bool:
 
 def _write_snapshot_format(root: Path) -> None:
     marker = root / REMOTE_SNAPSHOT_FORMAT_FILE
-    fd, temporary = tempfile.mkstemp(prefix=f".{marker.name}.", dir=root)
+    fd, temporary = tempfile.mkstemp(prefix=".fmt-", dir=root)
     temporary_path = Path(temporary)
     try:
         with os.fdopen(fd, "wb") as handle:
@@ -3424,8 +3557,72 @@ def _write_snapshot_format(root: Path) -> None:
 
 
 def _snapshot_copy_ignore(_directory: str, names: list[str]) -> set[str]:
-    """Keep repository-controlled files out of internal snapshot control paths."""
-    return {".git", REMOTE_SNAPSHOT_FORMAT_FILE} & set(names)
+    """Reject links and repository-controlled internal snapshot control paths."""
+    internal = {
+        ".git",
+        REMOTE_SNAPSHOT_FORMAT_FILE,
+        REMOTE_SNAPSHOT_REGISTRY_HEALTH_FILE,
+    }
+    ignored = internal & set(names)
+    directory = Path(_directory)
+    for name in names:
+        try:
+            if (directory / name).is_symlink():
+                ignored.add(name)
+        except OSError:
+            ignored.add(name)
+    return ignored
+
+
+def _write_snapshot_registry_health(
+    root: Path,
+    health: RegistryHealthSummary,
+) -> None:
+    path = root / REMOTE_SNAPSHOT_REGISTRY_HEALTH_FILE
+    fd, temporary = tempfile.mkstemp(prefix=".health-", dir=root)
+    temporary_path = Path(temporary)
+    try:
+        payload = json.dumps(asdict(health), ensure_ascii=False, sort_keys=True)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _read_snapshot_registry_health(
+    root: Path,
+    *,
+    commit: str,
+) -> RegistryHealthSummary | None:
+    path = _safe_snapshot_member_path(
+        root,
+        root / REMOTE_SNAPSHOT_REGISTRY_HEALTH_FILE,
+    )
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        status = str(data.get("status") or "")
+        checked_commit = str(data.get("checked_commit") or "")
+        if status not in {"healthy", "issues", "legacy", "missing", "invalid", "unavailable"}:
+            return None
+        if checked_commit != commit:
+            return None
+        return RegistryHealthSummary(
+            status=status,  # type: ignore[arg-type]
+            checked_commit=checked_commit,
+            issue_count=int(data.get("issue_count") or 0),
+            repairable_count=int(data.get("repairable_count") or 0),
+            blocked_count=int(data.get("blocked_count") or 0),
+            message=str(data.get("message") or ""),
+        )
+    except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+        return None
 
 
 def _snapshot_registry_path(root: Path) -> Path | None:
@@ -3438,26 +3635,54 @@ def _snapshot_registry_path(root: Path) -> Path | None:
     return candidate
 
 
-def _load_snapshot_registry(root: Path) -> Registry:
+def _load_snapshot_registry(root: Path) -> Registry | None:
     registry_path = _snapshot_registry_path(root)
     if registry_path is None:
-        raise AssetSyncError(
-            "The remote snapshot registry must be a regular non-symlink file "
-            "inside the snapshot."
-        )
-    return load_registry(registry_path)
+        return None
+    try:
+        return load_registry(registry_path)
+    except Exception:
+        return None
+
+
+def _snapshot_registry_state(
+    root: Path,
+    *,
+    commit: str,
+    repo_url: str,
+    branch: str,
+) -> tuple[Registry | None, RegistryHealthSummary]:
+    health = _read_snapshot_registry_health(root, commit=commit)
+    if health is None:
+        health = audit_registry_root(
+            root,
+            remote_commit=commit,
+            repo_url=repo_url,
+            branch=branch,
+        ).health
+    registry = _load_snapshot_registry(root) if health.status in {"healthy", "issues"} else None
+    if health.status in {"healthy", "issues"} and registry is None:
+        health = audit_registry_root(
+            root,
+            remote_commit=commit,
+            repo_url=repo_url,
+            branch=branch,
+        ).health
+    return registry, health
 
 
 def _materialize_remote_snapshot(
     transport: Path,
     snapshot_root: Path,
     snapshot_cache_root: Path,
+    *,
+    registry_health: RegistryHealthSummary | None = None,
 ) -> None:
     """Build a complete snapshot before replacing an older cache entry."""
     snapshot_cache_root.mkdir(parents=True, exist_ok=True)
-    nonce = uuid.uuid4().hex
-    temporary = snapshot_cache_root / f".{snapshot_root.name}.{nonce}.tmp"
-    backup = snapshot_cache_root / f".{snapshot_root.name}.{nonce}.old"
+    nonce = uuid.uuid4().hex[:8]
+    temporary = snapshot_cache_root / f".snap-{nonce}"
+    backup = snapshot_cache_root / f".old-{nonce}"
     _assert_internal_path(temporary, snapshot_cache_root)
     _assert_internal_path(backup, snapshot_cache_root)
     backup_created = False
@@ -3469,12 +3694,9 @@ def _materialize_remote_snapshot(
             symlinks=True,
             ignore=_snapshot_copy_ignore,
         )
+        source_health = registry_health or audit_registry_root(transport).health
+        _write_snapshot_registry_health(temporary, source_health)
         _write_snapshot_format(temporary)
-        if _snapshot_registry_path(temporary) is None:
-            raise AssetSyncError(
-                "The remote snapshot registry must be a regular non-symlink file "
-                "inside the snapshot."
-            )
         if snapshot_root.exists() or snapshot_root.is_symlink():
             os.replace(snapshot_root, backup)
             backup_created = True
@@ -4503,10 +4725,23 @@ def _entry_content_fingerprint(entry: RegistryItem | None, path: Path | None) ->
 def _remote_asset_fingerprint(root: Path, entry: RegistryItem | None) -> str:
     if entry is None:
         return ""
-    payload = entry.model_dump(
-        mode="json",
-        exclude={"last_checked", "reachable"},
-    )
+    plugin = entry.plugin.model_dump(mode="json") if entry.plugin is not None else None
+    if plugin is not None:
+        plugin.pop("observed_version", None)
+    payload = {
+        "kind": entry.kind,
+        "name": entry.name,
+        "path": entry.path,
+        "source": (
+            entry.external_source.model_dump(mode="json", exclude_none=True)
+            if entry.external_source is not None
+            else None
+        ),
+        "install_name": entry.install_dir,
+        "install_names": entry.platform_install_dirs,
+        "platforms": entry.platforms,
+        "plugin": plugin,
+    }
     payload["content_fingerprint"] = _entry_content_fingerprint(
         entry,
         _remote_content_path(root, entry),
@@ -4690,6 +4925,8 @@ def _remote_duplicate_keys(
     exclude_key: str,
 ) -> list[str]:
     matches: list[str] = []
+    if snapshot.registry is None:
+        return matches
     for entry in snapshot.registry.items:
         if entry.kind != kind or entry.resource_key == exclude_key:
             continue
@@ -4708,10 +4945,24 @@ def _finalize_row_actions(row: AssetPlatformRow, snapshot: RemoteSnapshot) -> No
     actions: list[str] = []
     active = row.entry is None or row.entry.lifecycle == "active"
     target_clear = row.status != "target-conflict"
+    registry_available = (
+        snapshot.registry_health is None
+        or snapshot.registry_health.status in {"healthy", "issues"}
+    )
+    remote_ready = snapshot.available and registry_available
+    if not registry_available:
+        _append_message(
+            row.blockers,
+            row.blocker_refs,
+            ui_message(
+                "asset.blocker.registry_unavailable",
+                "The remote registry is unavailable; remote resource actions are blocked.",
+            ),
+        )
     if row.plugin_track == "reference":
-        if active and row.remote_exists and snapshot.available:
+        if active and row.remote_exists and remote_ready:
             actions.append("download")
-        if active and row.local_exists and not row.blockers:
+        if active and row.local_exists and not row.blockers and remote_ready:
             actions.append("upload")
         row.available_actions = actions
         row.blockers = _unique_strings(row.blockers)
@@ -4725,12 +4976,12 @@ def _finalize_row_actions(row: AssetPlatformRow, snapshot: RemoteSnapshot) -> No
         and row.enabled
         and row.supported
         and target_clear
-        and snapshot.available
+        and remote_ready
     ):
         actions.extend(["download", "copy-to-local", "set-platform-install-name"])
-    elif active and row.remote_exists and row.remote_writable and snapshot.available:
+    elif active and row.remote_exists and row.remote_writable and remote_ready:
         actions.append("set-platform-install-name")
-    if active and row.local_exists:
+    if active and row.local_exists and remote_ready:
         if not row.remote_exists or row.remote_writable:
             actions.append("upload")
         actions.append("copy-to-remote")
@@ -5076,6 +5327,13 @@ def _apply_local_asset_action(
     cfg: Config,
 ) -> AssetActionResult:
     snapshot = _refresh_remote_snapshot(cfg, refresh=True)
+    if snapshot.registry is None:
+        raise _StaleAssetTarget(
+            "registry-unavailable",
+            snapshot.registry_health.message
+            if snapshot.registry_health
+            else "The remote registry is unavailable.",
+        )
     source_key = ResourceKey.parse(plan.resource_key)
     entry = snapshot.registry.get(source_key.name, source_key.kind)
     current_remote_exists = entry is not None
@@ -6617,6 +6875,32 @@ def _read_mcp_server(path: Path, server_name: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return dict(value) if isinstance(value, dict) else None
+
+
+def _read_portable_mcp_resource(path: Path) -> dict[str, Any] | None:
+    candidates = [path] if path.is_file() else [
+        path / "mcp.json",
+        path / "mcp.yaml",
+        path / "mcp.yml",
+    ]
+    for candidate in candidates:
+        if not candidate.is_file() or candidate.is_symlink():
+            continue
+        try:
+            payload = yaml.safe_load(candidate.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        servers = payload.get("mcpServers")
+        if isinstance(servers, dict) and len(servers) == 1:
+            payload = next(iter(servers.values()))
+        if not isinstance(payload, dict):
+            continue
+        sanitized = sanitize_mcp_config_for_storage(payload)
+        if sanitized:
+            return sanitized
+    return None
 
 
 def _derive_metadata(

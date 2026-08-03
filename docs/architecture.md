@@ -2,7 +2,7 @@
 
 ## 产品边界
 
-CC Port 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置；用户自己的远端资源仓库是跨设备事实源，本机状态目录保存可重建的受管远端镜像、commit 只读快照、备份、所有权和临时操作数据。AI 工具原生目录中的资源是本地实例，不通过本机镜像转发。
+CC Port 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置；远端仓库中的实体内容或外部 `source` 是跨设备事实，工具中立的 `registry.yaml` 只声明成员关系、稳定身份和位置。本机状态目录保存可重建的受管远端镜像、commit 只读快照、备份、所有权和临时操作数据。AI 工具原生目录中的资源是本地实例，不通过本机镜像转发。
 
 当前采用模块化单体，不拆分独立服务：
 
@@ -11,7 +11,7 @@ CC Port 定位为本地优先的 AI 工具资源管理器。管理对象包括 `
 - Tauri/Rust 只负责桌面外壳、sidecar 调用和系统路径打开。
 - CLI、Desktop API 和 MCP Server 复用同一套 Python services。
 
-当前不提供第三方适配器插件 API，也不引入 SQLite。registry 已升级为 v7，以 `kind:name` 作为复合资源身份，并为插件提供 content/reference 双轨；适配器契约先作为内部 API 演进，稳定后再决定是否外部开放。
+当前不提供第三方适配器插件 API，也不引入 SQLite。Registry v1 以 `kind:name` 作为复合资源身份，使用互斥的 `path` 或 `source` 描述内容与引用；它不绑定 CC Port。平台别名和插件安装意图位于可选的 `cc-port.yaml`，运行时由 `ResolvedResource` 合并。适配器契约先作为内部 API 演进，稳定后再决定是否外部开放。
 
 ## 组件关系
 
@@ -36,12 +36,13 @@ flowchart LR
 
 | 模块 | 职责 | 主要约束 |
 | --- | --- | --- |
-| `core.models` / `core.registry` | registry v7 复合键模型、旧版本迁移和读写 | 私有仓库配置分支中的资源索引是跨设备事实源 |
+| `core.models` / `core.registry` | `RegistryCatalog`、`RegistryResource`、`ExternalSource`、`CcPortSettings` 与 canonical v1 读写 | Registry 只保存工具中立声明；派生元数据和本机状态不得写回 |
 | `core.tool_adapters` | 工具能力、默认路径、发现信号和安装机制 | 当前仅内部使用，不承诺第三方兼容性 |
 | `core.resource_files` | 资源复制与同步共用的文件策略 | 排除真实 `.env`、构建产物、依赖目录和符号链接 |
 | `core.secret_scan` | 资源文本的凭据模式检查 | 只返回脱敏预览，不在日志中保存真实值 |
 | `core.ownership` | 目录与 MCP entry 的所有权 | 未管理目标不能被普通覆盖或卸载 |
 | `services.asset_sync` | 受管远端镜像刷新、commit 快照、逻辑资源并集、批量计划、哈希重验证、批量上传单提交与逐项安装事务 | 不信任前端路径或指纹；不强推；不隐式删除 |
+| `services.registry_audit` | 同 commit 的 Registry 审计、候选发现、问题分类、canonical diff、计划哈希和 registry-only 远端修复 | 检查只读；应用重新 fetch；只暂存 `registry.yaml`；竞态返回 stale |
 | `services.resource_sync` | 弃用兼容：旧 Git 分歧检测、worktree 合并与推送 | 仅保留一个发布版本，用于清理遗留工作区状态；新桌面流程不得调用 |
 | `services.resource_commit` | 资源级提交预览、管理路径限制和待推送内容扫描 | 不提供通用 Git 暂存区；非管理路径和敏感内容默认阻断 |
 | `services.resource_repo_lock` | 资源仓库进程内/跨进程写锁 | 同仓库写操作串行；嵌套服务调用可重入 |
@@ -59,22 +60,17 @@ flowchart LR
 
 ```text
 registry.yaml
+cc-port.yaml  # 可选；仅保存 CC Port 消费者设置
 skills/
 prompts/
 rules/
 plugins/
 mcp/
-resources/  # 兼容旧仓库布局
-  skills/
-  prompts/
-  rules/
-  plugins/
-  mcp/
 ```
 
-该仓库是跨设备事实源，只保存可跨设备同步的数据，不保存真实密钥、机器备份、临时 worktree 或操作日志。第三方 GitHub Skill/MCP 只在 `registry.yaml` 保存锁定到完整 commit SHA 的引用；本地导入才写入内容目录。具体收集、脱敏、恢复失败与旧 branch/tag 兼容语义见 [GitHub 引用收集与本地内容导入规格](specs/github-reference-collection.md)。
+该仓库只保存可跨设备同步的数据，不保存真实密钥、机器备份、临时 worktree 或操作日志。实体目录与文件是内容事实；外部资源的 `source` 是引用事实；`registry.yaml` 是可由其他工具读取和维护的成员清单，不是 CC Port 状态数据库。具体字段和审计行为见 [Registry v1 规格](specs/registry-v1.md)。外部 Git 收集、MCP 脱敏与恢复失败语义见 [GitHub 引用收集与本地内容导入规格](specs/github-reference-collection.md)。
 
-桌面主流程不为它创建用户需要维护的本地工作区。需要读取远端内容时，CC Port 更新受管远端镜像并选择明确 commit 生成只读远端快照；需要写入时，只通过选中资源的上传计划产生普通提交与推送。
+桌面主流程不为它创建用户需要维护的本地工作区。需要读取远端内容时，CC Port 更新受管远端镜像并选择明确 commit 生成只读远端快照，同时审计该 commit 的 Registry；需要写入资源时，只通过选中资源的上传计划产生普通提交与推送。Registry 修复是独立计划，只允许修改 `registry.yaml`。
 这一取舍及被拒绝的可编辑中枢、逐次临时克隆方案见 [ADR 0001：使用受管远端镜像，而不是可编辑工作区](adr/0001-use-managed-remote-mirror.md)。
 
 ### 本机状态目录
@@ -108,14 +104,16 @@ sync/<operation-id>/  # 弃用兼容
 flowchart LR
     REMOTE["Remote resource repository"] -->|refresh remote| MIRROR["Managed remote mirror"]
     MIRROR --> SNAPSHOT["Commit read-only snapshot"]
+    SNAPSHOT --> AUDIT["Registry audit"]
     TOOLS["AI tool native targets"] -->|scan local| INSTANCES["Local instances"]
     SNAPSHOT --> INVENTORY["Unified asset inventory"]
     INSTANCES --> INVENTORY
     INVENTORY -->|selected upload plan| REMOTE
     INVENTORY -->|selected install plan| TOOLS
+    AUDIT -->|explicit registry-only repair| REMOTE
 ```
 
-桌面端只通过 `asset_inventory` 采集清单。应用启动静默刷新远端一次，用户也可手动刷新；两者都不轮询、不调用旧 `resource_pull`、不写 AI 工具目标。扫描本地只观察用户选择的全局与项目范围，不 fetch 或写远端。
+桌面端只通过 `asset_inventory` 采集清单。应用启动静默刷新远端一次，用户也可手动刷新；两者都对同一 commit 执行只读 Registry 审计，但不自动修复、不轮询、不调用旧 `resource_pull`、不写 AI 工具目标。扫描本地只观察用户选择的全局与项目范围，不 fetch 或写远端。Registry 缺失或损坏时，仓库连接状态与清单可用性分开：远端仍显示已连接，本地资源仍可扫描，所有依赖远端清单的动作被阻断。
 
 桌面会话保存最近一次 `{scan_global, project_ids}`。远端刷新与本地扫描由两个独立的会话级任务驱动，可在后台并行；同来源的手动操作、自动刷新和任务重试复用一个会话级 Promise，只有创建者控制来源 busy，不重复调用或发布。同一次清单构建需要两侧数据时，远端快照读取和本地发现也并行执行。尚未扫描时，刷新远端只重建远端一侧；已经扫描时，刷新后立即复用完全相同的会话范围重扫本地，使清单继续保留远端独有、本地独有和两端共有资源。任一任务完成都会发布一次双端 diff，完成代次校验阻止旧响应覆盖较新的本地扫描。配置或资源变更若遇到远端任务运行，会记录待刷新位并在结束后静默补刷；同一轮多次变更合并，补刷期间的新变更进入下一轮。会话扫描范围不持久化，应用重启后恢复为“未扫描”。
 

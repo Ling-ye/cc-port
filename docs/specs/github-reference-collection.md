@@ -2,86 +2,87 @@
 
 ## 目标
 
-第三方 GitHub Skill 和 MCP 通过引用进入私有资源仓库，不复制上游源码。引用在收集时解析并锁定到完整 commit SHA，使换机恢复不受上游分支或标签后续移动影响。本地导入继续保存内容，用于用户自有资源、用户修改过的第三方资源，以及明确需要由私有资源仓库托管的快照。
+外部 Git 资源通过 Registry v1 的通用 `source` 进入资源仓库，不复制上游源码。本地导入用于用户自有资源、修改后的第三方资源或需要由当前仓库托管的快照，并通过 `path` 指向仓库内普通内容。
 
-本规格只定义 `skill` 和 `mcp` 的 GitHub 收集、恢复与本地导入语义；插件继续遵循 [Registry v7](registry-v7.md) 的 content/reference 双轨规格，其他资源类型维持现有行为。
+本规格服从 [Registry v1](registry-v1.md)。Registry 是工具中立清单，不保存 CC Port 安装状态、派生元数据或 MCP 配置副本。
 
-## 收集与导入
+## 外部 Git 引用
 
-### GitHub 收集
-
-- GitHub 收集创建 `source: external` 条目，只写 registry 引用，不在 `skills/`、`mcp/` 或兼容内容目录中复制上游文件。
-- 输入中的仓库默认分支、分支或标签只用于本次解析；写入前必须解析为该时刻对应的完整 commit SHA。
-- `repo` 保存规范化 GitHub 根仓库地址，`subdir` 保存仓库内资源相对路径，`ref` 只保存解析后的完整 commit SHA。MVP 不同时保存原始 selector 与锁定 SHA。
-- 无法访问仓库、无法解析 ref、commit 不存在或 `subdir` 含 `..` 等不安全路径段时，本次收集失败且不写入或更新 registry。普通 GitHub 收集还必须先通过资源检测确认远端路径存在；兼容用的直接 API 在离线 SHA 模式下只保证路径语法安全。
-- 用户要保存自有源码或修改过的第三方源码时，必须先取得本地目录再使用本地导入；GitHub 收集入口不提供“同时复制内容”模式。
-
-Skill 引用示例：
+Git 引用使用以下结构：
 
 ```yaml
-- name: example-skill
-  kind: skill
-  source: external
-  repo: https://github.com/example/skills
-  subdir: skills/example
-  ref: 0123456789abcdef0123456789abcdef01234567
+version: 1
+resources:
+  - kind: skill
+    name: example-skill
+    source:
+      type: git
+      locator: https://github.com/example/skills
+      revision: 0123456789abcdef0123456789abcdef01234567
+      subpath: skills/example
 ```
 
-MCP 引用除相同的 `repo`、`subdir` 和锁定 `ref` 外，必须保存可部署的 `mcp_config`：
+- `locator` 是不含凭据的规范化仓库定位符；
+- `revision` 保存用户选择的版本策略。需要可复现收集时，CC Port 把 branch/tag 解析为完整 commit SHA 后再写入；
+- `subpath` 是来源仓库内部的安全 POSIX 相对路径；
+- 无法访问仓库、无法解析 revision、路径不存在或路径不安全时，收集失败且不写 Registry；
+- 用户需要保存上游内容副本时，必须先取得本地内容再使用本地导入，Git 收集入口不隐式复制源码。
+
+Registry 审计不联网验证外部来源。可达性只在用户执行收集、安装或显式来源检查时验证，并且不写回 Registry 健康缓存。
+
+## MCP
+
+Registry 不保存 `mcp_config`。需要可部署的 MCP 配置时，先脱敏并作为普通内容写入 `mcp/<name>/mcp.json|yaml|yml`，然后登记 `path`：
 
 ```yaml
-- name: example-mcp
-  kind: mcp
-  source: external
-  repo: https://github.com/example/mcp-servers
-  subdir: servers/example
-  ref: 89abcdef0123456789abcdef0123456789abcdef
-  mcp_config:
-    command: npx
-    args:
-      - -y
-      - '@example/mcp-server'
-    env:
-      EXAMPLE_TOKEN: ${EXAMPLE_TOKEN}
+version: 1
+resources:
+  - kind: mcp
+    name: example-mcp
+    path: mcp/example-mcp
 ```
 
-`mcp_config` 必须在写 registry 前经过统一脱敏：已有 `${NAME}` 占位符保持不变，非空字面量环境变量值替换为以该环境变量名生成的 `${NAME}`，真实值不得进入 registry、资源内容、日志或错误信息。配置必须至少包含 `command` 或 `url`，并继续接受现有的参数与非敏感字段。
+```json
+{
+  "command": "npx",
+  "args": ["-y", "@example/mcp-server"],
+  "env": {
+    "EXAMPLE_TOKEN": "${EXAMPLE_TOKEN}"
+  }
+}
+```
 
-### 接口契约
+非空环境变量字面量必须替换为 `${NAME}` 占位符。真实值不得进入 Registry、资源内容、diff、日志或错误信息。
 
-- CLI `cc-port collect` 和 Desktop API `collect` 复用同一收集服务与 ref 解析规则，不允许任一入口写入未解析的 branch/tag。
-- 收集 MCP 时 `mcp_config` 为必填；CLI 接受 JSON 配置参数，Desktop API 接受 mapping。非 MCP 收集携带该字段时拒绝请求。
-- 任何兼容用的 `skip_verify` 标志都不能允许新条目保存可变 ref，也不能跳过 `subdir` 路径语法安全校验。它只允许调用方离线提供完整 commit SHA；该 SHA 若在恢复时不可获取，必须明确失败。
-- 返回的 entry 中 `ref` 必须已经是完整 commit SHA；调用方不得用输入 selector 覆盖它。
+只引用外部 Git 仓库而不保存 MCP 配置时，可以登记 `source`，但 CC Port 只能只读展示引用；在取得可部署配置前不能把它安装为 MCP server。
 
-### 本地导入
+## 本地内容导入
 
-- 本地导入创建 `source: local` 内容条目，把选定目录或 MCP 配置复制到私有资源仓库的管理路径，并在 registry 中保存该相对 `path`。
-- 所有内容继续遵循[统一资源文件策略](resource-file-policy.md)：排除真实环境文件、依赖、缓存、构建产物、二进制发布物和符号链接，并执行敏感内容检查。
-- MCP 内容和派生出的 `mcp_config` 同样必须脱敏；“保存内容”不允许绕过 `${NAME}` 占位符规则。
-- 本地导入不要求或推导 GitHub 引用，也不自动转成 `source: external`。
+- 内容按 `skills/`、`mcp/`、`rules/`、`prompts/` 或 `plugins/` 的约定目录保存；
+- Registry 条目只写 `kind`、`name` 和 `path`；
+- 描述、版本、作者和许可证从内容派生，不复制进 Registry；
+- 文件遵循[统一资源文件策略](resource-file-policy.md)，排除真实环境文件、依赖、缓存、构建产物、二进制发布物和符号链接；
+- MCP 内容在写入前执行统一脱敏；
+- 本地导入不推导 Git 来源，也不自动改成 `source`。
 
 ## 恢复与失败语义
 
-- 新收集的 GitHub 引用必须获取存储的 commit，并以 detached checkout 恢复；`subdir` 只限制安装内容范围，不改变 commit 身份。
-- 上游默认分支、原始分支或标签移动后，恢复结果仍必须来自 registry 中的 commit SHA。
-- 仓库不可访问、凭据不足、commit 无法获取、`subdir` 不存在或内容校验失败时，恢复明确失败；不得回退到默认分支、同名分支、同名标签、最新提交或本地陈旧缓存。
-- 失败不改写 `ref`，不自动把引用转换为 content，也不生成上游镜像。
-- MCP 恢复部署的是脱敏后的启动或连接配置。对于远程 HTTP MCP，CC Port 只能复现 `url` 等配置，不能固定或证明远程服务端代码、数据、版本、可用性或运行行为。
+- Git 引用按保存的 `revision` 和 `subpath` 获取；固定 commit 不得回退到默认分支、最新提交或陈旧缓存；
+- 仓库不可访问、凭据不足、revision 无法获取、subpath 不存在或内容验证失败时明确失败；
+- 失败不改写 `revision`，也不自动把引用转换为内容副本；
+- 远程 HTTP MCP 只能复现脱敏后的连接配置，不能证明服务端代码、数据、版本、可用性或行为。
 
-## 兼容与 MVP 边界
+## 接口约束
 
-- 既有 branch/tag `ref` 条目继续可读取和安装，不自动迁移、不猜测原始 selector，也不在普通加载时改写 registry。
-- 旧 branch/tag 条目按原有可变引用语义解析，因此不具备新条目的可复现保证；通过新 GitHub 收集流程创建或显式更新后，才写为完整 commit SHA。
-- 无论新 SHA 还是旧 branch/tag 无法解析，都明确失败且不得回退到其他 ref。
-- Registry 版本和既有字段保持不变；MVP 不新增 selector/lock 双字段、不做上游镜像或离线制品缓存、不自动跟踪更新，也不增加签名或制品摘要。
+- CLI、Desktop API 和 Desktop GUI 调用同一收集服务；
+- MCP 收集如果要成为可安装内容，必须写脱敏后的资源文件，不得把配置塞入 Registry；
+- `skip_verify` 一类兼容入口不得跳过路径安全或凭据检查；
+- 返回给调用方的运行时资源可以包含从内容解析的 MCP 配置，但保存 Registry 时必须丢弃所有派生字段。
 
-## 验收标准
+## 验收
 
-- 收集 GitHub Skill 后，registry 只出现 `repo`、`subdir` 和完整 commit SHA 引用，私有资源仓库中没有该 Skill 的内容副本。
-- 收集 GitHub MCP 后，registry 同时包含锁定引用和脱敏后的 `mcp_config`，任何非空 `env` 字面量均未保存。
-- 上游分支移动后，在另一台机器恢复仍使用收集时的 commit。
-- 固定 commit 或仓库不可用时恢复失败，且没有默认分支、最新提交或陈旧缓存回退。
-- 本地导入的 Skill/MCP 内容进入私有资源仓库，并应用文件排除、敏感检查和 MCP 脱敏规则。
-- 现有 branch/tag registry 条目仍能加载；它们不可用时给出明确错误且保持原条目不变。
-- 远程 HTTP MCP 恢复结果只承诺配置一致，不宣称服务端行为可复现。
+- 外部 Git Skill 只产生 `source`，仓库中没有隐式内容副本；
+- 本地 Skill/MCP 只产生 `path`，Registry 不含描述、标签或 MCP 配置；
+- MCP 资源文件只保留占位符，不保存真实环境值；
+- 固定 commit 不可用时失败，不回退；
+- 保存、加载和上传运行时资源后，Registry 仍符合 v1 canonical 格式。

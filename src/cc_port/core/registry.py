@@ -1,27 +1,38 @@
-"""Load and persist the registry.yaml file."""
+"""Load and persist the tool-neutral registry v1 and CC Port overlay."""
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 
+import frontmatter
 import yaml
 
-from .models import Registry
+from .models import CcPortSettings, Registry
+from .secrets import sanitize_mcp_config_for_storage
 
 DEFAULT_REGISTRY_FILENAME = "registry.yaml"
+DEFAULT_CC_PORT_FILENAME = "cc-port.yaml"
+CURRENT_REGISTRY_VERSION = 1
+
+
+class RegistryFormatError(ValueError):
+    """Raised when registry.yaml is syntactically valid but not registry v1."""
+
+
+class UnsupportedRegistryVersionError(RegistryFormatError):
+    """Raised when a legacy or future registry version is encountered."""
+
+    def __init__(self, version: object) -> None:
+        self.version = version
+        super().__init__(f"Unsupported registry version: {version!r}; expected version 1.")
 
 
 def find_registry_path(start: Path | None = None) -> Path:
-    """Walk upwards from `start` looking for registry.yaml.
-
-    When `start` is omitted, the default registry lives in the configured
-    private resource repository, not in the CC Port tool repository.
-
-    Falls back to `<cwd>/registry.yaml` if none is found, so a missing file
-    can still be created in place.
-    """
+    """Walk upwards from *start* looking for registry.yaml."""
     if start is None:
         try:
             from .config import load_config
@@ -32,152 +43,259 @@ def find_registry_path(start: Path | None = None) -> Path:
 
     cur = (start or Path.cwd()).resolve()
     for candidate in [cur, *cur.parents]:
-        p = candidate / DEFAULT_REGISTRY_FILENAME
-        if p.is_file():
-            return p
+        path = candidate / DEFAULT_REGISTRY_FILENAME
+        if path.is_file():
+            return path
     return cur / DEFAULT_REGISTRY_FILENAME
 
 
-CURRENT_REGISTRY_VERSION = 7
-
-
-def _migrate_v1_to_v2(data: dict) -> dict:
-    """Convert a v1 registry (with ``skills`` list) to v2 (with ``items`` list)."""
-    items = []
-    for entry in data.get("skills", []) or []:
-        migrated = dict(entry)
-        migrated.setdefault("kind", "skill")
-        items.append(migrated)
-    return {"version": 2, "items": items}
-
-
-def _migrate_v2_to_v3(data: dict) -> dict:
-    """v2 -> v3: new optional metadata fields; no structural change needed."""
-    data = dict(data)
-    data["version"] = 3
-    return data
-
-
-def _migrate_v3_to_v4(data: dict) -> dict:
-    """v3 -> v4: local monorepo resources can carry a relative ``path``."""
-    data = dict(data)
-    data["version"] = 4
-    return data
-
-
-def _migrate_v4_to_v5(data: dict) -> dict:
-    """v4 -> v5: items get explicit lifecycle tracking."""
-    data = dict(data)
-    items = data.get("items", []) or []
-    if isinstance(items, list):
-        for item in items:
-            if isinstance(item, dict):
-                item.setdefault("lifecycle", "active")
-    data["version"] = 5
-    return data
-
-
-def _migrate_v5_to_v6(data: dict) -> dict:
-    """v5 -> v6: identity becomes kind+name and install aliases may vary by platform."""
-    data = dict(data)
-    items = data.get("items", []) or []
-    if isinstance(items, list):
-        for item in items:
-            if isinstance(item, dict):
-                item.setdefault("kind", "skill")
-                item.setdefault("platform_install_dirs", {})
-    data["version"] = 6
-    return data
-
-
-def _migrate_v6_to_v7(data: dict) -> dict:
-    """v6 -> v7: dual-track plugin metadata is opt-in for new entries."""
-    data = dict(data)
-    data["version"] = 7
-    return data
-
-
-def load_registry(path: Path | None = None) -> Registry:
-    p = path or find_registry_path()
-    if not p.is_file():
-        return Registry(version=CURRENT_REGISTRY_VERSION)
-    with p.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+def parse_registry_data(data: Any) -> Registry:
+    """Validate already-parsed YAML as canonical registry v1."""
     if not isinstance(data, dict):
-        raise ValueError(f"Registry file {p} must contain a YAML mapping at the root.")
-
-    version = data.get("version", 1)
-    if version < 2:
-        data = _migrate_v1_to_v2(data)
-    if version < 3:
-        data = _migrate_v2_to_v3(data)
-    if version < 4:
-        data = _migrate_v3_to_v4(data)
-    if version < 5:
-        data = _migrate_v4_to_v5(data)
-    if version < 6:
-        data = _migrate_v5_to_v6(data)
-    if version < 7:
-        data = _migrate_v6_to_v7(data)
-
-    if "skills" in data and "items" not in data:
-        data["items"] = data.pop("skills")
-
+        raise RegistryFormatError("registry.yaml must contain a YAML mapping at the root.")
+    version = data.get("version")
+    if version != CURRENT_REGISTRY_VERSION:
+        raise UnsupportedRegistryVersionError(version)
+    if "resources" not in data or not isinstance(data.get("resources"), list):
+        raise RegistryFormatError("registry.yaml version 1 requires a resources list.")
+    unknown = set(data) - {"version", "resources"}
+    if unknown:
+        raise RegistryFormatError(
+            "registry.yaml contains unsupported top-level fields: "
+            + ", ".join(sorted(str(item) for item in unknown))
+        )
     return Registry.model_validate(data)
 
 
-# Fields to omit from YAML output when empty/None
-_OMIT_WHEN_EMPTY: set[str] = {
-    "mcp_config", "last_checked", "reachable", "private",
-    "version", "author", "tags", "category", "license", "path", "platforms",
-    "removed_at", "removed_reason", "removed_effect", "platform_install_dirs", "plugin",
-}
-
-
-def save_registry(registry: Registry, path: Path | None = None) -> Path:
-    """Atomically write the registry to disk (always as current version)."""
-    p = path or find_registry_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-
-    payload = registry.model_dump(mode="json")
-    payload["version"] = CURRENT_REGISTRY_VERSION
-    payload["items"] = sorted(
-        payload.get("items", []),
-        key=lambda item: (str(item.get("kind") or ""), str(item.get("name") or "")),
-    )
-    for item in payload.get("items", []):
-        for key in _OMIT_WHEN_EMPTY:
-            val = item.get(key)
-            if val is None or val == "" or val == []:
-                item.pop(key, None)
-        plugin = item.get("plugin")
-        if isinstance(plugin, dict):
-            origin = plugin.get("origin")
-            if isinstance(origin, dict):
-                for key in list(origin):
-                    if key != "type" and origin.get(key) in {None, ""}:
-                        origin.pop(key, None)
-            if not plugin.get("dependencies"):
-                plugin.pop("dependencies", None)
-            if not plugin.get("observed_version"):
-                plugin.pop("observed_version", None)
-            installations = plugin.get("installations", [])
-            if isinstance(installations, list):
-                for installation in installations:
-                    if isinstance(installation, dict) and installation.get("project") is None:
-                        installation.pop("project", None)
-
-    text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
-
-    fd, tmp_name = tempfile.mkstemp(prefix=".registry-", suffix=".yaml", dir=str(p.parent))
+def load_registry(path: Path | None = None) -> Registry:
+    registry_path = path or find_registry_path()
+    if not registry_path.is_file():
+        return Registry()
+    with registry_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    registry = parse_registry_data(data)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.replace(tmp_name, p)
+        registry.cc_port = load_cc_port_settings(
+            registry_path.parent / DEFAULT_CC_PORT_FILENAME
+        )
+    except (OSError, UnicodeError, yaml.YAMLError, ValueError):
+        registry.cc_port = CcPortSettings()
+    registry.reset_resolved()
+    resolve_registry_content(registry, registry_path.parent)
+    return registry
+
+
+def resolve_registry_content(registry: Registry, root: Path) -> Registry:
+    """Populate transient ResolvedResource fields from safe current content."""
+    for entry in registry.items:
+        if not entry.path or entry.kind not in {"skill", "mcp", "rule", "prompt", "plugin"}:
+            continue
+        content = _safe_content_path(root, entry.path)
+        if content is None or not content.exists():
+            continue
+        if entry.kind == "mcp":
+            entry.mcp_config = _read_mcp_content(content)
+            continue
+        metadata = _read_content_metadata(content, entry.kind)
+        for field_name in ("description", "version", "author", "license"):
+            value = metadata.get(field_name)
+            if value not in (None, ""):
+                setattr(entry, field_name, str(value))
+    return registry
+
+
+def _safe_content_path(root: Path, relative: str) -> Path | None:
+    root = root.absolute()
+    current = root
+    for part in relative.split("/"):
+        if part in {"", ".", ".."}:
+            return None
+        current /= part
+        if current.is_symlink():
+            return None
+    try:
+        resolved_root = root.resolve(strict=False)
+        resolved = current.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+    if resolved != resolved_root and resolved_root not in resolved.parents:
+        return None
+    return current
+
+
+def _read_mcp_content(path: Path) -> dict[str, Any] | None:
+    candidates = [path] if path.is_file() else [
+        path / "mcp.json",
+        path / "mcp.yaml",
+        path / "mcp.yml",
+    ]
+    for candidate in candidates:
+        if not candidate.is_file() or candidate.is_symlink():
+            continue
+        try:
+            payload = yaml.safe_load(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("mcp_config"), dict):
+            payload = payload["mcp_config"]
+        if isinstance(payload, dict) and isinstance(payload.get("mcpServers"), dict):
+            servers = payload["mcpServers"]
+            if len(servers) == 1:
+                payload = next(iter(servers.values()))
+        if not isinstance(payload, dict):
+            continue
+        sanitized = sanitize_mcp_config_for_storage(payload)
+        if sanitized:
+            return sanitized
+    return None
+
+
+def _read_content_metadata(path: Path, kind: str) -> dict[str, Any]:
+    if kind == "plugin":
+        candidates = [path] if path.is_file() else [
+            path / "package.json",
+            path / ".codex-plugin" / "plugin.json",
+            path / ".claude-plugin" / "plugin.json",
+            path / "plugin.json",
+        ]
+        for candidate in candidates:
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            author = payload.get("author")
+            license_value = payload.get("license")
+            return {
+                "description": payload.get("description"),
+                "version": payload.get("version"),
+                "author": author.get("name") if isinstance(author, dict) else author,
+                "license": (
+                    license_value.get("type")
+                    if isinstance(license_value, dict)
+                    else license_value
+                ),
+            }
+        return {}
+    candidates = [path] if path.is_file() else []
+    if kind == "skill":
+        candidates = [path / "SKILL.md"]
+    elif kind in {"rule", "prompt"} and path.is_dir():
+        candidates = sorted(
+            item
+            for item in path.rglob("*")
+            if item.is_file() and item.suffix.lower() in {".md", ".mdc"}
+        )
+    for candidate in candidates:
+        if not candidate.is_file() or candidate.is_symlink():
+            continue
+        try:
+            post = frontmatter.load(candidate)
+        except Exception:
+            continue
+        return {
+            "description": post.get("description"),
+            "version": post.get("version"),
+            "author": post.get("author"),
+            "license": post.get("license"),
+        }
+    return {}
+
+
+def load_cc_port_settings(path: Path) -> CcPortSettings:
+    if not path.is_file():
+        return CcPortSettings()
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"CC Port settings file {path} must contain a YAML mapping.")
+    return CcPortSettings.model_validate(data)
+
+
+def canonical_registry_payload(registry: Registry) -> dict[str, Any]:
+    resources: list[dict[str, Any]] = []
+    for resource in sorted(registry.resources, key=lambda item: (item.kind, item.name)):
+        item: dict[str, Any] = {"kind": resource.kind, "name": resource.name}
+        if resource.path:
+            item["path"] = resource.path
+        elif resource.source is not None:
+            source: dict[str, Any] = {
+                "type": resource.source.type,
+                "locator": resource.source.locator,
+            }
+            if resource.source.revision:
+                source["revision"] = resource.source.revision
+            if resource.source.subpath:
+                source["subpath"] = resource.source.subpath
+            item["source"] = source
+        for key, value in sorted((resource.model_extra or {}).items()):
+            item[key] = _canonical_extra(value)
+        resources.append(item)
+    return {"version": CURRENT_REGISTRY_VERSION, "resources": resources}
+
+
+def _canonical_extra(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_extra(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, list):
+        return [_canonical_extra(item) for item in value]
+    return value
+
+
+def canonical_registry_text(registry: Registry) -> str:
+    return yaml.safe_dump(
+        canonical_registry_payload(registry),
+        sort_keys=False,
+        allow_unicode=True,
+    )
+
+
+def save_registry(
+    registry: Registry,
+    path: Path | None = None,
+    *,
+    save_cc_port_overlay: bool = True,
+) -> Path:
+    """Atomically write canonical registry v1 and, when present, cc-port.yaml."""
+    registry_path = path or find_registry_path()
+    _atomic_write_text(registry_path, canonical_registry_text(registry))
+    if save_cc_port_overlay and registry.cc_port.resources:
+        settings_payload = registry.cc_port.model_dump(mode="json", exclude_none=True)
+        settings_payload["resources"] = {
+            key: settings_payload["resources"][key]
+            for key in sorted(settings_payload.get("resources", {}))
+        }
+        settings_text = yaml.safe_dump(
+            settings_payload,
+            sort_keys=False,
+            allow_unicode=True,
+        )
+        _atomic_write_text(registry_path.parent / DEFAULT_CC_PORT_FILENAME, settings_text)
+    return registry_path
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.stem}-",
+        suffix=path.suffix,
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
     except Exception:
         try:
-            os.unlink(tmp_name)
+            os.unlink(temporary)
         except OSError:
             pass
         raise
-    return p

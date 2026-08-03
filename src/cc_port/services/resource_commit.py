@@ -17,6 +17,7 @@ from .resource_repo_lock import resource_repo_write_lock
 MANAGED_ROOT_FILES = {
     "README.md",
     "registry.yaml",
+    "cc-port.yaml",
     "secrets.example.yaml",
 }
 MANAGED_DIRECTORIES = {

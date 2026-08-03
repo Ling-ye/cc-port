@@ -65,6 +65,11 @@ from ..services.plugin_management import (
     list_plugin_projects,
     remove_plugin_project,
 )
+from ..services.registry_audit import (
+    RegistryRepairChoice,
+    apply_registry_repair,
+    build_registry_repair_plan,
+)
 from ..services.resource_binding import bind_resource_repo, parse_github_repo_url
 from ..services.resource_commit import build_resource_commit_plan
 from ..services.resource_discovery import (
@@ -433,6 +438,21 @@ def _asset_inventory(payload: JsonDict) -> Any:
     response = asdict(inventory)
     response.pop("rows", None)
     return response
+
+
+def _registry_repair_plan(payload: JsonDict) -> Any:
+    return build_registry_repair_plan(
+        config=load_config(),
+        choices=_registry_repair_choices(payload.get("choices")),
+    )
+
+
+def _registry_repair_apply(payload: JsonDict) -> Any:
+    return apply_registry_repair(
+        expected_plan_hash=_required_str(payload, "plan_hash"),
+        config=load_config(),
+        choices=_registry_repair_choices(payload.get("choices")),
+    )
 
 
 def _asset_content_diff(payload: JsonDict) -> Any:
@@ -1117,6 +1137,31 @@ def _asset_batch_choices(value: Any) -> list[AssetBatchChoice]:
     return choices
 
 
+def _registry_repair_choices(value: Any) -> list[RegistryRepairChoice]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("Registry repair choices must be a list.")
+    choices: list[RegistryRepairChoice] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"Registry repair choice {index} must be an object.")
+        issue_id = str(item.get("issue_id") or "").strip()
+        action = str(item.get("action") or "").strip()
+        if not issue_id or not action:
+            raise ValueError(
+                f"Registry repair choice {index} requires issue_id and action."
+            )
+        choices.append(
+            RegistryRepairChoice(
+                issue_id=issue_id,
+                action=action,
+                name=str(item.get("name") or "").strip(),
+            )
+        )
+    return choices
+
+
 def _discovery_selections(value: Any) -> list[JsonDict]:
     if not isinstance(value, list):
         return []
@@ -1155,6 +1200,8 @@ ACTIONS: dict[str, Handler] = {
     "sync": _sync,
     "resource_inventory": _resource_inventory,
     "asset_inventory": _asset_inventory,
+    "registry_repair_plan": _registry_repair_plan,
+    "registry_repair_apply": _registry_repair_apply,
     "asset_content_diff": _asset_content_diff,
     "asset_action_plan": _asset_action_plan,
     "asset_action_apply": _asset_action_apply,

@@ -33,13 +33,6 @@ def test_export_claude_plugin_uses_valid_slug_and_active_local_skills(tmp_path: 
                     path="skills/active-skill",
                 ),
                 RegistryItem(
-                    name="removed-skill",
-                    kind="skill",
-                    source="local",
-                    path="skills/removed-skill",
-                    lifecycle="removed",
-                ),
-                RegistryItem(
                     name="cursor-only",
                     kind="skill",
                     source="local",

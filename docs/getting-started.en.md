@@ -46,10 +46,16 @@ Create a private repository on GitHub, for example `ai-coding-resources`:
 - Set its visibility to **Private**.
 - Do not put a token in the repository or its URL.
 - Use `main` as the default branch.
-- Store only synchronized resources and `registry.yaml` there; do not put the
-  application backup directory in the repository.
+- Store only synchronized resources, the tool-neutral `registry.yaml`, and the
+  optional `cc-port.yaml` consumer settings there; do not put the application
+  backup directory in the repository.
 
 CC Port does not create or delete repositories, or change their visibility.
+
+An initialized repository contains a version 1 Registry and the conventional
+`skills/`, `mcp/`, `rules/`, `prompts/`, and `plugins/` directories. This is not
+a CC Port-private format; other tools can maintain it using the
+[Registry v1 specification](specs/registry-v1.md).
 
 ## 4. Connect the repository
 
@@ -75,9 +81,15 @@ expire, return to Settings and verify the connection again.
 2. Choose the global or project scopes to scan.
 3. Start a scan and review the discovered Skills, MCP servers, Rules, Prompts,
    and Plugins.
-4. Choose an action for an individual resource:
+4. Review the Registry health on the remote card. Use **Check repository** to
+   inspect issues and the proposed YAML diff.
+5. Choose an action for an individual resource:
    - **Upload to repository** writes a local instance to the private repository.
    - **Install to tool** writes a remote resource to the selected tool directory.
+
+Remote refresh audits but never repairs automatically. A missing, malformed, or
+linked Registry must be corrected manually; local discovery remains available,
+while remote upload and installation actions are blocked.
    - **Save as copy** preserves the current instance under a new name.
    - **Set install alias** uses a different directory name on each platform.
 5. Review the operation plan, warnings, and blockers before confirming.

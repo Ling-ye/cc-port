@@ -46,11 +46,16 @@ import type {
   AssetResourceRow,
   AssetStatus,
   ConfigSettings,
+  KnownResourceKind,
   PlatformProfile,
+  RegistryAuditIssue,
+  RegistryRepairChoice,
+  RegistryRepairPlan,
+  RegistryRepairResult,
   ResourceKind,
 } from "@/types/cc-port";
 
-const kinds: Array<"all" | ResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
+const kinds: Array<"all" | KnownResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
 const statuses: Array<"all" | AssetStatus> = [
   "all",
   "local-only",
@@ -107,6 +112,7 @@ export function ResourcesView({
   onError: (message: string) => void;
   onOpenSettings: () => void;
 }) {
+  const { runTask } = useTaskCenter();
   const [kindFilter, setKindFilter] = useState<(typeof kinds)[number]>("all");
   const [statusFilter, setStatusFilter] = useState<(typeof statuses)[number]>("all");
   const [localFilter, setLocalFilter] = useState<(typeof localStatuses)[number]>("all");
@@ -118,6 +124,8 @@ export function ResourcesView({
   const [batchDirection, setBatchDirection] = useState<"upload" | "download" | null>(null);
   const [entryDialog, setEntryDialog] = useState<"collect" | "import" | null>(null);
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
+  const [registryPlan, setRegistryPlan] = useState<RegistryRepairPlan | null>(null);
+  const [registryBusy, setRegistryBusy] = useState(false);
   const selectVisibleRef = useRef<HTMLInputElement>(null);
 
   const resources = inventory?.resources ?? emptyResources;
@@ -230,6 +238,26 @@ export function ResourcesView({
     await Promise.resolve(onChanged());
   }
 
+  async function checkRegistry() {
+    if (remoteRefreshBusy || registryBusy) return;
+    setRegistryBusy(true);
+    try {
+      const plan = await runTask({
+        kind: "registry-check",
+        title: t("registry.checkRepository"),
+        action: () => ccPortAction<RegistryRepairPlan>("registry_repair_plan", { choices: [] }),
+        successMessage: (value) => t("registry.checkComplete", { count: value.issues.length }),
+        failureMessage: (error) => displayError(error, t),
+        retryPolicy: "safe-read",
+      });
+      setRegistryPlan(plan);
+    } catch (reason) {
+      onError(displayError(reason, t));
+    } finally {
+      setRegistryBusy(false);
+    }
+  }
+
   return (
     <section className="asset-unified-view">
       <div className="panel asset-inventory-panel">
@@ -237,6 +265,11 @@ export function ResourcesView({
           <section className="asset-source-card asset-remote-source-card">
             <div className="asset-source-card-head">
               <span className="asset-source-title"><Cloud size={17} />{t("assets.remoteSource")}</span>
+              {inventory?.registry_health ? (
+                <span className={`asset-pill asset-source-state state-${registryHealthTone(inventory.registry_health.status)}`}>
+                  {registryHealthLabel(inventory.registry_health.status, t)}
+                </span>
+              ) : null}
               <span className={`asset-pill asset-source-state state-${repoConfigured ? (inventory?.remote_available ? "online" : "cache") : "unconfigured"}`}>
                 {repoConfigured
                   ? (inventory?.remote_available ? t("assets.remoteOnline") : t("assets.remoteCache"))
@@ -250,9 +283,14 @@ export function ResourcesView({
               <div><dt>{t("assets.lastChecked")}</dt><dd>{formatTimestamp(remoteCheckedAt, t)}</dd></div>
             </dl>
             {repoConfigured ? (
-              <button className="secondary" type="button" onClick={() => void Promise.resolve(onRefreshRemote())} disabled={remoteRefreshBusy}>
-                <RefreshCcw size={15} className={remoteRefreshBusy ? "spin" : undefined} />{t("assets.refreshRemote")}
-              </button>
+              <div className="asset-source-actions">
+                <button className="secondary" type="button" onClick={() => void checkRegistry()} disabled={remoteRefreshBusy || registryBusy}>
+                  <FileDiff size={15} className={registryBusy ? "spin" : undefined} />{t("registry.checkRepository")}
+                </button>
+                <button className="secondary" type="button" onClick={() => void Promise.resolve(onRefreshRemote())} disabled={remoteRefreshBusy || registryBusy}>
+                  <RefreshCcw size={15} className={remoteRefreshBusy ? "spin" : undefined} />{t("assets.refreshRemote")}
+                </button>
+              </div>
             ) : (
               <button className="secondary" type="button" onClick={onOpenSettings} disabled={inventoryBusy}>
                 {t("assets.configureRepository")}
@@ -506,8 +544,306 @@ export function ResourcesView({
           }}
         />
       ) : null}
+
+      {registryPlan ? (
+        <RegistryRepairDialog
+          initialPlan={registryPlan}
+          t={t}
+          onClose={() => setRegistryPlan(null)}
+          onDone={async () => {
+            setRegistryPlan(null);
+            await Promise.resolve(onRefreshRemote());
+          }}
+        />
+      ) : null}
     </section>
   );
+}
+
+function RegistryRepairDialog({
+  initialPlan,
+  t,
+  onClose,
+  onDone,
+}: {
+  initialPlan: RegistryRepairPlan;
+  t: TFunction;
+  onClose: () => void;
+  onDone: () => Promise<void>;
+}) {
+  const { runTask } = useTaskCenter();
+  const [plan, setPlan] = useState(initialPlan);
+  const [choices, setChoices] = useState<Record<string, RegistryRepairChoice>>(
+    () => registryChoiceMap(initialPlan),
+  );
+  const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [legacyConfirmed, setLegacyConfirmed] = useState(false);
+  const [error, setError] = useState("");
+
+  const grouped = registryIssueGroups(plan.issues, t);
+  const legacy = plan.registry_status === "legacy";
+  const canApply = plan.repairable
+    && plan.executable_count > 0
+    && plan.blocked_count === 0
+    && !dirty
+    && (!legacy || legacyConfirmed);
+
+  function payloadChoices() {
+    return Object.values(choices);
+  }
+
+  function updateChoice(issue: RegistryAuditIssue, action: string, name = "") {
+    setChoices((current) => ({
+      ...current,
+      [issue.id]: { issue_id: issue.id, action, name },
+    }));
+    setDirty(true);
+    setLegacyConfirmed(false);
+  }
+
+  async function rebuildPlan() {
+    setBusy(true);
+    setError("");
+    try {
+      const next = await runTask({
+        kind: "registry-repair-plan",
+        title: t("registry.refreshPlan"),
+        action: () => ccPortAction<RegistryRepairPlan>("registry_repair_plan", {
+          choices: payloadChoices(),
+        }),
+        successMessage: (value) => t("registry.planSummary", {
+          executable: value.executable_count,
+          blocked: value.blocked_count,
+        }),
+        failureMessage: (reason) => displayError(reason, t),
+        retryPolicy: "safe-read",
+      });
+      setPlan(next);
+      setChoices(registryChoiceMap(next));
+      setDirty(false);
+    } catch (reason) {
+      setError(displayError(reason, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyPlan() {
+    if (!canApply) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await runTask({
+        kind: "registry-repair-apply",
+        title: t("registry.applyRepair"),
+        action: () => ccPortAction<RegistryRepairResult>("registry_repair_apply", {
+          plan_hash: plan.plan_hash,
+          choices: payloadChoices(),
+        }),
+        successMessage: (value) => value.status === "unchanged"
+          ? t("registry.unchanged")
+          : value.status === "stale"
+            ? t("registry.stale")
+            : t("registry.repaired"),
+        failureMessage: (reason) => displayError(reason, t),
+        retryPolicy: "none",
+      });
+      if (result.status === "stale" && result.stale_plan) {
+        setPlan(result.stale_plan);
+        setChoices(registryChoiceMap(result.stale_plan));
+        setDirty(false);
+        setLegacyConfirmed(false);
+        setError(t("registry.stale"));
+        return;
+      }
+      if (result.status === "blocked" || result.status === "failed") {
+        setError(result.message || t("registry.applyFailed"));
+        return;
+      }
+      await onDone();
+    } catch (reason) {
+      setError(displayError(reason, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal registry-repair-modal" role="dialog" aria-modal="true" aria-labelledby="registry-repair-title">
+        <div className="modal-head">
+          <FileDiff size={19} />
+          <h2 id="registry-repair-title">{t("registry.dialogTitle")}</h2>
+          <button className="icon-button modal-close" type="button" onClick={onClose} disabled={busy} aria-label={t("common.close")}>
+            <X size={17} />
+          </button>
+        </div>
+
+        <div className="registry-plan-summary">
+          <StatusPill value={plan.registry_status === "healthy" ? "same" : "uncomparable"} label={registryHealthLabel(plan.registry_status, t)} />
+          <span>{t("registry.planSummary", { executable: plan.executable_count, blocked: plan.blocked_count })}</span>
+          <code>{shortCommit(plan.remote_commit)}</code>
+        </div>
+
+        {legacy ? (
+          <Banner
+            tone="danger"
+            text={t("registry.legacyWarning", {
+              total: plan.legacy_item_count,
+              rebuilt: plan.rebuilt_item_count,
+              dropped: plan.dropped_item_count,
+            })}
+          />
+        ) : null}
+
+        {grouped.map((group) => (
+          <section className="registry-issue-group" key={group.key}>
+            <h3>{group.label} ({group.issues.length})</h3>
+            {group.issues.map((issue) => (
+              <RegistryIssueEditor
+                key={issue.id}
+                issue={issue}
+                choice={choices[issue.id]}
+                t={t}
+                onChange={(action, name) => updateChoice(issue, action, name)}
+              />
+            ))}
+          </section>
+        ))}
+
+        {!plan.issues.length ? <EmptyState text={t("registry.healthyDescription")} /> : null}
+
+        <section className="registry-diff-review">
+          <h3>{t("registry.diffTitle")}</h3>
+          {plan.registry_diff
+            ? <pre>{plan.registry_diff}</pre>
+            : <p>{t("registry.noDiff")}</p>}
+        </section>
+
+        {legacy ? (
+          <label className="checkline registry-legacy-confirmation">
+            <input
+              type="checkbox"
+              checked={legacyConfirmed}
+              onChange={(event) => setLegacyConfirmed(event.target.checked)}
+              disabled={busy || dirty}
+            />
+            <span>{t("registry.confirmLegacyLoss")}</span>
+          </label>
+        ) : null}
+
+        {error ? <Banner tone="danger" text={error} /> : null}
+        <div className="modal-actions">
+          <button className="secondary" type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
+          <button className="secondary" type="button" onClick={() => void rebuildPlan()} disabled={busy || !plan.repairable}>
+            {busy ? t("common.working") : dirty ? t("registry.updatePreview") : t("registry.recheck")}
+          </button>
+          {plan.repairable && plan.executable_count > 0 ? (
+            <button className="primary" type="button" onClick={() => void applyPlan()} disabled={busy || !canApply}>
+              {t("registry.applyRepair")}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RegistryIssueEditor({
+  issue,
+  choice,
+  t,
+  onChange,
+}: {
+  issue: RegistryAuditIssue;
+  choice?: RegistryRepairChoice;
+  t: TFunction;
+  onChange: (action: string, name?: string) => void;
+}) {
+  const action = choice?.action || issue.default_action;
+  const entries = Array.isArray(issue.details.entries)
+    ? issue.details.entries.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    : [];
+  return (
+    <div className={`registry-issue ${issue.blocking ? "blocking" : ""}`}>
+      <div>
+        <strong>{issue.resource_key || issue.path || issue.code}</strong>
+        <small>{translateMessage(issue.message_ref, t, issue.message)}</small>
+      </div>
+      {issue.code === "duplicate-key" || issue.code === "duplicate-path" ? (
+        <label>
+          <span>{t("registry.selectEntry")}</span>
+          <select value={choice?.name || ""} onChange={(event) => onChange("select-entry", event.target.value)}>
+            <option value="">{t("registry.selectEntryPlaceholder")}</option>
+            {entries.map((entry) => (
+              <option key={String(entry.index)} value={String(entry.index)}>
+                #{String(entry.index)} · {String(entry.resource_key || "-")} · {String(entry.path || entry.source_type || "-")}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : issue.actions.length ? (
+        <label>
+          <span>{t("registry.suggestedAction")}</span>
+          <select value={action} onChange={(event) => onChange(event.target.value, choice?.name || "")}>
+            {issue.actions.map((value) => <option key={value} value={value}>{registryActionLabel(value, t)}</option>)}
+          </select>
+        </label>
+      ) : null}
+      {(issue.code === "unregistered-resource" || issue.code === "invalid-resource-name") && action === "add" ? (
+        <label>
+          <span>{t("registry.resourceName")}</span>
+          <input value={choice?.name || issue.name} onChange={(event) => onChange(action, event.target.value)} />
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+function registryChoiceMap(plan: RegistryRepairPlan): Record<string, RegistryRepairChoice> {
+  return Object.fromEntries(plan.choices.map((choice) => [choice.issue_id, choice]));
+}
+
+function registryIssueGroups(issues: RegistryAuditIssue[], t: TFunction) {
+  const definitions = [
+    { key: "add", label: t("registry.groupAdd"), matches: (issue: RegistryAuditIssue) => issue.code === "unregistered-resource" || issue.code === "invalid-resource-name" },
+    { key: "remove", label: t("registry.groupRemove"), matches: (issue: RegistryAuditIssue) => issue.code === "missing-resource" },
+    { key: "manual", label: t("registry.groupManual"), matches: (issue: RegistryAuditIssue) => issue.actions.length > 0 },
+    { key: "unrepairable", label: t("registry.groupUnrepairable"), matches: (_issue: RegistryAuditIssue) => true },
+  ];
+  const remaining = [...issues];
+  return definitions.map((definition) => {
+    const matched = remaining.filter(definition.matches);
+    matched.forEach((issue) => remaining.splice(remaining.indexOf(issue), 1));
+    return { key: definition.key, label: definition.label, issues: matched };
+  }).filter((group) => group.issues.length);
+}
+
+function registryHealthTone(status: string): string {
+  return status === "healthy" ? "online" : status === "issues" || status === "legacy" ? "cache" : "unconfigured";
+}
+
+function registryHealthLabel(status: string, t: TFunction): string {
+  switch (status) {
+    case "healthy": return t("registry.status.healthy");
+    case "issues": return t("registry.status.issues");
+    case "legacy": return t("registry.status.legacy");
+    case "missing": return t("registry.status.missing");
+    case "invalid": return t("registry.status.invalid");
+    default: return t("registry.status.unavailable");
+  }
+}
+
+function registryActionLabel(action: string, t: TFunction): string {
+  switch (action) {
+    case "add": return t("registry.action.add");
+    case "remove": return t("registry.action.remove");
+    case "replace": return t("registry.action.replace");
+    case "normalize": return t("registry.action.normalize");
+    case "select-entry": return t("registry.action.selectEntry");
+    default: return t("registry.action.keep");
+  }
 }
 
 function Filter<T extends string>({

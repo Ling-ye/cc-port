@@ -96,10 +96,14 @@ def discover_resources(
 ) -> list[DiscoveredResource]:
     """Discover resource candidates without modifying any source directory."""
     roots = _roots_for_scope(scope=scope, root_path=root_path)
-    registry_keys = {
-        (item.kind, item.name)
-        for item in load_registry(registry_path).items
-    }
+    registry_keys = (
+        {
+            (item.kind, item.name)
+            for item in load_registry(registry_path).items
+        }
+        if registry_path is not None
+        else set()
+    )
     candidates: list[DiscoveredResource] = []
     seen: set[tuple[str, str]] = set()
 

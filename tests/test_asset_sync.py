@@ -272,7 +272,7 @@ def test_logical_inventory_preserves_unknown_local_and_unavailable_remote_snapsh
     )
 
     logical = inventory.resources[0]
-    assert logical.description == "Repository description"
+    assert logical.description == "Remote"
     assert logical.description_source == "remote"
     assert logical.local_status == "unknown"
     assert logical.remote_status == "unavailable"
@@ -505,7 +505,7 @@ def test_logical_inventory_merges_remote_and_discovered_local_union(
     assert logical["skill:local"].status == "local-only"
     assert logical["skill:local"].description == "Local description"
     assert logical["skill:remote"].status == "remote-only"
-    assert logical["skill:remote"].description == "Remote description"
+    assert logical["skill:remote"].description == "Remote"
 
 
 def test_asset_content_diff_reports_changed_files_on_demand(
@@ -1479,6 +1479,7 @@ def test_upload_replays_unchanged_target_on_latest_remote_commit(
         body="local body",
         version="2.0.0",
         author="Local Author",
+        license_name="Apache-2.0",
     )
     cfg = _config(tmp_path, repo_url=str(bare))
     monkeypatch.setattr(asset_sync, "discover_environment", _empty_discovery)
@@ -1509,7 +1510,10 @@ def test_upload_replays_unchanged_target_on_latest_remote_commit(
     assert stored.version == "2.0.0"
     assert stored.author == "Local Author"
     assert stored.license == "Apache-2.0"
-    assert stored.tags == ["preserved"]
+    assert stored.tags == []
+    registry_text = (verify / "registry.yaml").read_text(encoding="utf-8")
+    for derived_field in ("description", "version", "author", "license", "tags"):
+        assert f"  {derived_field}:" not in registry_text
     assert (verify / "README.md").read_text(encoding="utf-8") == "unrelated\n"
 
 
@@ -1822,7 +1826,7 @@ def test_snapshot_materialization_does_not_follow_remote_control_symlink(
     )
 
 
-def test_snapshot_materialization_rejects_symlink_registry(
+def test_snapshot_materialization_rejects_symlink_registry_but_preserves_health(
     tmp_path: Path,
 ) -> None:
     transport = tmp_path / "transport"
@@ -1836,22 +1840,27 @@ def test_snapshot_materialization_rejects_symlink_registry(
     snapshot_cache = tmp_path / "snapshots"
     snapshot = snapshot_cache / ("d" * 40)
 
-    with pytest.raises(
-        asset_sync.AssetSyncError,
-        match="regular non-symlink file",
-    ):
-        asset_sync._materialize_remote_snapshot(
-            transport,
-            snapshot,
-            snapshot_cache,
-        )
+    asset_sync._materialize_remote_snapshot(
+        transport,
+        snapshot,
+        snapshot_cache,
+    )
 
     assert outside.read_text(encoding="utf-8") == "version: 7\nitems: []\n"
-    assert not snapshot.exists()
-    assert list(snapshot_cache.iterdir()) == []
+    assert snapshot.is_dir()
+    assert not (snapshot / "registry.yaml").exists()
+    registry, health = asset_sync._snapshot_registry_state(
+        snapshot,
+        commit="",
+        repo_url="https://example.invalid/resources.git",
+        branch="main",
+    )
+    assert registry is None
+    assert health.status == "invalid"
+    assert health.blocked_count == 1
 
 
-def test_snapshot_materialization_requires_regular_registry_file(
+def test_snapshot_materialization_preserves_invalid_registry_for_health_reporting(
     tmp_path: Path,
 ) -> None:
     transport = tmp_path / "transport"
@@ -1859,18 +1868,120 @@ def test_snapshot_materialization_requires_regular_registry_file(
     snapshot_cache = tmp_path / "snapshots"
     snapshot = snapshot_cache / ("e" * 40)
 
-    with pytest.raises(
-        asset_sync.AssetSyncError,
-        match="regular non-symlink file",
-    ):
-        asset_sync._materialize_remote_snapshot(
-            transport,
-            snapshot,
-            snapshot_cache,
-        )
+    asset_sync._materialize_remote_snapshot(
+        transport,
+        snapshot,
+        snapshot_cache,
+    )
 
-    assert not snapshot.exists()
-    assert list(snapshot_cache.iterdir()) == []
+    assert snapshot.is_dir()
+    assert (snapshot / "registry.yaml").is_dir()
+    assert asset_sync._load_snapshot_registry(snapshot) is None
+    registry, health = asset_sync._snapshot_registry_state(
+        snapshot,
+        commit="e" * 40,
+        repo_url="https://example.invalid/resources.git",
+        branch="main",
+    )
+    assert registry is None
+    assert health.status == "invalid"
+
+
+def test_snapshot_registry_state_rejects_corrupt_healthy_sidecar(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "registry.yaml").write_text("version: [\n", encoding="utf-8")
+    asset_sync._write_snapshot_registry_health(
+        snapshot,
+        asset_sync.RegistryHealthSummary(
+            status="healthy",
+            checked_commit="abc",
+            issue_count=0,
+            repairable_count=0,
+            blocked_count=0,
+            message="healthy",
+        ),
+    )
+
+    registry, health = asset_sync._snapshot_registry_state(
+        snapshot,
+        commit="abc",
+        repo_url="https://example.invalid/resources.git",
+        branch="main",
+    )
+
+    assert registry is None
+    assert health.status == "invalid"
+
+
+def test_remote_refresh_does_not_reuse_old_registry_after_new_commit_breaks_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed, bare = _seed_bare_remote(tmp_path)
+    cfg = _config(tmp_path, repo_url=str(bare))
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(tmp_path / "state"))
+
+    healthy = asset_sync._refresh_remote_snapshot(cfg, refresh=True)
+    assert healthy.registry is not None
+    assert healthy.registry_health is not None
+    assert healthy.registry_health.status == "healthy"
+
+    (seed / "registry.yaml").write_text("version: [\n", encoding="utf-8")
+    _run_git(seed, "add", "registry.yaml")
+    _run_git(
+        seed,
+        "-c",
+        "user.name=CC Port Test",
+        "-c",
+        "user.email=cc-port@example.test",
+        "commit",
+        "-m",
+        "break registry",
+    )
+    _run_git(seed, "push", str(bare), "main")
+
+    broken = asset_sync._refresh_remote_snapshot(cfg, refresh=True)
+
+    assert broken.commit != healthy.commit
+    assert broken.available is True
+    assert broken.registry is None
+    assert broken.registry_health is not None
+    assert broken.registry_health.status == "invalid"
+    local = tmp_path / "cursor" / "skills" / "local-only"
+    _skill(local, name="local-only", description="Local only", body="local")
+    monkeypatch.setattr(
+        asset_sync,
+        "discover_environment",
+        lambda **_kwargs: EnvDiscoveryResult(
+            tools=[],
+            resources=[
+                DiscoveredResource(
+                    id="cursor:skill:local-only",
+                    tool="cursor",
+                    source="configured",
+                    kind="skill",
+                    name_hint="local-only",
+                    path=local,
+                )
+            ],
+            mcp_servers=[],
+        ),
+    )
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        remote_snapshot=broken,
+    )
+    assert inventory.remote_available is True
+    assert inventory.registry_health is not None
+    assert inventory.registry_health.status == "invalid"
+    assert len(inventory.resources) == 1
+    resource = inventory.resources[0]
+    assert resource.resource_key == "skill:local-only"
+    assert resource.status == "local-only"
+    assert resource.available_actions == []
+    assert any("remote registry is unavailable" in item.lower() for item in resource.blockers)
 
 
 def test_remote_content_path_rejects_ancestor_symlink_escape(
@@ -2476,7 +2587,7 @@ def _reference_spec(*, enabled: bool = True) -> PluginSpec:
     )
 
 
-def test_plugin_reference_mutation_writes_registry_only_and_preserves_selector(tmp_path: Path) -> None:
+def test_plugin_reference_mutation_splits_portable_source_and_cc_port_settings(tmp_path: Path) -> None:
     registry_path = tmp_path / "registry.yaml"
     registry = Registry()
     key = ResourceKey(kind="plugin", name="opencode-npm-acme-tool")
@@ -2495,7 +2606,11 @@ def test_plugin_reference_mutation_writes_registry_only_and_preserves_selector(t
     assert entry is not None and entry.plugin is not None
     assert entry.path == ""
     assert entry.plugin.origin.selector == "^2.0.0"
-    assert entry.plugin.observed_version == "2.4.1"
+    assert entry.plugin.observed_version == ""
+    assert (tmp_path / "cc-port.yaml").is_file()
+    registry_text = registry_path.read_text(encoding="utf-8")
+    assert "observed_version" not in registry_text
+    assert "installations" not in registry_text
     assert not (tmp_path / "plugins").exists()
 
 
@@ -2535,7 +2650,8 @@ def test_unobserved_selector_does_not_replace_existing_reference_policy(tmp_path
     stored = load_registry(registry_path).get(existing.name, "plugin")
     assert stored is not None and stored.plugin is not None
     assert stored.plugin.origin.selector == "release-2026"
-    assert stored.plugin.observed_version == "26.7.0"
+    assert stored.plugin.observed_version == ""
+    assert "observed_version" not in registry_path.read_text(encoding="utf-8")
 
 
 def test_managed_reference_can_sync_policy_metadata_but_never_cache_content(

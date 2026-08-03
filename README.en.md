@@ -1,6 +1,6 @@
 # CC Port
 
-> Safely sync Skills, MCP servers, Rules, Prompts, and Plugins across Codex, Claude Code, Cursor, Windsurf, and OpenCode through a private Git repository you control.
+> Safely sync Skills, MCP servers, Rules, Prompts, and Plugins across Codex, Claude Code, Cursor, Windsurf, and OpenCode through a portable Git resource repository you control.
 
 [中文](README.md) · [Download for Windows](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4) · [Quick start](docs/getting-started.en.md) · [Report an issue](https://github.com/Ling-ye/cc-port/issues)
 
@@ -9,7 +9,7 @@
 ![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%2F11_x64-0078D4?logo=windows)
 ![Public Beta](https://img.shields.io/badge/status-public_beta-orange)
 
-CC Port is a local desktop resource manager for people who use more than one AI coding tool. It scans each tool's native directories, uses your private Git repository as the cross-device source of truth, and produces an explicit plan before writing anything.
+CC Port is a local desktop resource manager for people who use more than one AI coding tool. It scans each tool's native directories, uses your Git repository as the cross-device source of truth, and produces an explicit plan before writing anything. The repository and `registry.yaml` use an open format; other consumers do not need CC Port.
 
 ## At a glance
 
@@ -25,6 +25,36 @@ CC Port is a local desktop resource manager for people who use more than one AI 
 - **Credential exposure:** MCP configuration can contain literal tokens or environment values that should not be committed.
 
 CC Port compares a remote repository snapshot with every local platform instance. Upload, install, copy, and install-alias operations begin with a plan. Writes use backups, target locks, result verification, and rollback on failure.
+
+### Portable Registry v1 and repository checks
+
+Repository content or an external `source` is authoritative. `registry.yaml` is only a portable membership manifest: it stores the stable `(kind, name)` identity and exactly one repository-relative `path` or external `source`.
+
+```yaml
+version: 1
+resources:
+  - kind: skill
+    name: code-review
+    path: skills/code-review
+  - kind: plugin
+    name: browser-tools
+    source:
+      type: marketplace
+      locator: openai-bundled/browser-tools
+      revision: latest
+```
+
+Descriptions, versions, authors, licenses, tags, hashes, and check timestamps are derived rather than persisted in the Registry. MCP configuration lives in `mcp/<name>/mcp.json|yaml|yml`. Optional CC Port-only platform aliases and plugin installation intent live in `cc-port.yaml`, which other tools may ignore. See the [Registry v1 specification](docs/specs/registry-v1.md) for the complete contract.
+
+Every remote refresh audits the Registry at the same commit without modifying the repository. **Check repository** previews additions, removals, manual blockers, and the final YAML diff. Only explicit confirmation creates and normally pushes one commit containing `registry.yaml` and no resource content or `cc-port.yaml` changes.
+
+A missing, malformed, or linked Registry is diagnostic-only and has no Apply button. The repository remains connected and local discovery remains available, while actions that depend on the remote manifest are blocked. CLI equivalents are:
+
+```text
+cc-port resource registry-check --json
+cc-port resource registry-repair --dry-run
+cc-port resource registry-repair --yes --choices choices.yaml
+```
 
 ## Get started in five steps
 
@@ -53,7 +83,7 @@ Do not open a public issue for a vulnerability. Follow the [security policy](SEC
 
 ### Resource types
 
-| Type | Discover and register | Private repository sync | Install to tools |
+| Type | Discover and register | Resource repository sync | Install to tools |
 | --- | :---: | :---: | :---: |
 | Skill | ✓ | ✓ | ✓ |
 | MCP Server | ✓ | ✓ | ✓ |
@@ -76,7 +106,7 @@ Do not open a public issue for a vulnerability. Follow the [security policy](SEC
 
 The Cursor preset installs Prompt `<name>` as the global custom command
 `~/.cursor/commands/<name>.md`; a platform install alias replaces `<name>` in
-that filename. The private resource repository continues to store portable
+that filename. The resource repository continues to store portable
 content under `prompts/<name>/`. For downloads to this file-style target, the
 remote Prompt must be a Markdown file or a directory containing exactly one
 non-symlink `.md` file at its root. Zero or multiple root-level Markdown files
@@ -116,6 +146,7 @@ For installation, sign-in, or sync failures, see [troubleshooting](docs/troubles
 - [v0.5.4 release notes](docs/releases/v0.5.4.en.md)
 - [Development guide (Chinese)](docs/development.md)
 - [Architecture (Chinese)](docs/architecture.md)
+- [Registry v1 specification (Chinese)](docs/specs/registry-v1.md)
 - [Desktop packaging and release (Chinese)](docs/packaging-and-deployment.md)
 - [Behavior specifications (Chinese)](docs/specs/)
 - [Changelog](CHANGELOG.md)

@@ -118,7 +118,7 @@ function collectBackendMessageCodes() {
   ];
   const codes = new Set();
   const codePattern =
-    /["']((?:(?:api|asset|bridge|doctor)\.[a-z0-9_.]+|plugin\.delete\.[a-z0-9_.]+))["']/g;
+    /["']((?:(?:api|asset|bridge|doctor)\.[a-z0-9_.]+|registry\.issue\.[a-z0-9_.]+|plugin\.delete\.[a-z0-9_.]+))["']/g;
   for (const file of files) {
     const source = fs.readFileSync(file, "utf8");
     for (const match of source.matchAll(codePattern)) codes.add(match[1]);

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..core.config import Config
 from ..core.models import ItemKind, Registry, RegistryItem
-from ..core.registry import load_registry, save_registry
+from ..core.registry import find_registry_path, load_registry, save_registry
 from ..core.secret_scan import find_secret_text
 from ..core.secrets import sanitize_mcp_config_for_storage
 from ..core.validator import parse_skill
@@ -315,11 +317,23 @@ def add_external_skill(
             raise UnsafeMcpConfigError(finding.reason)
 
     inferred_name = name or _infer_name_from_url(github_url, subdir)
+    resource_name = _slug(inferred_name)
+    effective_registry_path = registry_path or find_registry_path()
+    content_path = ""
+    source = "external"
+    if kind == "mcp" and stored_mcp_config is not None:
+        content_path = _write_mcp_resource(
+            effective_registry_path,
+            resource_name,
+            stored_mcp_config,
+        )
+        source = "local"
     entry = RegistryItem(
-        name=_slug(inferred_name),
+        name=resource_name,
         kind=kind,
         repo=repo_url,
-        source="external",
+        source=source,
+        path=content_path,
         subdir=(subdir or "").strip().strip("/"),
         ref=pinned_ref,
         install_dir="",
@@ -329,10 +343,38 @@ def add_external_skill(
         category=category,
         platforms=platforms or [],
     )
-    registry = load_registry(registry_path)
+    registry = load_registry(effective_registry_path)
     registry.upsert(entry)
-    save_registry(registry, registry_path)
+    save_registry(registry, effective_registry_path)
     return entry
+
+
+def _write_mcp_resource(
+    registry_path: Path,
+    name: str,
+    config: dict[str, Any],
+) -> str:
+    root = registry_path.parent.absolute()
+    directory = root / "mcp" / name
+    for member in (root / "mcp", directory):
+        if member.is_symlink():
+            raise ValueError(f"MCP resource path must not be a symbolic link: {member}")
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / "mcp.json"
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        raise ValueError(f"MCP resource file must be a regular file: {destination}")
+    text = json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    descriptor, temporary = tempfile.mkstemp(prefix=".mcp-", suffix=".json", dir=directory)
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return f"mcp/{name}"
 
 
 def remove_skill(

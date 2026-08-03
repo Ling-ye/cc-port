@@ -1,11 +1,11 @@
 import { X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { resourceKindLabel, type TFunction } from "@/app/i18n";
-import type { ResourceKind } from "@/types/cc-port";
+import type { KnownResourceKind } from "@/types/cc-port";
 
-export type AddKind = "auto" | ResourceKind;
+export type AddKind = "auto" | KnownResourceKind;
 
-const resourceKinds: ResourceKind[] = ["skill", "mcp", "rule", "prompt", "plugin"];
+const resourceKinds: KnownResourceKind[] = ["skill", "mcp", "rule", "prompt", "plugin"];
 
 export function ResourceDialogFrame({
   dialogId,
