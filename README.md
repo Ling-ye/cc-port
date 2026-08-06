@@ -1,6 +1,6 @@
 # CC Port
 
-> 把分散在 Codex、Claude Code、Cursor、Windsurf 和 OpenCode 的 Skill、MCP、Rule、Prompt、Plugin，安全同步到你自己的私有 Git 仓库。
+> 把分散在 Codex、Claude Code、Cursor、Windsurf 和 OpenCode 的 Skill、MCP、Rule、Prompt、Plugin，安全同步到你控制的通用 Git 资源仓库。
 
 [English](README.en.md) · [下载 Windows 安装器](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4) · [快速开始](docs/getting-started.md) · [报告问题](https://github.com/Ling-ye/cc-port/issues)
 
@@ -9,7 +9,7 @@
 ![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%2F11_x64-0078D4?logo=windows)
 ![Public Beta](https://img.shields.io/badge/status-public_beta-orange)
 
-CC Port 是一个面向多 AI coding 工具的本地桌面资源管理器。它扫描每个工具的原生目录，以你控制的私有 Git 仓库作为跨设备事实源，并在真正写入前生成明确的操作计划。
+CC Port 是一个面向多 AI coding 工具的本地桌面资源管理器。它扫描每个工具的原生目录，以你控制的 Git 仓库作为跨设备事实源，并在真正写入前生成明确的操作计划。资源仓库和 `registry.yaml` 是开放格式，不要求其他消费者安装或理解 CC Port。
 
 ## 一眼看懂
 
@@ -37,6 +37,36 @@ CC Port 将远端仓库快照与每个平台的本地实例逐项比较。上传
 WSL 创建的 LX 符号链接与 Windows 原生符号链接不是同一种 reparse point，Windows 桌面服务不会尝试经由 WSL 桥接读取它。遇到此类阻断时，请在 Windows 中重建原生链接，或用资源安装器的复制模式（例如 `npx skills add ... --copy`）重新安装。
 
 本地资产扫描会同时检查所有已启用平台配置的 `skills_dir`、`mcp_json` 和 `plugins_dir`，因此 Claude Code 安装在 WSL 时，可以分别配置为 `\\wsl.localhost\<发行版>\home\<用户>\.claude\skills`、`\\wsl.localhost\<发行版>\home\<用户>\.claude.json` 和 `\\wsl.localhost\<发行版>\home\<用户>\.claude\plugins`。普通 WSL 路径中的 Skill、MCP 和内容型 Plugin 都可以下载并进入上传计划；首次上传内容型 Plugin 仍要求确认其为自有源码。目录中的 Linux 符号链接仍按 WSL LX 链接单项阻断。配置路径与平台默认目录相同时会自动去重，不会重复展示资源。
+
+### 通用 Registry v1 与仓库检查
+
+仓库中的资源文件或外部 `source` 是事实，`registry.yaml` 只是可移植成员清单。它只保存 `(kind, name)` 稳定身份，以及互斥的仓库相对 `path` 或外部 `source`：
+
+```yaml
+version: 1
+resources:
+  - kind: skill
+    name: code-review
+    path: skills/code-review
+  - kind: plugin
+    name: browser-tools
+    source:
+      type: marketplace
+      locator: openai-bundled/browser-tools
+      revision: latest
+```
+
+描述、版本、作者、许可证、标签、哈希和检查时间不写入 Registry；MCP 配置保存在 `mcp/<name>/mcp.json|yaml|yml`。平台白名单、安装别名和插件启用意图可以进入可选的 `cc-port.yaml`，其他工具无需读取它。完整字段见 [Registry v1 规格](docs/specs/registry-v1.md)。
+
+每次远端刷新都会对同一个 commit 只读检查 Registry，但不会自动修改仓库。资源页的“检查仓库”会预览待新增、待移除、人工处理项和最终 YAML diff；用户确认后，CC Port 才以一次只包含 `registry.yaml` 的提交修复并普通推送。修复绝不改写、移动或删除资源内容，也不修改 `cc-port.yaml`。
+
+Registry 缺失、YAML 损坏或本身是链接时只显示诊断，不显示应用按钮；仓库仍显示已连接，本地扫描仍可使用，但上传和安装等依赖远端清单的动作会阻断。CLI 使用：
+
+```text
+cc-port resource registry-check --json
+cc-port resource registry-repair --dry-run
+cc-port resource registry-repair --yes --choices choices.yaml
+```
 
 ## 五步开始
 
@@ -67,7 +97,7 @@ WSL 创建的 LX 符号链接与 Windows 原生符号链接不是同一种 repar
 
 ### 资源类型
 
-| 类型 | 扫描与登记 | 私有仓库同步 | 安装到工具 |
+| 类型 | 扫描与登记 | 资源仓库同步 | 安装到工具 |
 | --- | :---: | :---: | :---: |
 | Skill | ✓ | ✓ | ✓ |
 | MCP Server | ✓ | ✓ | ✓ |
@@ -89,7 +119,7 @@ WSL 创建的 LX 符号链接与 Windows 原生符号链接不是同一种 repar
 ### Cursor Prompt 命令
 
 Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
-`~/.cursor/commands/<name>.md`；设置平台安装别名后，文件名改用该别名。私有资源仓库
+`~/.cursor/commands/<name>.md`；设置平台安装别名后，文件名改用该别名。资源仓库
 仍以 `prompts/<name>/` 保存可移植内容。下载到这个文件式目标时，远端 Prompt
 必须是一个 Markdown 文件，或目录根级恰好包含一个非符号链接 `.md` 文件；零个或
 多个根级 Markdown 文件都会阻断计划，不会任意选择。
@@ -125,6 +155,7 @@ Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
 - [故障排查](docs/troubleshooting.md)
 - [开发指南](docs/development.md)
 - [架构](docs/architecture.md)
+- [Registry v1 规格](docs/specs/registry-v1.md)
 - [桌面打包与发布](docs/packaging-and-deployment.md)
 - [v0.5.4 发布说明](docs/releases/v0.5.4.md)
 - [功能规格](docs/specs/)

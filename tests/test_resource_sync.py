@@ -340,11 +340,10 @@ def _write_resource(repo: Path, text: str) -> None:
     (repo / "registry.yaml").write_text(
         "\n".join(
             [
-                "version: 5",
-                "items:",
-                "  - name: demo",
-                "    kind: skill",
-                "    source: local",
+                "version: 1",
+                "resources:",
+                "  - kind: skill",
+                "    name: demo",
                 "    path: skills/demo",
                 "",
             ]

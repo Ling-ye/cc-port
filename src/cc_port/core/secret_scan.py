@@ -17,6 +17,10 @@ HIGH_RISK_SECRET_RE = re.compile(
     r"xox[baprs]-[A-Za-z0-9-]{16,}|AIza[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|"
     r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----)",
 )
+CREDENTIAL_URL_RE = re.compile(
+    r"(?P<prefix>https?://[^/\s:@]+:)(?P<secret>[^@\s/]+)(?P<suffix>@)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,19 @@ def find_secret_text(text: str) -> SecretTextMatch | None:
     return None
 
 
+def redact_secret_text(text: str) -> str:
+    """Replace recognized secret values while preserving useful surrounding context."""
+    redacted = SECRET_VALUE_RE.sub(
+        lambda match: f"{match.group('prefix')}${{SECRET_VALUE}}",
+        text,
+    )
+    redacted = HIGH_RISK_SECRET_RE.sub("${SECRET_VALUE}", redacted)
+    return CREDENTIAL_URL_RE.sub(
+        lambda match: f"{match.group('prefix')}${{SECRET_VALUE}}{match.group('suffix')}",
+        redacted,
+    )
+
+
 def is_secret_placeholder(value: str) -> bool:
     normalized = value.strip()
     return (
@@ -56,7 +73,4 @@ def _line_preview(text: str, index: int) -> str:
     if end == -1:
         end = len(text)
     line = text[start:end].strip()
-    return SECRET_VALUE_RE.sub(
-        lambda match: f"{match.group('prefix')}${{SECRET_VALUE}}",
-        line,
-    )[:160]
+    return redact_secret_text(line)[:160]

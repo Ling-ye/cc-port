@@ -145,16 +145,12 @@ cc-port resource sync-*
 
 旧工作区存在 dirty、ahead、diverged、wrong-branch 或未处理旧同步计划时，新资产模型仍允许读取和扫描，但阻断远端写入。先使用兼容命令提交、取消或清理旧状态。
 
-## Registry v7 兼容
+## Registry v1 不兼容切换
 
-资源身份从名称升级为 `kind:name`。旧名称查询只在同名资源唯一时继续工作；如果 `skill:demo` 和 `prompt:demo` 同时存在，调用方必须传入 `kind`。
+资源身份仍为 `kind:name`，但持久格式已经切换为工具中立的 `version: 1` 和 `resources`。每个资源只保存互斥的 `path` 或 `source`；平台安装名称、白名单和插件安装意图进入可选的 `cc-port.yaml`。
 
-平台目标名称按以下优先级解析：
+普通加载器不再读取或迁移 v5/v6/v7。远端审计器只为可解析的 v7 提供一次性覆盖：用户确认后依据当前五个约定目录的实体资源生成 v1，旧外部引用和所有 CC Port 专属字段都会丢弃。v5/v6、缺失 Registry、损坏 YAML 和 Registry 链接只报告，不自动重建。
 
-1. `platform_install_dirs[platform]`
-2. 旧 `install_dir`
-3. 资源 `name`
+旧同步计划、临时 worktree 或仓库内容不会被自动删除。删除资源时直接删除 v1 清单项，不再保存 `lifecycle=removed` 历史记录。
 
-迁移不会自动删除旧同步计划、临时 worktree 或本地资源仓库内容。
-
-v6 插件条目不会被猜测为 content 或 reference；它们继续使用旧内容语义。新插件条目使用 `plugin` 规格记录轨道、平台、来源、版本策略和多作用域安装意图。扫描器不知道 selector 时保留已有策略；marketplace 来源只保存可移植身份。完整字段见 [Registry v7 规格](specs/registry-v7.md)。
+完整字段、审计分类、计划哈希和 registry-only 提交规则见 [Registry v1 规格](specs/registry-v1.md)。

@@ -12,14 +12,14 @@ import type {
   AddResourceResult,
   CollectResourcePayload,
   McpTransport,
+  KnownResourceKind,
   PortableMcpConfig,
-  ResourceKind,
 } from "@/types/cc-port";
 
 interface CollectDraft {
   githubUrl: string;
   name: string;
-  kind: ResourceKind;
+  kind: KnownResourceKind;
   mcpTransport: McpTransport;
   mcpCommand: string;
   mcpArgs: string;

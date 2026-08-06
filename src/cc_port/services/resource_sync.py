@@ -1,4 +1,4 @@
-"""Safe Git synchronization for the private resource repository."""
+"""Safe Git synchronization for a portable resource repository."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Any
 import yaml
 
 from ..core.config import Config, default_state_dir, load_config, resource_repo_auth_token
-from ..core.models import Registry, RegistryItem
+from ..core.models import Registry, RegistryResource
 from ..core.registry import CURRENT_REGISTRY_VERSION, save_registry
 from ..infrastructure import git_ops
 from .resource_commit import validate_outgoing_resource_commits
@@ -568,7 +568,7 @@ def _registry_conflicting_names(worktree: Path) -> list[str]:
 
 def _resolve_registry(worktree: Path, choices: dict[str, str]) -> list[str]:
     base, local, incoming = _registry_stages(worktree)
-    selected: list[RegistryItem] = []
+    selected: list[RegistryResource] = []
     unresolved: list[str] = []
     for name in sorted(set(base) | set(local) | set(incoming)):
         base_item = base.get(name)
@@ -590,11 +590,11 @@ def _resolve_registry(worktree: Path, choices: dict[str, str]) -> list[str]:
                 continue
             value = local_item if choice == "local" else incoming_item
         if value is not None:
-            selected.append(RegistryItem.model_validate(value))
+            selected.append(RegistryResource.model_validate(value))
     if unresolved:
         return unresolved
     save_registry(
-        Registry(version=CURRENT_REGISTRY_VERSION, items=selected),
+        Registry(version=CURRENT_REGISTRY_VERSION, resources=selected),
         worktree / REGISTRY_FILE,
     )
     git_ops.add_paths(worktree, [REGISTRY_FILE])
@@ -614,7 +614,7 @@ def _registry_item_map(text: str | None) -> dict[str, dict[str, Any]]:
     if not text:
         return {}
     data = yaml.safe_load(text) or {}
-    raw_items = data.get("items", data.get("skills", [])) if isinstance(data, dict) else []
+    raw_items = data.get("resources", []) if isinstance(data, dict) else []
     if not isinstance(raw_items, list):
         return {}
     result: dict[str, dict[str, Any]] = {}

@@ -141,7 +141,7 @@ def _repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-b", "main")
-    (repo / "registry.yaml").write_text("version: 5\nitems: []\n", encoding="utf-8")
+    (repo / "registry.yaml").write_text("version: 1\nresources: []\n", encoding="utf-8")
     (repo / "README.md").write_text("# Resources\n", encoding="utf-8")
     _commit(repo, "base")
     return repo

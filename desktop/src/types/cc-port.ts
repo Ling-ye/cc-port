@@ -1,4 +1,5 @@
-export type ResourceKind = "skill" | "mcp" | "rule" | "prompt" | "plugin";
+export type KnownResourceKind = "skill" | "mcp" | "rule" | "prompt" | "plugin";
+export type ResourceKind = KnownResourceKind | (string & {});
 export type DiscoveryScope = "global" | "directory";
 export type ResourceLifecycle = "active" | "removed";
 export type RemovedEffect = "index_only" | "local_files_deleted" | "remote_repo_deleted" | "";
@@ -29,7 +30,7 @@ export type PortableMcpConfig = PortableMcpStdioConfig | PortableMcpHttpConfig;
 
 export interface CollectResourcePayload extends Record<string, unknown> {
   github_url: string;
-  kind: ResourceKind;
+  kind: KnownResourceKind;
   name: string;
   push: boolean;
   mcp_config?: PortableMcpConfig;
@@ -382,7 +383,69 @@ export interface AssetInventory {
   generated_at: string;
   legacy_write_blocker: string;
   legacy_write_blocker_ref?: UiMessageRef | null;
+  registry_health?: RegistryHealthSummary | null;
   resources: AssetResourceRow[];
+}
+
+export type RegistryHealthStatus = "healthy" | "issues" | "legacy" | "missing" | "invalid" | "unavailable";
+
+export interface RegistryHealthSummary {
+  status: RegistryHealthStatus;
+  checked_commit: string;
+  issue_count: number;
+  repairable_count: number;
+  blocked_count: number;
+  message: string;
+}
+
+export interface RegistryRepairChoice {
+  issue_id: string;
+  action: "add" | "remove" | "keep" | "select-entry" | "replace" | "normalize" | string;
+  name: string;
+}
+
+export interface RegistryAuditIssue {
+  id: string;
+  code: string;
+  severity: string;
+  message: string;
+  message_ref?: UiMessageRef | null;
+  resource_key: string;
+  kind: string;
+  name: string;
+  path: string;
+  default_action: string;
+  actions: string[];
+  blocking: boolean;
+  details: Record<string, unknown>;
+}
+
+export interface RegistryRepairPlan {
+  remote_commit: string;
+  repo_url: string;
+  branch: string;
+  registry_status: RegistryHealthStatus;
+  issues: RegistryAuditIssue[];
+  choices: RegistryRepairChoice[];
+  registry_diff: string;
+  plan_hash: string;
+  executable_count: number;
+  blocked_count: number;
+  repairable: boolean;
+  original_registry_hash: string;
+  candidate_fingerprints: Record<string, string>;
+  resulting_registry_text: string;
+  legacy_item_count: number;
+  rebuilt_item_count: number;
+  dropped_item_count: number;
+}
+
+export interface RegistryRepairResult {
+  status: "succeeded" | "unchanged" | "stale" | "blocked" | "failed";
+  plan_hash: string;
+  remote_commit: string;
+  message: string;
+  stale_plan?: RegistryRepairPlan | null;
 }
 
 export type AssetLocalStatus = "unknown" | "missing" | "single" | "identical-copies" | "variants";

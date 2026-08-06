@@ -122,6 +122,8 @@ def test_add_external_mcp_accepts_offline_sha_and_sanitizes_config(
     )
 
     assert entry.ref == commit.lower()
+    assert entry.source == "local"
+    assert entry.path == "mcp/demo-mcp"
     assert entry.mcp_config == {
         "command": "demo",
         "args": ["--token=${EXISTING_TOKEN}"],
@@ -130,7 +132,17 @@ def test_add_external_mcp_accepts_offline_sha_and_sanitizes_config(
             "EXISTING_TOKEN": "${EXISTING_TOKEN}",
         },
     }
-    assert "literal-secret" not in registry_path.read_text(encoding="utf-8")
+    registry_text = registry_path.read_text(encoding="utf-8")
+    mcp_text = (tmp_path / "mcp" / "demo-mcp" / "mcp.json").read_text(
+        encoding="utf-8"
+    )
+    assert "mcp_config" not in registry_text
+    assert "path: mcp/demo-mcp" in registry_text
+    assert "literal-secret" not in registry_text
+    assert "literal-secret" not in mcp_text
+    assert "${SECRET_TOKEN}" in mcp_text
+    loaded = load_registry(registry_path).get("demo-mcp", "mcp")
+    assert loaded is not None and loaded.mcp_config == entry.mcp_config
 
 
 @pytest.mark.parametrize(

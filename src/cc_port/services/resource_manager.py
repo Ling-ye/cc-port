@@ -241,7 +241,7 @@ def preview_resource(
             path="registry:mcp_config",
             text=text,
             truncated=False,
-            warning="Previewing MCP config stored in registry.yaml.",
+            warning="Previewing the resolved MCP configuration.",
         )
 
     raise FileNotFoundError("No local content is available to preview. Download/register it first.")
@@ -289,6 +289,7 @@ def delete_resource(
     entry.removed_at = _utc_now()
     entry.removed_reason = reason.strip() or _default_remove_reason(entry, effect)
     entry.removed_effect = effect
+    registry.remove(entry.name, entry.kind)
     save_registry(registry, reg_path)
 
     return ResourceDeleteResult(
@@ -655,7 +656,7 @@ def _parse_owner_repo(github_url: str) -> tuple[str, str]:
 
 def _default_remove_reason(entry: RegistryItem, effect: RemovedEffect) -> str:
     if effect == "local_files_deleted":
-        return "Removed local resource files from the private resource repository."
+        return "Removed local resource files from the resource repository."
     if effect == "remote_repo_deleted":
         return "Deleted owned remote repository."
     if entry.source == "external":

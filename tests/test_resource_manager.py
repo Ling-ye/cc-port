@@ -10,7 +10,7 @@ from cc_port.core.config import Config, GithubConfig, InstallConfig, ResourcesCo
 from cc_port.core.models import Registry, RegistryItem
 from cc_port.core.ownership import mark_cc_port_managed_mcp, write_managed_marker
 from cc_port.core.platforms import PlatformProfile, PlatformsConfig
-from cc_port.core.registry import load_registry, save_registry
+from cc_port.core.registry import UnsupportedRegistryVersionError, load_registry, save_registry
 from cc_port.services import installer, resource_manager
 from cc_port.services.operation_history import operation_history, restore_operation
 
@@ -30,7 +30,7 @@ def _config(
     )
 
 
-def test_registry_v4_migrates_items_to_active_lifecycle(tmp_path: Path) -> None:
+def test_registry_v4_is_not_loaded_as_registry_v1(tmp_path: Path) -> None:
     registry_path = tmp_path / "registry.yaml"
     registry_path.write_text(
         "\n".join(
@@ -47,13 +47,11 @@ def test_registry_v4_migrates_items_to_active_lifecycle(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    registry = load_registry(registry_path)
-
-    assert registry.version == 7
-    assert registry.get("demo").lifecycle == "active"
+    with pytest.raises(UnsupportedRegistryVersionError):
+        load_registry(registry_path)
 
 
-def test_delete_local_resource_marks_removed_and_deletes_repo_files(tmp_path: Path) -> None:
+def test_delete_local_resource_removes_entry_and_deletes_repo_files(tmp_path: Path) -> None:
     root = tmp_path / "resources"
     install = tmp_path / "install"
     source = root / "skills" / "local-demo"
@@ -84,12 +82,11 @@ def test_delete_local_resource_marks_removed_and_deletes_repo_files(tmp_path: Pa
     assert result.effect == "local_files_deleted"
     assert result.deleted_local_files is True
     assert not source.exists()
-    assert stored is not None
-    assert stored.lifecycle == "removed"
-    assert stored.removed_effect == "local_files_deleted"
+    assert stored is None
+    assert result.entry.removed_effect == "local_files_deleted"
 
 
-def test_delete_external_resource_only_marks_index_removed(tmp_path: Path) -> None:
+def test_delete_external_resource_only_removes_index_entry(tmp_path: Path) -> None:
     root = tmp_path / "resources"
     install = tmp_path / "install"
     untouched = tmp_path / "external"
@@ -119,12 +116,11 @@ def test_delete_external_resource_only_marks_index_removed(tmp_path: Path) -> No
     stored = load_registry(registry_path).get("external-demo")
     assert result.effect == "index_only"
     assert untouched.exists()
-    assert stored is not None
-    assert stored.lifecycle == "removed"
-    assert stored.removed_effect == "index_only"
+    assert stored is None
+    assert result.entry.removed_effect == "index_only"
 
 
-def test_delete_owned_resource_deletes_remote_and_marks_removed(
+def test_portable_git_source_does_not_imply_remote_ownership(
     tmp_path: Path, monkeypatch
 ) -> None:
     root = tmp_path / "resources"
@@ -159,16 +155,14 @@ def test_delete_owned_resource_deletes_remote_and_marks_removed(
         "owned-demo",
         config=_config(root, install, token="token"),
         registry_path=registry_path,
-        confirm_name="owned-demo",
     )
 
     stored = load_registry(registry_path).get("owned-demo")
-    assert calls == [("example", "owned-demo")]
-    assert result.effect == "remote_repo_deleted"
-    assert result.remote_repo_deleted is True
-    assert stored is not None
-    assert stored.lifecycle == "removed"
-    assert stored.removed_effect == "remote_repo_deleted"
+    assert calls == []
+    assert result.effect == "index_only"
+    assert result.remote_repo_deleted is False
+    assert stored is None
+    assert result.entry.removed_effect == "index_only"
 
 
 def test_uninstall_keeps_registry_lifecycle_active(tmp_path: Path) -> None:
@@ -824,6 +818,10 @@ def test_repeated_mcp_install_does_not_rewrite_config_or_ownership(
 ) -> None:
     root = tmp_path / "resources"
     (root / "mcp" / "demo-mcp").mkdir(parents=True)
+    (root / "mcp" / "demo-mcp" / "mcp.json").write_text(
+        json.dumps({"command": "demo", "args": ["serve"]}),
+        encoding="utf-8",
+    )
     registry_path = root / "registry.yaml"
     save_registry(
         Registry(

@@ -62,6 +62,12 @@ from ..services.plugin_management import (
     list_plugin_projects,
     remove_plugin_project,
 )
+from ..services.registry_audit import (
+    RegistryRepairChoice,
+    RegistryRepairPlan,
+    apply_registry_repair,
+    build_registry_repair_plan,
+)
 from ..services.resource_commit import build_resource_commit_plan
 from ..services.resource_manager import resource_install_plan
 from ..services.resource_repo import (
@@ -103,7 +109,7 @@ app = typer.Typer(
         "and plugins across AI coding platforms."
     ),
 )
-resource_app = typer.Typer(help="Manage the private CC Port resource repository.")
+resource_app = typer.Typer(help="Manage a portable Git resource repository.")
 asset_app = typer.Typer(
     help="Inspect and synchronize logical resources across local AI tools and the private repository."
 )
@@ -239,7 +245,7 @@ def cmd_resource_init(
 def cmd_resource_use(
     target: str = typer.Argument(..., help="Existing local path or Git URL for the resource repo."),
 ) -> None:
-    """Bind CC Port to an existing private resource repository."""
+    """Bind CC Port to an existing portable resource repository."""
     try:
         info = use_resource_repo(target, config=_load())
     except Exception as exc:
@@ -250,13 +256,135 @@ def cmd_resource_use(
 
 @resource_app.command("status")
 def cmd_resource_status() -> None:
-    """Show private resource repository configuration and git state."""
+    """Show resource repository configuration and Git state."""
     _print_resource_info(inspect_resource_repo(_load()))
+
+
+@resource_app.command("registry-check")
+def cmd_resource_registry_check(
+    json_output: bool = typer.Option(False, "--json", help="Print the full plan as JSON."),
+) -> None:
+    """Audit registry.yaml against the current remote commit without writing."""
+    try:
+        plan = build_registry_repair_plan(config=_load())
+    except Exception as exc:
+        console.print(f"[red]Registry check failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if json_output:
+        _print_machine_json(asdict(plan))
+        return
+    _print_registry_repair_plan(plan)
+
+
+@resource_app.command("registry-repair")
+def cmd_resource_registry_repair(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Build and print the plan only."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm the registry-only commit and push."),
+    choices_path: Path | None = typer.Option(
+        None,
+        "--choices",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="YAML file containing explicit issue choices.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print the plan or result as JSON."),
+) -> None:
+    """Preview or explicitly apply a registry.yaml-only remote repair."""
+    choices = _load_registry_repair_choices(choices_path)
+    try:
+        plan = build_registry_repair_plan(config=_load(), choices=choices)
+    except Exception as exc:
+        console.print(f"[red]Registry repair planning failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if dry_run or not yes:
+        if json_output:
+            _print_machine_json(asdict(plan))
+        else:
+            _print_registry_repair_plan(plan)
+        if not dry_run and not yes:
+            console.print("[red]No changes were applied; pass --yes to commit and push.[/red]")
+            raise typer.Exit(2)
+        return
+    result = apply_registry_repair(
+        expected_plan_hash=plan.plan_hash,
+        config=_load(),
+        choices=choices,
+    )
+    if json_output:
+        _print_machine_json(asdict(result))
+    else:
+        color = "green" if result.status in {"succeeded", "unchanged"} else "yellow"
+        console.print(f"[{color}]{result.status}:[/{color}] {result.message}")
+        if result.stale_plan is not None:
+            _print_registry_repair_plan(result.stale_plan)
+    if result.status not in {"succeeded", "unchanged"}:
+        raise typer.Exit(1)
+
+
+def _load_registry_repair_choices(path: Path | None) -> list[RegistryRepairChoice]:
+    if path is None:
+        return []
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise typer.BadParameter(f"Cannot parse choices YAML: {exc}") from exc
+    if isinstance(payload, dict):
+        payload = payload.get("choices", [])
+    if not isinstance(payload, list):
+        raise typer.BadParameter("Choices YAML must be a list or contain a choices list.")
+    choices: list[RegistryRepairChoice] = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            raise typer.BadParameter(f"Choice {index} must be a mapping.")
+        issue_id = str(item.get("issue_id") or "").strip()
+        action = str(item.get("action") or "").strip()
+        if not issue_id or not action:
+            raise typer.BadParameter(f"Choice {index} requires issue_id and action.")
+        choices.append(
+            RegistryRepairChoice(
+                issue_id=issue_id,
+                action=action,
+                name=str(item.get("name") or "").strip(),
+            )
+        )
+    return choices
+
+
+def _print_registry_repair_plan(plan: RegistryRepairPlan) -> None:
+    console.print(
+        f"Registry: [bold]{plan.registry_status}[/bold]  "
+        f"commit={plan.remote_commit or '-'}  repairable={str(plan.repairable).lower()}"
+    )
+    table = Table(title="Registry audit issues")
+    table.add_column("Issue")
+    table.add_column("Resource")
+    table.add_column("Path")
+    table.add_column("Action")
+    table.add_column("Message")
+    choice_by_id = {choice.issue_id: choice for choice in plan.choices}
+    for issue in plan.issues:
+        choice = choice_by_id.get(issue.id)
+        table.add_row(
+            issue.code,
+            issue.resource_key or "-",
+            issue.path or "-",
+            choice.action if choice else issue.default_action,
+            issue.message,
+        )
+    console.print(table)
+    if plan.registry_diff:
+        console.print("[bold]registry.yaml diff[/bold]")
+        console.print(plan.registry_diff, markup=False)
+    console.print(
+        f"Executable: {plan.executable_count}; blocked: {plan.blocked_count}; "
+        f"plan_hash: {plan.plan_hash}"
+    )
 
 
 @resource_app.command("pull")
 def cmd_resource_pull() -> None:
-    """Pull the private resource repository after checking it is clean."""
+    """Pull the resource repository after checking it is clean."""
     _print_sync_deprecation()
     try:
         info = pull_resource_repo(_load())

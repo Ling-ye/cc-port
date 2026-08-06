@@ -23,9 +23,22 @@
 - 远端仓库快照继续拒绝符号链接，不得复用本地根级链接的放行逻辑。
 - 本地资产扫描必须包含所有已启用平台配置的 `skills_dir`、`mcp_json` 和 `plugins_dir`；自定义目录、UNC 路径和 WSL UNC 路径使用同一套资源发现、去重与链接安全规则。
 
+## Registry v1 约束
+
+- `registry.yaml` 是工具中立清单，只保存 `version: 1`、资源 `(kind, name)` 以及互斥的 `path` 或 `source`；不得写入派生元数据、健康缓存、删除历史、MCP 配置或 CC Port 专属设置。
+- 实体资源内容或外部 `source` 是事实；已登记内容内部变化且仍有效时不得产生 Registry 修复项。
+- MCP 配置必须脱敏后写入 `mcp/<name>/mcp.json|yaml|yml`，Registry 只保存路径。
+- CC Port 专属平台和插件意图只能进入可选 `cc-port.yaml`；其他工具无需理解它。
+- 每次远端刷新必须审计同一个 commit，但不得自动修改远端；Registry 不可用时远端仍可标记连接成功，本地扫描继续，依赖远端清单的动作全部阻断。
+- Registry 修复必须重新 fetch 并校验 `plan_hash`；只允许暂存、提交和普通推送 `registry.yaml`，不得修改资源内容、`cc-port.yaml` 或其他文件，不得强推或自动合并竞态。
+- Registry 缺失、YAML 损坏、不是普通文件或为链接时只报告且不可修复；普通加载器不兼容 v5/v6/v7。可解析 v7 只允许用户确认后从当前实体资源覆盖为 v1。
+- 未知安全 `kind` 和 `source.type` 必须原样保留并只读展示；已知类型拼错字段必须报告 schema 错误。
+- 凭据或疑似秘密不得出现在 Registry、diff、结构化错误、日志或提交中。
+
 ## 快速验证
 
 - 后端：`.venv\Scripts\python.exe -m pytest tests/test_asset_sync.py -q`
+- Registry：`.venv\Scripts\python.exe -m pytest tests/test_registry_v1.py tests/test_registry_audit.py tests/test_registry_interfaces.py -q`
 - 链接探测：`.venv\Scripts\python.exe -m pytest tests/test_local_path_probe.py -q`
 - 前端：在 `desktop` 目录执行 `npm.cmd exec vitest run -- src/features/resources/ResourcesView.test.tsx`
 - 构建：在 `desktop` 目录执行 `npm.cmd run build`

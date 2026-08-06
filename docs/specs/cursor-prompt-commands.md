@@ -11,7 +11,7 @@
 
 - 本规格只新增 Cursor 全局 Prompt 命令的扫描、上传、下载和覆盖语义。
 - Codex 继续只声明并安装 Skill，不把 Prompt 伪装成 Codex 支持项。
-- 私有资源仓库继续使用 `prompts/<name>/` 作为 Prompt 的可移植存储目录。
+- 资源仓库继续使用 `prompts/<name>/` 作为 Prompt 的可移植存储目录。
 - 不增加第二套同步协议；单项和批量操作继续复用资产计划、事务、锁、备份、
   校验、回滚和普通 Git push。
 

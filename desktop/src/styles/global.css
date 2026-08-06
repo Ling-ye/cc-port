@@ -2355,6 +2355,7 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .asset-source-title {
@@ -2433,6 +2434,16 @@ button {
 .asset-source-card > button {
   width: 100%;
   align-self: end;
+}
+
+.asset-source-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.asset-source-actions button {
+  min-width: 0;
 }
 
 .asset-entry-strip {
@@ -3047,6 +3058,111 @@ button {
   width: min(920px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   overflow: auto;
+}
+
+.registry-repair-modal {
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.registry-plan-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 12px;
+  color: #52606b;
+  font-size: 13px;
+}
+
+.registry-plan-summary code {
+  margin-left: auto;
+}
+
+.registry-issue-group,
+.registry-diff-review {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.registry-issue-group h3,
+.registry-diff-review h3 {
+  margin: 0;
+  color: #384650;
+  font-size: 13px;
+}
+
+.registry-issue {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, .55fr);
+  gap: 10px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid #dce5e9;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.registry-issue.blocking {
+  border-color: #d7a0a0;
+  background: #fff6f6;
+}
+
+.registry-issue > div,
+.registry-issue label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.registry-issue small {
+  color: #5f6d76;
+  overflow-wrap: anywhere;
+}
+
+.registry-issue label > span {
+  color: #697781;
+  font-size: 11px;
+}
+
+.registry-issue input,
+.registry-issue select {
+  width: 100%;
+}
+
+.registry-diff-review pre {
+  max-height: 280px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid #dce5e9;
+  border-radius: 8px;
+  background: #172126;
+  color: #e6edf0;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre;
+}
+
+.registry-diff-review p {
+  margin: 0;
+  color: #697781;
+}
+
+.registry-legacy-confirmation {
+  margin-top: 14px;
+  padding: 10px;
+  border: 1px solid #d7a0a0;
+  border-radius: 8px;
+  background: #fff6f6;
+}
+
+@media (max-width: 700px) {
+  .registry-issue,
+  .asset-source-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .asset-platform-picker {

@@ -11,6 +11,7 @@ import type {
   AssetBatchResult,
   AssetInventory,
   AssetResourceRow,
+  RegistryRepairPlan,
 } from "@/types/cc-port";
 
 vi.mock("@/api/client", () => ({
@@ -171,6 +172,42 @@ function actionPlan(action: "upload" | "download"): AssetActionPlan {
     blocked: false,
     created_at: "2026-07-29T00:00:00Z",
     schema_version: 1,
+  };
+}
+
+function registryPlan(overrides: Partial<RegistryRepairPlan> = {}): RegistryRepairPlan {
+  return {
+    remote_commit: "1234567890abcdef",
+    repo_url: "https://example.test/resources.git",
+    branch: "main",
+    registry_status: "issues",
+    issues: [{
+      id: "issue-add-demo",
+      code: "unregistered-resource",
+      severity: "warning",
+      message: "Valid skill content at skills/demo is not registered.",
+      resource_key: "skill:demo",
+      kind: "skill",
+      name: "demo",
+      path: "skills/demo",
+      default_action: "add",
+      actions: ["add", "keep"],
+      blocking: false,
+      details: {},
+    }],
+    choices: [{ issue_id: "issue-add-demo", action: "add", name: "" }],
+    registry_diff: "--- registry.yaml (current)\n+++ registry.yaml (proposed)\n+  - kind: skill\n",
+    plan_hash: "registry-plan-hash",
+    executable_count: 1,
+    blocked_count: 0,
+    repairable: true,
+    original_registry_hash: "original-hash",
+    candidate_fingerprints: { "skills/demo": "content-hash" },
+    resulting_registry_text: "version: 1\nresources:\n- kind: skill\n  name: demo\n  path: skills/demo\n",
+    legacy_item_count: 0,
+    rebuilt_item_count: 0,
+    dropped_item_count: 0,
+    ...overrides,
   };
 }
 
@@ -470,6 +507,160 @@ describe("ResourcesView unified inventory", () => {
 
     await user.click(screen.getByRole("button", { name: "Refresh remote" }));
     expect(onRefreshRemote).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows registry health and keeps missing or invalid registry repair read-only", async () => {
+    const user = userEvent.setup();
+    const plan = registryPlan({
+      registry_status: "missing",
+      repairable: false,
+      executable_count: 0,
+      blocked_count: 1,
+      registry_diff: "",
+      resulting_registry_text: "",
+      choices: [],
+      issues: [{
+        id: "missing-registry",
+        code: "missing-registry",
+        severity: "error",
+        message: "registry.yaml is missing and automatic repair is disabled.",
+        resource_key: "",
+        kind: "",
+        name: "",
+        path: "registry.yaml",
+        default_action: "keep",
+        actions: [],
+        blocking: true,
+        details: {},
+      }],
+    });
+    vi.mocked(ccPortAction).mockResolvedValue(plan);
+    renderView(undefined, {
+      inventory: {
+        ...inventory([resource()]),
+        registry_health: {
+          status: "missing",
+          checked_commit: "1234567890abcdef",
+          issue_count: 1,
+          repairable_count: 0,
+          blocked_count: 1,
+          message: "registry.yaml is missing.",
+        },
+      },
+    });
+
+    expect(screen.getByText("Registry missing")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Check repository" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Registry check and repair" });
+    expect(within(dialog).getByText("Cannot be repaired automatically (1)")).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: "Apply registry repair" }))
+      .not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Check again" })).toBeDisabled();
+    expect(ccPortAction).toHaveBeenCalledWith("registry_repair_plan", { choices: [] });
+  });
+
+  it("uses default safe choices and replaces a stale repair plan before another apply", async () => {
+    const user = userEvent.setup();
+    const initial = registryPlan();
+    const stale = registryPlan({
+      remote_commit: "fedcba9876543210",
+      registry_status: "missing",
+      repairable: false,
+      executable_count: 0,
+      blocked_count: 1,
+      registry_diff: "",
+      choices: [],
+      issues: [{
+        id: "missing-registry",
+        code: "missing-registry",
+        severity: "error",
+        message: "registry.yaml is missing.",
+        resource_key: "",
+        kind: "",
+        name: "",
+        path: "registry.yaml",
+        default_action: "keep",
+        actions: [],
+        blocking: true,
+        details: {},
+      }],
+    });
+    vi.mocked(ccPortAction)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce({
+        status: "stale",
+        plan_hash: stale.plan_hash,
+        remote_commit: "",
+        message: "stale",
+        stale_plan: stale,
+      });
+    renderView(undefined, {
+      inventory: {
+        ...inventory([resource()]),
+        registry_health: {
+          status: "issues",
+          checked_commit: initial.remote_commit,
+          issue_count: 1,
+          repairable_count: 1,
+          blocked_count: 0,
+          message: "registry.yaml has issues.",
+        },
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Check repository" }));
+    const dialog = await screen.findByRole("dialog", { name: "Registry check and repair" });
+    expect(within(dialog).getByRole("combobox", { name: "Action" })).toHaveValue("add");
+    expect(within(dialog).getByRole("textbox", { name: "Registry name" })).toHaveValue("demo");
+    await user.click(within(dialog).getByRole("button", { name: "Apply registry repair" }));
+
+    expect(await within(dialog).findByText(
+      "The remote repository changed. Review the refreshed plan before applying it.",
+    )).toBeVisible();
+    expect(within(dialog).getByText("Registry missing")).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: "Apply registry repair" }))
+      .not.toBeInTheDocument();
+    expect(ccPortAction).toHaveBeenNthCalledWith(2, "registry_repair_apply", {
+      plan_hash: "registry-plan-hash",
+      choices: [{ issue_id: "issue-add-demo", action: "add", name: "" }],
+    });
+  });
+
+  it("requires explicit legacy data-loss confirmation before applying", async () => {
+    const user = userEvent.setup();
+    vi.mocked(ccPortAction).mockResolvedValue(registryPlan({
+      registry_status: "legacy",
+      legacy_item_count: 4,
+      rebuilt_item_count: 2,
+      dropped_item_count: 2,
+      issues: [{
+        id: "legacy-v7",
+        code: "legacy-v7",
+        severity: "warning",
+        message: "Legacy registry v7 can be replaced.",
+        resource_key: "",
+        kind: "",
+        name: "",
+        path: "",
+        default_action: "replace",
+        actions: ["replace", "keep"],
+        blocking: false,
+        details: {},
+      }],
+      choices: [{ issue_id: "legacy-v7", action: "replace", name: "" }],
+    }));
+    renderView();
+
+    await user.click(screen.getByRole("button", { name: "Check repository" }));
+    const dialog = await screen.findByRole("dialog", { name: "Registry check and repair" });
+    const apply = within(dialog).getByRole("button", { name: "Apply registry repair" });
+    expect(within(dialog).getByText(/Legacy v7 contains 4 item/)).toBeVisible();
+    expect(apply).toBeDisabled();
+    await user.click(within(dialog).getByRole("checkbox", {
+      name: "I understand that legacy references and CC Port-specific settings will be discarded.",
+    }));
+    expect(apply).toBeEnabled();
   });
 
   it("keeps collection visible but disabled when the repository is unconfigured", async () => {

@@ -1,4 +1,4 @@
-"""Manage resources stored directly inside the private CC Port resource repository."""
+"""Manage content stored directly inside a portable resource repository."""
 
 from __future__ import annotations
 

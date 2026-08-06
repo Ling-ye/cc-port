@@ -66,3 +66,17 @@ def test_english_readme_links_to_the_english_user_path() -> None:
     assert "docs/getting-started.en.md" in source
     assert "docs/troubleshooting.en.md" in source
     assert "docs/releases/v0.5.4.en.md" in source
+
+
+def test_registry_v1_is_documented_as_a_tool_neutral_manifest() -> None:
+    spec = (ROOT / "docs" / "specs" / "registry-v1.md").read_text(encoding="utf-8")
+    chinese_readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    english_readme = (ROOT / "README.en.md").read_text(encoding="utf-8")
+
+    assert "工具中立、可移植的资源成员清单" in spec
+    assert "CC Port 只是该清单的一个消费者" in spec
+    assert "Registry 不保存" in spec
+    assert "cc-port resource registry-check" in spec
+    assert "cc-port resource registry-repair --yes" in spec
+    assert "资源仓库和 `registry.yaml` 是开放格式" in chinese_readme
+    assert "other consumers do not need CC Port" in english_readme

@@ -1,4 +1,4 @@
-"""Private resource repository management for CC Port user data."""
+"""Portable Git resource repository management."""
 
 from __future__ import annotations
 
@@ -23,9 +23,8 @@ from .resource_binding import configured_github_owner
 from .resource_commit import commit_resource_changes_unlocked
 from .resource_repo_lock import resource_repo_write_lock
 
-RESOURCE_DIRS = ("skills", "rules", "prompts", "mcp", "plugins", ".claude-plugin")
+RESOURCE_DIRS = ("skills", "rules", "prompts", "mcp", "plugins")
 CC_PORT_HOMEPAGE = "https://github.com/Ling-ye/cc-port"
-DEFAULT_PLUGIN_JSON = '{\n  "name": "cc-port-resources",\n  "skills": []\n}\n'
 
 
 @dataclass
@@ -60,26 +59,25 @@ def ensure_structure(root: Path) -> None:
         readme.write_text(_resource_readme(root.name), encoding="utf-8")
     reg = root / DEFAULT_REGISTRY_FILENAME
     if not reg.exists():
-        reg.write_text(f"version: {CURRENT_REGISTRY_VERSION}\nitems: []\n", encoding="utf-8")
-    plugin_json = root / ".claude-plugin" / "plugin.json"
-    if not plugin_json.exists():
-        plugin_json.write_text(DEFAULT_PLUGIN_JSON, encoding="utf-8")
+        reg.write_text(
+            f"version: {CURRENT_REGISTRY_VERSION}\nresources: []\n",
+            encoding="utf-8",
+        )
 
 
 def _resource_readme(repo_name: str) -> str:
     return (
         f"# {repo_name}\n\n"
-        "This is a private AI resource repository managed by "
-        f"[CC Port]({CC_PORT_HOMEPAGE}).\n\n"
-        "It stores your selected skills, rules, prompts, MCP configs, plugins, "
-        "and `registry.yaml` for syncing your AI coding environment across machines.\n\n"
-        "Typical commands:\n\n"
+        "This is a portable AI resource repository. "
+        f"[CC Port]({CC_PORT_HOMEPAGE}) can consume it, but the repository and "
+        "its `registry.yaml` manifest are not exclusive to CC Port.\n\n"
+        "`registry.yaml` lists resource identities and their repository paths or "
+        "external sources. Resource content remains the source of truth. See the "
+        f"[Registry v1 specification]({CC_PORT_HOMEPAGE}/blob/main/docs/specs/registry-v1.md).\n\n"
+        "Optional CC Port checks:\n\n"
         "```bash\n"
-        "cc-port collect <github-url-or-tree-url>\n"
-        "cc-port upload <local-path>\n"
-        "cc-port sync\n"
-        "cc-port resource pull\n"
-        "cc-port resource push\n"
+        "cc-port resource registry-check\n"
+        "cc-port resource registry-repair --dry-run\n"
         "```\n\n"
         "Keep this repository private if it contains personal resources or metadata.\n"
     )
@@ -396,11 +394,7 @@ def _is_generated_empty_scaffold(root: Path) -> bool:
     except Exception:
         return False
 
-    allowed_files = {
-        root / "README.md",
-        reg,
-        root / ".claude-plugin" / "plugin.json",
-    }
+    allowed_files = {root / "README.md", reg}
     for path in root.rglob("*"):
         if ".git" in path.relative_to(root).parts:
             continue
@@ -409,10 +403,6 @@ def _is_generated_empty_scaffold(root: Path) -> bool:
 
     readme = root / "README.md"
     if readme.is_file() and readme.read_text(encoding="utf-8") != _resource_readme(root.name):
-        return False
-
-    plugin_json = root / ".claude-plugin" / "plugin.json"
-    if plugin_json.is_file() and plugin_json.read_text(encoding="utf-8") != DEFAULT_PLUGIN_JSON:
         return False
 
     return True
