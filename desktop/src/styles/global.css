@@ -1440,6 +1440,64 @@ button {
   margin-top: 18px;
 }
 
+.github-star-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid #b9ddd5;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #edf9f6 0%, #f8fbfa 72%);
+}
+
+.github-star-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.github-star-mark {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: #132026;
+  color: #ffffff;
+}
+
+.github-star-repository {
+  display: block;
+  margin-bottom: 4px;
+  color: #167f72;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.github-star-card h3 {
+  margin: 0;
+  color: #18332f;
+  font-size: 16px;
+}
+
+.github-star-card p {
+  margin: 5px 0 0;
+  color: #536b66;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.github-star-action {
+  flex: 0 0 auto;
+  min-width: 190px;
+  white-space: nowrap;
+}
+
 .settings-section {
   border-top: 1px solid #edf1f4;
   padding-top: 16px;

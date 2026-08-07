@@ -122,7 +122,7 @@ Advanced users can add custom platform paths in `config.toml`. See the [configur
 
 ## Three interfaces
 
-- **Desktop GUI:** daily discovery, comparison, upload, installation, and environment diagnostics.
+- **Desktop GUI:** daily discovery, comparison, upload, installation, and environment diagnostics; the Guide page links to the project repository and its GitHub Star action.
 - **CLI:** scripting, batch operations, history recovery, and state maintenance.
 - **MCP server:** exposes CC Port capabilities to compatible AI coding tools.
 

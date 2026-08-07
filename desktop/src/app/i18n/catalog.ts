@@ -453,6 +453,10 @@ export const en = {
   "common.copy": "Copy",
   "common.working": "Working...",
   "guide.description": "What this tool does and how to use the desktop app.",
+  "guide.starAction": "Star CC Port on GitHub",
+  "guide.starDescription":
+    "If CC Port has helped you, star it on GitHub to support its continued improvement.",
+  "guide.starTitle": "Enjoying CC Port?",
   "guide.desktopTitle": "Desktop app functions",
   "guide.featureResources": "Resources",
   "guide.featureResourcesDescription":
@@ -1255,6 +1259,9 @@ export const zh: Record<I18nKey, string> = {
   "common.copy": "复制",
   "common.working": "处理中...",
   "guide.description": "了解此工具的作用，以及桌面端各功能入口的用途。",
+  "guide.starAction": "去 GitHub 加 Star",
+  "guide.starDescription": "如果 CC Port 对你有帮助，欢迎在 GitHub 点个 Star，支持项目持续完善。",
+  "guide.starTitle": "喜欢 CC Port？",
   "guide.desktopTitle": "桌面端功能",
   "guide.featureResources": "资源",
   "guide.featureResourcesDescription": "收集 GitHub 引用、导入本地目录、浏览资源，并管理双向同步、本地卸载和删除状态。",

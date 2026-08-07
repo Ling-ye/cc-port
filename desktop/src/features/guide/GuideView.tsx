@@ -1,9 +1,10 @@
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Github, Star } from "lucide-react";
 import { openExternalUrl } from "@/api/client";
-import type { I18nKey, TFunction } from "@/app/i18n";
+import { displayError, type I18nKey, type TFunction } from "@/app/i18n";
 import { DescriptionList } from "@/components/DescriptionList";
 
 const PROJECT_URL = "https://github.com/Ling-ye/cc-port";
+const PROJECT_REPOSITORY = "Ling-ye/cc-port";
 
 const resourceRows = [
   ["guide.resourceSkill", "guide.resourceSkillDescription"],
@@ -19,7 +20,21 @@ const featureRows = [
   ["guide.featureTopbar", "guide.featureTopbarDescription"],
 ] satisfies Array<[I18nKey, I18nKey]>;
 
-export function GuideView({ t }: { t: TFunction }) {
+export function GuideView({
+  t,
+  onError,
+}: {
+  t: TFunction;
+  onError: (message: string) => void;
+}) {
+  async function openProjectRepository() {
+    try {
+      await openExternalUrl(PROJECT_URL);
+    } catch (error) {
+      onError(displayError(error, t));
+    }
+  }
+
   return (
     <section className="settings-view">
       <div className="panel settings-panel">
@@ -29,6 +44,28 @@ export function GuideView({ t }: { t: TFunction }) {
             <p>{t("guide.description")}</p>
           </div>
         </div>
+
+        <aside className="github-star-card" aria-labelledby="github-star-title">
+          <div className="github-star-copy">
+            <span className="github-star-mark" aria-hidden="true">
+              <Github size={24} />
+            </span>
+            <div>
+              <span className="github-star-repository">{PROJECT_REPOSITORY}</span>
+              <h3 id="github-star-title">{t("guide.starTitle")}</h3>
+              <p>{t("guide.starDescription")}</p>
+            </div>
+          </div>
+          <button
+            className="primary github-star-action"
+            type="button"
+            onClick={() => void openProjectRepository()}
+          >
+            <Star size={17} />
+            {t("guide.starAction")}
+            <ExternalLink size={15} />
+          </button>
+        </aside>
 
         <div className="settings-sections">
           <div className="settings-section">
@@ -53,7 +90,7 @@ export function GuideView({ t }: { t: TFunction }) {
                   <button
                     className="external-text-link"
                     type="button"
-                    onClick={() => void openExternalUrl(PROJECT_URL)}
+                    onClick={() => void openProjectRepository()}
                   >
                     {PROJECT_URL}
                     <ExternalLink size={14} />

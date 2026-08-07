@@ -354,7 +354,7 @@ export default function App() {
             onRunDiagnostics={runDiagnostics}
           />
         ) : null}
-        {view === "guide" ? <GuideView t={t} /> : null}
+        {view === "guide" ? <GuideView t={t} onError={setError} /> : null}
       </main>
       <TaskCenterPanel open={taskPanelOpen} t={t} onClose={() => setTaskPanelOpen(false)} />
       <ToastViewport t={t} />

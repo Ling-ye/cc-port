@@ -40,7 +40,7 @@
 - 后端：`.venv\Scripts\python.exe -m pytest tests/test_asset_sync.py -q`
 - Registry：`.venv\Scripts\python.exe -m pytest tests/test_registry_v1.py tests/test_registry_audit.py tests/test_registry_interfaces.py -q`
 - 链接探测：`.venv\Scripts\python.exe -m pytest tests/test_local_path_probe.py -q`
-- 前端：在 `desktop` 目录执行 `npm.cmd exec vitest run -- src/features/resources/ResourcesView.test.tsx`
+- 前端：在 `desktop` 目录执行 `npm.cmd exec vitest run -- src/features/resources/ResourcesView.test.tsx src/features/guide/GuideView.test.tsx`
 - 构建：在 `desktop` 目录执行 `npm.cmd run build`
 - Rust 桥接：在 `desktop/src-tauri` 目录执行 `cargo test --lib`
 - 不要创建 Git 提交；提交由维护者完成。
