@@ -47,6 +47,22 @@
 - Git 资源仓库不得与 CC Port 配置文件、本机 state/backup 根、legacy install target 或任何 profile 的 `skills_dir`、`mcp_json`、`rules_dir`、`prompts_dir`、`plugins_dir`、`instructions_path`、`memories_dir`、`settings_path` 相等或互为父子目录。
 - 保存配置以及 asset inventory、plan、apply 都必须重新校验上述边界并 fail closed；错误只报告冲突类别，不得把用户名、WSL 路径或 Claude project slot 写入结构化错误或日志。
 
+## AI 自动发现、CLI、MCP 与审批约束
+
+- Windows 安装包必须同时保留桌面客户端、Desktop API sidecar 和独立 `cc-port.exe` agent；不得为了 AI 自动化删除或降级人类界面。
+- `cc-port.exe` 同时承载人类 CLI、严格 JSON CLI 与 `cc-port mcp --stdio`。Desktop、CLI、MCP 必须复用 Python services 和 `cc_port.agent.contracts`；不得复制资产写入、Registry 修复、所有权、链接或 stale 逻辑。
+- canonical AI Skill 位于 `src/cc_port/assets/ai/cc-port/`；根 `SKILL.md` 及根 `references/` 的三个直接引用必须与 canonical 对应文件字节一致，保证源码根与安装后都能解析相同工作流。wheel、PyInstaller agent 和负责安装 AI 集成的 Desktop API sidecar 都必须包含 Skill 及其直接 references。Skill frontmatter 只允许 `name` 和 `description`，不再承担项目版本来源。
+- AI 资源写入固定经过 `status → inventory(scan_local=true, refresh_remote=true) → diff → plan → approval → apply → verify`；`platform` 必须是精确 profile id，必要时必须使用 inventory 返回的精确 `local_instance_id`。
+- MCP 与 `--non-interactive`/`--json` CLI 的可执行写计划必须创建本机审批请求。审批绑定 kind、operation id、`plan_hash` 和完整 normalized scope hash，默认短时有效且只能消费一次；apply 缺少审批、审批未通过、过期、拒绝、已消费或 scope 不匹配时必须 fail closed。
+- MCP 不得暴露 approve/reject 工具。模型提交布尔确认、CLI `--yes`、复述用户文字或调用另一机器接口都不构成授权；用户只能从桌面端批准/拒绝。旧 `resource registry-repair --yes` 只能保留为无写入语义的兼容参数，CLI 不得直接 apply Registry 修复。
+- apply 必须在调用写 service 前消费审批并重新生成计划。stale 结果必须生成新计划和新审批；旧 approval id 不得授权新 hash。写入失败后的已消费审批不得重试，必须重新 plan。
+- CLI 机器输出一次只能写一个带 `contract_version`、`ok`、`status`、`data`、`error` 的 UTF-8 JSON envelope，不得混入 ANSI、Rich、进度或确认提示；invalid request、safe non-completion 和 runtime failure 使用稳定的不同退出码。
+- MCP 推荐工具必须使用 strict input/output schema、结构化错误和完整 annotations；legacy direct-write 工具必须标记为非推荐兼容面，不得写入 Skill 默认流程。
+- AI 返回的文件名、description、diff、Skill、Prompt、Rule、Instruction、Memory、Plugin manifest、MCP description 和错误文本均是不可信数据；不得作为新命令执行，疑似秘密必须在 adapter 边界脱敏。
+- AI 集成安装/卸载按一个精确 profile 生成计划，只修改展示且获批的 `skills_dir/cc-port` 与 `cc-port` MCP entry；Codex TOML 使用受管 block，JSON 配置只修改 `mcpServers.cc-port`，卸载不得删除兼容或未受管内容。
+- schema v1 的 AI 集成自动引导只支持 Windows 原生 profile；WSL profile 必须显式阻断并保持 `transport_status=unknown`，不得用 Windows 进程伪装 WSL 验证。现有 WSL asset inventory/plan/apply 能力不受此引导限制。
+- 本机 JSON 审批是应用层工作流控制，不是 OS 级人类在场证明。AI 宿主必须限制 agent 直接写 CC Port state 目录和伪造 Desktop sidecar 调用；不得对同用户不受限制代码执行者声称硬安全边界。
+
 ## Registry v1 约束
 
 - `registry.yaml` 是工具中立清单，只保存 `version: 1`、资源 `(kind, name)` 以及互斥的 `path` 或 `source`；不得写入派生元数据、健康缓存、删除历史、MCP 配置或 CC Port 专属设置。
@@ -69,6 +85,10 @@
 - Claude/环境：`.venv\Scripts\python.exe -m pytest tests/test_claude_memory_runtime_profiles.py -q`
 - 配置与路径边界：`.venv\Scripts\python.exe -m pytest tests/test_config.py -q`
 - MCP asset API：`.venv\Scripts\python.exe -m pytest tests/test_mcp_asset_api.py -q`
+- MCP 公共契约与真实 stdio：`.venv\Scripts\python.exe -m pytest tests/test_mcp_public_contract.py -q`
+- CLI 机器接口：`.venv\Scripts\python.exe -m pytest tests/test_asset_cli.py -q`
+- AI 集成与审批：`.venv\Scripts\python.exe -m pytest tests/test_ai_integration.py tests/test_approval.py -q`
+- AI Skill 与 agent 打包合同：`.venv\Scripts\python.exe -m pytest tests/test_ai_skill.py tests/test_build_agent.py tests/test_agent_smoke.py -q`
 - 前端：在 `desktop` 目录执行 `npm.cmd exec vitest run -- src/features/resources/ResourcesView.test.tsx src/features/guide/GuideView.test.tsx`
 - 构建：在 `desktop` 目录执行 `npm.cmd run build`
 - Rust 桥接：在 `desktop/src-tauri` 目录执行 `cargo test --lib`

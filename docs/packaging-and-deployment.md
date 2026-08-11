@@ -1,6 +1,7 @@
 # Windows 桌面打包与发布
 
-本手册适用于 CC Port `0.5.4`。它只保留当前可执行的维护者流程；缓存、
+本手册适用于当前开发分支的下一次 Windows 发布。已经公开的 `v0.5.4` 产物保持不变，
+不包含新增的 CLI/MCP agent。本文只保留当前可执行的维护者流程；缓存、
 并发、回滚和历史性能实验的完整约束见
 [桌面发布编排规格](specs/desktop-release-orchestration.md)。
 
@@ -29,7 +30,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1
 # 只检查，不安装或同步依赖
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -CheckOnly
 
-# 跳过确认
+# WinGet 安装使用静默参数并禁用交互（CC Port 本身没有二次确认）
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1 -NonInteractive
 
 # 无条件重新同步 Python 与前端依赖
@@ -53,7 +54,6 @@ desktop/package-lock.json（顶层与 packages[""]）
 desktop/src-tauri/Cargo.toml
 desktop/src-tauri/Cargo.lock
 desktop/src-tauri/tauri.conf.json
-SKILL.md
 ```
 
 同时准备：
@@ -84,14 +84,15 @@ git pull --ff-only
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1
 ```
 
-需要忽略依赖和 sidecar 缓存时：
+需要忽略依赖和 sidecar 缓存、强制重链桌面主程序时（公开 agent 本来就会每次 clean 构建）：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\release-desktop.ps1 -Clean
 ```
 
 脚本依次执行环境验证、PowerShell 自测、pytest、Ruff、Vitest、锁文件审计、
-sidecar 构建与冒烟、Tauri MSI/NSIS 构建、产物哈希和事务式目录切换。任一门禁
+Desktop API sidecar 构建与冒烟、公开 CLI/MCP agent 构建与真实 stdio MCP 冒烟、
+Tauri MSI/NSIS 构建、产物哈希和事务式目录切换。任一门禁
 失败都会停止发布；脚本不会安装生成的安装包，也不会上传 GitHub Release。
 Rust 构建期间会把用户目录、Cargo/Rustup 目录和仓库目录重映射为稳定名称，
 避免发布 EXE 包含构建用户名或源码绝对路径；调用前的 Rust flags 会在构建后恢复。
@@ -104,6 +105,7 @@ Rust 构建期间会把用户目录、Cargo/Rustup 目录和仓库目录重映�
 release/desktop/x86_64-pc-windows-msvc/
   cc-port-desktop.exe
   cc-port-desktop-api.exe
+  cc-port.exe
   msi/
     CC Port_<version>_x64_en-US.msi
   nsis/
@@ -118,7 +120,7 @@ release/publish/v<version>/
   SHA256SUMS.txt
 ```
 
-不要上传 MSI、原始桌面 EXE 或 sidecar EXE。`SHA256SUMS.txt` 由脚本从已
+不要上传 MSI、原始桌面 EXE、Desktop API sidecar 或 agent EXE。`SHA256SUMS.txt` 由脚本从已
 验证的 NSIS 安装器生成；每次成功构建都会事务式替换该版本目录，避免混入旧文件。
 
 ## 安装冒烟
@@ -177,10 +179,11 @@ npm test
 npm run build
 ```
 
-### sidecar 冒烟或哈希失败
+### sidecar、agent 冒烟或哈希失败
 
 使用 `release-desktop.ps1 -Clean` 重建。仍失败时检查本次
-`build/metrics/*.logs/`，不要复制旧 sidecar 绕过校验。
+`build/metrics/*.logs/`。Agent 冒烟必须通过 CLI `--help`、MCP initialize、
+`tools/list` 和一次真实 `cc_port_status` 调用；不要复制旧二进制绕过校验。
 
 ### 正式目录无法替换
 
@@ -195,8 +198,8 @@ npm run build
 
 - [ ] 所有版本和中英文 Release notes 一致。
 - [ ] PowerShell 自测、pytest、Ruff、Vitest、npm audit 和 Vite build 通过。
-- [ ] sidecar 冒烟、MSI/NSIS 检查和四类本地产物哈希通过。
-- [ ] 解包后的桌面 EXE 和 sidecar 不包含构建用户名或绝对源码路径。
+- [ ] Desktop API sidecar 与 CLI/MCP agent 冒烟、MSI/NSIS 检查和五类本地产物哈希通过。
+- [ ] 解包后的桌面 EXE、sidecar 和 agent 不包含构建用户名或绝对源码路径。
 - [ ] `release/publish/vX.Y.Z/` 恰好包含两个规定文件，安装器哈希一致。
 - [ ] 干净 Windows 10/11 消费者环境完成安装、同步、覆盖升级和卸载。
 - [ ] 签名 annotated tag 指向已验证的 `main` 提交。

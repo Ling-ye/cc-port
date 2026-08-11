@@ -208,13 +208,19 @@ CLI：
 ```text
 cc-port resource registry-check [--json]
 cc-port resource registry-repair --dry-run [--choices choices.yaml] [--json]
-cc-port resource registry-repair --yes [--choices choices.yaml] [--json]
+cc-port resource registry-repair [--choices choices.yaml] [--json]
 ```
+
+CLI 只检查或生成修复计划；兼容参数 `--yes` 不构成授权，也不得应用修复。机器调用必须使用
+统一 JSON envelope。需要写入时，由用户在 Desktop 审阅，或使用 MCP
+`registry_repair_plan` → Desktop approval → `registry_repair_apply`，并提交原样的
+`operation_id`、`plan_hash`、choices 和 `approval_id`。
 
 Desktop API：
 
 - `registry_repair_plan` 接受 `choices`，返回 commit、状态、问题、选择、diff、`plan_hash` 和计数；
-- `registry_repair_apply` 接受相同 `choices` 与必填 `plan_hash`，返回 `succeeded|unchanged|stale|blocked|failed`；
+- `registry_repair_apply` 接受相同 `choices` 与必填 `operation_id`、`plan_hash`、`approval_id`，
+  返回 `succeeded|unchanged|stale|blocked|failed`；
 - `asset_inventory.registry_health` 返回状态、检查 commit 和问题计数。
 
 Desktop 的“检查仓库”只打开计划。安全增删项默认选中；阻断项、v7 数据丢弃和最终 diff 必须由用户审阅。`missing`、`invalid` 和 Registry 链接状态不显示应用按钮。

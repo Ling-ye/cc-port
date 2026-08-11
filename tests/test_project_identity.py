@@ -89,12 +89,16 @@ def test_desktop_and_skill_manifests_share_one_identity() -> None:
     assert tauri_manifest["version"] == EXPECTED_VERSION
     assert tauri_manifest["identifier"] == "com.lingye.cc-port.desktop"
     assert tauri_manifest["app"]["windows"][0]["title"] == "CC Port"
-    assert tauri_manifest["bundle"]["externalBin"] == ["binaries/cc-port-desktop-api"]
+    assert tauri_manifest["bundle"]["externalBin"] == [
+        "binaries/cc-port-desktop-api",
+        "binaries/cc-port",
+    ]
 
     assert skill_frontmatter["name"] == "cc-port"
-    assert skill_frontmatter["metadata"]["version"] == EXPECTED_VERSION
+    assert set(skill_frontmatter) == {"name", "description"}
     assert (ROOT / "desktop/src/types/cc-port.ts").is_file()
     assert (ROOT / "tools/packaging/sidecar/cc_port_desktop_api_entry.py").is_file()
+    assert (ROOT / "tools/packaging/agent/cc_port_agent_entry.py").is_file()
     assert not (ROOT / "package-lock.json").exists()
 
 

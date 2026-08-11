@@ -94,12 +94,14 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Stage Tauri sidecar placeholder
+      - name: Stage Tauri external binary placeholders
         shell: pwsh
         run: |
           $sidecarPath = "desktop/src-tauri/binaries/cc-port-desktop-api-x86_64-pc-windows-msvc.exe"
+          $agentPath = "desktop/src-tauri/binaries/cc-port-x86_64-pc-windows-msvc.exe"
           New-Item -ItemType Directory -Path (Split-Path -Parent $sidecarPath) -Force | Out-Null
           New-Item -ItemType File -Path $sidecarPath -Force | Out-Null
+          New-Item -ItemType File -Path $agentPath -Force | Out-Null
 
       - name: Verify acknowledged glib advisory is absent from Windows target
         shell: pwsh

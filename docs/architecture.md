@@ -2,7 +2,7 @@
 
 ## 产品边界
 
-CC Port 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skill`、`prompt`、`rule`、`plugin` 和 MCP server 配置；远端仓库中的实体内容或外部 `source` 是跨设备事实，工具中立的 `registry.yaml` 只声明成员关系、稳定身份和位置。本机状态目录保存可重建的受管远端镜像、commit 只读快照、备份、所有权和临时操作数据。AI 工具原生目录中的资源是本地实例，不通过本机镜像转发。
+CC Port 定位为本地优先的 AI 工具资源管理器。管理对象包括 `skill`、`mcp`、`rule`、`prompt`、`plugin`、`instruction` 和 `memory`；远端仓库中的实体内容或外部 `source` 是跨设备事实，工具中立的 `registry.yaml` 只声明成员关系、稳定身份和位置。本机状态目录保存可重建的受管远端镜像、commit 只读快照、备份、所有权、审批和临时操作数据。AI 工具原生目录中的资源是本地实例，不通过本机镜像转发。
 
 当前采用模块化单体，不拆分独立服务：
 
@@ -17,6 +17,8 @@ CC Port 定位为本地优先的 AI 工具资源管理器。管理对象包括 `
 
 ```mermaid
 flowchart LR
+    AGENT["AI coding agent"] --> MCP["Typed stdio MCP"]
+    AGENT --> CLI["Machine JSON CLI"]
     UI["React Desktop"] --> TAURI["Tauri / Rust bridge"]
     TAURI --> API["Desktop API sidecar"]
     CLI["CLI"] --> SERVICES
@@ -30,6 +32,10 @@ flowchart LR
     MIRROR --> SNAPSHOT["Commit read-only snapshots"]
     SERVICES --> STATE["Machine-local state"]
     SERVICES --> TOOLS["AI tool native targets"]
+    MCP --> APPROVAL["Single-use local approval"]
+    CLI --> APPROVAL
+    API --> APPROVAL
+    APPROVAL --> SERVICES
 ```
 
 ## Python 模块边界
@@ -42,6 +48,9 @@ flowchart LR
 | `core.secret_scan` | 资源文本的凭据模式检查 | 只返回脱敏预览，不在日志中保存真实值 |
 | `core.ownership` | 目录与 MCP entry 的所有权 | 未管理目标不能被普通覆盖或卸载 |
 | `services.asset_sync` | 受管远端镜像刷新、commit 快照、逻辑资源并集、批量计划、哈希重验证、批量上传单提交与逐项安装事务 | 不信任前端路径或指纹；不强推；不隐式删除 |
+| `agent.contracts` | CLI 与 MCP 共用的严格机器协议、版本化 envelope、状态与退出码映射 | 输入默认拒绝未知字段；机器输出只产生一个 JSON 文档；不得为不同 adapter 复制 schema |
+| `services.approval` | 本机一次性审批请求及其状态转换 | 授权绑定 kind、operation id、plan hash 和完整 scope hash；过期、拒绝、已消费或不匹配的授权都不能写入 |
+| `services.ai_integration` | 为精确 profile 计划、安装、验证和卸载 CC Port Skill 与 MCP 注册 | 只修改展示并获批的目标；保留未受管内容；目标变化返回新计划并要求新审批；本地写入使用共享事务 |
 | `services.registry_audit` | 同 commit 的 Registry 审计、候选发现、问题分类、canonical diff、计划哈希和 registry-only 远端修复 | 检查只读；应用重新 fetch；只暂存 `registry.yaml`；竞态返回 stale |
 | `services.resource_sync` | 弃用兼容：旧 Git 分歧检测、worktree 合并与推送 | 仅保留一个发布版本，用于清理遗留工作区状态；新桌面流程不得调用 |
 | `services.resource_commit` | 资源级提交预览、管理路径限制和待推送内容扫描 | 不提供通用 Git 暂存区；非管理路径和敏感内容默认阻断 |
@@ -86,6 +95,9 @@ maintenance/orphans/<quarantine-id>/
 maintenance/trash/<cleanup-id>/
 operations/
 ownership/mcp.json
+approvals/<approval-id>.json
+ai-integration/plans/<operation-id>.json
+ai-integration/ownership/<profile-id>.json
 assets/remotes/
 assets/snapshots/
 asset-plans/<operation-id>/
@@ -94,9 +106,23 @@ sync/<operation-id>/  # 弃用兼容
 
 `assets/remotes/` 保存隐藏的完整受管远端镜像，`assets/snapshots/` 保存以 commit 为边界的只读视图。两者都是可从远端重建的派生缓存，不允许用户编辑，不提供给 AI 工具作为资源目录，也不建立到工具目标的链接。远端不可用时最近成功的快照只能用于查看；依赖最新远端断言的写入仍然阻断。
 
+`approvals/` 只保存本机授权状态，不进入资源仓库。审批状态为 `pending`、`approved`、`consumed`、`rejected` 或 `expired`；授权只能消费一次。`ai-integration/` 保存安装计划与 MCP entry 所有权证据，也属于可审计的本机私有状态。
+
 ### AI 工具目标
 
 工具目标路径来自 `PlatformProfile` 和内部 `ToolAdapter`。每个被发现或安装到这些原生目标的资源都是本地实例；同一逻辑资源可以在多个工具或项目范围内存在多个实例。目录型资源写入 `.cc-port-managed.json`；MCP 只拥有指定 server entry，不拥有整个 JSON 配置文件。
+
+## AI 自动化接口
+
+Windows 安装包同时携带桌面程序、Desktop API sidecar 和独立的 `cc-port.exe` agent 二进制。后者提供人类 CLI、严格 JSON CLI，以及 `cc-port mcp --stdio`。安装 AI 集成时，桌面端把随包发布的 `cc-port` Skill 复制到所选精确 profile 的 `skills_dir/cc-port`，并只在该 profile 的原生 MCP 配置中注册本机 `cc-port.exe` 命令。Codex 使用受管 TOML block；采用 JSON MCP 配置的工具只增加 `mcpServers.cc-port` entry。卸载只删除 CC Port 明确拥有的 Skill 与 entry。
+
+AI 的标准工作流固定为 `status → inventory → diff → plan → approval → apply → verify`。MCP 是首选接口；不支持 MCP 时，AI 才使用带 `--non-interactive --json` 的 CLI。两种接口共用 `agent.contracts` 与 Python services，不能自行复制文件、修改 Git 仓库或绕过 plan/apply。
+
+读操作和 plan 不需要写授权。MCP 或非交互 CLI 产生可执行计划时，会创建本机 `pending` 审批；模型无权通过 MCP、CLI `--yes` 或其他机器参数批准它。用户通过保留的桌面客户端审批或拒绝。apply 必须提交同一 `approval_id`、operation id、plan hash 和 scope；服务原子消费授权后才进入写服务。发生 stale 时返回替代计划和新的审批，旧授权必须先失效，不能迁移或在状态恢复后重放。
+
+这个审批模型是应用层的能力分层，假设 AI 宿主的沙箱或权限策略不允许 agent 直接改写 CC Port 本机 state，也不允许伪造 Desktop sidecar 父进程调用。当前 v1 的普通用户 JSON 状态和未签名桌面二进制不构成独立 Windows 安全主体；对同用户、不受限制的代码执行者，需要另设独立 broker/服务账户或 OS 级用户在场机制才能形成硬安全边界，该部分不在 schema v1 中。
+
+MCP server instructions、工具 annotations 和 Skill 文档用于帮助模型选择接口，但不作为安全边界。真正的边界是严格 schema、精确 profile/local instance、服务端 plan 重建、一次性审批、目标锁、备份/回滚以及 apply 后重新 inventory。完整契约见 [AI Agent 自动发现、审批与调用规格](specs/ai-agent-interface.md)。
 
 ## 资源清单读取流
 

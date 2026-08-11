@@ -30,7 +30,8 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/cc-port-desktop-api"
+      "binaries/cc-port-desktop-api",
+      "binaries/cc-port"
     ]
   }
 }

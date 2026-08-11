@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
+from fastmcp.tools import ToolResult
 
 from cc_port.interfaces import mcp_server
+from cc_port.services.approval import (
+    approve_approval_request,
+    load_approval_request,
+)
 from cc_port.services.asset_sync import (
     AssetActionPlan,
     AssetActionResult,
@@ -83,7 +89,7 @@ def test_mcp_asset_inventory_forwards_scope_and_preserves_profile_identity(
                         writable=True,
                         read_only=False,
                         commit="abc123",
-                        path=None,
+                        path=Path("memories/claude-memory-deadbeef"),
                         description="",
                     ),
                     local_instances=[
@@ -96,6 +102,10 @@ def test_mcp_asset_inventory_forwards_scope_and_preserves_profile_identity(
                             fingerprint="local-fingerprint",
                             description="Claude memory",
                             status="local-only",
+                            content_path=Path(
+                                "/home/lingye/.claude/projects/slot/memory"
+                            ),
+                            link_target="/home/lingye/private/memory",
                             tool_id="claude-code",
                             environment_kind="wsl",
                             environment_name="Ubuntu",
@@ -135,14 +145,20 @@ def test_mcp_asset_inventory_forwards_scope_and_preserves_profile_identity(
         "scan_global": False,
         "project_ids": ["project-1"],
     }
-    assert "rows" not in result
-    instance = result["resources"][0]["local_instances"][0]
-    assert instance["platform"] == "claude-wsl-ubuntu"
-    assert instance["tool_id"] == "claude-code"
-    assert instance["environment_kind"] == "wsl"
-    assert instance["environment_name"] == "Ubuntu"
-    assert instance["path"].replace("\\", "/").endswith("projects/slot/memory")
-    assert wire_result.structured_content == result
+    assert result.ok is True
+    assert result.data is not None
+    instance = result.data.resources[0].local_instances[0]
+    assert instance.platform == "claude-wsl-ubuntu"
+    assert instance.tool_id == "claude-code"
+    assert instance.environment_kind == "wsl"
+    assert instance.environment_name == "Ubuntu"
+    assert instance.path == "${PRIVATE_PATH}"
+    assert instance.content_path == "${PRIVATE_PATH}"
+    assert instance.link_target == "${PRIVATE_PATH}"
+    remote_path = result.data.resources[0].remote.path
+    assert remote_path is not None
+    assert remote_path.replace("\\", "/") == "memories/claude-memory-deadbeef"
+    assert wire_result.structured_content == result.model_dump(mode="json")
 
 
 def test_mcp_single_asset_plan_and_apply_forward_revalidation_identity(
@@ -150,32 +166,35 @@ def test_mcp_single_asset_plan_and_apply_forward_revalidation_identity(
 ) -> None:
     config = object()
     captured: dict[str, object] = {}
+    service_plan = AssetActionPlan(
+        operation_id="plan-1",
+        action="set-platform-install-name",
+        resource_key="memory:claude-memory-deadbeef",
+        target_resource_key="memory:claude-memory-deadbeef",
+        kind="memory",
+        name="claude-memory-deadbeef",
+        platform="claude-windows",
+        local_instance_id="claude-windows:memory:slot",
+        local_locator="discovered",
+        remote_commit="abc123",
+        remote_target_exists=True,
+        remote_target_fingerprint="remote-fingerprint",
+        local_source_fingerprint="local-fingerprint",
+        target_path=Path("C:/Users/Lingye/.claude/projects/slot/memory"),
+        target_exists=True,
+        target_fingerprint="target-fingerprint",
+        target_managed=True,
+        new_install_name="-c-Users-Lingye-project",
+        overwrite_unmanaged=True,
+        link_target_confirmed=True,
+        tool_id="claude-code",
+        environment_kind="windows",
+        environment_name="windows",
+    )
 
     def fake_plan(action: str, **kwargs: object) -> AssetActionPlan:
-        captured["plan"] = (action, kwargs)
-        return AssetActionPlan(
-            operation_id="plan-1",
-            action="set-platform-install-name",
-            resource_key="memory:claude-memory-deadbeef",
-            target_resource_key="memory:claude-memory-deadbeef",
-            kind="memory",
-            name="claude-memory-deadbeef",
-            platform="claude-windows",
-            local_instance_id="claude-windows:memory:slot",
-            local_locator="discovered",
-            remote_commit="abc123",
-            remote_target_exists=True,
-            remote_target_fingerprint="remote-fingerprint",
-            local_source_fingerprint="local-fingerprint",
-            target_path=Path("C:/Users/Lingye/.claude/projects/slot/memory"),
-            target_exists=True,
-            target_fingerprint="target-fingerprint",
-            target_managed=True,
-            new_install_name="-c-Users-Lingye-project",
-            tool_id="claude-code",
-            environment_kind="windows",
-            environment_name="windows",
-        )
+        captured.setdefault("plans", []).append((action, kwargs))
+        return service_plan
 
     def fake_apply(operation_id: str, **kwargs: object) -> AssetActionResult:
         captured["apply"] = (operation_id, kwargs)
@@ -193,6 +212,11 @@ def test_mcp_single_asset_plan_and_apply_forward_revalidation_identity(
     monkeypatch.setattr(mcp_server, "load_config", lambda: config)
     monkeypatch.setattr(mcp_server, "build_asset_action_plan", fake_plan)
     monkeypatch.setattr(mcp_server, "apply_asset_action_plan", fake_apply)
+    monkeypatch.setattr(
+        mcp_server,
+        "load_asset_action_plan",
+        lambda operation_id, **_kwargs: service_plan,
+    )
 
     planned = mcp_server.asset_action_plan(
         "set-platform-install-name",
@@ -204,9 +228,43 @@ def test_mcp_single_asset_plan_and_apply_forward_revalidation_identity(
         overwrite_unmanaged=True,
         link_target_confirmed=True,
     )
-    applied = mcp_server.asset_action_apply("plan-1")
+    assert planned.data is not None
+    assert planned.data.requires_approval is True
+    assert planned.data.approval_status == "pending"
+    pending_apply = mcp_server.asset_action_apply(
+        planned.data.operation_id,
+        planned.data.plan_hash,
+        planned.data.approval_id,
+    )
+    pending_called = asyncio.run(
+        mcp_server.mcp.call_tool(
+            "asset_action_apply",
+            {
+                "operation_id": planned.data.operation_id,
+                "plan_hash": planned.data.plan_hash,
+                "approval_id": planned.data.approval_id,
+            },
+        )
+    )
+    assert isinstance(pending_apply, ToolResult)
+    assert pending_apply.is_error is True
+    assert pending_apply.structured_content is not None
+    assert pending_apply.structured_content["status"] == "needs-confirmation"
+    assert pending_apply.structured_content["error"]["code"] == "approval_required"
+    assert (
+        pending_apply.structured_content["error"]["details"]["approval_id"]
+        == planned.data.approval_id
+    )
+    assert pending_called.is_error is True
+    assert pending_called.structured_content == pending_apply.structured_content
+    approve_approval_request(planned.data.approval_id)
+    applied = mcp_server.asset_action_apply(
+        planned.data.operation_id,
+        planned.data.plan_hash,
+        planned.data.approval_id,
+    )
 
-    action, kwargs = captured["plan"]
+    action, kwargs = captured["plans"][0]
     assert action == "set-platform-install-name"
     assert kwargs == {
         "kind": "memory",
@@ -220,11 +278,34 @@ def test_mcp_single_asset_plan_and_apply_forward_revalidation_identity(
         "config": config,
     }
     assert captured["apply"] == ("plan-1", {"config": config})
-    assert planned["operation_id"] == "plan-1"
-    assert planned["platform"] == "claude-windows"
-    assert planned["tool_id"] == "claude-code"
-    assert planned["environment_kind"] == "windows"
-    assert applied["local_path"].replace("\\", "/").endswith("projects/slot/memory")
+    assert planned.data.operation_id == "plan-1"
+    assert len(planned.data.plan_hash) == 64
+    assert planned.data.platform == "claude-windows"
+    assert planned.data.tool_id == "claude-code"
+    assert planned.data.environment_kind == "windows"
+    assert planned.data.target_path == "${PRIVATE_PATH}"
+    approval = load_approval_request(planned.data.approval_id)
+    assert approval.metadata["operation_id"] == planned.data.operation_id
+    assert approval.metadata["plan_hash"] == planned.data.plan_hash
+    assert approval.metadata["scope"] == {
+        "action": "set-platform-install-name",
+        "resource_key": "memory:claude-memory-deadbeef",
+        "target_resource_key": "memory:claude-memory-deadbeef",
+        "platform": "claude-windows",
+        "local_instance_id": "claude-windows:memory:slot",
+        "new_name": "",
+        "new_install_name": "-c-Users-Lingye-project",
+        "overwrite_unmanaged": True,
+            "link_target_confirmed": True,
+            "remote_commit": "abc123",
+            "remote_repo_hash": "",
+            "remote_branch": "",
+        }
+    assert "C:/Users/Lingye" not in str(approval.metadata)
+    assert applied.data is not None
+    assert applied.data.approval_status == "consumed"
+    assert load_approval_request(planned.data.approval_id).status == "consumed"
+    assert applied.data.local_path == "${PRIVATE_PATH}"
 
 
 def test_mcp_batch_plan_and_apply_preserve_hash_profiles_and_choices(
@@ -232,15 +313,17 @@ def test_mcp_batch_plan_and_apply_preserve_hash_profiles_and_choices(
 ) -> None:
     config = object()
     captured: dict[str, object] = {}
+    plan_hash = "a" * 64
+    replacement_hash = "b" * 64
 
     def fake_plan(direction: str, **kwargs: object) -> AssetBatchPlan:
-        captured["plan"] = (direction, kwargs)
+        captured.setdefault("plans", []).append((direction, kwargs))
         return AssetBatchPlan(
             direction=direction,
             resource_keys=list(kwargs["resource_keys"]),
             target_platforms=list(kwargs["target_platforms"]),
             remote_commit="abc123",
-            plan_hash="batch-hash",
+            plan_hash=plan_hash,
             items=[],
             executable_count=1,
             blocked_count=0,
@@ -254,15 +337,15 @@ def test_mcp_batch_plan_and_apply_preserve_hash_profiles_and_choices(
             resource_keys=list(kwargs["resource_keys"]),
             target_platforms=list(kwargs["target_platforms"]),
             remote_commit="def456",
-            plan_hash="new-hash",
+            plan_hash=replacement_hash,
             items=[],
-            executable_count=0,
-            blocked_count=1,
+            executable_count=1,
+            blocked_count=0,
             skipped_count=0,
         )
         return AssetBatchResult(
             status="stale-plan",
-            plan_hash="new-hash",
+            plan_hash=replacement_hash,
             results=[],
             stale_plan=stale_plan,
         )
@@ -281,7 +364,12 @@ def test_mcp_batch_plan_and_apply_preserve_hash_profiles_and_choices(
             "plugin_track": "reference",
             "ownership_confirmed": True,
             "link_target_confirmed": True,
-            "reference_origin": {"origin_type": "git", "repo": "owner/repo"},
+            "reference_origin": {
+                "origin_type": "git",
+                "repo": "owner/repo",
+                "url": "https://user:supersecretvalue@example.test/repo",
+                "local_path": "C:/Users/Lingye/private/repo",
+            },
             "plugin_dependencies": {"demo": "1.0.0"},
         }
     ]
@@ -295,14 +383,24 @@ def test_mcp_batch_plan_and_apply_preserve_hash_profiles_and_choices(
         choices=choices,
     )
     applied = mcp_server.asset_batch_apply(
+        "download", resource_keys, plan_hash, "not-yet", "0" * 32
+    )
+    assert isinstance(applied, ToolResult)
+    assert planned.data is not None
+    assert planned.data.requires_approval is True
+    assert planned.data.approval_status == "pending"
+    approve_approval_request(planned.data.approval_id)
+    applied = mcp_server.asset_batch_apply(
         "download",
         resource_keys,
-        "batch-hash",
+        plan_hash,
+        planned.data.operation_id,
+        planned.data.approval_id,
         target_platforms=target_platforms,
         choices=choices,
     )
 
-    _, plan_kwargs = captured["plan"]
+    _, plan_kwargs = captured["plans"][0]
     _, apply_kwargs = captured["apply"]
     plan_choice = plan_kwargs["choices"][0]
     apply_choice = apply_kwargs["choices"][0]
@@ -311,17 +409,40 @@ def test_mcp_batch_plan_and_apply_preserve_hash_profiles_and_choices(
     assert plan_choice.platform == "claude-wsl-ubuntu"
     assert plan_choice.local_instance_id == "claude-wsl-ubuntu:memory:slot"
     assert plan_choice.link_target_confirmed is True
-    assert plan_choice.reference_origin == {"origin_type": "git", "repo": "owner/repo"}
+    assert plan_choice.reference_origin == {
+        "origin_type": "git",
+        "repo": "owner/repo",
+        "url": "https://user:supersecretvalue@example.test/repo",
+        "local_path": "C:/Users/Lingye/private/repo",
+    }
     assert apply_choice == plan_choice
     assert plan_kwargs["target_platforms"] == target_platforms
     assert apply_kwargs["target_platforms"] == target_platforms
-    assert apply_kwargs["expected_plan_hash"] == "batch-hash"
+    assert apply_kwargs["expected_plan_hash"] == plan_hash
     assert plan_kwargs["config"] is config
     assert apply_kwargs["config"] is config
-    assert planned["plan_hash"] == "batch-hash"
-    assert applied["status"] == "stale-plan"
-    assert applied["plan_hash"] == "new-hash"
-    assert applied["stale_plan"]["target_platforms"] == target_platforms
+    assert planned.data.plan_hash == plan_hash
+    approval = load_approval_request(planned.data.approval_id)
+    assert approval.metadata["operation_id"] == planned.data.operation_id
+    assert approval.metadata["plan_hash"] == plan_hash
+    assert approval.metadata["scope"]["direction"] == "download"
+    assert approval.metadata["scope"]["resource_keys"] == resource_keys
+    assert approval.metadata["scope"]["target_platforms"] == target_platforms
+    review_choice = approval.metadata["scope"]["choices"][0]
+    assert review_choice["platform"] == "claude-wsl-ubuntu"
+    assert review_choice["local_instance_id"] == "claude-wsl-ubuntu:memory:slot"
+    assert "supersecretvalue" not in json.dumps(approval.metadata)
+    assert "${SECRET_VALUE}" in review_choice["reference_origin"]["url"]
+    assert review_choice["reference_origin"]["local_path"] == "${PRIVATE_PATH}"
+    assert applied.status == "stale-plan"
+    assert applied.data is not None
+    assert applied.data.approval_status == "consumed"
+    assert applied.data.plan_hash == replacement_hash
+    assert applied.data.stale_plan is not None
+    assert applied.data.stale_plan.target_platforms == target_platforms
+    assert applied.data.stale_plan.approval_status == "pending"
+    assert applied.data.stale_plan.approval_id != planned.data.approval_id
+    assert load_approval_request(planned.data.approval_id).status == "consumed"
 
 
 def test_mcp_batch_choice_rejects_missing_resource_identity() -> None:

@@ -403,6 +403,8 @@ def audit_registry_root(
     blocked_count = len(structural_blockers)
     original_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
     plan_hash = _plan_hash(
+        repo_url=repo_url,
+        branch=branch,
         remote_commit=remote_commit,
         original_hash=original_hash,
         candidate_fingerprints=candidate_fingerprints,
@@ -1161,6 +1163,8 @@ def _effective_choices(
 
 def _plan_hash(
     *,
+    repo_url: str,
+    branch: str,
     remote_commit: str,
     original_hash: str,
     candidate_fingerprints: dict[str, str],
@@ -1169,6 +1173,8 @@ def _plan_hash(
     issues: list[RegistryAuditIssue],
 ) -> str:
     payload = {
+        "repo_url_hash": hashlib.sha256(repo_url.encode("utf-8")).hexdigest(),
+        "branch": branch,
         "remote_commit": remote_commit,
         "original_hash": original_hash,
         "candidate_fingerprints": dict(sorted(candidate_fingerprints.items())),
@@ -1199,6 +1205,8 @@ def _unrepairable_plan(
 ) -> RegistryRepairPlan:
     original_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
     plan_hash = _plan_hash(
+        repo_url=repo_url,
+        branch=branch,
         remote_commit=remote_commit,
         original_hash=original_hash,
         candidate_fingerprints={},

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -582,6 +583,7 @@ def test_desktop_asset_inventory_plan_and_apply(monkeypatch) -> None:
     monkeypatch.setattr(desktop_api, "build_asset_inventory", fake_inventory)
     monkeypatch.setattr(desktop_api, "build_asset_action_plan", fake_plan)
     monkeypatch.setattr(desktop_api, "apply_asset_action_plan", fake_apply)
+    monkeypatch.setattr(desktop_api, "_require_trusted_desktop_action", lambda _action: None)
 
     inventory = desktop_api.run_action(
         "asset_inventory",
@@ -689,6 +691,7 @@ def test_desktop_asset_batch_plan_and_apply(monkeypatch) -> None:
     monkeypatch.setattr(desktop_api, "load_config", Config)
     monkeypatch.setattr(desktop_api, "build_asset_batch_plan", fake_batch_plan)
     monkeypatch.setattr(desktop_api, "apply_asset_batch_plan", fake_batch_apply)
+    monkeypatch.setattr(desktop_api, "_require_trusted_desktop_action", lambda _action: None)
 
     planned = desktop_api.run_action(
         "asset_batch_plan",
@@ -1088,3 +1091,283 @@ def test_desktop_doctor_drops_cli_only_token_check(monkeypatch) -> None:
 
     assert result["ok"] is True
     assert result["data"]["checks"] == [{"id": "git", "status": "ok"}]
+
+
+def test_desktop_ai_integration_plan_approve_apply_and_verify(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.setattr(
+        desktop_api,
+        "build_ai_integration_plan",
+        lambda profile_id, **kwargs: {
+            "operation_id": "a" * 32,
+            "profile_id": profile_id,
+            "action": kwargs["action"],
+            "plan_hash": "plan-hash",
+            "approval_id": "approval-1",
+            "overwrite_unmanaged": kwargs["overwrite_unmanaged"],
+        },
+    )
+
+    def fake_approve(approval_id: str, **expected) -> dict[str, str]:
+        calls.append(("approve", (approval_id, expected)))
+        return {"approval_id": approval_id, "status": "approved"}
+
+    def fake_apply(
+        operation_id: str,
+        plan_hash: str,
+        approval_id: str,
+        **_kwargs,
+    ) -> dict[str, object]:
+        calls.append(("apply", (operation_id, plan_hash, approval_id)))
+        return {"status": "succeeded", "verified": True}
+
+    monkeypatch.setattr(
+        desktop_api,
+        "load_approval_request",
+        lambda approval_id: SimpleNamespace(
+            approval_id=approval_id,
+            scope_hash="scope-hash",
+            revision="revision-1",
+        ),
+    )
+    monkeypatch.setattr(desktop_api, "approve_approval_request", fake_approve)
+    monkeypatch.setattr(desktop_api, "apply_ai_integration_plan", fake_apply)
+    monkeypatch.setattr(desktop_api, "_trusted_desktop_parent", lambda: True)
+    monkeypatch.setattr(
+        desktop_api,
+        "verify_ai_integration",
+        lambda profile_id, **kwargs: {
+            "profile_id": profile_id,
+            "installed": True,
+            "transport_verified": kwargs["verify_transport"],
+        },
+    )
+
+    planned = desktop_api.run_action(
+        "ai_integration_plan",
+        {
+            "profile_id": "codex-windows",
+            "action": "install",
+            "overwrite_unmanaged": True,
+        },
+    )
+    monkeypatch.setenv(
+        desktop_api.TRUSTED_DESKTOP_ACTION_ENV_VAR,
+        "ai_integration_approve_apply",
+    )
+    applied = desktop_api.run_action(
+        "ai_integration_approve_apply",
+        {
+            "operation_id": "a" * 32,
+            "plan_hash": "plan-hash",
+            "approval_id": "approval-1",
+        },
+    )
+    verified = desktop_api.run_action(
+        "ai_integration_verify",
+        {"profile_id": "codex-windows", "verify_transport": True},
+    )
+
+    assert planned["data"]["approval_id"] == "approval-1"
+    assert planned["data"]["overwrite_unmanaged"] is True
+    assert applied["data"] == {"status": "succeeded", "verified": True}
+    assert verified["data"]["transport_verified"] is True
+    assert calls == [
+        (
+            "approve",
+            (
+                "approval-1",
+                {
+                    "expected_operation_id": "a" * 32,
+                    "expected_plan_hash": "plan-hash",
+                    "expected_scope_hash": "scope-hash",
+                    "expected_revision": "revision-1",
+                },
+            ),
+        ),
+        ("apply", ("a" * 32, "plan-hash", "approval-1")),
+    ]
+
+
+def test_desktop_is_the_human_approval_surface(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    pending = {
+        "approval_id": "approval-1",
+        "kind": "asset-action",
+        "status": "pending",
+    }
+
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+
+    def fake_list(*, statuses):
+        calls.append(("list", statuses))
+        return [pending]
+
+    def fake_approve(approval_id: str, **expected):
+        calls.append(("approve", (approval_id, expected)))
+        return {**pending, "status": "approved"}
+
+    def fake_reject(approval_id: str, **expected):
+        calls.append(("reject", (approval_id, expected)))
+        return {**pending, "status": "rejected"}
+
+    monkeypatch.setattr(desktop_api, "list_approval_requests", fake_list)
+    monkeypatch.setattr(desktop_api, "approve_approval_request", fake_approve)
+    monkeypatch.setattr(desktop_api, "reject_approval_request", fake_reject)
+    monkeypatch.setattr(desktop_api, "_trusted_desktop_parent", lambda: True)
+
+    listed = desktop_api.run_action("approval_requests")
+    review = {
+        "approval_id": "approval-1",
+        "operation_id": "operation-1",
+        "plan_hash": "plan-hash",
+        "scope_hash": "scope-hash",
+        "revision": "revision-1",
+    }
+    monkeypatch.setenv(desktop_api.TRUSTED_DESKTOP_ACTION_ENV_VAR, "approval_approve")
+    approved = desktop_api.run_action(
+        "approval_approve", review
+    )
+    monkeypatch.setenv(desktop_api.TRUSTED_DESKTOP_ACTION_ENV_VAR, "approval_reject")
+    rejected = desktop_api.run_action(
+        "approval_reject", review
+    )
+
+    assert listed["data"]["requests"] == [pending]
+    assert approved["data"]["status"] == "approved"
+    assert rejected["data"]["status"] == "rejected"
+    assert calls == [
+        ("list", {"pending", "approved"}),
+        (
+            "approve",
+            (
+                "approval-1",
+                {
+                    "expected_operation_id": "operation-1",
+                    "expected_plan_hash": "plan-hash",
+                    "expected_scope_hash": "scope-hash",
+                    "expected_revision": "revision-1",
+                },
+            ),
+        ),
+        (
+            "reject",
+            (
+                "approval-1",
+                {
+                    "expected_operation_id": "operation-1",
+                    "expected_plan_hash": "plan-hash",
+                    "expected_scope_hash": "scope-hash",
+                    "expected_revision": "revision-1",
+                },
+            ),
+        ),
+    ]
+
+
+def test_desktop_approval_action_rejects_direct_sidecar_call(monkeypatch) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.delenv(desktop_api.TRUSTED_DESKTOP_ACTION_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        desktop_api,
+        "approve_approval_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("untrusted action must not reach approval state")
+        ),
+    )
+
+    result = desktop_api.run_action(
+        "approval_approve",
+        {
+            "approval_id": "approval-1",
+            "operation_id": "operation-1",
+            "plan_hash": "plan-hash",
+            "scope_hash": "scope-hash",
+            "revision": "revision-1",
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "PermissionError"
+    assert "trusted CC Port desktop interaction" in result["error"]["message"]
+
+
+def test_trusted_desktop_parent_requires_exact_frozen_sibling(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    sidecar = installed / "cc-port-desktop-api.exe"
+    desktop = installed / "cc-port-desktop.exe"
+    lookalike = tmp_path / "lookalike" / "cc-port-desktop.exe"
+    lookalike.parent.mkdir()
+    sidecar.write_bytes(b"sidecar")
+    desktop.write_bytes(b"desktop")
+    lookalike.write_bytes(b"renamed process")
+    monkeypatch.setattr(desktop_api.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop_api.sys, "executable", str(sidecar))
+
+    monkeypatch.setattr(desktop_api, "_parent_process_image", lambda: lookalike)
+    assert desktop_api._trusted_desktop_parent() is False
+
+    monkeypatch.setattr(desktop_api, "_parent_process_image", lambda: desktop)
+    assert desktop_api._trusted_desktop_parent() is True
+
+
+def test_source_tree_python_is_never_a_desktop_approval_authority(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    desktop = tmp_path / "cc-port-desktop.exe"
+    desktop.write_bytes(b"desktop")
+    monkeypatch.setattr(desktop_api.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(desktop_api, "_parent_process_image", lambda: desktop)
+
+    assert desktop_api._trusted_desktop_parent() is False
+
+
+@pytest.mark.parametrize(
+    ("action", "payload", "service_name"),
+    [
+        ("asset_action_apply", {"operation_id": "operation-1"}, "apply_asset_action_plan"),
+        (
+            "asset_batch_apply",
+            {
+                "direction": "download",
+                "resource_keys": ["skill:demo"],
+                "target_platforms": ["codex"],
+                "plan_hash": "plan-hash",
+            },
+            "apply_asset_batch_plan",
+        ),
+        (
+            "registry_repair_apply",
+            {"plan_hash": "plan-hash", "choices": []},
+            "apply_registry_repair",
+        ),
+    ],
+)
+def test_desktop_reviewed_write_rejects_direct_sidecar_call(
+    action: str,
+    payload: dict[str, object],
+    service_name: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(desktop_api, "load_config", Config)
+    monkeypatch.delenv(desktop_api.TRUSTED_DESKTOP_ACTION_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        desktop_api,
+        service_name,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("untrusted action must not reach the write service")
+        ),
+    )
+
+    result = desktop_api.run_action(action, payload)
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "PermissionError"
+    assert "trusted CC Port desktop interaction" in result["error"]["message"]

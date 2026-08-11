@@ -77,6 +77,9 @@ def test_registry_v1_is_documented_as_a_tool_neutral_manifest() -> None:
     assert "CC Port 只是该清单的一个消费者" in spec
     assert "Registry 不保存" in spec
     assert "cc-port resource registry-check" in spec
-    assert "cc-port resource registry-repair --yes" in spec
+    assert "cc-port resource registry-repair --yes" not in spec
+    assert "`--yes` 不构成授权" in spec
+    assert "registry_repair_plan" in spec
+    assert "registry_repair_apply" in spec
     assert "资源仓库和 `registry.yaml` 是开放格式" in chinese_readme
     assert "other consumers do not need CC Port" in english_readme

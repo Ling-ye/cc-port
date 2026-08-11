@@ -140,6 +140,8 @@ def build_pyinstaller_command(python: str, work_root: Path, *, clean: bool) -> l
             str(ROOT),
             "--collect-submodules",
             "cc_port",
+            "--collect-data",
+            "cc_port",
         ]
     )
     for module in EXCLUDED_MODULES:

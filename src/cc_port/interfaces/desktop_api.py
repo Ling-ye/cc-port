@@ -45,6 +45,17 @@ from ..core.registry import find_registry_path, load_registry
 from ..core.resource_detection import detect_local_resource_type, detect_remote_resource
 from ..infrastructure import git_ops
 from ..services import publisher
+from ..services.ai_integration import (
+    apply_ai_integration_plan,
+    build_ai_integration_plan,
+    verify_ai_integration,
+)
+from ..services.approval import (
+    approve_approval_request,
+    list_approval_requests,
+    load_approval_request,
+    reject_approval_request,
+)
 from ..services.asset_sync import (
     AssetBatchChoice,
     add_plugin_reference,
@@ -123,6 +134,15 @@ from ..services.ui_messages import UiMessageRef, ui_message
 JsonDict = dict[str, Any]
 Handler = Callable[[JsonDict], Any]
 DESKTOP_PAYLOAD_ENV_VAR = "CC_PORT_DESKTOP_API_PAYLOAD"
+TRUSTED_DESKTOP_ACTION_ENV_VAR = "CC_PORT_TRUSTED_DESKTOP_ACTION"
+TRUSTED_DESKTOP_ACTIONS = {
+    "ai_integration_approve_apply",
+    "approval_approve",
+    "approval_reject",
+    "asset_action_apply",
+    "asset_batch_apply",
+    "registry_repair_apply",
+}
 
 
 class DesktopRemoteRepositoryMutationError(RuntimeError):
@@ -245,6 +265,213 @@ def _platforms(_: JsonDict) -> JsonDict:
 def _doctor(_: JsonDict) -> JsonDict:
     checks = build_doctor_checks(load_config())
     return {"checks": [check for check in checks if check.get("id") != "github_token"]}
+
+
+def _ai_integration_status(payload: JsonDict) -> JsonDict:
+    cfg = load_config()
+    requested = _optional_str(payload.get("profile_id"))
+    profiles = (
+        [cfg.platforms.get(requested)]
+        if requested
+        else list(cfg.platforms.profiles)
+    )
+    results = []
+    for profile in profiles:
+        if profile is None:
+            raise ValueError("Unknown platform profile id.")
+        try:
+            result = verify_ai_integration(
+                profile.name,
+                config=cfg,
+                verify_transport=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - status keeps other profiles visible
+            results.append(
+                {
+                    "profile_id": profile.name,
+                    "installed": False,
+                    "managed": False,
+                    "skill_ready": False,
+                    "mcp_registered": False,
+                    "transport_verified": False,
+                    "tool_count": 0,
+                    "tools": [],
+                    "problems": [str(exc)],
+                    "configured": False,
+                    "transport_status": "unknown",
+                    "skill_managed": False,
+                    "mcp_managed": False,
+                    "managed_actions_available": [],
+                }
+            )
+        else:
+            results.append(result)
+    return {"profiles": results}
+
+
+def _ai_integration_plan(payload: JsonDict) -> Any:
+    return build_ai_integration_plan(
+        _required_str(payload, "profile_id"),
+        action=str(payload.get("action") or "install"),  # type: ignore[arg-type]
+        overwrite_unmanaged=bool(payload.get("overwrite_unmanaged", False)),
+        config=load_config(),
+    )
+
+
+def _ai_integration_approve_apply(payload: JsonDict) -> Any:
+    _require_trusted_desktop_action("ai_integration_approve_apply")
+    approval_id = _required_str(payload, "approval_id")
+    operation_id = _required_str(payload, "operation_id")
+    plan_hash = _required_str(payload, "plan_hash")
+    request = load_approval_request(approval_id)
+    approve_approval_request(
+        approval_id,
+        expected_operation_id=operation_id,
+        expected_plan_hash=plan_hash,
+        expected_scope_hash=request.scope_hash,
+        expected_revision=request.revision,
+    )
+    return apply_ai_integration_plan(
+        operation_id,
+        plan_hash,
+        approval_id,
+        config=load_config(),
+    )
+
+
+def _ai_integration_verify(payload: JsonDict) -> Any:
+    return verify_ai_integration(
+        _required_str(payload, "profile_id"),
+        config=load_config(),
+        verify_transport=bool(payload.get("verify_transport", True)),
+    )
+
+
+def _approval_requests(_: JsonDict) -> JsonDict:
+    return {
+        "requests": list_approval_requests(statuses={"pending", "approved"}),
+    }
+
+
+def _approval_approve(payload: JsonDict) -> Any:
+    _require_trusted_desktop_action("approval_approve")
+    return approve_approval_request(
+        _required_str(payload, "approval_id"),
+        expected_operation_id=_required_str(payload, "operation_id"),
+        expected_plan_hash=_required_str(payload, "plan_hash"),
+        expected_scope_hash=_required_str(payload, "scope_hash"),
+        expected_revision=_required_str(payload, "revision"),
+    )
+
+
+def _approval_reject(payload: JsonDict) -> Any:
+    _require_trusted_desktop_action("approval_reject")
+    return reject_approval_request(
+        _required_str(payload, "approval_id"),
+        expected_operation_id=_required_str(payload, "operation_id"),
+        expected_plan_hash=_required_str(payload, "plan_hash"),
+        expected_scope_hash=_required_str(payload, "scope_hash"),
+        expected_revision=_required_str(payload, "revision"),
+    )
+
+
+def _require_trusted_desktop_action(action: str) -> None:
+    if action not in TRUSTED_DESKTOP_ACTIONS:
+        raise PermissionError("The requested action is not a trusted desktop approval action.")
+    marker = os.environ.pop(TRUSTED_DESKTOP_ACTION_ENV_VAR, "")
+    if marker != action or not _trusted_desktop_parent():
+        raise PermissionError("Approval requires a trusted CC Port desktop interaction.")
+
+
+def _trusted_desktop_parent() -> bool:
+    image = _parent_process_image()
+    if image is None:
+        return False
+    name = image.name.casefold()
+    if name not in {"cc-port-desktop", "cc-port-desktop.exe"}:
+        return False
+    if not getattr(sys, "frozen", False):
+        # Source-tree Python processes are never an approval authority. Tests
+        # and desktop development must explicitly replace this narrow helper.
+        return False
+    sidecar = Path(sys.executable)
+    sidecar_name = sidecar.name.casefold()
+    if not (
+        sidecar_name in {"cc-port-desktop-api", "cc-port-desktop-api.exe"}
+        or sidecar_name.startswith("cc-port-desktop-api-")
+    ):
+        return False
+    try:
+        sidecar = sidecar.resolve(strict=True)
+        image = image.resolve(strict=True)
+    except OSError:
+        return False
+    return any(_same_process_image(image, candidate) for candidate in _desktop_image_candidates(sidecar))
+
+
+def _desktop_image_candidates(sidecar: Path) -> tuple[Path, ...]:
+    """Return production Tauri locations corresponding to one frozen sidecar."""
+    directories = [sidecar.parent]
+    if sidecar.parent.name.casefold() == "resources":
+        directories.append(sidecar.parent.parent)
+    if (
+        sidecar.parent.name.casefold() == "binaries"
+        and sidecar.parent.parent.name.casefold() == "_up_"
+    ):
+        directories.append(sidecar.parent.parent.parent)
+    names = ("cc-port-desktop.exe", "cc-port-desktop")
+    return tuple(directory / name for directory in directories for name in names)
+
+
+def _same_process_image(actual: Path, expected: Path) -> bool:
+    try:
+        return expected.is_file() and actual.samefile(expected)
+    except OSError:
+        return False
+
+
+def _parent_process_image() -> Path | None:
+    if os.name != "nt":
+        proc_link = Path("/proc") / str(os.getppid()) / "exe"
+        try:
+            return proc_link.resolve(strict=True)
+        except OSError:
+            return None
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(
+            process_query_limited_information,
+            False,
+            os.getppid(),
+        )
+        if not handle:
+            return None
+        try:
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return None
+            return Path(buffer.value)
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, OSError, ValueError):
+        return None
 
 
 def _collect(payload: JsonDict) -> JsonDict:
@@ -481,6 +708,7 @@ def _registry_repair_plan(payload: JsonDict) -> Any:
 
 
 def _registry_repair_apply(payload: JsonDict) -> Any:
+    _require_trusted_desktop_action("registry_repair_apply")
     return apply_registry_repair(
         expected_plan_hash=_required_str(payload, "plan_hash"),
         config=load_config(),
@@ -562,6 +790,7 @@ def _asset_action_plan(payload: JsonDict) -> Any:
 
 
 def _asset_action_apply(payload: JsonDict) -> Any:
+    _require_trusted_desktop_action("asset_action_apply")
     return apply_asset_action_plan(
         _required_str(payload, "operation_id"),
         config=load_config(),
@@ -579,6 +808,7 @@ def _asset_batch_plan(payload: JsonDict) -> Any:
 
 
 def _asset_batch_apply(payload: JsonDict) -> Any:
+    _require_trusted_desktop_action("asset_batch_apply")
     return apply_asset_batch_plan(
         _required_str(payload, "direction"),
         resource_keys=_str_list(payload.get("resource_keys")),
@@ -1262,6 +1492,13 @@ ACTIONS: dict[str, Handler] = {
     "resource_status": _resource_status,
     "platforms": _platforms,
     "doctor": _doctor,
+    "ai_integration_status": _ai_integration_status,
+    "ai_integration_plan": _ai_integration_plan,
+    "ai_integration_approve_apply": _ai_integration_approve_apply,
+    "ai_integration_verify": _ai_integration_verify,
+    "approval_requests": _approval_requests,
+    "approval_approve": _approval_approve,
+    "approval_reject": _approval_reject,
     "collect": _collect,
     "upload": _upload,
     "discover_resources": _discover_resources,

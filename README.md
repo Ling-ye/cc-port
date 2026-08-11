@@ -9,7 +9,7 @@
 ![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%2F11_x64-0078D4?logo=windows)
 ![Public Beta](https://img.shields.io/badge/status-public_beta-orange)
 
-CC Port 是一个面向多 AI coding 工具的本地桌面资源管理器。它扫描每个工具的原生目录，以你控制的 Git 仓库作为跨设备事实源，并在真正写入前生成明确的操作计划。资源仓库和 `registry.yaml` 是开放格式，不要求其他消费者安装或理解 CC Port。
+CC Port 是一个面向多 AI coding 工具的本地资源管理器。人类可以继续使用桌面客户端，AI 则可通过随安装包提供的 Skill、严格 JSON CLI 和 stdio MCP 自动发现并调用同一套能力。它扫描每个工具的原生目录，以你控制的 Git 仓库作为跨设备事实源，并在真正写入前生成明确的操作计划。资源仓库和 `registry.yaml` 是开放格式，不要求其他消费者安装或理解 CC Port。
 
 ## 一眼看懂
 
@@ -102,8 +102,9 @@ Registry 缺失、YAML 损坏或本身是链接时只显示诊断，不显示应
 ```text
 cc-port resource registry-check --json
 cc-port resource registry-repair --dry-run
-cc-port resource registry-repair --yes --choices choices.yaml
 ```
+
+命令行的 `registry-repair` 只生成和展示计划，`--yes` 不具有授权或写入语义。实际修复需要在桌面端审阅，或使用带一次性审批的 MCP `registry_repair_plan` / `registry_repair_apply` 流程。
 
 ## 五步开始
 
@@ -113,7 +114,7 @@ cc-port resource registry-repair --yes --choices choices.yaml
 4. 启动 CC Port，在“设置”中粘贴仓库的 HTTPS 地址并完成验证。
 5. 扫描本机资源，在资源页逐项选择上传到仓库或安装到目标工具。
 
-安装包已经包含桌面程序和 Python sidecar；普通用户不需要安装 Python、Node.js 或 Rust。完整流程、首次配置和卸载方式见[快速开始](docs/getting-started.md)。
+本仓库的新 Windows 构建会同时包含桌面程序、Desktop API sidecar 和独立的 `cc-port.exe` CLI/MCP agent；普通用户不需要安装 Python、Node.js 或 Rust。已经发布的 v0.5.4 安装器早于这项能力，尚不包含 agent；请等待包含该功能的新版本。完整流程、首次配置、AI 集成和卸载方式见[快速开始](docs/getting-started.md)。
 
 开发环境可运行 `Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1` 自动检查并安装所需工具和依赖。脚本列出操作后会直接执行，不再要求输入 `y/n`；`-CheckOnly` 仍只检查而不修改环境。
 
@@ -122,6 +123,7 @@ cc-port resource registry-repair --yes --choices choices.yaml
 - **仓库归你所有**：CC Port 不提供托管云服务；资源保存在你指定的 Git 仓库。
 - **凭据交给系统**：桌面端通过 Git Credential Manager 使用系统凭据，不读取或保存 GitHub Token。
 - **先计划再写入**：桌面端和 CLI 在写操作前展示目标、动作与阻断原因。
+- **机器接口不提供自批准**：推荐的 MCP 与非交互 CLI 写入必须提交绑定 operation、plan hash 和完整 scope 的一次性本机审批；用户在桌面端批准，stale 后必须重新审阅。
 - **不覆盖未接管内容**：所有权标记用于区分 CC Port 管理项与手工维护项。
 - **悬空链接只替换链接本身**：下载目标是根级 Windows 原生悬空符号链接时，只有明确确认覆盖未接管目标后才会删除链接本身并写入普通内容，不会跟随或修改链接指向的位置。
 - **可恢复写入**：安装、卸载、部署和恢复使用持久化事务、备份与失败回滚。
@@ -181,11 +183,19 @@ Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
 
 ## 三种入口
 
-- **桌面 GUI**：日常扫描、比较、上传、安装和环境诊断；说明页提供项目仓库与 GitHub Star 支持入口。
-- **CLI**：脚本化、批量操作、历史恢复和状态维护。
-- **MCP Server**：让支持 MCP 的 AI coding 工具调用 CC Port 能力。
+- **桌面 GUI**：日常扫描、比较、上传、安装、AI 集成、审批和环境诊断；人类界面不会删除。
+- **CLI**：人类脚本、严格 `--non-interactive --json` 机器调用、批量操作、历史恢复和状态维护。
+- **MCP Server**：`cc-port mcp --stdio` 向支持 MCP 的 AI coding 工具暴露 typed plan/apply 能力。
 
 三种入口共享同一套 Python 核心逻辑。架构边界和同步状态机见[架构文档](docs/architecture.md)。
+
+### 让 AI 自动使用 CC Port
+
+在包含该能力的新构建中，从桌面端“设置 → AI 自动化”按精确 profile 审阅启用计划。批准后，CC Port 只把随包发布的 `cc-port` Skill 安装到该 profile 的 Skill 目录，并在该工具的原生配置中增加本机 `cc-port.exe mcp --stdio` entry；不会删除客户端，也不会改写其他 MCP server。当前 schema v1 只自动引导 Windows 原生 profile；WSL profile 会显式阻断这一“Skill + MCP 注册”步骤，不会把 Windows 进程误报为 WSL 连接成功。现有的 profile-aware WSL 资源扫描和 plan/apply 能力仍保留。
+
+AI 首选 MCP discovery，并执行 `status → inventory(scan_local=true) → diff → plan → approval → apply → verify`；MCP 不可用时才回退到单 JSON envelope 的非交互 CLI。读和 plan 可自动完成，写计划进入桌面的“待处理 AI 审批”，用户单次批准后才能 apply。审批会过期且只能消费一次；目标变化返回新的 stale plan，旧审批自动失效。完整命令、schema 和安全边界见 [AI Agent 自动发现、审批与调用规格](docs/specs/ai-agent-interface.md)。
+
+这是应用层审批边界，不是 Windows 上的独立安全主体：AI 宿主必须限制 agent 直接改写 CC Port 本机 state 目录或伪造桌面 sidecar 调用。对与人类用户拥有同等、不受限制文件与进程权限的代码执行者，当前 v1 不声称提供操作系统级“人类在场”证明。
 
 ## 当前限制
 
@@ -206,6 +216,7 @@ Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
 - [架构](docs/architecture.md)
 - [Registry v1 规格](docs/specs/registry-v1.md)
 - [Claude Code 指令、记忆与多运行环境规格](docs/specs/claude-memory-and-runtime-environments.md)
+- [AI Agent 自动发现、审批与调用规格](docs/specs/ai-agent-interface.md)
 - [桌面打包与发布](docs/packaging-and-deployment.md)
 - [v0.5.4 发布说明](docs/releases/v0.5.4.md)
 - [功能规格](docs/specs/)

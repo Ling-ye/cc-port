@@ -694,6 +694,93 @@ export interface ConfigSettings {
   config: EditableConfig;
 }
 
+export interface AiIntegrationProfileStatus {
+  profile_id: string;
+  configured: boolean;
+  installed: boolean;
+  managed: boolean;
+  skill_managed: boolean;
+  mcp_managed: boolean;
+  skill_ready: boolean;
+  mcp_registered: boolean;
+  transport_verified: boolean;
+  transport_status: "unknown" | "verified" | "failed";
+  managed_actions_available: string[];
+  tool_count: number;
+  tools: string[];
+  problems: string[];
+}
+
+export interface AiIntegrationStatusResult {
+  profiles: AiIntegrationProfileStatus[];
+}
+
+export interface AiIntegrationTarget extends PlatformIdentity {
+  profile_id: string;
+  display_name: string;
+  available: boolean;
+  skill_path: string;
+  mcp_config_path: string;
+  mcp_config_format: string;
+  skill_status: string;
+  mcp_status: string;
+  actions: string[];
+  blockers: string[];
+  current_skill_hash: string;
+  current_config_hash: string;
+  desired_skill_hash: string;
+  desired_entry_hash: string;
+}
+
+export interface AiIntegrationPlan {
+  operation_id: string;
+  action: "install" | "uninstall";
+  profile_id: string;
+  command: string;
+  command_args: string[];
+  command_source: string;
+  target: AiIntegrationTarget;
+  plan_hash: string;
+  blocked: boolean;
+  blockers: string[];
+  requires_approval: boolean;
+  approval_id: string;
+  overwrite_unmanaged: boolean;
+  schema_version: number;
+}
+
+export interface AiIntegrationResult {
+  status: string;
+  operation_id: string;
+  plan_hash: string;
+  profile_id: string;
+  changed: boolean;
+  verified: boolean;
+  apply_operation_id: string;
+  approval_id: string;
+  stale_plan?: AiIntegrationPlan | null;
+  blockers: string[];
+  message: string;
+}
+
+export interface ApprovalRequest {
+  approval_id: string;
+  kind: string;
+  operation_id: string;
+  plan_hash: string;
+  scope_hash: string;
+  summary: string;
+  status: "pending" | "approved" | "consumed" | "rejected" | "expired";
+  created_at: string;
+  expires_at: string;
+  approved_at: string;
+  consumed_at: string;
+  rejected_at: string;
+  metadata: Record<string, unknown>;
+  revision: string;
+  schema_version: number;
+}
+
 export interface GitCredentialStatus {
   state: "ready" | "git_missing" | "gcm_missing" | "gcm_not_configured";
   ready: boolean;

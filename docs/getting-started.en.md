@@ -36,8 +36,11 @@ unknown-publisher warning. After confirming that the file came from
 `github.com/Ling-ye/cc-port` and that its SHA-256 matches, select **More info**
 to continue.
 
-The installer contains the desktop application and its Python sidecar. You do
-not need to install Python, Node.js, or Rust.
+New installers contain the desktop application, Desktop API sidecar, and
+standalone `cc-port.exe` CLI/MCP agent. You do not need to install Python,
+Node.js, or Rust. The already-published v0.5.4 installer predates the AI agent
+integration and does not include `cc-port.exe`; section 5 applies to a later
+build that contains this capability.
 
 ## 3. Create a resource repository
 
@@ -78,7 +81,36 @@ Verification reads remote references and probes write permission without
 uploading resources. Background refresh remains non-interactive. If credentials
 expire, return to Settings and verify the connection again.
 
-## 5. Scan and synchronize
+## 5. Enable AI invocation
+
+This step is optional and does not remove or replace the desktop client:
+
+1. Open **Settings → AI automation**.
+2. Select **Review enable plan** for the exact native Windows profile that
+   should expose CC Port to an AI. Schema v1 explicitly blocks automatic
+   bootstrap for WSL profiles; this does not remove the existing WSL asset
+   inventory and plan/apply workflows.
+3. Check the Skill target, MCP configuration target, launch command, and
+   planned actions. Same-name unmanaged content is blocked by default; create
+   a takeover plan only after confirming that CC Port should own that target.
+4. Select **Approve and enable**. CC Port installs its packaged `cc-port`
+   Skill, registers local `cc-port.exe mcp --stdio`, starts the MCP process,
+   and verifies its tool manifest.
+
+After enablement, an MCP-capable AI coding tool can discover CC Port. Reads and
+plans can run automatically; every write plan appears under **Pending AI
+approvals** in Settings. Approval is bound to the displayed operation,
+`plan_hash`, and complete scope, expires automatically, and can be consumed
+only once. Target drift requires review of a new plan and cannot reuse the old
+approval.
+
+When the host has no MCP support, use the
+`cc-port --non-interactive ... --json` machine interface. It returns one
+versioned JSON envelope and enforces the same approval boundary. The complete
+workflow is documented in the
+[AI agent discovery, approval, and invocation specification (Chinese)](specs/ai-agent-interface.md).
+
+## 6. Scan and synchronize
 
 1. Open **Resources**.
 2. Choose the global or project scopes to scan.

@@ -472,6 +472,7 @@ function Remove-KnownTauriOutputs {
         [Parameter(Mandatory = $true)][string]$TargetReleaseDirectory,
         [Parameter(Mandatory = $true)][string]$DesktopName,
         [Parameter(Mandatory = $true)][string]$SidecarName,
+        [string]$AgentName = "cc-port",
         [switch]$Clean
     )
 
@@ -480,7 +481,7 @@ function Remove-KnownTauriOutputs {
     }
     $bundleDirectory = Join-Path $TargetReleaseDirectory "bundle"
     Remove-CcPortSafePath -Path $bundleDirectory -Parent $TargetReleaseDirectory
-    $names = @("$SidecarName.exe")
+    $names = @("$SidecarName.exe", "$AgentName.exe")
     if ($Clean) {
         $names += "$DesktopName.exe"
     }
@@ -498,12 +499,14 @@ function Copy-TauriOutputs {
         [Parameter(Mandatory = $true)][string]$TargetReleaseDirectory,
         [Parameter(Mandatory = $true)][string]$StagingDirectory,
         [Parameter(Mandatory = $true)][string]$DesktopName,
-        [Parameter(Mandatory = $true)][string]$SidecarName
+        [Parameter(Mandatory = $true)][string]$SidecarName,
+        [string]$AgentName = "cc-port"
     )
 
     $required = @(
         (Join-Path $TargetReleaseDirectory "$DesktopName.exe"),
-        (Join-Path $TargetReleaseDirectory "$SidecarName.exe")
+        (Join-Path $TargetReleaseDirectory "$SidecarName.exe"),
+        (Join-Path $TargetReleaseDirectory "$AgentName.exe")
     )
     foreach ($source in $required) {
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
@@ -558,6 +561,38 @@ function Invoke-SidecarSmokeTest {
     }
 }
 
+function Invoke-AgentSmokeTest {
+    param(
+        [Parameter(Mandatory = $true)][string]$AgentPath,
+        [Parameter(Mandatory = $true)][string]$PythonPath,
+        [Parameter(Mandatory = $true)][string]$RepoRoot
+    )
+
+    $result = Invoke-CcPortNative `
+        -FilePath $PythonPath `
+        -ArgumentList @(
+            (Join-Path $RepoRoot "tools\packaging\agent\smoke_agent.py"),
+            $AgentPath
+        ) `
+        -WorkingDirectory $RepoRoot `
+        -Capture `
+        -Description "packaged CLI/MCP smoke test"
+    try {
+        $response = $result.Output | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "Packaged agent smoke returned invalid JSON: $(Get-CcPortOutputExcerpt -Value $result.Output)"
+    }
+    if (
+        $null -eq $response -or
+        -not $response.ok -or
+        -not $response.status_call_ok -or
+        [int]$response.tool_count -lt 1
+    ) {
+        throw "Packaged agent smoke did not discover MCP tools: $(Get-CcPortOutputExcerpt -Value $result.Output)"
+    }
+    Write-Host "  agent MCP tools: $($response.tool_count)"
+}
+
 try {
     $repoRoot = Get-CcPortRepoRoot
     $releaseVersion = Get-CcPortReleaseVersion -RepoRoot $repoRoot
@@ -578,11 +613,14 @@ try {
     $publicPublishRoot = Join-Path $repoRoot "release\publish"
     $desktopName = "cc-port-desktop"
     $sidecarName = "cc-port-desktop-api"
+    $agentName = "cc-port"
     $expectedTarget = Get-CcPortExpectedTarget
     $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
     $sidecarCachePath = Join-Path $repoRoot "build\cache\sidecar.json"
     $sourceSidecar = Join-Path $tauriDirectory "binaries\$sidecarName-$expectedTarget.exe"
+    $sourceAgent = Join-Path $tauriDirectory "binaries\$agentName-$expectedTarget.exe"
     $targetSidecar = Join-Path $targetReleaseDirectory "$sidecarName.exe"
+    $targetAgent = Join-Path $targetReleaseDirectory "$agentName.exe"
 
     $env:CC_PORT_DEPENDENCY_CACHE_STATUS = $null
     $setupPhaseIndex = $script:ReleasePhases.Count
@@ -670,7 +708,7 @@ try {
         [pscustomobject]@{
             Name = "Ruff"
             FilePath = $venvPython
-            ArgumentList = @("-m", "ruff", "check", "src/cc_port", "tests", "tools/packaging/sidecar", "tools/packaging/icons")
+            ArgumentList = @("-m", "ruff", "check", "src/cc_port", "tests", "tools/packaging/sidecar", "tools/packaging/agent", "tools/packaging/icons")
             WorkingDirectory = $repoRoot
         },
         [pscustomobject]@{
@@ -740,12 +778,22 @@ try {
         }
     }
 
-    Invoke-ReleaseAction -Description "Cleaning known Tauri outputs" -CacheStatus $(if ($Clean) { "forced" } else { "reuse-cargo" }) -Action {
-        Remove-KnownTauriOutputs -TargetReleaseDirectory $targetReleaseDirectory -DesktopName $desktopName -SidecarName $sidecarName -Clean:$Clean
+    Invoke-ReleaseStep -Description "Building public CLI and MCP agent" -FilePath $venvPython -ArgumentList @(
+        (Join-Path $repoRoot "tools\packaging\agent\build_agent.py"),
+        "--target", $expectedTarget
+    ) -WorkingDirectory $repoRoot -CacheStatus $(if ($Clean) { "forced" } else { "rebuilt" })
+    Invoke-ReleaseAction -Description "Smoke testing public CLI and MCP agent" -CacheStatus "rebuilt" -Action {
+        Invoke-AgentSmokeTest -AgentPath $sourceAgent -PythonPath $venvPython -RepoRoot $repoRoot
     }
-    Invoke-ReleaseAction -Description "Staging verified Tauri sidecar" -CacheStatus $(if ($sidecarCacheHit) { "hit" } else { "rebuilt" }) -Action {
+
+    Invoke-ReleaseAction -Description "Cleaning known Tauri outputs" -CacheStatus $(if ($Clean) { "forced" } else { "reuse-cargo" }) -Action {
+        Remove-KnownTauriOutputs -TargetReleaseDirectory $targetReleaseDirectory -DesktopName $desktopName -SidecarName $sidecarName -AgentName $agentName -Clean:$Clean
+    }
+    Invoke-ReleaseAction -Description "Staging verified Tauri binaries" -CacheStatus $(if ($sidecarCacheHit) { "mixed" } else { "rebuilt" }) -Action {
         Copy-Item -LiteralPath $sourceSidecar -Destination $targetSidecar -Force
         Assert-SidecarHashesMatch -ExpectedPath $sourceSidecar -ActualPath $targetSidecar
+        Copy-Item -LiteralPath $sourceAgent -Destination $targetAgent -Force
+        Assert-SidecarHashesMatch -ExpectedPath $sourceAgent -ActualPath $targetAgent
     }
     $rustPathRemappingState = Enter-CcPortRustPathRemapping -RepoRoot $repoRoot
     try {
@@ -765,6 +813,9 @@ try {
         Assert-CcPortBinaryOmitsHostPaths `
             -Path $targetSidecar `
             -SensitivePaths $rustPathRemappingState.SensitivePaths
+        Assert-CcPortBinaryOmitsHostPaths `
+            -Path $targetAgent `
+            -SensitivePaths $rustPathRemappingState.SensitivePaths
     }
 
     if (-not (Test-Path -LiteralPath $releaseRoot -PathType Container)) {
@@ -777,15 +828,20 @@ try {
     New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
     try {
         Invoke-ReleaseAction -Description "Collecting release artifacts into staging" -CacheStatus $null -Action {
-            Copy-TauriOutputs -TargetReleaseDirectory $targetReleaseDirectory -StagingDirectory $stagingDirectory -DesktopName $desktopName -SidecarName $sidecarName
+            Copy-TauriOutputs -TargetReleaseDirectory $targetReleaseDirectory -StagingDirectory $stagingDirectory -DesktopName $desktopName -SidecarName $sidecarName -AgentName $agentName
         }
         $stagedSidecar = Join-Path $stagingDirectory "$sidecarName.exe"
         Invoke-ReleaseAction -Description "Smoke testing packaged sidecar" -CacheStatus $null -Action {
             Invoke-SidecarSmokeTest -SidecarPath $stagedSidecar -RepoRoot $repoRoot
         }
+        $stagedAgent = Join-Path $stagingDirectory "$agentName.exe"
+        Invoke-ReleaseAction -Description "Smoke testing packaged CLI and MCP agent" -CacheStatus $null -Action {
+            Invoke-AgentSmokeTest -AgentPath $stagedAgent -PythonPath $venvPython -RepoRoot $repoRoot
+        }
         $stagedArtifacts = @(
             (Get-Item -LiteralPath (Join-Path $stagingDirectory "$desktopName.exe")),
-            (Get-Item -LiteralPath (Join-Path $stagingDirectory "$sidecarName.exe"))
+            (Get-Item -LiteralPath (Join-Path $stagingDirectory "$sidecarName.exe")),
+            (Get-Item -LiteralPath (Join-Path $stagingDirectory "$agentName.exe"))
         ) + @(Get-CcPortWindowsPackageArtifacts -ReleaseDirectory $stagingDirectory)
         Invoke-ReleaseAction -Description "Hashing verified release artifacts" -CacheStatus $null -Action {
             $verifiedArtifacts = New-Object System.Collections.Generic.List[object]

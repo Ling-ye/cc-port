@@ -38,7 +38,10 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 ./scripts/dev.sh
 ```
 
-开发脚本先构建 `cc-port-desktop-api` sidecar，再启动 Tauri 开发窗口。
+开发脚本先构建 `cc-port-desktop-api` sidecar 和公开的 `cc-port` CLI/MCP agent，
+再启动 Tauri 开发窗口。已有且确认可复用对应产物时，可以分别传入
+Windows 的 `-SkipSidecar` / `-SkipAgent`，或 Bash 的
+`--skip-sidecar` / `--skip-agent`；fresh checkout 不应跳过。
 
 ## 质量检查
 

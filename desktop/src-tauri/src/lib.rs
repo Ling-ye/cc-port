@@ -11,6 +11,16 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+const TRUSTED_DESKTOP_ACTION_ENV: &str = "CC_PORT_TRUSTED_DESKTOP_ACTION";
+const TRUSTED_DESKTOP_ACTIONS: [&str; 6] = [
+    "ai_integration_approve_apply",
+    "approval_approve",
+    "approval_reject",
+    "asset_action_apply",
+    "asset_batch_apply",
+    "registry_repair_apply",
+];
+
 #[derive(Debug, Deserialize)]
 struct CcPortActionRequest {
     action: String,
@@ -47,8 +57,11 @@ async fn cc_port_action(
     let payload = serde_json::to_string(&request.payload).map_err(|err| {
         CcPortBridgeError::new("bridge.request_serialize_failed", err.to_string())
     })?;
+    let trusted_approval_action = is_trusted_desktop_action(&action);
     let output =
-        tauri::async_runtime::spawn_blocking(move || run_cc_port_ui_api(&action, &payload))
+        tauri::async_runtime::spawn_blocking(move || {
+            run_cc_port_ui_api(&action, &payload, trusted_approval_action)
+        })
             .await
             .map_err(|err| CcPortBridgeError::new("bridge.sidecar_task_failed", err.to_string()))?
             .map_err(|err| CcPortBridgeError::new("bridge.sidecar_unavailable", err))?;
@@ -151,12 +164,20 @@ fn build_candidates(action: &str) -> Vec<Candidate> {
     out
 }
 
-fn run_cc_port_ui_api(action: &str, payload: &str) -> Result<Vec<u8>, String> {
+fn run_cc_port_ui_api(
+    action: &str,
+    payload: &str,
+    trusted_approval_action: bool,
+) -> Result<Vec<u8>, String> {
     let candidates = build_candidates(action);
     let mut errors: Vec<String> = Vec::new();
 
     for candidate in &candidates {
-        match run_candidate(candidate, payload) {
+        match run_candidate(
+            candidate,
+            payload,
+            trusted_approval_action.then_some(action),
+        ) {
             Ok(output)
                 if output.status.success() || is_structured_sidecar_response(&output.stdout) =>
             {
@@ -197,18 +218,29 @@ fn is_structured_sidecar_response(stdout: &[u8]) -> bool {
         .is_some()
 }
 
-fn run_candidate(candidate: &Candidate, payload: &str) -> std::io::Result<Output> {
+fn run_candidate(
+    candidate: &Candidate,
+    payload: &str,
+    trusted_action: Option<&str>,
+) -> std::io::Result<Output> {
     let mut command = candidate.to_command();
     command
         .env("CC_PORT_DESKTOP_API_PAYLOAD", payload)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(action) = trusted_action {
+        command.env(TRUSTED_DESKTOP_ACTION_ENV, action);
+    }
     let mut child = command.spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(payload.as_bytes())?;
     }
     child.wait_with_output()
+}
+
+fn is_trusted_desktop_action(action: &str) -> bool {
+    TRUSTED_DESKTOP_ACTIONS.contains(&action)
 }
 
 fn open_path_with_system(path: &str) -> Result<(), String> {
@@ -280,7 +312,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_structured_sidecar_response, CcPortBridgeError};
+    use super::{is_structured_sidecar_response, is_trusted_desktop_action, CcPortBridgeError};
 
     #[test]
     fn bridge_errors_serialize_stable_code_and_external_detail() {
@@ -301,5 +333,16 @@ mod tests {
         ));
         assert!(!is_structured_sidecar_response(b"not json"));
         assert!(!is_structured_sidecar_response(br#"{"error":"missing ok"}"#));
+    }
+
+    #[test]
+    fn only_human_reviewed_write_actions_receive_the_trusted_desktop_marker() {
+        assert!(is_trusted_desktop_action("ai_integration_approve_apply"));
+        assert!(is_trusted_desktop_action("approval_approve"));
+        assert!(is_trusted_desktop_action("approval_reject"));
+        assert!(is_trusted_desktop_action("asset_action_apply"));
+        assert!(is_trusted_desktop_action("asset_batch_apply"));
+        assert!(is_trusted_desktop_action("registry_repair_apply"));
+        assert!(!is_trusted_desktop_action("approval_requests"));
     }
 }

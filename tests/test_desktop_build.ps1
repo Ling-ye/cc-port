@@ -567,7 +567,6 @@ try {
             "desktop\src-tauri\Cargo.toml",
             "desktop\src-tauri\Cargo.lock",
             "desktop\src-tauri\tauri.conf.json",
-            "SKILL.md",
             "docs\releases\v0.5.4.md",
             "docs\releases\v0.5.4.en.md"
         )

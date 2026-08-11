@@ -144,6 +144,78 @@ def _minimal_remote_plan(
     )
 
 
+def test_apply_action_stops_when_remote_repository_identity_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _minimal_remote_plan(platform="codex", tool_id="codex")
+    plan.remote_repo_hash = asset_sync._remote_repo_hash(
+        "https://example.test/original.git"
+    )
+    plan.remote_branch = "main"
+    cfg = Config(
+        install=InstallConfig(target=str(tmp_path / "install")),
+        resources=ResourcesConfig(
+            repo_url="https://example.test/replacement.git",
+            local_path=str(tmp_path / "resources"),
+            branch="main",
+        ),
+    )
+    saved: list[object] = []
+    monkeypatch.setattr(asset_sync, "_assert_private_asset_boundaries", lambda _cfg: None)
+    monkeypatch.setattr(asset_sync, "_load_asset_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(asset_sync, "load_asset_action_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(
+        asset_sync,
+        "_refresh_remote_snapshot",
+        lambda *_args, **_kwargs: RemoteSnapshot(
+            root=tmp_path / "replacement",
+            registry=None,
+            commit="same-commit",
+            branch="main",
+            repo_url="https://example.test/replacement.git",
+        ),
+    )
+    monkeypatch.setattr(
+        asset_sync,
+        "_save_asset_result",
+        lambda result, _cfg: saved.append(result),
+    )
+
+    result = asset_sync.apply_asset_action_plan(plan.operation_id, config=cfg)
+
+    assert result.status == "stale-plan"
+    assert "repository identity changed" in result.message
+    assert saved == [result]
+
+
+def test_batch_plan_hash_binds_remote_repository_and_branch() -> None:
+    plan = asset_sync.AssetBatchPlan(
+        direction="upload",
+        resource_keys=["skill:demo"],
+        target_platforms=[],
+        remote_commit="same-commit",
+        plan_hash="",
+        items=[],
+        executable_count=0,
+        blocked_count=0,
+        skipped_count=1,
+        remote_repo_hash=asset_sync._remote_repo_hash(
+            "https://example.test/original.git"
+        ),
+        remote_branch="main",
+    )
+    original = asset_sync._asset_batch_plan_hash(plan)
+    plan.remote_repo_hash = asset_sync._remote_repo_hash(
+        "https://example.test/replacement.git"
+    )
+    replacement_repo = asset_sync._asset_batch_plan_hash(plan)
+    plan.remote_branch = "release"
+    replacement_branch = asset_sync._asset_batch_plan_hash(plan)
+
+    assert len({original, replacement_repo, replacement_branch}) == 3
+
+
 def _empty_discovery(**_kwargs: object) -> EnvDiscoveryResult:
     return EnvDiscoveryResult(tools=[], resources=[], mcp_servers=[])
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -13,6 +14,26 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from ..agent.contracts import (
+    WIRE_EXIT_INVALID_REQUEST,
+    WIRE_EXIT_RUNTIME_FAILURE,
+    WIRE_EXIT_SAFE_NONCOMPLETION,
+    AssetBatchChoiceWire,
+    AssetBatchRequestWire,
+    WireEnvelope,
+    asset_action_approval_scope,
+    asset_action_plan_hash,
+    asset_batch_approval_scope,
+    asset_batch_operation_id,
+    parse_asset_batch_choices,
+    parse_asset_batch_request,
+    to_public_wire_value,
+    to_wire_value,
+    wire_exit_code,
+    wire_failure,
+    wire_result,
+    wire_success,
+)
 from ..core.config import (
     CONFIG_ENV_VAR,
     Config,
@@ -35,8 +56,25 @@ from ..core.resource_detection import (
     detect_local_resource_type,
     detect_remote_resource,
 )
+from ..core.secret_scan import redact_secret_text
 from ..infrastructure import git_ops
 from ..services import publisher
+from ..services.ai_integration import (
+    AiIntegrationPlan,
+    apply_ai_integration_plan,
+    build_ai_integration_plan,
+    load_ai_integration_plan,
+    verify_ai_integration,
+)
+from ..services.approval import (
+    ApprovalRequest,
+    ApprovalRequiredError,
+    approval_scope_hash,
+    consume_approval,
+    create_approval_request,
+    invalidate_approval_request,
+    load_approval_request,
+)
 from ..services.asset_sync import (
     AssetBatchChoice,
     add_plugin_reference,
@@ -45,8 +83,10 @@ from ..services.asset_sync import (
     apply_plugin_delete_plan,
     build_asset_action_plan,
     build_asset_batch_plan,
+    build_asset_content_diff,
     build_asset_inventory,
     build_plugin_delete_plan,
+    load_asset_action_plan,
 )
 from ..services.doctor import build_doctor_checks, has_doctor_errors
 from ..services.installer import (
@@ -71,7 +111,6 @@ from ..services.plugin_management import (
 from ..services.registry_audit import (
     RegistryRepairChoice,
     RegistryRepairPlan,
-    apply_registry_repair,
     build_registry_repair_plan,
 )
 from ..services.resource_commit import build_resource_commit_plan
@@ -123,13 +162,18 @@ operations_app = typer.Typer(help="Inspect and restore persisted local write ope
 plugin_app = typer.Typer(help="Manage dual-track plugin references and project scan roots.")
 plugin_project_app = typer.Typer(help="Manage explicit project roots used by plugin scans.")
 plugin_reference_app = typer.Typer(help="Manage plugin references without uploading cache content.")
+integration_app = typer.Typer(
+    help="Install, verify, or remove CC Port's Skill and MCP registration for one exact profile."
+)
 app.add_typer(resource_app, name="resource")
 app.add_typer(asset_app, name="asset")
 app.add_typer(operations_app, name="operations")
 app.add_typer(plugin_app, name="plugin")
+app.add_typer(integration_app, name="integration")
 plugin_app.add_typer(plugin_project_app, name="project")
 plugin_app.add_typer(plugin_reference_app, name="reference")
 console = Console()
+_NON_INTERACTIVE = False
 VALID_KINDS = {
     "skill",
     "mcp",
@@ -143,6 +187,23 @@ DEPRECATED_SYNC_MESSAGE = (
     "Deprecated: use `cc-port asset list`, `cc-port asset plan`, and `cc-port asset apply`. "
     "Git workspace sync commands will be removed in the next release."
 )
+
+
+@app.callback()
+def configure_cli(
+    non_interactive: bool = typer.Option(
+        False,
+        "--non-interactive",
+        help=(
+            "Never prompt; pair with a command's --json option for a structured "
+            "non-completion result."
+        ),
+    ),
+) -> None:
+    """Configure process-wide CLI behavior before dispatching a command."""
+
+    global _NON_INTERACTIVE
+    _NON_INTERACTIVE = non_interactive
 
 
 def _load() -> Config:
@@ -173,6 +234,351 @@ def _print_machine_json(data: object) -> None:
     )
 
 
+def _print_wire_envelope(envelope: WireEnvelope[object]) -> None:
+    """Write exactly one versioned JSON envelope to stdout."""
+
+    typer.echo(json.dumps(to_public_wire_value(envelope), ensure_ascii=False, indent=2))
+
+
+def _print_wire_success(data: object, *, status: str = "succeeded") -> None:
+    _print_wire_envelope(wire_success(data, status=status))
+
+
+def _print_wire_result(data: object, *, status: str, message: str) -> WireEnvelope[object]:
+    envelope = wire_result(data, status=status, message=message)
+    _print_wire_envelope(envelope)
+    return envelope
+
+
+def _exit_wire_error(
+    *,
+    json_output: bool,
+    code: str,
+    message: str,
+    status: str = "failed",
+    exit_code: int = WIRE_EXIT_RUNTIME_FAILURE,
+    data: object | None = None,
+) -> None:
+    if json_output:
+        _print_wire_envelope(
+            wire_failure(code, redact_secret_text(message), status=status, data=data)
+        )
+    else:
+        console.print(f"[red]{escape(message)}[/red]")
+    raise typer.Exit(exit_code)
+
+
+def _require_interactive_input(
+    message: str,
+    *,
+    json_output: bool = False,
+    code: str = "input_required",
+) -> None:
+    if not _NON_INTERACTIVE:
+        return
+    _exit_wire_error(
+        json_output=json_output,
+        code=code,
+        message=message,
+        status="needs-confirmation" if code == "confirmation_required" else "needs-action",
+        exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+    )
+
+
+def _wire_asset_batch_choices(
+    choices: list[AssetBatchChoice],
+) -> list[AssetBatchChoiceWire]:
+    return [AssetBatchChoiceWire.model_validate(to_wire_value(choice)) for choice in choices]
+
+
+def _asset_action_approval_metadata(plan: object) -> dict[str, object]:
+    return {
+        "action": str(plan.action),  # type: ignore[attr-defined]
+        "resource_key": str(plan.resource_key),  # type: ignore[attr-defined]
+        "target_resource_key": str(plan.target_resource_key),  # type: ignore[attr-defined]
+        "profile_id": str(plan.platform),  # type: ignore[attr-defined]
+        "local_instance_id": str(plan.local_instance_id),  # type: ignore[attr-defined]
+        "new_name": str(plan.new_name),  # type: ignore[attr-defined]
+        "new_install_name": str(plan.new_install_name),  # type: ignore[attr-defined]
+        "overwrite_unmanaged": bool(plan.overwrite_unmanaged),  # type: ignore[attr-defined]
+        "link_target_confirmed": bool(plan.link_target_confirmed),  # type: ignore[attr-defined]
+        "remote_commit": str(plan.remote_commit),  # type: ignore[attr-defined]
+    }
+
+
+def _create_asset_action_approval(
+    plan: object,
+) -> tuple[str, ApprovalRequest | None]:
+    plan_hash = asset_action_plan_hash(plan)
+    if bool(getattr(plan, "blocked", False)):
+        return plan_hash, None
+    scope = asset_action_approval_scope(plan)
+    request = create_approval_request(
+        kind="asset-action",
+        operation_id=str(plan.operation_id),  # type: ignore[attr-defined]
+        plan_hash=plan_hash,
+        scope=scope,
+        summary=(
+            f"{plan.action} {plan.resource_key} "  # type: ignore[attr-defined]
+            f"for profile {plan.platform}"  # type: ignore[attr-defined]
+        ),
+        metadata=_asset_action_approval_metadata(plan),
+    )
+    return plan_hash, request
+
+
+def _asset_action_plan_payload(
+    plan: object,
+    *,
+    plan_hash: str,
+    approval: ApprovalRequest | None,
+) -> dict[str, object]:
+    payload = to_wire_value(plan)
+    if not isinstance(payload, dict):
+        raise TypeError("Asset action plan must be an object.")
+    payload.update(
+        {
+            "plan_hash": plan_hash,
+            "requires_approval": approval is not None,
+            "approval_id": approval.approval_id if approval else "",
+            "approval_status": approval.status if approval else "not-required",
+            "approval_scope_hash": approval.scope_hash if approval else "",
+        }
+    )
+    return payload
+
+
+def _rebuild_asset_action_plan(
+    plan: object,
+    *,
+    config: Config,
+    persist: bool,
+) -> object:
+    return build_asset_action_plan(
+        plan.action,  # type: ignore[attr-defined]
+        kind=plan.kind,  # type: ignore[attr-defined]
+        name=plan.name,  # type: ignore[attr-defined]
+        platform=plan.platform,  # type: ignore[attr-defined]
+        local_instance_id=plan.local_instance_id,  # type: ignore[attr-defined]
+        new_name=plan.new_name,  # type: ignore[attr-defined]
+        new_install_name=plan.new_install_name,  # type: ignore[attr-defined]
+        overwrite_unmanaged=plan.overwrite_unmanaged,  # type: ignore[attr-defined]
+        link_target_confirmed=plan.link_target_confirmed,  # type: ignore[attr-defined]
+        config=config,
+        _persist=persist,
+    )
+
+
+def _asset_batch_approval_metadata(
+    request: AssetBatchRequestWire,
+) -> dict[str, object]:
+    choices = [
+        {
+            "resource_key": choice.resource_key,
+            "profile_id": choice.platform,
+            "local_instance_id": choice.local_instance_id,
+            "resolution": choice.resolution,
+            "new_name": choice.new_name,
+            "overwrite_unmanaged": choice.overwrite_unmanaged,
+            "plugin_track": choice.plugin_track,
+            "ownership_confirmed": choice.ownership_confirmed,
+            "link_target_confirmed": choice.link_target_confirmed,
+            "reference_origin_present": bool(choice.reference_origin),
+            "plugin_dependency_count": len(choice.plugin_dependencies),
+        }
+        for choice in request.choices
+    ]
+    return {
+        "direction": request.direction,
+        "resource_keys": list(request.resource_keys),
+        "target_platforms": list(request.target_platforms),
+        "choices": choices,
+    }
+
+
+def _create_asset_batch_approval(
+    plan: object,
+    request: AssetBatchRequestWire,
+) -> ApprovalRequest | None:
+    if bool(getattr(plan, "blocked_count", 0)) or not int(getattr(plan, "executable_count", 0)):
+        return None
+    plan_hash = str(plan.plan_hash)  # type: ignore[attr-defined]
+    scope = asset_batch_approval_scope(
+        direction=request.direction,
+        resource_keys=request.resource_keys,
+        target_platforms=request.target_platforms,
+        choices=request.choices,
+        plan_hash=plan_hash,
+    )
+    return create_approval_request(
+        kind="asset-batch",
+        operation_id=asset_batch_operation_id(plan_hash),
+        plan_hash=plan_hash,
+        scope=scope,
+        summary=(
+            f"{request.direction.title()} {len(request.resource_keys)} CC Port asset resource(s)"
+        ),
+        metadata=_asset_batch_approval_metadata(request),
+    )
+
+
+def _asset_batch_plan_payload(
+    plan: object,
+    *,
+    approval: ApprovalRequest | None,
+) -> dict[str, object]:
+    payload = to_wire_value(plan)
+    if not isinstance(payload, dict):
+        raise TypeError("Asset batch plan must be an object.")
+    plan_hash = str(plan.plan_hash)  # type: ignore[attr-defined]
+    payload.update(
+        {
+            "operation_id": asset_batch_operation_id(plan_hash),
+            "requires_approval": approval is not None,
+            "approval_id": approval.approval_id if approval else "",
+            "approval_status": approval.status if approval else "not-required",
+            "approval_scope_hash": approval.scope_hash if approval else "",
+        }
+    )
+    return payload
+
+
+def _consume_cli_approval(
+    approval_id: str,
+    *,
+    kind: str,
+    operation_id: str,
+    plan_hash: str,
+    scope: dict[str, object],
+    summary: str,
+    metadata: dict[str, object],
+    json_output: bool,
+    data: object,
+) -> ApprovalRequest | None:
+    selected = approval_id.strip()
+    if not selected:
+        if _NON_INTERACTIVE or json_output:
+            _exit_wire_error(
+                json_output=json_output,
+                code="approval_id_required",
+                message="Apply requires an explicit human-approved --approval-id.",
+                status="invalid-request",
+                exit_code=WIRE_EXIT_INVALID_REQUEST,
+                data=data,
+            )
+        request = create_approval_request(
+            kind=kind,
+            operation_id=operation_id,
+            plan_hash=plan_hash,
+            scope=scope,
+            summary=summary,
+            metadata=metadata,
+        )
+    else:
+        try:
+            request = load_approval_request(selected)
+        except Exception as exc:
+            _exit_wire_error(
+                json_output=json_output,
+                code="approval_unavailable",
+                message=f"The approval request is unavailable: {exc}",
+                status="needs-confirmation",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=data,
+            )
+    if (
+        request.kind != kind
+        or request.operation_id != operation_id
+        or request.plan_hash != plan_hash
+        or request.scope_hash != approval_scope_hash(scope)
+    ):
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_mismatch",
+            message="The approval request does not match this operation, plan, or scope.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+            data=data,
+        )
+    if request.status == "pending":
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_required",
+            message=(
+                f"Approval request {request.approval_id} is pending; "
+                "review it in the Desktop client before apply."
+            ),
+            status="needs-confirmation",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=data,
+        )
+    elif request.status != "approved":
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_not_active",
+            message=f"The approval request cannot be used in status {request.status}.",
+            status="needs-action",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=data,
+        )
+    try:
+        return consume_approval(
+            request.approval_id,
+            kind=kind,
+            operation_id=operation_id,
+            plan_hash=plan_hash,
+            scope=scope,
+        )
+    except ApprovalRequiredError as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_required",
+            message=str(exc),
+            status="needs-confirmation",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=data,
+        )
+
+
+def _invalidate_cli_approval(
+    approval_id: str,
+    *,
+    kind: str,
+    operation_id: str,
+    plan_hash: str,
+    scope: dict[str, object],
+    json_output: bool,
+    data: object,
+) -> ApprovalRequest:
+    selected = approval_id.strip()
+    if not selected:
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_id_required",
+            message="The reviewed approval id is required before stale-plan replacement.",
+            status="needs-confirmation",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=data,
+        )
+    try:
+        return invalidate_approval_request(
+            selected,
+            kind=kind,
+            operation_id=operation_id,
+            plan_hash=plan_hash,
+            scope=scope,
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_invalidation_failed",
+            message=f"The stale approval could not be invalidated safely: {exc}",
+            status="needs-confirmation",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=data,
+        )
+
+
 def _without_desktop_message_refs(data: object) -> object:
     """Keep desktop-only localization metadata out of stable CLI JSON."""
 
@@ -185,6 +591,509 @@ def _without_desktop_message_refs(data: object) -> object:
     if isinstance(data, list):
         return [_without_desktop_message_refs(value) for value in data]
     return data
+
+
+@app.command("mcp")
+def cmd_mcp(
+    stdio: bool = typer.Option(
+        False,
+        "--stdio",
+        help="Run the CC Port MCP server over stdio without terminal prose.",
+    ),
+) -> None:
+    """Run CC Port as a discoverable MCP server for AI clients."""
+
+    if not stdio:
+        _exit_wire_error(
+            json_output=False,
+            code="transport_required",
+            message="Select the MCP transport explicitly with --stdio.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    _run_mcp_stdio()
+
+
+def _run_mcp_stdio() -> None:
+    """Import the MCP adapter lazily so ordinary CLI startup remains lightweight."""
+
+    from .mcp_server import main
+
+    main()
+
+
+@integration_app.command("status")
+def cmd_integration_status(
+    profile_id: str = typer.Option(
+        "",
+        "--profile",
+        help="Exact profile id. Omit to inspect every configured profile.",
+    ),
+    verify_transport: bool = typer.Option(
+        False,
+        "--verify-transport/--no-verify-transport",
+        help="Also start the configured MCP command and request its tool list.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Inspect CC Port's Skill and MCP entry for every configured profile."""
+
+    try:
+        cfg = _load()
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="integration_status_failed",
+            message=f"AI integration status failed: {exc}",
+        )
+    selected = profile_id.strip()
+    if selected:
+        profile = cfg.platforms.get(selected)
+        if profile is None:
+            _exit_wire_error(
+                json_output=json_output,
+                code="unknown_profile",
+                message="Unknown platform profile id.",
+                status="invalid-request",
+                exit_code=WIRE_EXIT_INVALID_REQUEST,
+            )
+        profiles = [profile]
+    else:
+        profiles = list(cfg.platforms.profiles)
+    results: list[object] = []
+    failed = False
+    for profile in profiles:
+        try:
+            results.append(
+                verify_ai_integration(
+                    profile.name,
+                    config=cfg,
+                    verify_transport=verify_transport,
+                )
+            )
+        except Exception as exc:
+            failed = True
+            results.append(
+                {
+                    "profile_id": profile.name,
+                    "installed": False,
+                    "managed": False,
+                    "skill_ready": False,
+                    "mcp_registered": False,
+                    "transport_verified": False,
+                    "configured": False,
+                    "transport_status": "failed" if verify_transport else "unknown",
+                    "skill_managed": False,
+                    "mcp_managed": False,
+                    "managed_actions_available": [],
+                    "tool_count": 0,
+                    "tools": [],
+                    "problems": [redact_secret_text(str(exc) or exc.__class__.__name__)],
+                }
+            )
+    payload = {"profiles": results}
+    if json_output:
+        if failed:
+            _exit_wire_error(
+                json_output=True,
+                code="integration_status_incomplete",
+                message="One or more integration profiles could not be inspected.",
+                status="partial",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=payload,
+            )
+        _print_wire_success(payload, status="ready")
+        return
+    _print_ai_integration_status(results)
+    if failed:
+        raise typer.Exit(WIRE_EXIT_SAFE_NONCOMPLETION)
+
+
+@integration_app.command("plan-install")
+def cmd_integration_plan_install(
+    profile_id: str = typer.Option("", "--profile", help="Exact target profile id."),
+    overwrite_unmanaged: bool = typer.Option(
+        False,
+        "--overwrite-unmanaged",
+        help="Plan explicit takeover of an unmanaged Skill or MCP entry.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Plan Skill installation and MCP registration for one exact profile."""
+
+    _run_ai_integration_plan_command(
+        "install",
+        profile_id=profile_id,
+        overwrite_unmanaged=overwrite_unmanaged,
+        json_output=json_output,
+    )
+
+
+@integration_app.command("plan-uninstall")
+def cmd_integration_plan_uninstall(
+    profile_id: str = typer.Option("", "--profile", help="Exact target profile id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Plan removal of only CC Port-owned Skill and MCP integration state."""
+
+    _run_ai_integration_plan_command(
+        "uninstall",
+        profile_id=profile_id,
+        overwrite_unmanaged=False,
+        json_output=json_output,
+    )
+
+
+def _run_ai_integration_plan_command(
+    action: str,
+    *,
+    profile_id: str,
+    overwrite_unmanaged: bool,
+    json_output: bool,
+) -> None:
+    selected = profile_id.strip()
+    if not selected:
+        _exit_wire_error(
+            json_output=json_output,
+            code="profile_required",
+            message="An exact --profile id is required.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    try:
+        plan = build_ai_integration_plan(
+            selected,
+            action=action,  # type: ignore[arg-type]
+            overwrite_unmanaged=overwrite_unmanaged,
+            config=_load(),
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="integration_plan_failed",
+            message=f"AI integration planning failed: {exc}",
+        )
+    if json_output:
+        if plan.blocked:
+            _exit_wire_error(
+                json_output=True,
+                code="plan_blocked",
+                message="The AI integration plan is blocked.",
+                status="blocked",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=plan,
+            )
+        _print_wire_success(plan, status="planned")
+        return
+    _print_ai_integration_plan(plan)
+
+
+@integration_app.command("apply-install")
+def cmd_integration_apply_install(
+    operation_id: str = typer.Option("", "--operation-id", help="Id returned by plan-install."),
+    plan_hash: str = typer.Option("", "--plan-hash", help="Hash returned by plan-install."),
+    approval_id: str = typer.Option(
+        "",
+        "--approval-id",
+        help="Approval id returned by plan-install and approved by a human surface.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Deprecated compatibility flag; it does not approve pending requests.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Apply an installation plan approved through the Desktop client."""
+
+    _ = yes
+    _run_ai_integration_apply_command(
+        "install",
+        operation_id=operation_id,
+        plan_hash=plan_hash,
+        approval_id=approval_id,
+        json_output=json_output,
+    )
+
+
+@integration_app.command("apply-uninstall")
+def cmd_integration_apply_uninstall(
+    operation_id: str = typer.Option("", "--operation-id", help="Id returned by plan-uninstall."),
+    plan_hash: str = typer.Option("", "--plan-hash", help="Hash returned by plan-uninstall."),
+    approval_id: str = typer.Option(
+        "",
+        "--approval-id",
+        help="Approval id returned by plan-uninstall and approved by a human surface.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Deprecated compatibility flag; it does not approve pending requests.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Apply an ownership-safe uninstall plan approved through Desktop."""
+
+    _ = yes
+    _run_ai_integration_apply_command(
+        "uninstall",
+        operation_id=operation_id,
+        plan_hash=plan_hash,
+        approval_id=approval_id,
+        json_output=json_output,
+    )
+
+
+def _run_ai_integration_apply_command(
+    action: str,
+    *,
+    operation_id: str,
+    plan_hash: str,
+    approval_id: str,
+    json_output: bool,
+) -> None:
+    identifiers = {
+        "operation_id": operation_id.strip(),
+        "plan_hash": plan_hash.strip(),
+        "approval_id": approval_id.strip(),
+    }
+    missing = [name for name, value in identifiers.items() if not value]
+    if missing:
+        _exit_wire_error(
+            json_output=json_output,
+            code="integration_apply_identifiers_required",
+            message="Apply requires --operation-id, --plan-hash, and --approval-id.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+            data={"missing": missing},
+        )
+    try:
+        plan = load_ai_integration_plan(identifiers["operation_id"])
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="integration_plan_unavailable",
+            message=f"The stored AI integration plan is unavailable: {exc}",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    if plan.action != action:
+        _exit_wire_error(
+            json_output=json_output,
+            code="integration_action_mismatch",
+            message=f"This command applies {action} plans, but the stored plan is {plan.action}.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    if plan.plan_hash != identifiers["plan_hash"]:
+        _exit_wire_error(
+            json_output=json_output,
+            code="integration_plan_hash_mismatch",
+            message="The supplied plan hash does not match the stored integration plan.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    try:
+        approval = load_approval_request(identifiers["approval_id"])
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_unavailable",
+            message=f"The approval request is unavailable: {exc}",
+            status="needs-confirmation",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=plan,
+        )
+    if (
+        approval.kind != "ai-integration"
+        or approval.operation_id != plan.operation_id
+        or approval.plan_hash != plan.plan_hash
+    ):
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_mismatch",
+            message="The approval request does not match this integration plan.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    if approval.status == "pending":
+        if not json_output:
+            _print_ai_integration_plan(plan)
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_required",
+            message=(
+                f"Approval request {approval.approval_id} is pending; "
+                "review it in the Desktop client before apply."
+            ),
+            status="needs-confirmation",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data={"plan": plan, "approval": approval},
+        )
+    elif approval.status != "approved":
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_not_active",
+            message=f"The approval request cannot be used in status {approval.status}.",
+            status="needs-action",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data={"plan": plan, "approval": approval},
+        )
+    try:
+        result = apply_ai_integration_plan(
+            plan.operation_id,
+            plan.plan_hash,
+            approval.approval_id,
+            config=_load(),
+        )
+    except ApprovalRequiredError as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_required",
+            message=str(exc),
+            status="needs-confirmation",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=plan,
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="integration_apply_failed",
+            message=f"AI integration apply failed: {exc}",
+        )
+    if json_output:
+        envelope = _print_wire_result(
+            result,
+            status=result.status,
+            message=result.message or "AI integration apply did not complete successfully.",
+        )
+        if not envelope.ok:
+            raise typer.Exit(wire_exit_code(envelope))
+        return
+    console.print(f"[bold]{result.status}[/bold] {result.profile_id}: {result.message}")
+    if result.status not in {"succeeded", "unchanged"}:
+        raise typer.Exit(wire_exit_code(wire_result(result, status=result.status)))
+
+
+@integration_app.command("verify")
+def cmd_integration_verify(
+    profile_id: str = typer.Option("", "--profile", help="Exact target profile id."),
+    expect: str = typer.Option(
+        "installed",
+        "--expect",
+        help="Expected state: installed | absent | any.",
+    ),
+    verify_transport: bool = typer.Option(
+        True,
+        "--verify-transport/--no-verify-transport",
+        help="Start the configured MCP command and request its tool list.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Verify the observed Skill, MCP registration, and optional stdio transport."""
+
+    selected = profile_id.strip()
+    expected = expect.strip().lower()
+    if not selected:
+        _exit_wire_error(
+            json_output=json_output,
+            code="profile_required",
+            message="An exact --profile id is required.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    if expected not in {"installed", "absent", "any"}:
+        _exit_wire_error(
+            json_output=json_output,
+            code="invalid_expected_state",
+            message="--expect must be installed, absent, or any.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    try:
+        verification = verify_ai_integration(
+            selected,
+            config=_load(),
+            verify_transport=verify_transport,
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="integration_verify_failed",
+            message=f"AI integration verification failed: {exc}",
+        )
+    matches = (
+        expected == "any"
+        or expected == "installed"
+        and verification.installed
+        or expected == "absent"
+        and not verification.skill_ready
+        and not verification.mcp_registered
+    )
+    if json_output:
+        if not matches:
+            _exit_wire_error(
+                json_output=True,
+                code="verification_mismatch",
+                message=f"Observed integration state does not match expected state: {expected}.",
+                status="needs-action",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=verification,
+            )
+        _print_wire_success(verification, status="ready")
+        return
+    _print_ai_integration_status([verification])
+    if not matches:
+        raise typer.Exit(WIRE_EXIT_SAFE_NONCOMPLETION)
+
+
+def _print_ai_integration_status(results: list[object]) -> None:
+    table = Table(title="CC Port AI integration")
+    table.add_column("Profile", style="bold")
+    table.add_column("Installed")
+    table.add_column("Managed")
+    table.add_column("Skill")
+    table.add_column("MCP")
+    table.add_column("Transport")
+    table.add_column("Problems")
+    for result in results:
+        value = to_wire_value(result)
+        if not isinstance(value, dict):
+            continue
+        table.add_row(
+            str(value.get("profile_id") or ""),
+            str(bool(value.get("installed"))).lower(),
+            str(bool(value.get("managed"))).lower(),
+            str(bool(value.get("skill_ready"))).lower(),
+            str(bool(value.get("mcp_registered"))).lower(),
+            str(bool(value.get("transport_verified"))).lower(),
+            "; ".join(str(item) for item in value.get("problems", [])) or "-",
+        )
+    console.print(table)
+
+
+def _print_ai_integration_plan(plan: AiIntegrationPlan) -> None:
+    table = Table(title=f"CC Port AI integration {plan.action}")
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    for label, value in (
+        ("Operation", plan.operation_id),
+        ("Profile", plan.profile_id),
+        ("Skill target", plan.target.skill_path),
+        ("MCP config", plan.target.mcp_config_path),
+        ("Skill status", plan.target.skill_status),
+        ("MCP status", plan.target.mcp_status),
+        ("Actions", ", ".join(plan.target.actions) or "none"),
+        ("Plan hash", plan.plan_hash),
+        ("Approval", plan.approval_id or "not required"),
+        ("Blocked", str(plan.blocked).lower()),
+    ):
+        table.add_row(label, str(value))
+    console.print(table)
+    for blocker in plan.blockers:
+        console.print(f"[red]Blocked:[/red] {escape(blocker)}")
 
 
 def _print_sync_deprecation() -> None:
@@ -256,6 +1165,7 @@ def cmd_resource_init(
     cfg = _load()
     repo_name = name
     if repo_name is None and not cfg.resources.repo_url:
+        _require_interactive_input("Resource repository name is required; pass --name.")
         repo_name = typer.prompt("Resource repository name", default=cfg.resources.repo_name)
     try:
         info = init_resource_repo(name=repo_name, config=cfg)
@@ -292,10 +1202,13 @@ def cmd_resource_registry_check(
     try:
         plan = build_registry_repair_plan(config=_load())
     except Exception as exc:
-        console.print(f"[red]Registry check failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
+        _exit_wire_error(
+            json_output=json_output,
+            code="registry_check_failed",
+            message=f"Registry check failed: {exc}",
+        )
     if json_output:
-        _print_machine_json(asdict(plan))
+        _print_wire_success(plan)
         return
     _print_registry_repair_plan(plan)
 
@@ -303,47 +1216,49 @@ def cmd_resource_registry_check(
 @resource_app.command("registry-repair")
 def cmd_resource_registry_repair(
     dry_run: bool = typer.Option(False, "--dry-run", help="Build and print the plan only."),
-    yes: bool = typer.Option(False, "--yes", help="Confirm the registry-only commit and push."),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Deprecated compatibility flag; CLI registry repair never applies a plan.",
+    ),
     choices_path: Path | None = typer.Option(
         None,
         "--choices",
-        exists=True,
-        dir_okay=False,
-        readable=True,
         help="YAML file containing explicit issue choices.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print the plan or result as JSON."),
 ) -> None:
-    """Preview or explicitly apply a registry.yaml-only remote repair."""
-    choices = _load_registry_repair_choices(choices_path)
+    """Build a Registry repair plan; apply is restricted to approved interfaces."""
+    _ = yes
+
     try:
+        choices = _load_registry_repair_choices(choices_path)
         plan = build_registry_repair_plan(config=_load(), choices=choices)
     except Exception as exc:
-        console.print(f"[red]Registry repair planning failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
-    if dry_run or not yes:
+        _exit_wire_error(
+            json_output=json_output,
+            code="registry_repair_plan_failed",
+            message=f"Registry repair planning failed: {exc}",
+        )
+    if dry_run:
         if json_output:
-            _print_machine_json(asdict(plan))
+            _print_wire_success(plan, status="planned")
         else:
             _print_registry_repair_plan(plan)
-        if not dry_run and not yes:
-            console.print("[red]No changes were applied; pass --yes to commit and push.[/red]")
-            raise typer.Exit(2)
         return
-    result = apply_registry_repair(
-        expected_plan_hash=plan.plan_hash,
-        config=_load(),
-        choices=choices,
+    if not json_output:
+        _print_registry_repair_plan(plan)
+    _exit_wire_error(
+        json_output=json_output,
+        code="registry_repair_apply_unavailable",
+        message=(
+            "CLI registry repair apply is disabled; review and apply the plan "
+            "through Desktop or the approval-gated MCP workflow."
+        ),
+        status="needs-confirmation",
+        exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+        data=plan,
     )
-    if json_output:
-        _print_machine_json(asdict(result))
-    else:
-        color = "green" if result.status in {"succeeded", "unchanged"} else "yellow"
-        console.print(f"[{color}]{result.status}:[/{color}] {result.message}")
-        if result.stale_plan is not None:
-            _print_registry_repair_plan(result.stale_plan)
-    if result.status not in {"succeeded", "unchanged"}:
-        raise typer.Exit(1)
 
 
 def _load_registry_repair_choices(path: Path | None) -> list[RegistryRepairChoice]:
@@ -726,13 +1641,21 @@ def cmd_plugin_delete(
         table.add_column("Selectable")
         table.add_column("Detail")
         for item in plan.instances:
-            table.add_row(item.id, item.scope, item.method, str(item.selectable).lower(), item.detail)
+            table.add_row(
+                item.id, item.scope, item.method, str(item.selectable).lower(), item.detail
+            )
         console.print(table)
     if dry_run:
         return
     if plan.blocked:
         console.print("[red]" + "; ".join(plan.blockers) + "[/red]")
         raise typer.Exit(1)
+    if not yes:
+        _require_interactive_input(
+            "Plugin deletion requires confirmation; pass --yes.",
+            json_output=json_output,
+            code="confirmation_required",
+        )
     if not yes and not typer.confirm(
         f"Uninstall {len(plan.selected_instance_ids)} plugin instance(s)?",
         default=False,
@@ -789,12 +1712,15 @@ def cmd_asset_list(
             project_ids=project or None,
         )
     except Exception as exc:
-        console.print(f"[red]Asset inventory failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_inventory_failed",
+            message=f"Asset inventory failed: {exc}",
+        )
     if json_output:
         payload = asdict(inventory)
         payload.pop("rows", None)
-        _print_machine_json(payload)
+        _print_wire_success(payload)
         return
 
     table = Table(title=f"CC Port assets ({inventory.branch or 'unconfigured branch'})")
@@ -820,15 +1746,62 @@ def cmd_asset_list(
         console.print(f"[red]Remote writes blocked:[/red] {inventory.legacy_write_blocker}")
 
 
+@asset_app.command("diff")
+def cmd_asset_diff(
+    resource_key: str = typer.Option(..., "--resource", "-r", help="Logical resource key."),
+    local_instance_id: str = typer.Option(
+        ...,
+        "--local-instance-id",
+        help="Exact local instance id returned by asset list --scan-local.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Build a bounded, read-only diff between one local instance and the remote asset."""
+
+    try:
+        content_diff = build_asset_content_diff(
+            resource_key,
+            local_instance_id,
+            config=_load(),
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_diff_failed",
+            message=f"Asset diff failed: {exc}",
+        )
+    if json_output:
+        _print_wire_success(content_diff)
+        return
+    summary = Table(title=f"CC Port asset diff {content_diff.resource_key}")
+    summary.add_column("Added")
+    summary.add_column("Deleted")
+    summary.add_column("Modified")
+    summary.add_column("Binary")
+    summary.add_column("Truncated")
+    summary.add_row(
+        str(content_diff.added_files),
+        str(content_diff.deleted_files),
+        str(content_diff.modified_files),
+        str(content_diff.binary_files),
+        str(content_diff.truncated).lower(),
+    )
+    console.print(summary)
+    for item in content_diff.files:
+        console.print(f"[bold]{escape(item.status)}[/bold] {escape(item.path)}")
+        if item.diff:
+            console.print(item.diff, markup=False)
+
+
 @asset_app.command("plan")
 def cmd_asset_plan(
     action: str = typer.Argument(
-        ...,
+        "",
         help="download | upload | copy-to-local | copy-to-remote | set-platform-install-name",
     ),
-    kind: str = typer.Option(..., "--kind", "-k", help="Asset kind."),
-    name: str = typer.Option(..., "--name", "-n", help="Asset name."),
-    platform: str = typer.Option(..., "--platform", "-p", help="Platform id."),
+    kind: str = typer.Option("", "--kind", "-k", help="Asset kind."),
+    name: str = typer.Option("", "--name", "-n", help="Asset name."),
+    platform: str = typer.Option("", "--platform", "-p", help="Platform id."),
     local_instance_id: str = typer.Option(
         "",
         "--local-instance-id",
@@ -849,63 +1822,287 @@ def cmd_asset_plan(
         "--overwrite-unmanaged",
         help="Explicitly allow replacing an unmanaged local target.",
     ),
+    link_target_confirmed: bool = typer.Option(
+        False,
+        "--link-target-confirmed",
+        help="Explicitly confirm an untrusted non-standard root link target.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Persist one revalidatable asset action plan."""
-    if kind not in VALID_KINDS:
-        console.print(f"[red]Unsupported resource kind:[/red] {kind}")
-        raise typer.Exit(2)
+    normalized = {
+        "action": action.strip(),
+        "kind": kind.strip(),
+        "name": name.strip(),
+        "platform": platform.strip(),
+    }
+    missing = [field for field, value in normalized.items() if not value]
+    if missing:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_plan_inputs_required",
+            message="Asset plan requires action, --kind, --name, and --platform.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+            data={"missing": missing},
+        )
+    if normalized["kind"] not in VALID_KINDS:
+        _exit_wire_error(
+            json_output=json_output,
+            code="invalid_resource_kind",
+            message=f"Unsupported resource kind: {normalized['kind']}",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
     try:
         plan = build_asset_action_plan(
-            action,
-            kind=kind,  # type: ignore[arg-type]
-            name=name,
-            platform=platform,
+            normalized["action"],
+            kind=normalized["kind"],  # type: ignore[arg-type]
+            name=normalized["name"],
+            platform=normalized["platform"],
             local_instance_id=local_instance_id,
             new_name=new_name,
             new_install_name=new_install_name,
             overwrite_unmanaged=overwrite_unmanaged,
+            link_target_confirmed=link_target_confirmed,
             config=_load(),
         )
     except Exception as exc:
-        console.print(f"[red]Asset planning failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_plan_failed",
+            message=f"Asset planning failed: {exc}",
+        )
+    try:
+        plan_hash, approval = _create_asset_action_approval(plan)
+        payload = _asset_action_plan_payload(
+            plan,
+            plan_hash=plan_hash,
+            approval=approval,
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_approval_request_failed",
+            message=f"Asset approval request failed: {exc}",
+        )
     if json_output:
-        _print_machine_json(asdict(plan))
+        if plan.blocked:
+            _exit_wire_error(
+                json_output=True,
+                code="plan_blocked",
+                message="The asset action plan is blocked.",
+                status="blocked",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=payload,
+            )
+        _print_wire_success(payload, status="planned")
         return
-    table = Table(title="CC Port asset action plan")
-    table.add_column("Field", style="bold")
-    table.add_column("Value")
-    for label, value in (
-        ("Operation", plan.operation_id),
-        ("Action", plan.action),
-        ("Source", plan.resource_key),
-        ("Target", plan.target_resource_key),
-        ("Platform", plan.platform),
-        ("Remote commit", plan.remote_commit),
-        ("Blocked", str(plan.blocked).lower()),
-    ):
-        table.add_row(label, str(value))
-    console.print(table)
-    for warning in plan.warnings:
-        console.print(f"[yellow]Warning:[/yellow] {warning}")
-    for blocker in plan.blockers:
-        console.print(f"[red]Blocked:[/red] {blocker}")
+    _print_asset_action_plan(
+        plan,
+        plan_hash=plan_hash,
+        approval_id=approval.approval_id if approval else "",
+        approval_status=approval.status if approval else "not-required",
+    )
 
 
 @asset_app.command("apply")
 def cmd_asset_apply(
-    operation_id: str = typer.Argument(..., help="Operation id returned by asset plan."),
+    operation_id: str = typer.Argument("", help="Operation id returned by asset plan."),
+    approval_id: str = typer.Option(
+        "",
+        "--approval-id",
+        help="Approval id returned by asset plan and approved by a human surface.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Deprecated compatibility flag; it does not approve pending requests.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Revalidate and apply one persisted asset action plan."""
+    _ = yes
+    selected_operation_id = operation_id.strip()
+    if not selected_operation_id:
+        _exit_wire_error(
+            json_output=json_output,
+            code="operation_id_required",
+            message="Asset apply requires an operation id returned by asset plan.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+            data={"missing": ["operation_id"]},
+        )
+    selected_approval_id = approval_id.strip()
+    if not selected_approval_id:
+        _exit_wire_error(
+            json_output=json_output,
+            code="approval_id_required",
+            message="Asset apply requires --approval-id from the reviewed plan.",
+            status="needs-confirmation",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data={"missing": ["approval_id"]},
+        )
+
     try:
-        result = apply_asset_action_plan(operation_id, config=_load())
+        cfg = _load()
+        plan = load_asset_action_plan(selected_operation_id, config=cfg)
     except Exception as exc:
-        console.print(f"[red]Asset apply failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_plan_unavailable",
+            message=f"The stored asset action plan is unavailable: {exc}",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    plan_hash = asset_action_plan_hash(plan)
+    plan_payload = _asset_action_plan_payload(plan, plan_hash=plan_hash, approval=None)
+    if plan.blocked:
+        _exit_wire_error(
+            json_output=json_output,
+            code="plan_blocked",
+            message="The stored asset action plan is blocked.",
+            status="blocked",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=plan_payload,
+        )
+    try:
+        current = _rebuild_asset_action_plan(plan, config=cfg, persist=False)
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_revalidation_failed",
+            message=f"Asset action revalidation failed: {exc}",
+        )
+    if asset_action_plan_hash(current) != plan_hash:
+        invalidated = _invalidate_cli_approval(
+            selected_approval_id,
+            kind="asset-action",
+            operation_id=plan.operation_id,
+            plan_hash=plan_hash,
+            scope=asset_action_approval_scope(plan),
+            json_output=json_output,
+            data=plan_payload,
+        )
+        try:
+            replacement = _rebuild_asset_action_plan(plan, config=cfg, persist=True)
+            replacement_hash, replacement_approval = _create_asset_action_approval(replacement)
+            stale_plan_payload = _asset_action_plan_payload(
+                replacement,
+                plan_hash=replacement_hash,
+                approval=replacement_approval,
+            )
+        except Exception as exc:
+            stale_plan_payload = None
+            replan_error = redact_secret_text(str(exc))
+        else:
+            replan_error = ""
+        if not json_output and stale_plan_payload is not None:
+            _print_asset_action_plan(
+                replacement,
+                plan_hash=replacement_hash,
+                approval_id=(replacement_approval.approval_id if replacement_approval else ""),
+                approval_status=(
+                    replacement_approval.status if replacement_approval else "not-required"
+                ),
+            )
+        _exit_wire_error(
+            json_output=json_output,
+            code="stale_plan",
+            message="The asset action plan is stale; review the returned replacement plan.",
+            status="stale-plan",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data={
+                "operation_id": plan.operation_id,
+                "plan_hash": plan_hash,
+                "approval_id": invalidated.approval_id,
+                "approval_status": invalidated.status,
+                "action": plan.action,
+                "status": "stale-plan",
+                "resource_key": plan.resource_key,
+                "target_resource_key": plan.target_resource_key,
+                "platform": plan.platform,
+                "message": "The action state changed before approval consumption.",
+                "stale_plan": stale_plan_payload,
+                "replan_error": replan_error,
+            },
+        )
+    if not _NON_INTERACTIVE and not json_output:
+        _print_asset_action_plan(
+            plan,
+            plan_hash=plan_hash,
+            approval_id=selected_approval_id,
+            approval_status="pending or approved",
+        )
+    approval = _consume_cli_approval(
+        selected_approval_id,
+        kind="asset-action",
+        operation_id=plan.operation_id,
+        plan_hash=plan_hash,
+        scope=asset_action_approval_scope(current),
+        summary=f"{plan.action} {plan.resource_key} for profile {plan.platform}",
+        metadata=_asset_action_approval_metadata(plan),
+        json_output=json_output,
+        data=plan_payload,
+    )
+    if approval is None:
+        return
+    try:
+        result = apply_asset_action_plan(selected_operation_id, config=cfg)
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_apply_failed",
+            message=f"Asset apply failed: {exc}",
+        )
+    result_payload = to_wire_value(result)
+    if not isinstance(result_payload, dict):
+        raise TypeError("Asset action result must be an object.")
+    result_payload.update(
+        {
+            "plan_hash": plan_hash,
+            "approval_id": approval.approval_id,
+            "approval_status": approval.status,
+        }
+    )
+    if result.status.startswith("stale-"):
+        try:
+            replacement = _rebuild_asset_action_plan(plan, config=cfg, persist=True)
+            replacement_hash, replacement_approval = _create_asset_action_approval(replacement)
+            result_payload["stale_plan"] = _asset_action_plan_payload(
+                replacement,
+                plan_hash=replacement_hash,
+                approval=replacement_approval,
+            )
+            if not json_output:
+                _print_asset_action_plan(
+                    replacement,
+                    plan_hash=replacement_hash,
+                    approval_id=(replacement_approval.approval_id if replacement_approval else ""),
+                    approval_status=(
+                        replacement_approval.status if replacement_approval else "not-required"
+                    ),
+                )
+        except Exception as exc:
+            result_payload["stale_plan"] = None
+            result_payload["replan_error"] = redact_secret_text(str(exc))
+        _exit_wire_error(
+            json_output=json_output,
+            code="stale_plan",
+            message="The asset action plan became stale; review the returned replacement plan.",
+            status="stale-plan",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=result_payload,
+        )
     if json_output:
-        _print_machine_json(asdict(result))
+        envelope = _print_wire_result(
+            result_payload,
+            status=result.status,
+            message=result.message or "Asset apply did not complete successfully.",
+        )
+        if not envelope.ok:
+            raise typer.Exit(wire_exit_code(envelope))
     else:
         console.print(
             f"[bold]{result.status}[/bold] {result.target_resource_key} "
@@ -913,7 +2110,7 @@ def cmd_asset_apply(
         )
         for warning in result.warnings:
             console.print(f"[yellow]Warning:[/yellow] {warning}")
-    if result.status not in {"succeeded", "unchanged"}:
+    if not json_output and result.status not in {"succeeded", "unchanged"}:
         raise typer.Exit(1)
 
 
@@ -929,7 +2126,17 @@ def cmd_asset_upload(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the current plan without writing."
     ),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive confirmation."),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Deprecated compatibility flag; it does not approve pending requests.",
+    ),
+    approval_id: str = typer.Option(
+        "",
+        "--approval-id",
+        help="Approval id returned by an earlier plan and approved by a human surface.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Upload selected local resources in one remote commit."""
@@ -941,6 +2148,7 @@ def cmd_asset_upload(
         choices_path=choices,
         dry_run=dry_run,
         yes=yes,
+        approval_id=approval_id,
         json_output=json_output,
     )
 
@@ -960,13 +2168,28 @@ def cmd_asset_download(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the current plan without writing."
     ),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive confirmation."),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Deprecated compatibility flag; it does not approve pending requests.",
+    ),
+    approval_id: str = typer.Option(
+        "",
+        "--approval-id",
+        help="Approval id returned by an earlier plan and approved by a human surface.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Download selected remote resources to one or more enabled AI tools."""
     if not platform:
-        console.print("[red]Select at least one target with --platform.[/red]")
-        raise typer.Exit(2)
+        _exit_wire_error(
+            json_output=json_output,
+            code="target_platform_required",
+            message="Select at least one target with --platform.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
     _run_asset_batch_command(
         "download",
         resource_keys=resource,
@@ -975,8 +2198,294 @@ def cmd_asset_download(
         choices_path=choices,
         dry_run=dry_run,
         yes=yes,
+        approval_id=approval_id,
         json_output=json_output,
     )
+
+
+@asset_app.command("batch-plan")
+def cmd_asset_batch_plan(
+    request_source: str = typer.Option(
+        "",
+        "--request",
+        help="JSON request file, or '-' to read the request from stdin.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Build a stateless batch plan from one strict reusable JSON request."""
+    selected_request = request_source.strip()
+    if not selected_request:
+        _exit_wire_error(
+            json_output=json_output,
+            code="batch_request_required",
+            message="Asset batch plan requires --request with a JSON file or '-'.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+            data={"missing": ["request"]},
+        )
+
+    try:
+        request = _load_asset_batch_request(selected_request)
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="invalid_batch_request",
+            message=str(exc),
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    try:
+        plan = build_asset_batch_plan(
+            request.direction,
+            resource_keys=request.resource_keys,
+            target_platforms=request.target_platforms,
+            choices=_service_asset_batch_choices(request.choices),
+            config=_load(),
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_batch_plan_failed",
+            message=f"Asset batch planning failed: {exc}",
+        )
+    try:
+        approval = _create_asset_batch_approval(plan, request)
+        payload = _asset_batch_plan_payload(plan, approval=approval)
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_approval_request_failed",
+            message=f"Asset batch approval request failed: {exc}",
+        )
+    if json_output:
+        if plan.blocked_count:
+            _exit_wire_error(
+                json_output=True,
+                code="plan_blocked",
+                message="The asset batch plan contains blocked items.",
+                status="blocked",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=payload,
+            )
+        _print_wire_success(payload, status="planned")
+        return
+    _print_asset_batch_plan(plan, request=request)
+    if approval:
+        console.print(f"Approval: {approval.approval_id} ({approval.status})")
+
+
+@asset_app.command("batch-apply")
+def cmd_asset_batch_apply(
+    request_source: str = typer.Option(
+        "",
+        "--request",
+        help="The exact JSON request file used for batch-plan, or '-' for stdin.",
+    ),
+    plan_hash: str = typer.Option(
+        "",
+        "--plan-hash",
+        help="The exact plan_hash returned by batch-plan.",
+    ),
+    approval_id: str = typer.Option(
+        "",
+        "--approval-id",
+        help="Approval id returned by batch-plan and approved by a human surface.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Deprecated compatibility flag; it does not approve pending requests.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Apply a batch only when the same request still produces the reviewed hash."""
+    _ = yes
+    selected_request = request_source.strip()
+    selected_plan_hash = plan_hash.strip()
+    selected_approval_id = approval_id.strip()
+    missing = [
+        field
+        for field, value in (
+            ("request", selected_request),
+            ("plan_hash", selected_plan_hash),
+            ("approval_id", selected_approval_id),
+        )
+        if not value
+    ]
+    if missing:
+        _exit_wire_error(
+            json_output=json_output,
+            code="batch_apply_inputs_required",
+            message="Asset batch apply requires --request, --plan-hash, and --approval-id.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+            data={"missing": missing},
+        )
+    try:
+        request = _load_asset_batch_request(selected_request)
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="invalid_batch_request",
+            message=str(exc),
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    try:
+        cfg = _load()
+        current = build_asset_batch_plan(
+            request.direction,
+            resource_keys=request.resource_keys,
+            target_platforms=request.target_platforms,
+            choices=_service_asset_batch_choices(request.choices),
+            config=cfg,
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_batch_plan_failed",
+            message=f"Asset batch revalidation failed: {exc}",
+        )
+    if current.plan_hash != selected_plan_hash:
+        old_operation_id = asset_batch_operation_id(selected_plan_hash)
+        invalidated = _invalidate_cli_approval(
+            selected_approval_id,
+            kind="asset-batch",
+            operation_id=old_operation_id,
+            plan_hash=selected_plan_hash,
+            scope=asset_batch_approval_scope(
+                direction=request.direction,
+                resource_keys=request.resource_keys,
+                target_platforms=request.target_platforms,
+                choices=request.choices,
+                plan_hash=selected_plan_hash,
+            ),
+            json_output=json_output,
+            data={"plan_hash": selected_plan_hash},
+        )
+        replacement_approval = _create_asset_batch_approval(current, request)
+        stale_payload = {
+            "operation_id": old_operation_id,
+            "approval_id": invalidated.approval_id,
+            "approval_status": invalidated.status,
+            "status": "stale-plan",
+            "plan_hash": current.plan_hash,
+            "results": [],
+            "stale_plan": _asset_batch_plan_payload(
+                current,
+                approval=replacement_approval,
+            ),
+        }
+        if not json_output:
+            _print_asset_batch_plan(current, request=request)
+            if replacement_approval:
+                console.print(
+                    f"Approval: {replacement_approval.approval_id} ({replacement_approval.status})"
+                )
+        _exit_wire_error(
+            json_output=json_output,
+            code="stale_plan",
+            message="The asset batch plan is stale; review the returned replacement plan.",
+            status="stale-plan",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=stale_payload,
+        )
+    current_payload = _asset_batch_plan_payload(current, approval=None)
+    if current.blocked_count:
+        _exit_wire_error(
+            json_output=json_output,
+            code="plan_blocked",
+            message="The current asset batch plan contains blocked items.",
+            status="blocked",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=current_payload,
+        )
+    if not _NON_INTERACTIVE and not json_output:
+        _print_asset_batch_plan(current, request=request)
+        console.print(f"Approval: {approval_id.strip() or '(create or select during apply)'}")
+    consumed: ApprovalRequest | None = None
+    if current.executable_count:
+        consumed = _consume_cli_approval(
+            selected_approval_id,
+            kind="asset-batch",
+            operation_id=asset_batch_operation_id(current.plan_hash),
+            plan_hash=current.plan_hash,
+            scope=asset_batch_approval_scope(
+                direction=request.direction,
+                resource_keys=request.resource_keys,
+                target_platforms=request.target_platforms,
+                choices=request.choices,
+                plan_hash=current.plan_hash,
+            ),
+            summary=(
+                f"{request.direction.title()} {len(request.resource_keys)} "
+                "CC Port asset resource(s)"
+            ),
+            metadata=_asset_batch_approval_metadata(request),
+            json_output=json_output,
+            data=current_payload,
+        )
+        if consumed is None:
+            return
+    try:
+        result = apply_asset_batch_plan(
+            request.direction,
+            resource_keys=request.resource_keys,
+            target_platforms=request.target_platforms,
+            choices=_service_asset_batch_choices(request.choices),
+            expected_plan_hash=selected_plan_hash,
+            config=cfg,
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_batch_apply_failed",
+            message=f"Asset batch apply failed: {exc}",
+        )
+    result_payload = to_wire_value(result)
+    if not isinstance(result_payload, dict):
+        raise TypeError("Asset batch result must be an object.")
+    result_payload.update(
+        {
+            "operation_id": asset_batch_operation_id(current.plan_hash),
+            "approval_id": consumed.approval_id if consumed else "",
+            "approval_status": consumed.status if consumed else "not-required",
+        }
+    )
+    if result.status == "stale-plan" and result.stale_plan is not None:
+        replacement_approval = _create_asset_batch_approval(result.stale_plan, request)
+        result_payload["stale_plan"] = _asset_batch_plan_payload(
+            result.stale_plan,
+            approval=replacement_approval,
+        )
+        if not json_output:
+            _print_asset_batch_plan(result.stale_plan, request=request)
+            if replacement_approval:
+                console.print(
+                    f"Approval: {replacement_approval.approval_id} ({replacement_approval.status})"
+                )
+    if json_output:
+        envelope = _print_wire_result(
+            result_payload,
+            status=result.status,
+            message=_asset_batch_result_message(result.status),
+        )
+        if not envelope.ok:
+            raise typer.Exit(wire_exit_code(envelope))
+        return
+    console.print(f"[bold]{result.status}[/bold]")
+    for item in result.results:
+        console.print(
+            f"{item.status}: {item.target_resource_key}"
+            f"{f' on {item.platform}' if item.platform else ''} - {item.message}"
+        )
+    if result.status != "succeeded":
+        raise typer.Exit(
+            WIRE_EXIT_SAFE_NONCOMPLETION
+            if result.status in {"stale-plan", "partial", "needs-action"}
+            else WIRE_EXIT_RUNTIME_FAILURE
+        )
 
 
 def _run_asset_batch_command(
@@ -988,21 +2497,38 @@ def _run_asset_batch_command(
     choices_path: Path | None,
     dry_run: bool,
     yes: bool,
+    approval_id: str,
     json_output: bool,
 ) -> None:
-    cfg = _load()
-    keys = list(dict.fromkeys(item.strip() for item in resource_keys if item.strip()))
-    if all_resources:
-        inventory = build_asset_inventory(config=cfg, scan_local=True, refresh_remote=True)
-        keys = [
-            item.resource_key
-            for item in inventory.resources
-            if direction == "upload" or item.remote.exists
-        ]
+    _ = yes
+
+    try:
+        cfg = _load()
+        keys = list(dict.fromkeys(item.strip() for item in resource_keys if item.strip()))
+        if all_resources:
+            inventory = build_asset_inventory(config=cfg, scan_local=True, refresh_remote=True)
+            keys = [
+                item.resource_key
+                for item in inventory.resources
+                if direction == "upload" or item.remote.exists
+            ]
+        batch_choices = _load_asset_batch_choices(choices_path)
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="invalid_batch_request",
+            message=f"Invalid asset batch request: {exc}",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
     if not keys:
-        console.print("[red]Select at least one resource with --resource or --all.[/red]")
-        raise typer.Exit(2)
-    batch_choices = _load_asset_batch_choices(choices_path)
+        _exit_wire_error(
+            json_output=json_output,
+            code="resource_selection_required",
+            message="Select at least one resource with --resource or --all.",
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
     try:
         plan = build_asset_batch_plan(
             direction,
@@ -1012,38 +2538,195 @@ def _run_asset_batch_command(
             config=cfg,
         )
     except Exception as exc:
-        console.print(f"[red]Asset batch planning failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_batch_plan_failed",
+            message=f"Asset batch planning failed: {exc}",
+        )
+    request = AssetBatchRequestWire(
+        direction=direction,  # type: ignore[arg-type]
+        resource_keys=keys,
+        target_platforms=platforms,
+        choices=_wire_asset_batch_choices(batch_choices),
+    )
+    selected_approval_id = approval_id.strip()
+    if selected_approval_id:
+        try:
+            reviewed_approval = load_approval_request(selected_approval_id)
+        except Exception as exc:
+            _exit_wire_error(
+                json_output=json_output,
+                code="approval_unavailable",
+                message=f"The approval request is unavailable: {exc}",
+                status="needs-confirmation",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            )
+        if reviewed_approval.kind != "asset-batch":
+            _exit_wire_error(
+                json_output=json_output,
+                code="approval_mismatch",
+                message="The approval request does not match an asset batch operation.",
+                status="invalid-request",
+                exit_code=WIRE_EXIT_INVALID_REQUEST,
+            )
+        if reviewed_approval.plan_hash != plan.plan_hash:
+            invalidated = _invalidate_cli_approval(
+                selected_approval_id,
+                kind="asset-batch",
+                operation_id=asset_batch_operation_id(reviewed_approval.plan_hash),
+                plan_hash=reviewed_approval.plan_hash,
+                scope=asset_batch_approval_scope(
+                    direction=request.direction,
+                    resource_keys=request.resource_keys,
+                    target_platforms=request.target_platforms,
+                    choices=request.choices,
+                    plan_hash=reviewed_approval.plan_hash,
+                ),
+                json_output=json_output,
+                data={"plan_hash": reviewed_approval.plan_hash},
+            )
+            replacement_approval = _create_asset_batch_approval(plan, request)
+            stale_payload = {
+                "operation_id": reviewed_approval.operation_id,
+                "approval_id": invalidated.approval_id,
+                "approval_status": invalidated.status,
+                "status": "stale-plan",
+                "plan_hash": plan.plan_hash,
+                "results": [],
+                "stale_plan": _asset_batch_plan_payload(
+                    plan,
+                    approval=replacement_approval,
+                ),
+            }
+            if not json_output:
+                _print_asset_batch_plan(plan, request=request)
+                if replacement_approval:
+                    console.print(
+                        f"Approval: {replacement_approval.approval_id} "
+                        f"({replacement_approval.status})"
+                    )
+            _exit_wire_error(
+                json_output=json_output,
+                code="stale_plan",
+                message="The asset batch plan is stale; review the returned replacement plan.",
+                status="stale-plan",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=stale_payload,
+            )
+    try:
+        planned_approval = (
+            _create_asset_batch_approval(plan, request) if not selected_approval_id else None
+        )
+        plan_payload = _asset_batch_plan_payload(plan, approval=planned_approval)
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_approval_request_failed",
+            message=f"Asset batch approval request failed: {exc}",
+        )
     if json_output and dry_run:
-        _print_machine_json(asdict(plan))
+        if plan.blocked_count:
+            _exit_wire_error(
+                json_output=True,
+                code="plan_blocked",
+                message="The asset batch plan contains blocked items.",
+                status="blocked",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=plan_payload,
+            )
+        _print_wire_success(plan_payload, status="planned")
         return
     if not json_output:
-        _print_asset_batch_plan(plan)
+        _print_asset_batch_plan(plan, request=request)
+        if planned_approval:
+            console.print(f"Approval: {planned_approval.approval_id} ({planned_approval.status})")
     if dry_run:
         return
     has_manual = any(item.disposition == "manual" for item in plan.items)
     if plan.executable_count == 0 and not has_manual:
-        console.print("[red]The plan has no executable items.[/red]")
-        raise typer.Exit(1)
+        _exit_wire_error(
+            json_output=json_output,
+            code="no_executable_items",
+            message="The plan has no executable items.",
+            status="blocked",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=plan_payload,
+        )
     if plan.blocked_count:
-        console.print("[red]Resolve or remove blocked items before applying.[/red]")
-        raise typer.Exit(1)
-    if plan.executable_count and not yes and not typer.confirm(
-        f"Apply {plan.executable_count} {direction} action(s)?",
-        default=False,
-    ):
-        console.print("[yellow]Batch cancelled.[/yellow]")
-        return
-    result = apply_asset_batch_plan(
-        direction,
-        resource_keys=keys,
-        target_platforms=platforms,
-        choices=batch_choices,
-        expected_plan_hash=plan.plan_hash,
-        config=cfg,
+        _exit_wire_error(
+            json_output=json_output,
+            code="plan_blocked",
+            message="Resolve or remove blocked items before applying.",
+            status="blocked",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+            data=plan_payload,
+        )
+    consumed: ApprovalRequest | None = None
+    if plan.executable_count:
+        consumed = _consume_cli_approval(
+            selected_approval_id,
+            kind="asset-batch",
+            operation_id=asset_batch_operation_id(plan.plan_hash),
+            plan_hash=plan.plan_hash,
+            scope=asset_batch_approval_scope(
+                direction=request.direction,
+                resource_keys=request.resource_keys,
+                target_platforms=request.target_platforms,
+                choices=request.choices,
+                plan_hash=plan.plan_hash,
+            ),
+            summary=f"{direction.title()} {len(keys)} CC Port asset resource(s)",
+            metadata=_asset_batch_approval_metadata(request),
+            json_output=json_output,
+            data=plan_payload,
+        )
+        if consumed is None:
+            return
+    try:
+        result = apply_asset_batch_plan(
+            direction,
+            resource_keys=keys,
+            target_platforms=platforms,
+            choices=batch_choices,
+            expected_plan_hash=plan.plan_hash,
+            config=cfg,
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_batch_apply_failed",
+            message=f"Asset batch apply failed: {exc}",
+        )
+    result_payload = to_wire_value(result)
+    if not isinstance(result_payload, dict):
+        raise TypeError("Asset batch result must be an object.")
+    result_payload.update(
+        {
+            "operation_id": asset_batch_operation_id(plan.plan_hash),
+            "approval_id": consumed.approval_id if consumed else "",
+            "approval_status": consumed.status if consumed else "not-required",
+        }
     )
+    if result.status == "stale-plan" and result.stale_plan is not None:
+        replacement_approval = _create_asset_batch_approval(result.stale_plan, request)
+        result_payload["stale_plan"] = _asset_batch_plan_payload(
+            result.stale_plan,
+            approval=replacement_approval,
+        )
+        if not json_output:
+            _print_asset_batch_plan(result.stale_plan, request=request)
+            if replacement_approval:
+                console.print(
+                    f"Approval: {replacement_approval.approval_id} ({replacement_approval.status})"
+                )
     if json_output:
-        _print_machine_json(asdict(result))
+        envelope = _print_wire_result(
+            result_payload,
+            status=result.status,
+            message=_asset_batch_result_message(result.status),
+        )
+        if not envelope.ok:
+            raise typer.Exit(wire_exit_code(envelope))
     else:
         console.print(f"[bold]{result.status}[/bold]")
         for item in result.results:
@@ -1051,7 +2734,7 @@ def _run_asset_batch_command(
                 f"{item.status}: {item.target_resource_key}"
                 f"{f' on {item.platform}' if item.platform else ''} - {item.message}"
             )
-    if result.status not in {"succeeded"}:
+    if not json_output and result.status not in {"succeeded"}:
         raise typer.Exit(1)
 
 
@@ -1060,7 +2743,6 @@ def _load_asset_batch_choices(path: Path | None) -> list[AssetBatchChoice]:
         return []
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     raw_items = payload.get("items", payload) if isinstance(payload, dict) else payload
-    choices: list[AssetBatchChoice] = []
     if isinstance(raw_items, dict):
         iterable = [
             {"resource_key": key, **(value if isinstance(value, dict) else {"resolution": value})}
@@ -1070,37 +2752,94 @@ def _load_asset_batch_choices(path: Path | None) -> list[AssetBatchChoice]:
         iterable = raw_items
     else:
         raise ValueError("Batch choices must be a mapping or list.")
-    for item in iterable:
-        if not isinstance(item, dict) or not str(item.get("resource_key") or "").strip():
-            continue
-        choices.append(
-            AssetBatchChoice(
-                resource_key=str(item["resource_key"]).strip(),
-                platform=str(item.get("platform") or "").strip(),
-                local_instance_id=str(item.get("local_instance_id") or "").strip(),
-                resolution=str(item.get("resolution") or "overwrite").strip(),
-                new_name=str(item.get("new_name") or "").strip(),
-                overwrite_unmanaged=bool(item.get("overwrite_unmanaged", False)),
-                plugin_track=str(item.get("plugin_track") or "").strip(),
-                ownership_confirmed=bool(item.get("ownership_confirmed", False)),
-                reference_origin={
-                    str(key): str(value)
-                    for key, value in (item.get("reference_origin") or {}).items()
-                }
-                if isinstance(item.get("reference_origin"), dict)
-                else {},
-                plugin_dependencies={
-                    str(key): str(value)
-                    for key, value in (item.get("plugin_dependencies") or {}).items()
-                }
-                if isinstance(item.get("plugin_dependencies"), dict)
-                else {},
-            )
-        )
-    return choices
+    return _service_asset_batch_choices(parse_asset_batch_choices(iterable))
 
 
-def _print_asset_batch_plan(plan: object) -> None:
+def _load_asset_batch_request(source: str) -> AssetBatchRequestWire:
+    """Read and strictly validate one reusable batch request."""
+
+    if source == "-":
+        if sys.stdin.isatty():
+            raise ValueError("--request - requires JSON on stdin.")
+        raw = sys.stdin.read()
+    else:
+        raw = Path(source).expanduser().read_text(encoding="utf-8")
+    if not raw.strip():
+        raise ValueError("The batch request is empty.")
+    try:
+        payload = json.loads(raw.lstrip("\ufeff"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid batch request JSON at line {exc.lineno}, column {exc.colno}."
+        ) from exc
+    return parse_asset_batch_request(payload)
+
+
+def _service_asset_batch_choices(
+    choices: list[AssetBatchChoiceWire],
+) -> list[AssetBatchChoice]:
+    """Convert validated wire choices into the shared service input type."""
+
+    return [AssetBatchChoice(**choice.model_dump(mode="python")) for choice in choices]
+
+
+def _asset_batch_result_message(status: str) -> str:
+    return {
+        "stale-plan": "The batch plan is stale; review the returned fresh plan.",
+        "partial": "The batch completed only partially.",
+        "needs-action": "The batch requires additional user action.",
+        "failed": "The batch failed.",
+    }.get(status, f"The batch did not complete successfully: {status}.")
+
+
+def _print_asset_action_plan(
+    plan: object,
+    *,
+    plan_hash: str,
+    approval_id: str,
+    approval_status: str,
+) -> None:
+    table = Table(title="CC Port asset action plan")
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    for label, value in (
+        ("Operation", plan.operation_id),  # type: ignore[attr-defined]
+        ("Action", plan.action),  # type: ignore[attr-defined]
+        ("Source", plan.resource_key),  # type: ignore[attr-defined]
+        ("Target", plan.target_resource_key),  # type: ignore[attr-defined]
+        ("Platform", plan.platform),  # type: ignore[attr-defined]
+        ("Local instance", plan.local_instance_id or "-"),  # type: ignore[attr-defined]
+        ("New resource name", plan.new_name or "-"),  # type: ignore[attr-defined]
+        ("New install name", plan.new_install_name or "-"),  # type: ignore[attr-defined]
+        (
+            "Overwrite unmanaged",
+            str(plan.overwrite_unmanaged).lower(),  # type: ignore[attr-defined]
+        ),
+        (
+            "Link target confirmed",
+            str(plan.link_target_confirmed).lower(),  # type: ignore[attr-defined]
+        ),
+        ("Remote commit", plan.remote_commit),  # type: ignore[attr-defined]
+        ("Plan hash", plan_hash),
+        (
+            "Approval",
+            f"{approval_id or '(create or select during apply)'} ({approval_status})",
+        ),
+        ("Blocked", str(plan.blocked).lower()),  # type: ignore[attr-defined]
+    ):
+        table.add_row(label, str(value))
+    console.print(table)
+    for warning in plan.warnings:  # type: ignore[attr-defined]
+        console.print(f"[yellow]Warning:[/yellow] {escape(warning)}")
+    for blocker in plan.blockers:  # type: ignore[attr-defined]
+        console.print(f"[red]Blocked:[/red] {escape(blocker)}")
+
+
+def _print_asset_batch_plan(
+    plan: object,
+    *,
+    request: AssetBatchRequestWire | None = None,
+) -> None:
     table = Table(title=f"CC Port asset batch {getattr(plan, 'direction', '')}")
     table.add_column("Resource", style="bold")
     table.add_column("Platform")
@@ -1122,6 +2861,36 @@ def _print_asset_batch_plan(plan: object) -> None:
         f"skipped: {getattr(plan, 'skipped_count', 0)}"
         f"; manual: {sum(item.disposition == 'manual' for item in getattr(plan, 'items', []))}"
     )
+    console.print(f"Plan hash: {getattr(plan, 'plan_hash', '')}")
+    if request is None:
+        return
+    console.print(
+        f"Resources: {', '.join(request.resource_keys)}; "
+        f"target profiles: {', '.join(request.target_platforms) or '-'}"
+    )
+    if not request.choices:
+        return
+    choices = Table(title="Explicit batch choices")
+    choices.add_column("Resource", style="bold")
+    choices.add_column("Profile")
+    choices.add_column("Local instance")
+    choices.add_column("Resolution / name")
+    choices.add_column("Overwrite")
+    choices.add_column("Ownership")
+    choices.add_column("Link target")
+    choices.add_column("Plugin track")
+    for choice in request.choices:
+        choices.add_row(
+            choice.resource_key,
+            choice.platform or "-",
+            choice.local_instance_id or "-",
+            f"{choice.resolution} / {choice.new_name or '-'}",
+            str(choice.overwrite_unmanaged).lower(),
+            str(choice.ownership_confirmed).lower(),
+            str(choice.link_target_confirmed).lower(),
+            choice.plugin_track or "-",
+        )
+    console.print(choices)
 
 
 def _print_resource_info(info: object) -> None:
@@ -1180,6 +2949,10 @@ def _maybe_push_resource_repo(cfg: Config, *, push: bool, no_push: bool) -> None
         raise typer.Exit(2)
     should_push = push
     if not push and not no_push:
+        _require_interactive_input(
+            "Push confirmation is required; pass --push or --no-push.",
+            code="confirmation_required",
+        )
         should_push = typer.confirm(
             "Push changes to your private resource repo now?", default=False
         )
@@ -1301,6 +3074,11 @@ def cmd_operations_prune(
     if not selected:
         console.print("[yellow]No operations are eligible for cleanup.[/yellow]")
         return
+    if not yes:
+        _require_interactive_input(
+            "State cleanup requires confirmation; pass --yes.",
+            code="confirmation_required",
+        )
     if not yes and not typer.confirm(
         f"Delete {len(selected)} operation record(s) and their backups?",
         default=False,
@@ -1409,6 +3187,11 @@ def cmd_operations_orphan_quarantine(
     if not name:
         console.print("[red]Select at least one orphan with --name.[/red]")
         raise typer.Exit(2)
+    if not yes:
+        _require_interactive_input(
+            "Orphan quarantine requires confirmation; pass --yes.",
+            code="confirmation_required",
+        )
     if not yes and not typer.confirm(
         f"Quarantine {len(set(name))} orphan backup(s)?",
         default=False,
@@ -1451,6 +3234,11 @@ def cmd_operations_quarantine_delete(
     yes: bool = typer.Option(False, "--yes", "-y"),
 ) -> None:
     """Permanently delete one orphan backup quarantine batch."""
+    if not yes:
+        _require_interactive_input(
+            "Quarantine deletion requires confirmation; pass --yes.",
+            code="confirmation_required",
+        )
     if not yes and not typer.confirm(
         f"Permanently delete quarantine {quarantine_id}?",
         default=False,
@@ -1576,6 +3364,9 @@ def cmd_publish(
             raise typer.Exit(2) from exc
 
     if private is None and not yes:
+        _require_interactive_input(
+            "Repository visibility is required; pass --private, --public, or --yes to use the configured default."
+        )
         default = cfg.github.default_private
         choice = (
             typer.prompt(
@@ -2279,10 +4070,56 @@ def cmd_check(
 
 
 @app.command("doctor")
-def cmd_doctor() -> None:
+def cmd_doctor(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
     """Check that the environment is ready (git, token, permissions, platforms)."""
-    cfg = _load()
-    checks = build_doctor_checks(cfg)
+    try:
+        cfg = _load()
+        checks = build_doctor_checks(cfg)
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="doctor_failed",
+            message=f"Environment checks failed: {exc}",
+        )
+    if json_output:
+        statuses = [str(check.get("status") or "error") for check in checks]
+        report = {
+            "status": (
+                "error" if "error" in statuses else "warning" if "warning" in statuses else "ok"
+            ),
+            "ok_count": statuses.count("ok"),
+            "warning_count": statuses.count("warning"),
+            "error_count": statuses.count("error"),
+            "skipped_count": statuses.count("skipped"),
+            "checks": [
+                {
+                    "id": str(check.get("id") or ""),
+                    "label": str(check.get("label") or ""),
+                    "status": str(check.get("status") or "error"),
+                    "ok": bool(check.get("ok")),
+                    "detail": str(check.get("detail") or ""),
+                    "profile_id": (
+                        check["profile"].name
+                        if isinstance(check.get("profile"), PlatformProfile)
+                        else ""
+                    ),
+                }
+                for check in checks
+            ],
+        }
+        if has_doctor_errors(checks):
+            _exit_wire_error(
+                json_output=True,
+                code="doctor_errors",
+                message="Environment checks reported errors.",
+                status="blocked",
+                exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+                data=report,
+            )
+        _print_wire_success(report, status="ready")
+        return
     general_checks = [
         check for check in checks if not str(check.get("id", "")).startswith("platform:")
     ]
@@ -2433,9 +4270,36 @@ def cmd_install_self(
 
 
 @app.command("platforms")
-def cmd_platforms() -> None:
+def cmd_platforms(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
     """Show configured platforms and their directories."""
-    cfg = _load()
+    try:
+        cfg = _load()
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="platform_list_failed",
+            message=f"Platform discovery failed: {exc}",
+        )
+    if json_output:
+        _print_wire_success(
+            {
+                "profiles": [
+                    {
+                        "profile_id": plat.name,
+                        "tool_id": plat.effective_tool_id,
+                        "environment_kind": plat.environment_kind,
+                        "environment_name": plat.environment_name,
+                        "display_name": plat.effective_display_name,
+                        "enabled": plat.enabled,
+                    }
+                    for plat in cfg.platforms.profiles
+                ]
+            },
+            status="ready",
+        )
+        return
     table = Table(title="CC Port platforms")
     table.add_column("Platform", style="bold")
     table.add_column("Enabled")

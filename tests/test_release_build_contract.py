@@ -58,13 +58,16 @@ def test_release_runs_pytest_with_dynamic_xdist_workers() -> None:
     ) in source
 
 
-def test_verified_sidecar_is_staged_even_when_tauri_cache_skips_its_copy() -> None:
+def test_verified_agent_binaries_are_staged_before_tauri_build() -> None:
     source = _source()
 
-    stage_position = source.index('Description "Staging verified Tauri sidecar"')
+    assert "-not $response.status_call_ok" in source
+    stage_position = source.index('Description "Staging verified Tauri binaries"')
     tauri_position = source.index('Description "Building Tauri MSI and NSIS bundles"')
     assert stage_position < tauri_position
     assert "Copy-Item -LiteralPath $sourceSidecar -Destination $targetSidecar" in source
+    assert "Copy-Item -LiteralPath $sourceAgent -Destination $targetAgent" in source
+    assert "Assert-SidecarHashesMatch -ExpectedPath $sourceAgent" in source
 
 
 def test_warm_release_preserves_cargo_binary_and_validates_sidecar_hash() -> None:
@@ -174,7 +177,7 @@ def test_ci_scans_full_git_history_and_markdown_links() -> None:
 
 def test_tauri_ci_stages_external_bin_placeholder_before_cargo_check() -> None:
     source = CI_WORKFLOW.read_text(encoding="utf-8")
-    placeholder_step = "Stage Tauri sidecar placeholder"
+    placeholder_step = "Stage Tauri external binary placeholders"
     cargo_check = "cargo check --manifest-path desktop/src-tauri/Cargo.toml"
     placeholder_start = source.index(placeholder_step)
     cargo_check_start = source.index(cargo_check)
@@ -192,5 +195,14 @@ def test_tauri_ci_stages_external_bin_placeholder_before_cargo_check() -> None:
     )
     assert (
         "New-Item -ItemType File -Path $sidecarPath -Force | Out-Null"
+        in placeholder_block
+    )
+    assert (
+        '$agentPath = "desktop/src-tauri/binaries/'
+        'cc-port-x86_64-pc-windows-msvc.exe"'
+        in placeholder_block
+    )
+    assert (
+        "New-Item -ItemType File -Path $agentPath -Force | Out-Null"
         in placeholder_block
     )

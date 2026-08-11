@@ -30,7 +30,9 @@ git config --global --get-all credential.helper
 
 v0.5.4 尚未代码签名。Windows SmartScreen 可能显示“未知发布者”；确认下载地址为 `github.com/Ling-ye/cc-port` 且 SHA-256 一致后，选择“更多信息”继续安装。
 
-安装包已包含桌面程序与 Python sidecar，不需要额外安装 Python、Node.js 或 Rust。
+新版本安装包会包含桌面程序、Desktop API sidecar 与独立的 `cc-port.exe` CLI/MCP agent，
+不需要额外安装 Python、Node.js 或 Rust。已经发布的 v0.5.4 安装器早于 AI agent 集成，
+尚不包含 `cc-port.exe`；第 5 节适用于包含该能力的后续构建。
 
 ## 3. 创建资源仓库
 
@@ -61,7 +63,28 @@ CC Port 不会替你创建、删除仓库或改变仓库可见性。
 
 验证阶段只读取远端引用并执行写权限探测，不会上传资源。后台刷新保持非交互；凭据失效时，请回到设置页重新验证。
 
-## 5. 扫描与同步
+## 5. 启用 AI 自动调用
+
+这一步可选，且不会删除或替代桌面客户端：
+
+1. 打开“设置 → AI 自动化”。
+2. 在需要让 AI 使用 CC Port 的精确 Windows 原生 profile 上点击“审阅启用计划”。
+   当前 schema v1 会对 WSL profile 显式阻断自动引导；这不影响已有的 WSL 资源扫描与 plan/apply。
+3. 核对 Skill 目标、MCP 配置目标、启动命令和计划动作。存在同名未受管内容时，默认阻断；
+   只有确认目标确实应由 CC Port 接管后才重新生成接管计划。
+4. 点击“批准并启用”。CC Port 会安装随包发布的 `cc-port` Skill、注册本机
+   `cc-port.exe mcp --stdio`，然后真实启动 MCP 并验证工具清单。
+
+启用后，支持 MCP 的 AI coding 工具可以通过 discovery 找到 CC Port。AI 的读操作和计划
+可以自动执行；任何写计划都会出现在设置页的“待处理 AI 审批”。审批只对显示的 operation、
+`plan_hash` 和完整 scope 生效，会自动过期且只能使用一次。目标变化时必须审阅新的计划，
+不能沿用旧审批。
+
+如果宿主不支持 MCP，可使用 `cc-port --non-interactive ... --json` 机器接口；它输出单个
+版本化 JSON envelope，并使用同一审批边界。完整工作流见
+[AI Agent 自动发现、审批与调用规格](specs/ai-agent-interface.md)。
+
+## 6. 扫描与同步
 
 1. 打开“资源”页。
 2. 选择要扫描的全局或项目范围。

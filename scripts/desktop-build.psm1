@@ -978,7 +978,6 @@ function Get-CcPortReleaseVersion {
     $packageLockPath = Join-Path $root "desktop\package-lock.json"
     $tauriConfigPath = Join-Path $root "desktop\src-tauri\tauri.conf.json"
     $pythonInitPath = Join-Path $root "src\cc_port\__init__.py"
-    $skillPath = Join-Path $root "SKILL.md"
     $packageJson = [IO.File]::ReadAllText($packageJsonPath) | ConvertFrom-Json
     $packageLockText = [IO.File]::ReadAllText($packageLockPath)
     $tauriConfig = [IO.File]::ReadAllText($tauriConfigPath) | ConvertFrom-Json
@@ -994,15 +993,8 @@ function Get-CcPortReleaseVersion {
         [IO.File]::ReadAllText($pythonInitPath),
         '(?m)^__version__\s*=\s*"(?<version>[^"]+)"\s*$'
     )
-    $skillVersionMatch = [regex]::Match(
-        [IO.File]::ReadAllText($skillPath),
-        '(?m)^\s{2}version:\s*"(?<version>[^"]+)"\s*$'
-    )
     if (-not $pythonVersionMatch.Success) {
         throw "Python package version was not found: $pythonInitPath"
-    }
-    if (-not $skillVersionMatch.Success) {
-        throw "Skill metadata version was not found: $skillPath"
     }
     if (-not $packageLockVersionMatch.Success) {
         throw "Top-level package version was not found: $packageLockPath"
@@ -1024,7 +1016,6 @@ function Get-CcPortReleaseVersion {
         "desktop/src-tauri/Cargo.lock" = Get-CcPortCargoLockVersion `
             -Path (Join-Path $root "desktop\src-tauri\Cargo.lock") -PackageName "cc-port-desktop"
         "desktop/src-tauri/tauri.conf.json" = [string]$tauriConfig.version
-        "SKILL.md" = $skillVersionMatch.Groups["version"].Value
     }
     $uniqueVersions = @($versions.Values | Sort-Object -Unique)
     if ($uniqueVersions.Count -ne 1) {

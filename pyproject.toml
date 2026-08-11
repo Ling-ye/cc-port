@@ -27,7 +27,7 @@ dependencies = [
     "PyYAML>=6.0",
     "PyGithub>=2.3",
     "python-frontmatter>=1.1",
-    "fastmcp>=0.2",
+    "fastmcp>=3.4,<4",
     "tomli>=2.0; python_version < '3.11'",
 ]
 
@@ -38,8 +38,8 @@ dev = [
     "ruff>=0.5",
 ]
 # Tooling needed only when building the Tauri desktop app from source.
-# Installs PyInstaller for the release-only desktop API sidecar and Pillow
-# for generating placeholder icons via tools/packaging/icons/generate_icons.py.
+# Installs PyInstaller for the desktop API sidecar and public CLI/MCP agent,
+# plus Pillow for placeholder icons via tools/packaging/icons/generate_icons.py.
 desktop = [
     "pyinstaller>=6.0",
     "Pillow>=10.0",
@@ -61,6 +61,12 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["cc_port*"]
 exclude = ["tests*", "examples*"]
+
+[tool.setuptools.package-data]
+"cc_port" = [
+    "assets/ai/cc-port/SKILL.md",
+    "assets/ai/cc-port/references/*.md",
+]
 
 [tool.ruff]
 line-length = 100

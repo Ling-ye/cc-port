@@ -271,6 +271,16 @@ def test_plan_hash_changes_with_commit_content_and_choices(tmp_path: Path) -> No
         choices=[RegistryRepairChoice(issue_id=issue.id, action="keep")],
     )
     different_commit = audit_registry_root(tmp_path, remote_commit="two")
+    different_repo = audit_registry_root(
+        tmp_path,
+        remote_commit="one",
+        repo_url="https://example.test/other.git",
+    )
+    different_branch = audit_registry_root(
+        tmp_path,
+        remote_commit="one",
+        branch="release",
+    )
     _skill(tmp_path / "skills" / "demo", body="second")
     different_content = audit_registry_root(tmp_path, remote_commit="one")
 
@@ -278,8 +288,10 @@ def test_plan_hash_changes_with_commit_content_and_choices(tmp_path: Path) -> No
         initial.plan_hash,
         kept.plan_hash,
         different_commit.plan_hash,
+        different_repo.plan_hash,
+        different_branch.plan_hash,
         different_content.plan_hash,
-    }) == 4
+    }) == 6
 
 
 def test_secret_like_source_is_blocked_without_echoing_secret(tmp_path: Path) -> None:

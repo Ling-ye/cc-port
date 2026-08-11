@@ -65,33 +65,43 @@ class LocalChangeTransaction:
         *,
         metadata: dict[str, Any] | None = None,
         lock_timeout_seconds: float | None = None,
+        preheld_locks: TargetLockSet | None = None,
     ) -> LocalChangeTransaction:
-        unique_targets: dict[str, ChangeTarget] = {}
-        for target in targets:
-            normalized = normalize_path(target.path)
-            unique_targets.setdefault(
-                os.path.normcase(str(normalized)),
-                ChangeTarget(
-                    path=normalized,
-                    change_action=target.change_action,
-                    resource=target.resource,
-                    platform=target.platform,
-                ),
+        locks = preheld_locks
+        try:
+            ordered_targets = _normalize_change_targets(targets)
+        except Exception:
+            if locks is not None:
+                locks.release()
+            raise
+        if locks is None:
+            timeout = (
+                lock_timeout_seconds
+                if lock_timeout_seconds is not None
+                else load_config().state.lock_timeout_seconds
             )
-
-        ordered_targets = [
-            unique_targets[key]
-            for key in sorted(unique_targets)
-        ]
-        timeout = (
-            lock_timeout_seconds
-            if lock_timeout_seconds is not None
-            else load_config().state.lock_timeout_seconds
-        )
-        locks = acquire_target_locks(
-            (target.path for target in ordered_targets),
-            timeout_seconds=timeout,
-        )
+            locks = acquire_target_locks(
+                (target.path for target in ordered_targets),
+                timeout_seconds=timeout,
+            )
+        else:
+            try:
+                expected = {
+                    os.path.normcase(str(target.path))
+                    for target in ordered_targets
+                }
+                actual = {
+                    os.path.normcase(str(normalize_path(path)))
+                    for path in locks.targets
+                }
+            except Exception:
+                locks.release()
+                raise
+            if actual != expected:
+                locks.release()
+                raise ValueError(
+                    "Preheld transaction locks do not match the change targets."
+                )
         operation_metadata = dict(metadata or {})
         operation_metadata["locked_target_count"] = len(ordered_targets)
         try:
@@ -304,6 +314,22 @@ def resource_hash_path(path: Path) -> str:
 
 def normalize_path(path: Path) -> Path:
     return path.expanduser().absolute()
+
+
+def _normalize_change_targets(targets: Iterable[ChangeTarget]) -> list[ChangeTarget]:
+    unique_targets: dict[str, ChangeTarget] = {}
+    for target in targets:
+        normalized = normalize_path(target.path)
+        unique_targets.setdefault(
+            os.path.normcase(str(normalized)),
+            ChangeTarget(
+                path=normalized,
+                change_action=target.change_action,
+                resource=target.resource,
+                platform=target.platform,
+            ),
+        )
+    return [unique_targets[key] for key in sorted(unique_targets)]
 
 
 def _make_writable_and_retry(function, path: str, _exc_info) -> None:

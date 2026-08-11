@@ -4,17 +4,20 @@
     Run the CC Port desktop app in development mode.
 
 .DESCRIPTION
-    Builds the cc-port-desktop-api sidecar binary first (so the bundled app works
-    end-to-end), then uses `npm run tauri dev` as an internal step to start
-    Vite, compile the Tauri shell with Cargo, and open the desktop window.
+    Builds the cc-port-desktop-api sidecar and the public cc-port CLI/MCP agent
+    binaries first (so the bundled app works end-to-end), then uses
+    `npm run tauri dev` as an internal step to start Vite, compile the Tauri
+    shell with Cargo, and open the desktop window.
 
 .EXAMPLE
     pwsh scripts/dev.ps1
-    pwsh scripts/dev.ps1 -SkipSidecar    # only re-run if sidecar already built
+    pwsh scripts/dev.ps1 -SkipSidecar    # reuse an existing sidecar
+    pwsh scripts/dev.ps1 -SkipAgent      # reuse an existing CLI/MCP agent
 #>
 [CmdletBinding()]
 param(
-    [switch]$SkipSidecar
+    [switch]$SkipSidecar,
+    [switch]$SkipAgent
 )
 
 # Use Continue (not Stop): external commands writing to stderr (e.g.
@@ -72,6 +75,13 @@ if (-not $SkipSidecar) {
     Write-Host "==> Building cc-port-desktop-api sidecar" -ForegroundColor Cyan
     Invoke-Step "sidecar build" {
         & python "$RepoRoot/tools/packaging/sidecar/build_sidecar.py"
+    }
+}
+
+if (-not $SkipAgent) {
+    Write-Host "==> Building public cc-port CLI/MCP agent" -ForegroundColor Cyan
+    Invoke-Step "agent build" {
+        & python "$RepoRoot/tools/packaging/agent/build_agent.py"
     }
 }
 

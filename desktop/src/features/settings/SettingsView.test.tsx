@@ -97,6 +97,8 @@ function mockInitial(data = settings(), status = credentialStatus()) {
   vi.mocked(ccPortAction).mockImplementation(async (action) => {
     if (action === "config_get") return data;
     if (action === "git_credential_status") return status;
+    if (action === "ai_integration_status") return { profiles: [] };
+    if (action === "approval_requests") return { requests: [] };
     throw new Error(`Unexpected action: ${action}`);
   });
 }
@@ -491,5 +493,190 @@ describe("SettingsView native Git settings", () => {
     expect(within(screen.getByRole("dialog")).getByRole("alert")).toHaveTextContent(
       "Diagnostics could not be completed: Sidecar unavailable",
     );
+  });
+
+  it("reviews and applies an exact-profile AI integration plan", async () => {
+    let connected = false;
+    vi.mocked(ccPortAction).mockImplementation(async (action, payload) => {
+      if (action === "config_get") return settings();
+      if (action === "git_credential_status") return credentialStatus();
+      if (action === "approval_requests") return { requests: [] };
+      if (action === "ai_integration_status") {
+        return {
+          profiles: [{
+            profile_id: "codex",
+            configured: connected,
+            installed: connected,
+            managed: connected,
+            skill_managed: connected,
+            mcp_managed: connected,
+            skill_ready: connected,
+            mcp_registered: connected,
+            transport_verified: connected,
+            transport_status: connected ? "verified" : "unknown",
+            managed_actions_available: connected ? ["uninstall"] : [],
+            tool_count: connected ? 12 : 0,
+            tools: [],
+            problems: [],
+          }],
+        };
+      }
+      if (action === "ai_integration_plan") {
+        expect(payload).toEqual({
+          profile_id: "codex",
+          action: "install",
+          overwrite_unmanaged: false,
+        });
+        return {
+          operation_id: "a".repeat(32),
+          action: "install",
+          profile_id: "codex",
+          command: "C:/Program Files/CC Port/cc-port.exe",
+          command_args: ["mcp", "--stdio"],
+          command_source: "bundled-sibling",
+          target: {
+            profile_id: "codex",
+            tool_id: "codex",
+            display_name: "Codex",
+            environment_kind: "windows",
+            environment_name: "Windows",
+            available: true,
+            skill_path: "C:/Users/test/.codex/skills/cc-port",
+            mcp_config_path: "C:/Users/test/.codex/config.toml",
+            mcp_config_format: "codex-toml",
+            skill_status: "missing",
+            mcp_status: "missing",
+            actions: ["install-skill", "register-mcp"],
+            blockers: [],
+            current_skill_hash: "",
+            current_config_hash: "",
+            desired_skill_hash: "skill-hash",
+            desired_entry_hash: "entry-hash",
+          },
+          plan_hash: "plan-hash",
+          blocked: false,
+          blockers: [],
+          requires_approval: true,
+          approval_id: "approval-1",
+          overwrite_unmanaged: false,
+          schema_version: 1,
+        };
+      }
+      if (action === "ai_integration_approve_apply") {
+        expect(payload).toEqual({
+          operation_id: "a".repeat(32),
+          plan_hash: "plan-hash",
+          approval_id: "approval-1",
+        });
+        connected = true;
+        return {
+          status: "succeeded",
+          operation_id: "a".repeat(32),
+          plan_hash: "plan-hash",
+          profile_id: "codex",
+          changed: true,
+          verified: true,
+          approval_id: "approval-1",
+          blockers: [],
+          message: "done",
+        };
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    const { onChanged } = renderView();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Review enable plan" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Review AI integration plan" });
+    expect(within(dialog).getByText("C:/Users/test/.codex/skills/cc-port")).toBeVisible();
+    expect(within(dialog).getByText("C:/Users/test/.codex/config.toml")).toBeVisible();
+    expect(within(dialog).getByText("install-skill")).toBeVisible();
+    expect(within(dialog).getByText("register-mcp")).toBeVisible();
+
+    await user.click(within(dialog).getByRole("button", { name: "Approve and enable" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(ccPortAction).mock.calls.some(
+        ([action]) => action === "ai_integration_approve_apply",
+      )).toBe(true);
+      expect(onChanged).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("dialog", { name: "Review AI integration plan" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("lets a human approve a pending MCP write exactly once", async () => {
+    const pending = {
+      approval_id: "approval-asset-1",
+      kind: "asset-action",
+      operation_id: "operation-1",
+      plan_hash: "asset-plan-hash",
+      scope_hash: "scope-hash",
+      summary: "Download skill:demo to codex",
+      status: "pending",
+      created_at: "2026-08-11T12:00:00Z",
+      expires_at: "2026-08-11T12:30:00Z",
+      approved_at: "",
+      consumed_at: "",
+      rejected_at: "",
+      metadata: {
+        choices: [
+          { note: "x".repeat(1_200) },
+          { overwrite_unmanaged: true, link_target_confirmed: true },
+        ],
+      },
+      revision: "revision-1",
+      schema_version: 2,
+    };
+    let requests = [pending];
+    vi.mocked(ccPortAction).mockImplementation(async (action, payload) => {
+      if (action === "config_get") return settings();
+      if (action === "git_credential_status") return credentialStatus();
+      if (action === "ai_integration_status") return { profiles: [] };
+      if (action === "approval_requests") return { requests };
+      if (action === "approval_approve") {
+        expect(payload).toEqual({
+          approval_id: "approval-asset-1",
+          operation_id: "operation-1",
+          plan_hash: "asset-plan-hash",
+          scope_hash: "scope-hash",
+          revision: "revision-1",
+        });
+        requests = [{ ...pending, status: "approved", approved_at: "2026-08-11T12:01:00Z" }];
+        return requests[0];
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    renderView();
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("Download skill:demo to codex")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Review approval" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Review exact AI write scope" });
+    expect(within(dialog).getByText("operation-1")).toBeVisible();
+    expect(within(dialog).getByText("asset-plan-hash")).toBeVisible();
+    expect(within(dialog).getByText("scope-hash")).toBeVisible();
+    expect(within(dialog).getByText(/overwrite_unmanaged/)).toHaveTextContent(
+      /link_target_confirmed/,
+    );
+    const approve = within(dialog).getByRole("button", { name: "Approve once" });
+    expect(approve).toBeDisabled();
+    await user.click(within(dialog).getByRole("checkbox", {
+      name: "I reviewed the complete scope shown above and approve this exact write",
+    }));
+    await user.click(approve);
+
+    await waitFor(() => {
+      expect(vi.mocked(ccPortAction)).toHaveBeenCalledWith("approval_approve", {
+        approval_id: "approval-asset-1",
+        operation_id: "operation-1",
+        plan_hash: "asset-plan-hash",
+        scope_hash: "scope-hash",
+        revision: "revision-1",
+      });
+      expect(screen.queryByRole("button", { name: "Approve once" })).not.toBeInTheDocument();
+    });
   });
 });

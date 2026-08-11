@@ -9,7 +9,7 @@
 ![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%2F11_x64-0078D4?logo=windows)
 ![Public Beta](https://img.shields.io/badge/status-public_beta-orange)
 
-CC Port is a local desktop resource manager for people who use more than one AI coding tool. It scans each tool's native directories, uses your Git repository as the cross-device source of truth, and produces an explicit plan before writing anything. The repository and `registry.yaml` use an open format; other consumers do not need CC Port.
+CC Port is a local resource manager for people who use more than one AI coding tool. Humans keep the desktop client, while AI agents can discover and call the same capabilities through the bundled Skill, strict JSON CLI, and stdio MCP server. It scans each tool's native directories, uses your Git repository as the cross-device source of truth, and produces an explicit plan before writing anything. The repository and `registry.yaml` use an open format; other consumers do not need CC Port.
 
 ## At a glance
 
@@ -102,8 +102,12 @@ A missing, malformed, or linked Registry is diagnostic-only and has no Apply but
 ```text
 cc-port resource registry-check --json
 cc-port resource registry-repair --dry-run
-cc-port resource registry-repair --yes --choices choices.yaml
 ```
+
+The CLI `registry-repair` command only builds and displays a plan; `--yes` has no
+authorization or write semantics. Apply an actual repair after desktop review,
+or use the approval-gated MCP `registry_repair_plan` / `registry_repair_apply`
+workflow.
 
 ## Get started in five steps
 
@@ -113,13 +117,14 @@ cc-port resource registry-repair --yes --choices choices.yaml
 4. Start CC Port, paste the repository HTTPS URL into Settings, and verify the connection.
 5. Scan local resources, then choose which items to upload or install from the Resources page.
 
-The installer includes both the desktop application and its Python sidecar. End users do not need Python, Node.js, or Rust. See the [quick-start guide](docs/getting-started.en.md) for setup and uninstall details.
+New Windows builds from this repository include the desktop application, Desktop API sidecar, and standalone `cc-port.exe` CLI/MCP agent. End users do not need Python, Node.js, or Rust. The already-published v0.5.4 installer predates this capability and does not contain the agent; wait for a newer release that includes it. See the [quick-start guide](docs/getting-started.en.md) for setup, AI integration, and uninstall details.
 
 ## Safety boundaries
 
 - **You own the repository:** CC Port has no hosted cloud service; resources stay in the Git repository you choose.
 - **Credentials stay with the OS:** the desktop app uses Git Credential Manager and does not read or store a GitHub token.
 - **Plan before write:** desktop and CLI write operations expose targets, actions, and blockers first.
+- **Machine interfaces do not expose self-approval:** recommended MCP and non-interactive CLI writes require a single-use local approval bound to the operation, plan hash, and complete scope. A user approves it in the desktop app, and stale plans require a new review.
 - **Unmanaged content is protected:** ownership metadata distinguishes CC Port-managed items from manually maintained files.
 - **Dangling links replace only the link itself:** when a download target is a root-level dangling native Windows symlink, CC Port removes that link and writes regular content only after explicit unmanaged-target confirmation; it never follows or modifies the link target.
 - **Recoverable writes:** installation, removal, deployment, and recovery use persistent transactions, backups, and rollback.
@@ -183,11 +188,23 @@ Advanced users can add custom platform paths in `config.toml`. See the [configur
 
 ## Three interfaces
 
-- **Desktop GUI:** daily discovery, comparison, upload, installation, and environment diagnostics; the Guide page links to the project repository and its GitHub Star action.
-- **CLI:** scripting, batch operations, history recovery, and state maintenance.
-- **MCP server:** exposes CC Port capabilities to compatible AI coding tools.
+- **Desktop GUI:** daily discovery, comparison, upload, installation, AI integration, approval, and environment diagnostics. The human client remains supported.
+- **CLI:** human scripting, strict `--non-interactive --json` machine calls, batch operations, history recovery, and state maintenance.
+- **MCP server:** `cc-port mcp --stdio` exposes typed plan/apply capabilities to compatible AI coding tools.
 
 All three interfaces share the same Python core. See the [architecture (Chinese)](docs/architecture.md) for boundaries and sync state machines.
+
+### Let an AI use CC Port
+
+In a new build that includes this capability, open **Settings → AI automation** and review an enable plan for an exact profile. After approval, CC Port installs only its packaged `cc-port` Skill into that profile's Skill directory and adds a local `cc-port.exe mcp --stdio` entry to the tool's native configuration. It does not remove the desktop client or rewrite unrelated MCP servers. Schema v1 automatically bootstraps native Windows profiles only. A WSL profile is explicitly blocked at this Skill-plus-MCP registration step instead of treating a Windows process as a verified WSL connection; the existing profile-aware WSL asset inventory and plan/apply workflows remain available.
+
+The AI prefers MCP discovery and follows `status → inventory(scan_local=true) → diff → plan → approval → apply → verify`; it uses the single-envelope non-interactive CLI only when MCP is unavailable. Reads and plans can run automatically. A write plan appears under **Pending AI approvals** in the desktop app and cannot apply until the user grants a one-time approval. Approvals expire and can be consumed only once. Any target drift produces a fresh stale plan and invalidates the old authorization. See the [AI agent discovery, approval, and invocation specification (Chinese)](docs/specs/ai-agent-interface.md) for commands, schemas, and security boundaries.
+
+This is an application-level approval boundary, not a separate Windows security
+principal. The AI host must prevent the agent from directly modifying CC Port's
+local state or impersonating the desktop-sidecar channel. Version 1 does not
+claim an operating-system-level proof of human presence against code that has
+the same unrestricted filesystem and process privileges as the human user.
 
 ## Current limitations
 
@@ -209,6 +226,7 @@ For installation, sign-in, or sync failures, see [troubleshooting](docs/troubles
 - [Architecture (Chinese)](docs/architecture.md)
 - [Registry v1 specification (Chinese)](docs/specs/registry-v1.md)
 - [Claude Code instructions, memory, and runtime-environment specification (Chinese)](docs/specs/claude-memory-and-runtime-environments.md)
+- [AI agent discovery, approval, and invocation specification (Chinese)](docs/specs/ai-agent-interface.md)
 - [Desktop packaging and release (Chinese)](docs/packaging-and-deployment.md)
 - [Behavior specifications (Chinese)](docs/specs/)
 - [Changelog](CHANGELOG.md)

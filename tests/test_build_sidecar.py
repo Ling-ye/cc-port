@@ -41,6 +41,8 @@ def test_build_pyinstaller_command_clean_has_stable_parameters(tmp_path: Path) -
         str(build_sidecar.ROOT),
         "--collect-submodules",
         "cc_port",
+        "--collect-data",
+        "cc_port",
     ]
     for module in build_sidecar.EXCLUDED_MODULES:
         expected.extend(["--exclude-module", module])

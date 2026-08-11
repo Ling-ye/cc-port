@@ -121,7 +121,7 @@ AssetAction = Literal[
 
 ASSET_STATE_DIR = "assets"
 ASSET_PLAN_DIR = "asset-plans"
-ASSET_PLAN_SCHEMA_VERSION = 2
+ASSET_PLAN_SCHEMA_VERSION = 3
 REMOTE_CACHE_DIR = "remotes"
 REMOTE_SNAPSHOT_DIR = "snapshots"
 REMOTE_SNAPSHOT_FORMAT_FILE = ".cc-port-snapshot-format"
@@ -380,6 +380,8 @@ class AssetActionPlan:
     blocked: bool = False
     created_at: str = ""
     plugin_data: dict[str, Any] = field(default_factory=dict)
+    remote_repo_hash: str = ""
+    remote_branch: str = ""
     schema_version: int = ASSET_PLAN_SCHEMA_VERSION
 
 
@@ -457,6 +459,8 @@ class AssetBatchPlan:
     skipped_count: int
     status: str = "planned"
     checked_resources: list[AssetBatchResourceCheck] = field(default_factory=list)
+    remote_repo_hash: str = ""
+    remote_branch: str = ""
 
 
 @dataclass
@@ -1665,6 +1669,8 @@ def build_asset_action_plan(
         blocked=bool(blockers),
         created_at=_utc_now(),
         plugin_data=dict(row.plugin_data),
+        remote_repo_hash=_remote_repo_hash(snapshot.repo_url),
+        remote_branch=snapshot.branch,
     )
     if _persist:
         _save_asset_plan(plan, cfg)
@@ -1697,6 +1703,32 @@ def apply_asset_action_plan(
                 "asset.result.plan_blocked",
                 blocked_message,
                 detail="; ".join(plan.blockers),
+            ),
+            warnings=plan.warnings,
+            warning_refs=plan.warning_refs,
+        )
+        _save_asset_result(result, cfg)
+        return result
+
+    current_snapshot = _refresh_remote_snapshot(cfg, refresh=True)
+    current_repo_hash = _remote_repo_hash(current_snapshot.repo_url)
+    current_branch = current_snapshot.branch
+    if (
+        plan.remote_repo_hash != current_repo_hash
+        or plan.remote_branch != current_branch
+    ):
+        result = AssetActionResult(
+            operation_id=plan.operation_id,
+            action=plan.action,
+            status="stale-plan",
+            resource_key=plan.resource_key,
+            target_resource_key=plan.target_resource_key,
+            platform=plan.platform,
+            message="The configured remote repository identity changed after planning.",
+            message_ref=ui_message(
+                "asset.result.stale",
+                "The configured remote repository identity changed after planning.",
+                detail="remote repository identity changed",
             ),
             warnings=plan.warnings,
             warning_refs=plan.warning_refs,
@@ -1876,6 +1908,8 @@ def build_asset_batch_plan(
             for resource_key in keys
             if resource_key in resources_by_key
         ],
+        remote_repo_hash=_remote_repo_hash(snapshot.repo_url),
+        remote_branch=snapshot.branch,
     )
     plan.plan_hash = _asset_batch_plan_hash(plan)
     return plan
@@ -3247,6 +3281,8 @@ def _asset_batch_plan_hash(plan: AssetBatchPlan) -> str:
         "resource_keys": plan.resource_keys,
         "target_platforms": plan.target_platforms,
         "remote_commit": plan.remote_commit,
+        "remote_repo_hash": plan.remote_repo_hash,
+        "remote_branch": plan.remote_branch,
         "checked_resources": [
             {
                 "resource_key": item.resource_key,
@@ -3441,6 +3477,8 @@ def load_asset_action_plan(
         blocked=bool(data.get("blocked", False)),
         created_at=str(data.get("created_at") or ""),
         plugin_data=dict(data.get("plugin_data") or {}),
+        remote_repo_hash=str(data.get("remote_repo_hash") or ""),
+        remote_branch=str(data.get("remote_branch") or ""),
         schema_version=ASSET_PLAN_SCHEMA_VERSION,
     )
 
@@ -3660,6 +3698,12 @@ def _configured_remote_url(cfg: Config) -> str:
     if git_ops.is_repo(root):
         return git_ops.current_remote_url(root) or ""
     return ""
+
+
+def _remote_repo_hash(repo_url: str) -> str:
+    """Bind plans to one configured remote without exposing its URL."""
+
+    return hashlib.sha256(str(repo_url).strip().encode("utf-8")).hexdigest()
 
 
 def _latest_cached_snapshot(root: Path) -> Path | None:
