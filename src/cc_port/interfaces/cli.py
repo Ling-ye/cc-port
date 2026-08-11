@@ -22,7 +22,13 @@ from ..core.config import (
     load_config,
     write_config,
 )
-from ..core.platforms import PLATFORM_PRESETS, PlatformProfile, PlatformsConfig, build_platform
+from ..core.platforms import (
+    PLATFORM_PRESETS,
+    PlatformProfile,
+    PlatformsConfig,
+    build_platform,
+    resolve_portable_resource_platforms,
+)
 from ..core.registry import find_registry_path, load_registry
 from ..core.resource_detection import (
     ResourceDetectionError,
@@ -124,7 +130,15 @@ app.add_typer(plugin_app, name="plugin")
 plugin_app.add_typer(plugin_project_app, name="project")
 plugin_app.add_typer(plugin_reference_app, name="reference")
 console = Console()
-VALID_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
+VALID_KINDS = {
+    "skill",
+    "mcp",
+    "rule",
+    "prompt",
+    "plugin",
+    "instruction",
+    "memory",
+}
 DEPRECATED_SYNC_MESSAGE = (
     "Deprecated: use `cc-port asset list`, `cc-port asset plan`, and `cc-port asset apply`. "
     "Git workspace sync commands will be removed in the next release."
@@ -135,6 +149,16 @@ def _load() -> Config:
     cfg = load_config()
     git_ops.configure_git_executable(cfg.git.executable)
     return cfg
+
+
+def _portable_resource_platforms(
+    cfg: Config,
+    kind: str,
+    values: list[str],
+) -> list[str] | None:
+    """Keep local profile ids out of portable repository metadata."""
+    portable = resolve_portable_resource_platforms(cfg.platforms, kind, values)
+    return portable or None
 
 
 def _print_machine_json(data: object) -> None:
@@ -1489,7 +1513,10 @@ def cmd_publish(
     name: str | None = typer.Option(None, "--name", help="Override the item name."),
     description: str | None = typer.Option(None, "--description"),
     kind: str = typer.Option(
-        "skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."
+        "skill",
+        "--kind",
+        "-k",
+        help="Dedicated-repository type: skill | mcp | rule | prompt | plugin.",
     ),
     private: bool | None = typer.Option(
         None,
@@ -1529,7 +1556,14 @@ def cmd_publish(
 
     if kind not in VALID_KINDS:
         console.print(
-            f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin."
+            f"[red]Invalid kind {kind!r}.[/red] Expected: "
+            "skill, mcp, rule, prompt, plugin, instruction, memory."
+        )
+        raise typer.Exit(2)
+    if kind in {"instruction", "memory"}:
+        console.print(
+            "[red]Personal instructions and memories must use `cc-port upload` "
+            "or the asset upload workflow.[/red]"
         )
         raise typer.Exit(2)
 
@@ -1571,12 +1605,12 @@ def cmd_publish(
             mcp_config=mcp_config,
             tags=tags or None,
             category=category,
-            platforms=platforms or None,
+            platforms=_portable_resource_platforms(cfg, kind, platforms),
             version=version,
             author=author,
             item_license=item_license,
         )
-    except publisher.VisibilityMismatchError as exc:
+    except (ValueError, publisher.VisibilityMismatchError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
@@ -1599,7 +1633,10 @@ def cmd_add(
     ref: str = typer.Option("main", "--ref"),
     description: str = typer.Option("", "--description"),
     kind: str = typer.Option(
-        "skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."
+        "skill",
+        "--kind",
+        "-k",
+        help="Resource type: skill | mcp | rule | prompt | plugin | instruction | memory.",
     ),
     no_verify: bool = typer.Option(
         False,
@@ -1627,7 +1664,8 @@ def cmd_add(
     cfg = _load()
     if kind not in VALID_KINDS:
         console.print(
-            f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin."
+            f"[red]Invalid kind {kind!r}.[/red] Expected: "
+            "skill, mcp, rule, prompt, plugin, instruction, memory."
         )
         raise typer.Exit(2)
 
@@ -1652,9 +1690,9 @@ def cmd_add(
             token=cfg.github.token or None,
             tags=tags or None,
             category=category,
-            platforms=platforms or None,
+            platforms=_portable_resource_platforms(cfg, kind, platforms),
         )
-    except publisher.RepoUnreachableError as exc:
+    except (ValueError, publisher.RepoUnreachableError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     except publisher.UnsafeMcpConfigError as exc:
@@ -1669,7 +1707,7 @@ def cmd_collect(
     resource_type: str | None = typer.Option(
         None,
         "--type",
-        help="Override detected type: skill, mcp, rule, prompt, plugin.",
+        help="Override detected type: skill, mcp, rule, prompt, plugin, instruction, memory.",
     ),
     name: str | None = typer.Option(None, "--name", help="Override the resource name."),
     mcp_config_json: str | None = typer.Option(
@@ -1713,7 +1751,7 @@ def cmd_collect(
             skip_verify=False,
             token=cfg.github.token or None,
             tags=detected.tags,
-            platforms=platforms or None,
+            platforms=_portable_resource_platforms(cfg, detected.kind, platforms),
         )
     except (ValueError, ResourceDetectionError, publisher.RepoUnreachableError) as exc:
         console.print(f"[red]Collect failed:[/red] {exc}")
@@ -1732,7 +1770,7 @@ def cmd_upload(
     resource_type: str | None = typer.Option(
         None,
         "--type",
-        help="Override detected type: skill, mcp, rule, prompt, plugin.",
+        help="Override detected type: skill, mcp, rule, prompt, plugin, instruction, memory.",
     ),
     name: str | None = typer.Option(None, "--name", help="Override the resource name."),
     platforms: list[str] = typer.Option(
@@ -1755,7 +1793,7 @@ def cmd_upload(
             path,
             kind=kind,
             name=name,
-            platforms=platforms or None,
+            platforms=_portable_resource_platforms(cfg, kind, platforms),
             overwrite=force,
         )
     except Exception as exc:
@@ -1774,7 +1812,10 @@ def cmd_import_local(
     name: str | None = typer.Option(None, "--name", help="Override the item name."),
     description: str | None = typer.Option(None, "--description"),
     kind: str = typer.Option(
-        "skill", "--kind", "-k", help="Resource type: skill | mcp | rule | prompt | plugin."
+        "skill",
+        "--kind",
+        "-k",
+        help="Resource type: skill | mcp | rule | prompt | plugin | instruction | memory.",
     ),
     category: str = typer.Option(
         "", "--category", "-c", help="Stored under <kind>/<category>/<name>."
@@ -1794,9 +1835,11 @@ def cmd_import_local(
     ),
 ) -> None:
     """Copy a local resource into this repository and register it."""
+    cfg = _load()
     if kind not in VALID_KINDS:
         console.print(
-            f"[red]Invalid kind {kind!r}.[/red] Expected: skill, mcp, rule, prompt, plugin."
+            f"[red]Invalid kind {kind!r}.[/red] Expected: "
+            "skill, mcp, rule, prompt, plugin, instruction, memory."
         )
         raise typer.Exit(2)
 
@@ -1816,7 +1859,7 @@ def cmd_import_local(
             description=description,
             category=category,
             tags=tags or None,
-            platforms=platforms or None,
+            platforms=_portable_resource_platforms(cfg, kind, platforms),
             overwrite=force,
             mcp_config=mcp_config,
         )

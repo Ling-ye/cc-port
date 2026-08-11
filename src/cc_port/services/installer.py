@@ -24,8 +24,10 @@ from ..core.ownership import (
 from ..core.platforms import PlatformProfile
 from ..core.registry import find_registry_path, load_registry, save_registry
 from ..core.secrets import sanitize_mcp_config_for_storage
+from ..core.validator import validate_item
 from ..infrastructure import git_ops
 from .install_planner import InstallPlan, copy_resource_tree, plan_install
+from .local_path_probe import probe_local_path
 from .local_transaction import (
     ChangeTarget,
     LocalChangeTransaction,
@@ -41,7 +43,14 @@ from .mcp_installer import (
 # Backward-compatible alias
 SkillEntry = RegistryItem
 DEFAULT_SYNC_KINDS = {"skill"}
-OPTIONAL_SYNC_KINDS = {"mcp", "rule", "prompt", "plugin"}
+OPTIONAL_SYNC_KINDS = {
+    "mcp",
+    "rule",
+    "prompt",
+    "plugin",
+    "instruction",
+    "memory",
+}
 
 
 class SyncAction(str, Enum):
@@ -124,6 +133,33 @@ def _clone_path(config: Config, entry: RegistryItem) -> Path:
 # ---- Platform-aware install helpers ---- #
 
 
+def _entry_install_name(entry: RegistryItem, platform: PlatformProfile) -> str:
+    if entry.kind == "memory":
+        if platform.memory_layout == "direct":
+            return entry.name
+        mapped = platform.memory_install_names.get(entry.name)
+        if mapped:
+            # PlatformProfile.resolve_install_path owns the logical-name to
+            # local Claude project-slot mapping.  Passing the slot here would
+            # apply a chained mapping twice (A -> B -> C).
+            return entry.name
+        existing = platform.resolve_install_path("memory", entry.name)
+        if existing is None or not existing.exists():
+            raise ValueError(
+                "Memory installation requires an exact local Claude project-slot mapping."
+            )
+        return entry.name
+    return (
+        entry.platform_install_dirs.get(platform.effective_tool_id)
+        or entry.install_dir
+        or entry.name
+    )
+
+
+def _uses_sibling_marker(entry: RegistryItem, target: Path) -> bool:
+    return entry.kind in {"instruction", "memory"} or _is_file_prompt_target(entry, target)
+
+
 def _install_skill_to_platform(
     source_path: Path,
     platform: PlatformProfile,
@@ -134,7 +170,7 @@ def _install_skill_to_platform(
     """Copy a skill directory to a platform's skills_dir."""
     target_dir = platform.resolve_install_path(
         "skill",
-        entry.install_target_name(platform.name),
+        _entry_install_name(entry, platform),
     )
     if target_dir is None:
         return None
@@ -144,7 +180,7 @@ def _install_skill_to_platform(
     except OSError:
         pass
     target_dir.parent.mkdir(parents=True, exist_ok=True)
-    if target_dir.exists():
+    if target_dir.exists() or target_dir.is_symlink():
         if (
             not force_unmanaged
             and not is_cc_port_managed(target_dir, resource_key=entry.resource_key)
@@ -170,7 +206,7 @@ def _install_mcp_to_platform(
     mcp_path = platform.mcp_json_path()
     if mcp_path is None or entry.mcp_config is None:
         return None
-    server_name = entry.install_target_name(platform.name)
+    server_name = _entry_install_name(entry, platform)
     if (
         mcp_path.exists()
         and has_mcp_server(mcp_path, server_name)
@@ -217,12 +253,12 @@ def _install_rule_to_platform(
     """Copy a rule or prompt to its platform-native target."""
     target_dir = platform.resolve_install_path(
         entry.kind,
-        entry.install_target_name(platform.name),
+        _entry_install_name(entry, platform),
     )
     if target_dir is None:
         return None
-    if _is_file_prompt_target(entry, target_dir):
-        return _install_prompt_file_to_platform(
+    if _is_file_asset_target(entry, target_dir):
+        return _install_file_asset_to_platform(
             source_path,
             target_dir,
             entry,
@@ -234,34 +270,47 @@ def _install_rule_to_platform(
     except OSError:
         pass
     target_dir.parent.mkdir(parents=True, exist_ok=True)
-    if target_dir.exists():
+    if target_dir.exists() or target_dir.is_symlink():
+        file_target = _uses_sibling_marker(entry, target_dir)
         if (
             not force_unmanaged
-            and not is_cc_port_managed(target_dir, resource_key=entry.resource_key)
+            and not is_cc_port_managed(
+                target_dir,
+                resource_key=entry.resource_key,
+                file_target=file_target,
+            )
         ):
             raise RuntimeError(f"Target exists and is not managed by CC Port: {target_dir}")
         if (
-            is_cc_port_managed(target_dir, resource_key=entry.resource_key)
+            is_cc_port_managed(
+                target_dir,
+                resource_key=entry.resource_key,
+                file_target=file_target,
+            )
             and resource_hash_path(source_path) == resource_hash_path(target_dir)
         ):
             return target_dir
         _remove_path(target_dir)
-    copy_resource_tree(source_path, target_dir)
+    if entry.kind == "memory":
+        validate_item(source_path, "memory")
+        shutil.copytree(source_path, target_dir)
+    else:
+        copy_resource_tree(source_path, target_dir)
     return target_dir
 
 
-def _install_prompt_file_to_platform(
+def _install_file_asset_to_platform(
     source_path: Path,
     target_file: Path,
     entry: RegistryItem,
     *,
     force_unmanaged: bool,
 ) -> Path:
-    payload = _prompt_payload_path(source_path)
+    payload = _file_asset_payload_path(source_path, kind=entry.kind)
     marker = managed_marker_path(target_file, file_target=True)
     if marker.is_symlink():
         raise RuntimeError(
-            f"Prompt ownership sidecar must not be a symbolic link: {marker}"
+            f"Resource ownership sidecar must not be a symbolic link: {marker}"
         )
     try:
         if payload.resolve() == target_file.resolve():
@@ -290,20 +339,20 @@ def _install_prompt_file_to_platform(
     return target_file
 
 
-def _prompt_payload_path(source_path: Path) -> Path:
-    """Return the single Markdown payload for a file-style prompt target."""
+def _file_asset_payload_path(source_path: Path, *, kind: str) -> Path:
+    """Return the single Markdown payload for a file-style resource target."""
     if source_path.is_symlink():
         raise RuntimeError(
-            f"File-style prompt source must not be a symbolic link: {source_path}"
+            f"File-style {kind} source must not be a symbolic link: {source_path}"
         )
     if source_path.is_file():
         if source_path.suffix.lower() == ".md":
             return source_path
         raise RuntimeError(
-            f"File-style prompt source must be a Markdown file: {source_path}"
+            f"File-style {kind} source must be a Markdown file: {source_path}"
         )
     if not source_path.is_dir():
-        raise RuntimeError(f"File-style prompt source is unavailable: {source_path}")
+        raise RuntimeError(f"File-style {kind} source is unavailable: {source_path}")
 
     candidates = sorted(
         path
@@ -314,14 +363,23 @@ def _prompt_payload_path(source_path: Path) -> Path:
     )
     if len(candidates) != 1:
         raise RuntimeError(
-            "File-style prompt source must contain exactly one root-level "
+            f"File-style {kind} source must contain exactly one root-level "
             f"non-symlink .md file: {source_path}"
         )
     return candidates[0]
 
 
+def _prompt_payload_path(source_path: Path) -> Path:
+    """Backward-compatible helper for existing prompt call sites."""
+    return _file_asset_payload_path(source_path, kind="prompt")
+
+
 def _is_file_prompt_target(entry: RegistryItem, target: Path) -> bool:
     return entry.kind == "prompt" and target.suffix.lower() == ".md"
+
+
+def _is_file_asset_target(entry: RegistryItem, target: Path) -> bool:
+    return entry.kind == "instruction" or _is_file_prompt_target(entry, target)
 
 
 def _install_plugin_to_platform(
@@ -334,7 +392,7 @@ def _install_plugin_to_platform(
     """Copy a plugin directory to a platform's plugin target."""
     target_dir = platform.resolve_install_path(
         "plugin",
-        entry.install_target_name(platform.name),
+        _entry_install_name(entry, platform),
     )
     if target_dir is None:
         return None
@@ -374,7 +432,7 @@ def _distribute_to_platforms(
     platforms = [
         platform
         for platform in config.platforms.enabled()
-        if entry.supports_platform(platform.name)
+        if platform.supports_resource(entry.kind, entry.platforms)
     ]
     if platform_filter:
         platforms = [p for p in platforms if p.name == platform_filter]
@@ -398,7 +456,7 @@ def _distribute_to_platforms(
                 entry,
                 force_unmanaged=force_unmanaged,
             )
-        elif entry.kind in {"rule", "prompt"}:
+        elif entry.kind in {"rule", "prompt", "instruction", "memory"}:
             result_path = _install_rule_to_platform(
                 source,
                 plat,
@@ -414,7 +472,7 @@ def _distribute_to_platforms(
             )
 
         if result_path is not None:
-            file_target = _is_file_prompt_target(entry, result_path)
+            file_target = _uses_sibling_marker(entry, result_path)
             if (
                 entry.kind != "mcp"
                 and not is_cc_port_managed(
@@ -440,20 +498,25 @@ def _platform_targets(
     *,
     platform_filter: str | None = None,
 ) -> list[tuple[str, Path]]:
+    if entry.kind in {"instruction", "memory"}:
+        return []
     platforms = [
         platform
         for platform in config.platforms.enabled()
-        if entry.supports_platform(platform.name)
+        if platform.supports_resource(entry.kind, entry.platforms)
     ]
     if platform_filter:
         platforms = [p for p in platforms if p.name == platform_filter]
 
     targets: list[tuple[str, Path]] = []
     for platform in platforms:
-        target_path = platform.resolve_install_path(
-            entry.kind,
-            entry.install_target_name(platform.name),
-        )
+        try:
+            target_path = platform.resolve_install_path(
+                entry.kind,
+                _entry_install_name(entry, platform),
+            )
+        except ValueError:
+            continue
         if target_path is not None:
             targets.append((platform.name, target_path))
     return targets
@@ -472,6 +535,14 @@ def sync_one(
     force_unmanaged: bool = False,
     transactional: bool = True,
 ) -> SyncResult:
+    binding_problem = _legacy_resource_binding_problem(entry)
+    if binding_problem:
+        return SyncResult(
+            name=entry.name,
+            install_path=_install_path(config, entry),
+            action=SyncAction.SKIPPED,
+            detail=binding_problem,
+        )
     if not transactional:
         return _sync_one_unsafe(
             entry,
@@ -488,7 +559,11 @@ def sync_one(
             action=SyncAction.SKIPPED,
             detail="Resource has been removed from the active registry.",
         )
-    if platform_filter and not entry.supports_platform(platform_filter):
+    selected_profile = config.platforms.get(platform_filter) if platform_filter else None
+    if platform_filter and (
+        selected_profile is None
+        or not selected_profile.supports_resource(entry.kind, entry.platforms)
+    ):
         return SyncResult(
             name=entry.name,
             install_path=_install_path(config, entry),
@@ -571,6 +646,14 @@ def _sync_one_unsafe(
 ) -> SyncResult:
     install_path = _install_path(config, entry)
     clone_path = _clone_path(config, entry)
+    binding_problem = _legacy_resource_binding_problem(entry)
+    if binding_problem:
+        return SyncResult(
+            name=entry.name,
+            install_path=install_path,
+            action=SyncAction.SKIPPED,
+            detail=binding_problem,
+        )
     if entry.lifecycle != "active":
         return SyncResult(
             name=entry.name,
@@ -578,7 +661,11 @@ def _sync_one_unsafe(
             action=SyncAction.SKIPPED,
             detail="Resource has been removed from the active registry.",
         )
-    if platform_filter and not entry.supports_platform(platform_filter):
+    selected_profile = config.platforms.get(platform_filter) if platform_filter else None
+    if platform_filter and (
+        selected_profile is None
+        or not selected_profile.supports_resource(entry.kind, entry.platforms)
+    ):
         return SyncResult(
             name=entry.name,
             install_path=install_path,
@@ -615,15 +702,20 @@ def _sync_one_unsafe(
                     platforms_installed=platforms_installed,
                 )
 
+            if entry.kind in {"instruction", "memory"}:
+                validate_item(source_path, entry.kind)
             if install_path.exists() or install_path.is_symlink():
                 _remove_path(install_path)
             install_path.parent.mkdir(parents=True, exist_ok=True)
-            if source_path.is_file() and entry.kind == "prompt":
+            if source_path.is_file() and entry.kind in {"prompt", "instruction"}:
                 install_path.mkdir(parents=True)
-                payload = _prompt_payload_path(source_path)
+                payload = _file_asset_payload_path(source_path, kind=entry.kind)
                 shutil.copy2(payload, install_path / payload.name)
             elif source_path.is_dir():
-                copy_resource_tree(source_path, install_path)
+                if entry.kind in {"instruction", "memory"}:
+                    shutil.copytree(source_path, install_path)
+                else:
+                    copy_resource_tree(source_path, install_path)
             else:
                 install_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_path, install_path)
@@ -713,13 +805,44 @@ def _needs_clone(entry: RegistryItem) -> bool:
     return True
 
 
+def _legacy_resource_binding_problem(entry: RegistryItem) -> str:
+    if entry.kind in {"instruction", "memory"}:
+        return (
+            "Instruction and memory resources require environment-aware asset sync; "
+            "legacy sync is disabled for these resource kinds."
+        )
+    return ""
+
+
 def _is_local_resource(entry: RegistryItem) -> bool:
     return bool(entry.path) and entry.source in {"local", "owned"}
 
 
 def _local_source_path(entry: RegistryItem, *, registry_root: Path | None = None) -> Path:
-    root = registry_root or find_registry_path().parent
-    return (root / entry.path).resolve()
+    root = (registry_root or find_registry_path().parent).expanduser().absolute()
+    root_probe = probe_local_path(root)
+    if root_probe.is_link or not root_probe.ready:
+        raise ValueError(
+            root_probe.problem
+            or "The local registry root is linked or cannot be read safely."
+        )
+    candidate = (root / entry.path).absolute()
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Local resource path leaves the registry root.") from exc
+    current = root
+    for part in relative.parts:
+        current /= part
+        probe = probe_local_path(current)
+        if probe.health == "missing":
+            continue
+        if probe.is_link or not probe.ready:
+            raise ValueError(
+                probe.problem
+                or f"Local resource path crosses a linked or unreadable component: {current}"
+            )
+    return candidate
 
 
 def sync_all(
@@ -915,7 +1038,8 @@ def _preview_sync_item(
             )
 
     for platform_name, target_path in target_pairs:
-        file_target = _is_file_prompt_target(entry, target_path)
+        profile = config.platforms.get(platform_name)
+        file_target = _uses_sibling_marker(entry, target_path)
         unmanaged_directory = (
             entry.kind != "mcp"
             and (target_path.exists() or target_path.is_symlink())
@@ -928,14 +1052,16 @@ def _preview_sync_item(
         unmanaged_mcp = False
         if entry.kind == "mcp" and target_path.exists():
             try:
+                server_name = (
+                    _entry_install_name(entry, profile)
+                    if profile is not None
+                    else entry.install_target_name(platform_name)
+                )
                 unmanaged_mcp = (
-                    has_mcp_server(
-                        target_path,
-                        entry.install_target_name(platform_name),
-                    )
+                    has_mcp_server(target_path, server_name)
                     and not is_cc_port_managed_mcp(
                         target_path,
-                        entry.install_target_name(platform_name),
+                        server_name,
                         resource_key=entry.resource_key,
                     )
                 )
@@ -1027,6 +1153,8 @@ def uninstall_one(
     platform_filter: str | None = None,
     transactional: bool = True,
 ) -> bool:
+    if entry.kind in {"instruction", "memory"}:
+        return False
     if not transactional:
         return _uninstall_one_unsafe(
             entry,
@@ -1091,7 +1219,9 @@ def _uninstall_one_unsafe(
                 _remove_path(p)
                 removed = True
 
-    platforms = config.platforms.enabled()
+    # Allowlist changes must not make stale CC Port-managed targets impossible
+    # to remove. Ownership markers still gate every deletion below.
+    platforms = list(config.platforms.enabled())
     if platform_filter:
         platforms = [plat for plat in platforms if plat.name == platform_filter]
 
@@ -1150,7 +1280,8 @@ def _resource_change_targets(
                 platform=platform,
             )
         )
-        if _is_file_prompt_target(entry, path):
+        profile = config.platforms.get(platform)
+        if profile is not None and _uses_sibling_marker(entry, path):
             targets.append(
                 ChangeTarget(
                     path=managed_marker_path(path, file_target=True),
@@ -1185,7 +1316,11 @@ def _verify_resource_install(
         for platform_name in platforms_installed:
             platform = config.platforms.get(platform_name)
             mcp_path = platform.mcp_json_path() if platform else None
-            server_name = entry.install_target_name(platform_name)
+            server_name = (
+                _entry_install_name(entry, platform)
+                if platform is not None
+                else entry.install_target_name(platform_name)
+            )
             if (
                 mcp_path is None
                 or list_mcp_servers(mcp_path).get(server_name) != expected
@@ -1209,20 +1344,22 @@ def _verify_resource_install(
         target = (
             platform.resolve_install_path(
                 entry.kind,
-                entry.install_target_name(platform_name),
+                _entry_install_name(entry, platform),
             )
             if platform
             else None
         )
         expected_hash = cache_hash
-        if target is not None and _is_file_prompt_target(entry, target):
-            expected_hash = resource_hash_path(_prompt_payload_path(cache_path))
+        if target is not None and _is_file_asset_target(entry, target):
+            expected_hash = resource_hash_path(
+                _file_asset_payload_path(cache_path, kind=entry.kind)
+            )
         if (
             target is None
             or not is_cc_port_managed(
                 target,
                 resource_key=entry.resource_key,
-                file_target=_is_file_prompt_target(entry, target),
+                file_target=_uses_sibling_marker(entry, target),
             )
             or resource_hash_path(target) != expected_hash
         ):
@@ -1244,13 +1381,13 @@ def _verify_resource_uninstall(
                     f"Uninstall verification failed; cache still exists for {entry.name}: {path}"
                 )
 
-    platforms = config.platforms.enabled()
+    platforms = list(config.platforms.enabled())
     if platform_filter:
         platforms = [platform for platform in platforms if platform.name == platform_filter]
     for platform in platforms:
         if entry.kind == "mcp":
             mcp_path = platform.mcp_json_path()
-            server_name = entry.install_target_name(platform.name)
+            server_name = _entry_install_name(entry, platform)
             if (
                 mcp_path
                 and is_cc_port_managed_mcp(
@@ -1263,14 +1400,17 @@ def _verify_resource_uninstall(
                     f"Uninstall verification failed for {entry.name} on {platform.name}."
                 )
             continue
-        target = platform.resolve_install_path(
-            entry.kind,
-            entry.install_target_name(platform.name),
-        )
+        try:
+            target = platform.resolve_install_path(
+                entry.kind,
+                _entry_install_name(entry, platform),
+            )
+        except ValueError:
+            continue
         if target and is_cc_port_managed(
             target,
             resource_key=entry.resource_key,
-            file_target=_is_file_prompt_target(entry, target),
+            file_target=_uses_sibling_marker(entry, target),
         ):
             raise RuntimeError(
                 f"Uninstall verification failed for {entry.name} on {platform.name}."
@@ -1278,14 +1418,9 @@ def _verify_resource_uninstall(
 
 
 def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile) -> bool:
-    if entry.kind == "skill":
-        target = platform.resolve_install_path(
-            "skill",
-            entry.install_target_name(platform.name),
-        )
-    elif entry.kind == "mcp":
+    if entry.kind == "mcp":
         mcp_path = platform.mcp_json_path()
-        server_name = entry.install_target_name(platform.name)
+        server_name = _entry_install_name(entry, platform)
         if (
             not mcp_path
             or not is_cc_port_managed_mcp(
@@ -1299,32 +1434,32 @@ def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile
         if removed:
             unmark_cc_port_managed_mcp(mcp_path, server_name)
         return removed
-    elif entry.kind == "rule":
-        target = platform.resolve_install_path(
-            "rule",
-            entry.install_target_name(platform.name),
-        )
-    elif entry.kind == "prompt":
-        target = platform.resolve_install_path(
-            "prompt",
-            entry.install_target_name(platform.name),
-        )
-    elif entry.kind == "plugin":
-        target = platform.resolve_install_path(
-            "plugin",
-            entry.install_target_name(platform.name),
-        )
+    elif entry.kind in {
+        "skill",
+        "rule",
+        "prompt",
+        "plugin",
+        "instruction",
+        "memory",
+    }:
+        try:
+            target = platform.resolve_install_path(
+                entry.kind,
+                _entry_install_name(entry, platform),
+            )
+        except ValueError:
+            return False
     else:
         target = None
 
     if target is None:
         return False
-    file_prompt = _is_file_prompt_target(entry, target)
-    marker = managed_marker_path(target, file_target=True) if file_prompt else None
+    sibling_marker = _uses_sibling_marker(entry, target)
+    marker = managed_marker_path(target, file_target=True) if sibling_marker else None
     if marker is not None and marker.is_symlink():
         return False
     target_exists = target.exists() or target.is_symlink()
-    if not target_exists and file_prompt:
+    if not target_exists and sibling_marker:
         if not is_cc_port_managed(
             target,
             resource_key=entry.resource_key,
@@ -1336,7 +1471,7 @@ def _remove_platform_installation(entry: RegistryItem, platform: PlatformProfile
         if not is_cc_port_managed(
             target,
             resource_key=entry.resource_key,
-            file_target=file_prompt,
+            file_target=sibling_marker,
         ):
             return False
         _remove_path(target)

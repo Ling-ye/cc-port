@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,9 @@ def load_registry(path: Path | None = None) -> Registry:
             registry_path.parent / DEFAULT_CC_PORT_FILENAME
         )
     except (OSError, UnicodeError, yaml.YAMLError, ValueError):
-        registry.cc_port = CcPortSettings()
+        raise RegistryFormatError(
+            "cc-port.yaml contains invalid portable resource settings."
+        ) from None
     registry.reset_resolved()
     resolve_registry_content(registry, registry_path.parent)
     return registry
@@ -88,7 +91,15 @@ def load_registry(path: Path | None = None) -> Registry:
 def resolve_registry_content(registry: Registry, root: Path) -> Registry:
     """Populate transient ResolvedResource fields from safe current content."""
     for entry in registry.items:
-        if not entry.path or entry.kind not in {"skill", "mcp", "rule", "prompt", "plugin"}:
+        if not entry.path or entry.kind not in {
+            "skill",
+            "mcp",
+            "rule",
+            "prompt",
+            "plugin",
+            "instruction",
+            "memory",
+        }:
             continue
         content = _safe_content_path(root, entry.path)
         if content is None or not content.exists():
@@ -106,12 +117,14 @@ def resolve_registry_content(registry: Registry, root: Path) -> Registry:
 
 def _safe_content_path(root: Path, relative: str) -> Path | None:
     root = root.absolute()
+    if _is_link_or_reparse(root):
+        return None
     current = root
     for part in relative.split("/"):
         if part in {"", ".", ".."}:
             return None
         current /= part
-        if current.is_symlink():
+        if _is_link_or_reparse(current):
             return None
     try:
         resolved_root = root.resolve(strict=False)
@@ -121,6 +134,19 @@ def _safe_content_path(root: Path, relative: str) -> Path | None:
     if resolved != resolved_root and resolved_root not in resolved.parents:
         return None
     return current
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return path.is_symlink() or bool(
+        int(getattr(info, "st_file_attributes", 0) or 0)
+        & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    )
 
 
 def _read_mcp_content(path: Path) -> dict[str, Any] | None:
@@ -183,7 +209,7 @@ def _read_content_metadata(path: Path, kind: str) -> dict[str, Any]:
     candidates = [path] if path.is_file() else []
     if kind == "skill":
         candidates = [path / "SKILL.md"]
-    elif kind in {"rule", "prompt"} and path.is_dir():
+    elif kind in {"rule", "prompt", "memory"} and path.is_dir():
         candidates = sorted(
             item
             for item in path.rglob("*")
@@ -264,9 +290,20 @@ def save_registry(
 ) -> Path:
     """Atomically write canonical registry v1 and, when present, cc-port.yaml."""
     registry_path = path or find_registry_path()
+    portable_settings = (
+        CcPortSettings.model_validate(registry.cc_port.model_dump(mode="python"))
+        if save_cc_port_overlay
+        else None
+    )
+    settings_path = registry_path.parent / DEFAULT_CC_PORT_FILENAME
+    if save_cc_port_overlay and (
+        settings_path.is_symlink()
+        or (settings_path.exists() and not settings_path.is_file())
+    ):
+        raise ValueError("cc-port.yaml must be a regular non-symlink file.")
     _atomic_write_text(registry_path, canonical_registry_text(registry))
-    if save_cc_port_overlay and registry.cc_port.resources:
-        settings_payload = registry.cc_port.model_dump(mode="json", exclude_none=True)
+    if portable_settings is not None and portable_settings.resources:
+        settings_payload = portable_settings.model_dump(mode="json", exclude_none=True)
         settings_payload["resources"] = {
             key: settings_payload["resources"][key]
             for key in sorted(settings_payload.get("resources", {}))
@@ -276,7 +313,9 @@ def save_registry(
             sort_keys=False,
             allow_unicode=True,
         )
-        _atomic_write_text(registry_path.parent / DEFAULT_CC_PORT_FILENAME, settings_text)
+        _atomic_write_text(settings_path, settings_text)
+    elif portable_settings is not None and settings_path.is_file():
+        settings_path.unlink()
     return registry_path
 
 

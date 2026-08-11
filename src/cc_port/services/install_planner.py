@@ -135,30 +135,60 @@ def plan_install(
     enabled = [
         platform
         for platform in platforms
-        if platform.enabled and entry.supports_platform(platform.name)
+        if platform.enabled and platform.supports_resource(entry.kind, entry.platforms)
     ]
+    if entry.kind in {"instruction", "memory"}:
+        enabled = []
+        warnings.append(
+            "Instruction and memory resources require environment-aware asset sync; "
+            "legacy installation planning is disabled for these resource kinds."
+        )
     if platform_filter:
         enabled = [p for p in enabled if p.name == platform_filter]
-        if not entry.supports_platform(platform_filter):
+        selected_profile = next((p for p in platforms if p.name == platform_filter), None)
+        if selected_profile is None or not selected_profile.supports_resource(
+            entry.kind, entry.platforms
+        ):
             warnings.append(
                 f"Resource is not allowed on platform {platform_filter!r}."
             )
 
     detections_by_id = {item.provider.id: item for item in detected}
     for platform in enabled:
+        if entry.kind == "memory" and platform.memory_layout == "projects":
+            install_name = entry.name
+            existing_target = platform.resolve_install_path("memory", entry.name)
+            if (
+                entry.name not in platform.memory_install_names
+                and (existing_target is None or not existing_target.exists())
+            ):
+                warnings.append(
+                    f"Memory {entry.name!r} requires an exact local project-slot "
+                    f"mapping for platform {platform.name!r}."
+                )
+                continue
+        else:
+            install_name = (
+                entry.platform_install_dirs.get(platform.effective_tool_id)
+                or entry.install_dir
+                or entry.name
+            )
         target_path = platform.resolve_install_path(
             entry.kind,
-            entry.install_target_name(platform.name),
+            install_name,
         )
         if target_path is None:
             continue
-        detection = detections_by_id.get(platform.name)
+        detection = detections_by_id.get(platform.effective_tool_id)
         auto_install = detection.auto_install if detection and detection.detected else True
         targets.append(
             InstallPlanTarget(
                 platform=platform.name,
                 kind=entry.kind,
-                install_mechanism=_platform_install_mechanism(platform.name, entry.kind),
+                install_mechanism=_platform_install_mechanism(
+                    platform.effective_tool_id,
+                    entry.kind,
+                ),
                 path=target_path,
                 auto_install=auto_install,
             )

@@ -28,7 +28,13 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - py310 fallback
     import tomli as tomllib
 
-from ..core.config import Config, default_state_dir, load_config, resource_repo_auth_token
+from ..core.config import (
+    Config,
+    default_state_dir,
+    load_config,
+    resource_repo_auth_token,
+    resource_repo_private_path_conflicts,
+)
 from ..core.models import (
     ITEM_NAME_RE,
     ItemKind,
@@ -50,7 +56,14 @@ from ..core.ownership import (
     mcp_ownership_path,
     write_managed_marker,
 )
-from ..core.platforms import PlatformProfile, build_platform
+from ..core.platforms import (
+    PlatformProfile,
+    build_platform,
+    current_environment_identity,
+    is_cross_platform_absolute_path,
+    resolve_portable_resource_platforms,
+    validate_portable_tool_id,
+)
 from ..core.registry import DEFAULT_REGISTRY_FILENAME, load_registry, save_registry
 from ..core.resource_files import is_resource_path_excluded
 from ..core.secret_scan import find_secret_text
@@ -108,7 +121,7 @@ AssetAction = Literal[
 
 ASSET_STATE_DIR = "assets"
 ASSET_PLAN_DIR = "asset-plans"
-ASSET_PLAN_SCHEMA_VERSION = 1
+ASSET_PLAN_SCHEMA_VERSION = 2
 REMOTE_CACHE_DIR = "remotes"
 REMOTE_SNAPSHOT_DIR = "snapshots"
 REMOTE_SNAPSHOT_FORMAT_FILE = ".cc-port-snapshot-format"
@@ -122,6 +135,8 @@ RESOURCE_PARENT_BY_KIND: dict[ItemKind, str] = {
     "rule": "rules",
     "prompt": "prompts",
     "plugin": "plugins",
+    "instruction": "instructions",
+    "memory": "memories",
 }
 DERIVED_METADATA_FIELDS = ("description", "version", "author", "license")
 ASSET_DIFF_MAX_FILES = 200
@@ -196,6 +211,11 @@ class AssetPlatformRow:
     plugin_enabled: bool | None = None
     plugin_writable: bool = True
     plugin_data: dict[str, Any] = field(default_factory=dict)
+    tool_id: str = ""
+    environment_kind: str = ""
+    environment_name: str = ""
+    display_name: str = ""
+    memory_layout: str = ""
 
 
 @dataclass
@@ -244,6 +264,11 @@ class AssetLocalInstance:
     link_target: str = ""
     reparse_tag: str = ""
     link_target_trusted: bool = True
+    tool_id: str = ""
+    environment_kind: str = ""
+    environment_name: str = ""
+    display_name: str = ""
+    memory_layout: str = ""
 
 
 @dataclass
@@ -345,6 +370,9 @@ class AssetActionPlan:
     overwrite_unmanaged: bool = False
     new_name: str = ""
     new_install_name: str = ""
+    tool_id: str = ""
+    environment_kind: str = ""
+    environment_name: str = ""
     warnings: list[str] = field(default_factory=list)
     warning_refs: list[UiMessageRef] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
@@ -496,6 +524,9 @@ class _PlatformContext:
     configured: bool
     detected: bool
     supported_kinds: set[ItemKind]
+    environment_available: bool = True
+    environment_problem: str = ""
+    memory_problem: str = ""
 
 
 class AssetSyncError(RuntimeError):
@@ -523,6 +554,7 @@ def build_asset_inventory(
 ) -> AssetInventory:
     """Build logical resources plus internal platform comparison rows without writes."""
     cfg = config or load_config()
+    _assert_private_asset_boundaries(cfg)
     git_ops.configure_git_executable(cfg.git.executable)
     _cleanup_expired_asset_plans(cfg)
     discovery: EnvDiscoveryResult | None = None
@@ -549,6 +581,16 @@ def build_asset_inventory(
                 scan_global=scan_global,
                 project_ids=project_ids,
             )
+    if discovery is None:
+        # Even a remote-only inventory must resolve adapter settings that alter
+        # native write targets (notably Claude autoMemoryDirectory).  This scan
+        # reads only configured tool metadata; it does not enumerate resources,
+        # MCP servers, plugins, or projects.
+        discovery = discover_environment(
+            config=cfg,
+            scan_global=False,
+            project_ids=[],
+        )
     if snapshot.registry is None:
         snapshot = replace(
             snapshot,
@@ -813,8 +855,15 @@ def _asset_diff_file_maps(
             {display_name: local_blob},
             remote_blob.truncated or local_blob.truncated,
         )
-    remote_files, remote_truncated = _asset_diff_collect_files(remote_source)
-    local_files, local_truncated = _asset_diff_collect_files(local_source)
+    include_all = row.kind == "memory"
+    remote_files, remote_truncated = _asset_diff_collect_files(
+        remote_source,
+        include_excluded=include_all,
+    )
+    local_files, local_truncated = _asset_diff_collect_files(
+        local_source,
+        include_excluded=include_all,
+    )
     return remote_files, local_files, remote_truncated or local_truncated
 
 
@@ -825,6 +874,8 @@ def _asset_diff_json_blob(value: object) -> _AssetDiffBlob:
 
 def _asset_diff_collect_files(
     root: Path,
+    *,
+    include_excluded: bool = False,
 ) -> tuple[dict[str, _AssetDiffBlob], bool]:
     if root.is_symlink():
         raise ValueError("Symbolic-link content cannot be compared safely.")
@@ -840,7 +891,10 @@ def _asset_diff_collect_files(
             name
             for name in dirnames
             if not (current / name).is_symlink()
-            and not is_resource_path_excluded((current / name).relative_to(root))
+            and (
+                include_excluded
+                or not is_resource_path_excluded((current / name).relative_to(root))
+            )
         )
         for name in sorted(filenames):
             item = current / name
@@ -848,7 +902,7 @@ def _asset_diff_collect_files(
             if (
                 not item.is_file()
                 or item.is_symlink()
-                or is_resource_path_excluded(relative)
+                or (not include_excluded and is_resource_path_excluded(relative))
             ):
                 continue
             if len(files) >= ASSET_DIFF_MAX_FILES:
@@ -949,12 +1003,27 @@ def _discover_inventory_environment(
 
 
 def _requires_configured_resource_discovery(cfg: Config) -> bool:
+    tool_ids = [profile.effective_tool_id for profile in cfg.platforms.enabled()]
+    if len(tool_ids) != len(set(tool_ids)):
+        return True
     for profile in cfg.platforms.enabled():
-        adapter = tool_adapter_by_id(profile.name)
+        if profile.name != profile.effective_tool_id:
+            return True
+        adapter = tool_adapter_by_id(profile.effective_tool_id)
+        if adapter is not None:
+            if profile.settings_path != adapter.settings_path:
+                return True
+            if profile.home_dir not in {"", "~"}:
+                return True
         configured_paths = (
             (
                 profile.skills_path(),
                 adapter.skills_dir if adapter is not None else "",
+                "dir",
+            ),
+            (
+                profile.rules_path(),
+                adapter.rules_dir if adapter is not None else "",
                 "dir",
             ),
             (
@@ -970,6 +1039,16 @@ def _requires_configured_resource_discovery(cfg: Config) -> bool:
             (
                 profile.plugins_path(),
                 adapter.plugins_dir if adapter is not None else "",
+                "dir",
+            ),
+            (
+                profile.instructions_file(),
+                adapter.instructions_path if adapter is not None else "",
+                "file",
+            ),
+            (
+                profile.memories_path(),
+                adapter.memories_dir if adapter is not None else "",
                 "dir",
             ),
         )
@@ -1190,6 +1269,11 @@ def _local_instance_summary(row: AssetPlatformRow) -> AssetLocalInstance:
         link_target=row.link_target,
         reparse_tag=row.reparse_tag,
         link_target_trusted=row.link_target_trusted,
+        tool_id=row.tool_id,
+        environment_kind=row.environment_kind,
+        environment_name=row.environment_name,
+        display_name=row.display_name,
+        memory_layout=row.memory_layout,
     )
 
 
@@ -1400,12 +1484,33 @@ def build_asset_action_plan(
             blocker_refs,
             _upload_plan_blocker_refs(row, link_target_confirmed),
         )
+        if kind in {"instruction", "memory"} and not row.tool_id:
+            blockers.append(
+                "The local source tool identity is unavailable; portable tool binding cannot be inferred safely."
+            )
+        if kind == "memory" and row.tool_id and row.tool_id != "claude-code":
+            blockers.append("Memory resources can only originate from Claude Code.")
     elif action == "copy-to-local":
         _extend_messages(
             blockers,
             blocker_refs,
             _copy_to_local_blocker_refs(row, registry, normalized_new_name),
         )
+        copy_profile = cfg.platforms.get(row.platform)
+        if (
+            kind == "memory"
+            and copy_profile is not None
+            and copy_profile.memory_layout == "projects"
+            and normalized_new_name not in copy_profile.memory_install_names
+        ):
+            _append_message(
+                blockers,
+                blocker_refs,
+                ui_message(
+                    "asset.blocker.memory_target_mapping_required",
+                    "Map the new memory resource name to an exact local Claude project slot before copying.",
+                ),
+            )
         target_path, target_exists, target_fingerprint, target_managed = _copy_local_target_state(
             cfg,
             row,
@@ -1445,6 +1550,12 @@ def build_asset_action_plan(
                 link_target_confirmed,
             ),
         )
+        if kind in {"instruction", "memory"} and not row.tool_id:
+            blockers.append(
+                "The local source tool identity is unavailable; portable tool binding cannot be inferred safely."
+            )
+        if kind == "memory" and row.tool_id and row.tool_id != "claude-code":
+            blockers.append("Memory resources can only originate from Claude Code.")
         target_entry = (
             registry.get(normalized_new_name, kind) if normalized_new_name else None
         )
@@ -1455,16 +1566,26 @@ def build_asset_action_plan(
             else ""
         )
     else:
-        _extend_messages(
-            blockers,
-            blocker_refs,
-            _install_alias_plan_blocker_refs(
-                row,
-                registry,
-                cfg,
-                normalized_install_name,
+        if kind == "memory":
+            _append_message(
+                blockers,
+                blocker_refs,
+                ui_message(
+                    "asset.blocker.memory_install_name_local_only",
+                    "Memory project-slot mappings are local profile configuration and cannot be stored remotely.",
+                ),
             )
-        )
+        else:
+            _extend_messages(
+                blockers,
+                blocker_refs,
+                _install_alias_plan_blocker_refs(
+                    row,
+                    registry,
+                    cfg,
+                    normalized_install_name,
+                )
+            )
 
     if action in REMOTE_WRITE_ACTIONS:
         if not snapshot.available:
@@ -1534,6 +1655,9 @@ def build_asset_action_plan(
         overwrite_unmanaged=overwrite_unmanaged,
         new_name=normalized_new_name,
         new_install_name=normalized_install_name,
+        tool_id=row.tool_id,
+        environment_kind=row.environment_kind,
+        environment_name=row.environment_name,
         warnings=_unique_strings(warnings),
         warning_refs=_unique_message_refs(warning_refs),
         blockers=_unique_strings(blockers),
@@ -1543,7 +1667,7 @@ def build_asset_action_plan(
         plugin_data=dict(row.plugin_data),
     )
     if _persist:
-        _save_asset_plan(plan)
+        _save_asset_plan(plan, cfg)
     return plan
 
 
@@ -1553,10 +1677,12 @@ def apply_asset_action_plan(
     config: Config | None = None,
 ) -> AssetActionResult:
     """Revalidate and apply one persisted asset action plan."""
-    existing = _load_asset_result(operation_id)
+    cfg = config or load_config()
+    _assert_private_asset_boundaries(cfg)
+    existing = _load_asset_result(operation_id, cfg)
     if existing is not None:
         return existing
-    plan = load_asset_action_plan(operation_id)
+    plan = load_asset_action_plan(operation_id, config=cfg)
     if plan.blocked:
         blocked_message = "; ".join(plan.blockers) or "The asset action plan is blocked."
         result = AssetActionResult(
@@ -1575,10 +1701,9 @@ def apply_asset_action_plan(
             warnings=plan.warnings,
             warning_refs=plan.warning_refs,
         )
-        _save_asset_result(result)
+        _save_asset_result(result, cfg)
         return result
 
-    cfg = config or load_config()
     try:
         if plan.action in LOCAL_WRITE_ACTIONS:
             result = _apply_local_asset_action(plan, cfg)
@@ -1602,7 +1727,7 @@ def apply_asset_action_plan(
             warnings=plan.warnings,
             warning_refs=plan.warning_refs,
         )
-    _save_asset_result(result)
+    _save_asset_result(result, cfg)
     return result
 
 
@@ -1937,6 +2062,7 @@ def add_plugin_reference(
             commit_resource_changes_unlocked(
                 worktree,
                 message=f"cc-port: save plugin reference {key.name}",
+                config=cfg,
             )
             committed = git_ops.head_commit(worktree) or ""
             try:
@@ -2441,7 +2567,11 @@ def _remove_plugin_remote_installations(
             updated.removed_effect = "index_only"
         registry.upsert(updated)
         save_registry(registry, registry_path)
-        commit_resource_changes_unlocked(worktree, message=f"cc-port: delete plugin instances {key.name}")
+        commit_resource_changes_unlocked(
+            worktree,
+            message=f"cc-port: delete plugin instances {key.name}",
+            config=cfg,
+        )
         committed = git_ops.head_commit(worktree) or ""
         git_ops.push(
             worktree,
@@ -3075,10 +3205,19 @@ def _block_duplicate_batch_targets(
     for item in items:
         if item.plan is None or item.disposition not in {"create", "update", "rename"}:
             continue
-        target = (
-            item.target_resource_key,
-            item.platform if direction == "download" else "",
-        )
+        if direction == "download":
+            if item.plan.target_path is None:
+                continue
+            target_path = os.path.normcase(
+                str(item.plan.target_path.expanduser().absolute())
+            )
+            target_key = ResourceKey.parse(item.plan.target_resource_key)
+            target = (
+                target_path,
+                target_key.name if target_key.kind == "mcp" else "",
+            )
+        else:
+            target = (item.target_resource_key, "")
         grouped.setdefault(target, []).append(item)
     for duplicates in grouped.values():
         if len(duplicates) < 2:
@@ -3178,6 +3317,9 @@ def _batch_plan_assertions(plan: AssetActionPlan | None) -> dict[str, Any]:
         "overwrite_unmanaged": plan.overwrite_unmanaged,
         "new_name": plan.new_name,
         "new_install_name": plan.new_install_name,
+        "tool_id": plan.tool_id,
+        "environment_kind": plan.environment_kind,
+        "environment_name": plan.environment_name,
         "plugin_data": plan.plugin_data,
     }
 
@@ -3226,8 +3368,13 @@ def _batch_error_result(
     )
 
 
-def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
-    path = _asset_plan_dir(operation_id) / "plan.json"
+def load_asset_action_plan(
+    operation_id: str,
+    *,
+    config: Config | None = None,
+) -> AssetActionPlan:
+    cfg = config or load_config()
+    path = _asset_plan_dir(operation_id, config=cfg) / "plan.json"
     if not path.is_file():
         raise FileNotFoundError(f"Unknown asset action plan: {operation_id}")
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -3284,6 +3431,9 @@ def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
         overwrite_unmanaged=bool(data.get("overwrite_unmanaged", False)),
         new_name=str(data.get("new_name") or ""),
         new_install_name=str(data.get("new_install_name") or ""),
+        tool_id=str(data.get("tool_id") or ""),
+        environment_kind=str(data.get("environment_kind") or ""),
+        environment_name=str(data.get("environment_name") or ""),
         warnings=[str(item) for item in data.get("warnings", [])],
         warning_refs=ui_messages_from_data(data.get("warning_refs")),
         blockers=[str(item) for item in data.get("blockers", [])],
@@ -3296,6 +3446,7 @@ def load_asset_action_plan(operation_id: str) -> AssetActionPlan:
 
 
 def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
+    _assert_private_asset_boundaries(cfg)
     branch = cfg.resources.branch or "main"
     repo_url = _configured_remote_url(cfg)
     if not repo_url:
@@ -3317,6 +3468,7 @@ def _refresh_remote_snapshot(cfg: Config, *, refresh: bool) -> RemoteSnapshot:
         with resource_repo_write_lock(
             transport,
             timeout_seconds=cfg.state.lock_timeout_seconds,
+            allow_state_target=True,
         ):
             if transport.is_symlink():
                 _remove_internal_path(transport, state_root)
@@ -3511,13 +3663,18 @@ def _configured_remote_url(cfg: Config) -> str:
 
 
 def _latest_cached_snapshot(root: Path) -> Path | None:
-    if root.is_symlink() or not root.is_dir():
+    root_probe = probe_local_path(root)
+    if (
+        root_probe.path_kind != "regular"
+        or not root_probe.ready
+        or root_probe.content_path is None
+        or not root_probe.content_path.is_dir()
+    ):
         return None
     candidates = [
         path
         for path in root.iterdir()
-        if path.is_dir()
-        and not path.is_symlink()
+        if _regular_ready_directory(path)
         and (path.name == "unborn" or git_ops.is_full_commit_sha(path.name))
         and _snapshot_format_is_current(path)
     ]
@@ -3566,12 +3723,20 @@ def _snapshot_copy_ignore(_directory: str, names: list[str]) -> set[str]:
     ignored = internal & set(names)
     directory = Path(_directory)
     for name in names:
-        try:
-            if (directory / name).is_symlink():
-                ignored.add(name)
-        except OSError:
+        probe = probe_local_path(directory / name)
+        if probe.path_kind != "regular" or not probe.ready:
             ignored.add(name)
     return ignored
+
+
+def _regular_ready_directory(path: Path) -> bool:
+    probe = probe_local_path(path)
+    return bool(
+        probe.path_kind == "regular"
+        and probe.ready
+        and probe.content_path is not None
+        and probe.content_path.is_dir()
+    )
 
 
 def _write_snapshot_registry_health(
@@ -3724,14 +3889,17 @@ def _platform_contexts(
 ) -> dict[str, _PlatformContext]:
     contexts: dict[str, _PlatformContext] = {}
     for profile in cfg.platforms.profiles:
-        adapter = tool_adapter_by_id(profile.name)
+        adapter = tool_adapter_by_id(profile.effective_tool_id)
+        available, problem = _profile_environment_state(profile)
         contexts[profile.name] = _PlatformContext(
-            profile=profile,
+            profile=replace(profile),
             configured=True,
             detected=False,
             supported_kinds=set(adapter.supports_kinds)
             if adapter
             else set(RESOURCE_PARENT_BY_KIND),
+            environment_available=available,
+            environment_problem=problem,
         )
     if discovery is None:
         return contexts
@@ -3742,16 +3910,115 @@ def _platform_contexts(
         if existing is not None:
             existing.detected = True
             existing.supported_kinds.update(tool.supports_kinds)
+            if tool.instruction_path is not None:
+                existing.profile.instructions_path = str(tool.instruction_path)
+            if tool.memories_path is not None:
+                existing.profile.memories_dir = str(tool.memories_path)
+                existing.profile.memory_layout = tool.memory_layout
+            existing.memory_problem = tool.memory_blocker
             continue
-        profile = build_platform(tool.id)
+        profile = build_platform(
+            tool.id,
+            {
+                "tool_id": tool.tool_id or tool.id,
+                "environment_kind": tool.environment_kind,
+                "environment_name": tool.environment_name,
+                "display_name": tool.display_name,
+            },
+        )
+        if tool.instruction_path is not None:
+            profile.instructions_path = str(tool.instruction_path)
+        if tool.memories_path is not None:
+            profile.memories_dir = str(tool.memories_path)
+            profile.memory_layout = tool.memory_layout
         profile.enabled = False
         contexts[tool.id] = _PlatformContext(
             profile=profile,
             configured=False,
             detected=True,
             supported_kinds=set(tool.supports_kinds),
+            memory_problem=tool.memory_blocker,
         )
     return contexts
+
+
+def _profile_environment_state(profile: PlatformProfile) -> tuple[bool, str]:
+    current_kind, current_name = current_environment_identity()
+    configured_kind = profile.environment_kind.strip().lower()
+    if profile.home_dir in {"", "~"} and configured_kind:
+        kind_matches = configured_kind == current_kind
+        name_matches = (
+            configured_kind != "wsl"
+            or (
+                bool(profile.environment_name)
+                and bool(current_name)
+                and profile.environment_name.casefold() == current_name.casefold()
+            )
+        )
+        if not kind_matches or not name_matches:
+            return (
+                False,
+                "The configured runtime identity differs from the current process; "
+                "set an explicit accessible home_dir for this profile.",
+            )
+    if not profile.home_dir or profile.home_dir == "~":
+        return True, ""
+    if not is_cross_platform_absolute_path(profile.home_dir):
+        return (
+            False,
+            "The configured runtime home_dir is not absolute; access is blocked.",
+        )
+    home = profile.home_path()
+    home_text = str(home).replace("/", "\\")
+    wsl_unc = re.match(
+        r"^\\\\(?:wsl\.localhost|wsl\$)\\([^\\]+)(?:\\|$)",
+        home_text,
+        flags=re.IGNORECASE,
+    )
+    if wsl_unc is not None and (
+        configured_kind != "wsl"
+        or not profile.environment_name
+        or wsl_unc.group(1).casefold() != profile.environment_name.casefold()
+    ):
+        return (
+            False,
+            "The configured WSL UNC home does not match the runtime distro identity.",
+        )
+    unsafe_home = _local_target_ancestor_problem(home / ".cc-port-home-probe")
+    if unsafe_home:
+        return False, unsafe_home
+    if home.is_dir():
+        return True, ""
+    return (
+        False,
+        f"The configured {profile.environment_kind or 'runtime'} home is unavailable: {home}",
+    )
+
+
+def _effective_runtime_profile(
+    cfg: Config,
+    profile: PlatformProfile,
+    *,
+    kind: ItemKind,
+) -> PlatformProfile:
+    """Re-evaluate trusted adapter settings before resolving a write target."""
+    discovery = discover_environment(
+        config=cfg,
+        scan_global=False,
+        project_ids=[],
+    )
+    tool = next((item for item in discovery.tools if item.id == profile.name), None)
+    effective = replace(profile)
+    if tool is None:
+        return effective
+    if kind == "memory" and tool.memory_blocker:
+        raise _StaleAssetTarget("stale-platform", tool.memory_blocker)
+    if tool.instruction_path is not None:
+        effective.instructions_path = str(tool.instruction_path)
+    if tool.memories_path is not None:
+        effective.memories_dir = str(tool.memories_path)
+        effective.memory_layout = tool.memory_layout
+    return effective
 
 
 def _expected_row(
@@ -3763,12 +4030,14 @@ def _expected_row(
     *,
     reference_commits: dict[tuple[str, str], str],
 ) -> AssetPlatformRow | None:
-    install_name = entry.install_target_name(platform_name)
-    target = context.profile.resolve_install_path(entry.kind, install_name)
+    install_name = _entry_install_name(entry, context.profile)
+    target = _resolve_entry_install_path(context.profile, entry)
     if target is None:
         return None
-    supported = entry.supports_platform(platform_name) and (
-        not context.supported_kinds or entry.kind in context.supported_kinds
+    supported = (
+        context.profile.supports_resource(entry.kind, entry.platforms)
+        and (not context.supported_kinds or entry.kind in context.supported_kinds)
+        and not (entry.kind == "memory" and context.memory_problem)
     )
     target = target.expanduser().absolute()
     remote_path = _remote_content_path(snapshot.root, entry)
@@ -3780,18 +4049,30 @@ def _expected_row(
     if read_only and entry.repo:
         reference_commit = _reference_commit(entry, cfg, reference_commits)
 
-    (
-        local_exists,
-        local_fingerprint,
-        ownership,
-        local_probe,
-        local_tree_blockers,
-    ) = _expected_local_state(
-        entry,
-        context.profile,
-        target,
-        install_name,
+    target_ancestor_problem = (
+        _local_target_ancestor_problem(target)
+        if entry.kind in {"instruction", "memory"}
+        else ""
     )
+    if target_ancestor_problem:
+        local_exists = False
+        local_fingerprint = ""
+        ownership = "unknown"
+        local_probe = None
+        local_tree_blockers = []
+    else:
+        (
+            local_exists,
+            local_fingerprint,
+            ownership,
+            local_probe,
+            local_tree_blockers,
+        ) = _expected_local_state(
+            entry,
+            context.profile,
+            target,
+            install_name,
+        )
     local_content_path = (
         local_probe.content_path
         if local_probe is not None and local_probe.ready
@@ -3826,6 +4107,16 @@ def _expected_row(
     )
     blockers: list[str] = []
     blocker_refs: list[UiMessageRef] = []
+    if target_ancestor_problem:
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.local_path_unsafe",
+                target_ancestor_problem,
+                detail=target_ancestor_problem,
+            ),
+        )
     if (
         local_probe is not None
         and not local_probe.ready
@@ -3854,6 +4145,30 @@ def _expected_row(
                 detail=problem,
             ),
         )
+    if (
+        entry.kind == "memory"
+        and context.profile.memory_layout == "projects"
+        and entry.name not in context.profile.memory_install_names
+        and not local_exists
+    ):
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.memory_target_mapping_required",
+                "Map this memory resource to the exact local Claude project slot before downloading.",
+            ),
+        )
+    if entry.kind == "memory" and context.memory_problem:
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.memory_settings_untrusted",
+                context.memory_problem,
+                detail=context.memory_problem,
+            ),
+        )
     if not context.configured:
         _append_message(
             blockers,
@@ -3861,6 +4176,17 @@ def _expected_row(
             ui_message(
                 "asset.blocker.platform_not_configured",
                 "Platform is detected but not configured; configure it before downloading.",
+            ),
+        )
+    elif not context.environment_available:
+        problem = context.environment_problem or "The configured runtime environment is unavailable."
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.environment_unavailable",
+                problem,
+                detail=problem,
             ),
         )
     elif not context.profile.enabled:
@@ -3872,7 +4198,16 @@ def _expected_row(
                 "Platform is configured but disabled; enable it before downloading.",
             ),
         )
-    if not supported:
+    if entry.kind == "instruction" and not entry.platforms:
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.instruction_tool_binding_required",
+                "Instruction resources require an explicit tool binding before download.",
+            ),
+        )
+    elif not supported:
         _append_message(
             blockers,
             blocker_refs,
@@ -3936,6 +4271,37 @@ def _expected_row(
         blockers=_unique_strings(blockers),
         blocker_refs=_unique_message_refs(blocker_refs),
         entry=entry,
+        tool_id=context.profile.effective_tool_id,
+        environment_kind=context.profile.environment_kind,
+        environment_name=context.profile.environment_name,
+        display_name=context.profile.effective_display_name,
+        memory_layout=context.profile.memory_layout if entry.kind == "memory" else "",
+    )
+
+
+def _entry_install_name(entry: RegistryItem, profile: PlatformProfile) -> str:
+    if entry.kind == "memory":
+        return profile.memory_install_names.get(entry.name) or entry.name
+    return (
+        entry.platform_install_dirs.get(profile.effective_tool_id)
+        or entry.install_dir
+        or entry.name
+    )
+
+
+def _resolve_entry_install_path(
+    profile: PlatformProfile,
+    entry: RegistryItem,
+    *,
+    logical_name: str | None = None,
+    install_name: str | None = None,
+) -> Path | None:
+    """Resolve one target while applying local memory-slot mapping exactly once."""
+    if entry.kind == "memory":
+        return profile.resolve_install_path("memory", logical_name or entry.name)
+    return profile.resolve_install_path(
+        entry.kind,
+        install_name or _entry_install_name(entry, profile),
     )
 
 
@@ -3953,67 +4319,88 @@ def _expected_plugin_rows(
     spec = entry.plugin
     if spec is None:
         return []
-    context = contexts.get(spec.platform) or _detected_context(spec.platform, "plugin")
+    matching_contexts = [
+        context
+        for context in contexts.values()
+        if context.profile.effective_tool_id == spec.platform
+    ]
+    if not matching_contexts:
+        matching_contexts = [_detected_context(spec.platform, "plugin")]
     installations = spec.installations or [PluginInstallation(scope="user", enabled=True)]
     rows: list[AssetPlatformRow] = []
-    for installation in installations:
-        installation_spec = spec.model_copy(deep=True)
-        installation_spec.installations = [installation]
-        project_id = _configured_plugin_project_id(cfg, installation.project)
-        remote_path = _remote_content_path(snapshot.root, entry)
-        target = _plugin_content_target(entry, installation, cfg, context) if spec.track == "content" else None
-        local_exists = bool(target and target.exists() and not target.is_symlink())
-        remote_source = _plugin_remote_content_source(remote_path, spec)
-        remote_content = _plugin_installation_fingerprint(spec, installation) if spec.track == "reference" else resource_hash_path(remote_source) if remote_source and remote_source.exists() else ""
-        local_fingerprint = resource_hash_path(target) if local_exists and target is not None else ""
-        status = _asset_status(
-            remote_exists=True,
-            local_exists=local_exists,
-            remote_fingerprint=remote_content,
-            local_fingerprint=local_fingerprint,
-            metadata_differences=[],
-            read_only=False,
-        )
-        blockers: list[str] = []
-        blocker_refs: list[UiMessageRef] = []
-        if spec.track == "content" and target is None:
-            _append_message(
-                blockers,
-                blocker_refs,
-                ui_message(
-                    "asset.blocker.plugin_target_missing",
-                    "No portable local target is configured for this plugin installation.",
-                ),
+    for context in matching_contexts:
+        profile = context.profile
+        for installation in installations:
+            installation_spec = spec.model_copy(deep=True)
+            installation_spec.installations = [installation]
+            project_id = _configured_plugin_project_id(cfg, installation.project)
+            remote_path = _remote_content_path(snapshot.root, entry)
+            target = (
+                _plugin_content_target(entry, installation, cfg, context)
+                if spec.track == "content"
+                else None
             )
-        if installation.scope == "managed":
-            _append_message(
-                blockers,
-                blocker_refs,
-                ui_message(
-                    "asset.blocker.managed_plugin_read_only",
-                    "Managed plugin installations are read-only.",
-                ),
+            local_exists = bool(target and target.exists() and not target.is_symlink())
+            remote_source = _plugin_remote_content_source(remote_path, spec)
+            remote_content = (
+                _plugin_installation_fingerprint(spec, installation)
+                if spec.track == "reference"
+                else resource_hash_path(remote_source)
+                if remote_source and remote_source.exists()
+                else ""
             )
-        local_id = _instance_id(
-            "plugin-expected",
-            entry.resource_key,
-            spec.platform,
-            Path(project_id or installation.scope),
-            installation.scope,
-        )
-        rows.append(
-            AssetPlatformRow(
+            local_fingerprint = (
+                resource_hash_path(target)
+                if local_exists and target is not None
+                else ""
+            )
+            status = _asset_status(
+                remote_exists=True,
+                local_exists=local_exists,
+                remote_fingerprint=remote_content,
+                local_fingerprint=local_fingerprint,
+                metadata_differences=[],
+                read_only=False,
+            )
+            blockers: list[str] = []
+            blocker_refs: list[UiMessageRef] = []
+            if spec.track == "content" and target is None:
+                _append_message(
+                    blockers,
+                    blocker_refs,
+                    ui_message(
+                        "asset.blocker.plugin_target_missing",
+                        "No portable local target is configured for this plugin installation.",
+                    ),
+                )
+            if installation.scope == "managed":
+                _append_message(
+                    blockers,
+                    blocker_refs,
+                    ui_message(
+                        "asset.blocker.managed_plugin_read_only",
+                        "Managed plugin installations are read-only.",
+                    ),
+                )
+            local_id = _instance_id(
+                "plugin-expected",
+                entry.resource_key,
+                profile.name,
+                target or Path(project_id or installation.scope),
+                installation.scope,
+            )
+            rows.append(AssetPlatformRow(
                 resource_key=entry.resource_key,
                 kind="plugin",
                 name=entry.name,
-                platform=spec.platform,
+                platform=profile.name,
                 local_instance_id=local_id,
                 local_locator="plugin-expected",
                 install_name=spec.plugin_id,
                 configured=context.configured or (spec.track == "content" and target is not None),
                 enabled=context.profile.enabled if context.configured else target is not None,
                 detected=context.detected,
-                supported=True,
+                supported=profile.supports_resource(entry.kind, entry.platforms),
                 remote_exists=True,
                 local_exists=local_exists,
                 remote_writable=True,
@@ -4043,8 +4430,11 @@ def _expected_plugin_rows(
                 plugin_enabled=installation.enabled,
                 plugin_writable=installation.scope != "managed",
                 plugin_data={"plugin": installation_spec.model_dump(mode="json")},
-            )
-        )
+                tool_id=profile.effective_tool_id,
+                environment_kind=profile.environment_kind,
+                environment_name=profile.environment_name,
+                display_name=profile.effective_display_name,
+            ))
     return rows
 
 
@@ -4064,7 +4454,10 @@ def _discovered_rows(
             continue
         context = contexts.get(candidate.tool) or _detected_context(candidate.tool, candidate.kind)
         marker_key = (
-            managed_resource_key(candidate.path)
+            managed_resource_key(
+                candidate.path,
+                file_target=_uses_sibling_marker(candidate.kind, candidate.path),
+            )
             if candidate.content_path is not None
             else ""
         )
@@ -4077,7 +4470,7 @@ def _discovered_rows(
             else None
         )
         local_fingerprint = (
-            _safe_local_resource_fingerprint(local_content_path)
+            _safe_local_resource_fingerprint(local_content_path, candidate.kind)
             if local_content_path is not None and not candidate.blockers
             else ""
         )
@@ -4091,7 +4484,7 @@ def _discovered_rows(
             locator="discovered-resource",
             local_path=candidate.path,
             local_content_path=local_content_path,
-            install_name=candidate.path.name,
+            install_name=candidate.install_name_hint or candidate.path.name,
             local_fingerprint=local_fingerprint,
             ownership="managed" if marker_key else "unmanaged",
             entry=entry,
@@ -4158,7 +4551,7 @@ def _registry_plugin_entry_for_candidate(
         if entry.kind != "plugin" or spec is None or entry.lifecycle != "active":
             continue
         if (
-            spec.platform == candidate.platform
+            spec.platform == (candidate.tool_id or candidate.platform)
             and spec.plugin_id == candidate.plugin_id
             and spec.origin.type == candidate.origin_type
             and _plugin_origin_source_id(spec.origin) == _candidate_plugin_source_id(candidate)
@@ -4183,7 +4576,7 @@ def _plugin_candidate_resource_key(registry: Registry, candidate: Any) -> Resour
     if registry.get(base, "plugin") is None:
         return key
     identity = (
-        f"{candidate.platform}\0{candidate.plugin_id}\0{candidate.origin_type}"
+        f"{candidate.tool_id or candidate.platform}\0{candidate.plugin_id}\0{candidate.origin_type}"
         f"\0{_candidate_plugin_source_id(candidate)}"
     )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
@@ -4228,6 +4621,20 @@ def _plugin_candidate_row(
     )
     blockers: list[str] = []
     blocker_refs: list[UiMessageRef] = []
+    if context.configured and not context.environment_available:
+        problem = (
+            context.environment_problem
+            or "The configured runtime environment is unavailable."
+        )
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.environment_unavailable",
+                problem,
+                detail=problem,
+            ),
+        )
     if not candidate.complete:
         _append_message(
             blockers,
@@ -4257,7 +4664,9 @@ def _plugin_candidate_row(
         configured=context.configured,
         enabled=context.profile.enabled if context.configured else False,
         detected=True,
-        supported=True,
+        supported=(
+            entry is None or context.profile.supports_resource(entry.kind, entry.platforms)
+        ),
         remote_exists=remote_exists,
         local_exists=True,
         remote_writable=bool(entry is None or entry.plugin is not None),
@@ -4288,6 +4697,11 @@ def _plugin_candidate_row(
         plugin_enabled=candidate.enabled,
         plugin_writable=candidate.writable,
         plugin_data=plugin_data,
+        tool_id=context.profile.effective_tool_id,
+        environment_kind=context.profile.environment_kind,
+        environment_name=context.profile.environment_name,
+        display_name=context.profile.effective_display_name,
+        memory_layout=context.profile.memory_layout if key.kind == "memory" else "",
     )
 
 
@@ -4311,7 +4725,7 @@ def _plugin_data_from_candidate(candidate: Any) -> dict[str, Any]:
     return {
         "plugin": {
             "track": candidate.track,
-            "platform": candidate.platform,
+            "platform": candidate.tool_id or candidate.platform,
             "plugin_id": candidate.plugin_id,
             "origin": origin,
             "observed_version": candidate.observed_version,
@@ -4442,7 +4856,7 @@ def _plugin_content_target(
         return None
     if spec.platform == "opencode" and Path(source_name).suffix.lower() in {".js", ".ts"}:
         return (base / source_name).expanduser().absolute()
-    return (base / entry.install_target_name(spec.platform)).expanduser().absolute()
+    return (base / _entry_install_name(entry, context.profile)).expanduser().absolute()
 
 
 def _plugin_remote_content_source(remote_path: Path | None, spec: PluginSpec) -> Path | None:
@@ -4528,7 +4942,10 @@ def _local_candidate_row(
         metadata_differences=metadata_differences,
         read_only=read_only,
     )
-    supported = not context.supported_kinds or key.kind in context.supported_kinds
+    supported = (
+        (not context.supported_kinds or key.kind in context.supported_kinds)
+        and (entry is None or context.profile.supports_resource(entry.kind, entry.platforms))
+    )
     blockers: list[str] = list(discovery_blockers or [])
     blocker_refs: list[UiMessageRef] = []
     for blocker in discovery_blockers or []:
@@ -4540,6 +4957,20 @@ def _local_candidate_row(
             else "asset.blocker.local_path_unsafe"
         )
         blocker_refs.append(ui_message(message_key, blocker, detail=blocker))
+    if context.configured and not context.environment_available:
+        problem = (
+            context.environment_problem
+            or "The configured runtime environment is unavailable."
+        )
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.environment_unavailable",
+                problem,
+                detail=problem,
+            ),
+        )
     if not context.configured:
         _append_message(
             blockers,
@@ -4549,7 +4980,16 @@ def _local_candidate_row(
                 "Platform is detected but not configured; configure it before downloading.",
             ),
         )
-    if not supported:
+    if entry is not None and entry.kind == "instruction" and not entry.platforms:
+        _append_message(
+            blockers,
+            blocker_refs,
+            ui_message(
+                "asset.blocker.instruction_tool_binding_required",
+                "Instruction resources require an explicit tool binding before download.",
+            ),
+        )
+    elif not supported:
         _append_message(
             blockers,
             blocker_refs,
@@ -4611,6 +5051,10 @@ def _local_candidate_row(
             ]
         ),
         entry=entry,
+        tool_id=context.profile.effective_tool_id,
+        environment_kind=context.profile.environment_kind,
+        environment_name=context.profile.environment_name,
+        display_name=context.profile.effective_display_name,
     )
 
 
@@ -4660,7 +5104,7 @@ def _expected_local_state(
             for item in resource_tree_issues(probe.content_path)
         ]
     fingerprint = (
-        _safe_local_resource_fingerprint(probe.content_path)
+        _safe_local_resource_fingerprint(probe.content_path, entry.kind)
         if probe.ready and probe.content_path is not None and not tree_blockers
         else ""
     )
@@ -4668,7 +5112,7 @@ def _expected_local_state(
         is_cc_port_managed(
             target,
             resource_key=entry.resource_key,
-            file_target=entry.kind == "prompt" and _is_file_prompt_target(target),
+            file_target=_uses_sibling_marker(entry.kind, target),
         )
         if probe.ready
         else False
@@ -4682,11 +5126,36 @@ def _expected_local_state(
     )
 
 
-def _safe_local_resource_fingerprint(path: Path) -> str:
+def _safe_local_resource_fingerprint(
+    path: Path,
+    kind: ItemKind | None = None,
+) -> str:
     try:
-        return resource_hash_path(path)
+        return _asset_resource_fingerprint(path, kind)
     except (OSError, RuntimeError):
         return ""
+
+
+def _asset_resource_fingerprint(path: Path, kind: ItemKind | None) -> str:
+    """Hash every validated memory Markdown entry, including cache-like names."""
+    if kind != "memory":
+        return resource_hash_path(path)
+    if not path.exists() or path.is_symlink() or not path.is_dir():
+        return ""
+    digest = hashlib.sha256()
+    digest.update(b"resource-dir\0")
+    for item in sorted(path.rglob("*"), key=lambda value: value.as_posix()):
+        relative = item.relative_to(path)
+        if item.is_symlink():
+            raise OSError(f"Memory contains a symbolic link: {relative}")
+        digest.update(relative.as_posix().encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        if item.is_file():
+            digest.update(b"file\0")
+            digest.update(item.read_bytes())
+        else:
+            digest.update(b"dir\0")
+    return digest.hexdigest()
 
 
 def _platform_content_fingerprint(
@@ -4700,6 +5169,9 @@ def _platform_content_fingerprint(
         and _is_file_prompt_target(local_target)
     ):
         payload, _problem = _prompt_payload_path(remote_path)
+        return resource_hash_path(payload) if payload is not None else ""
+    if entry.kind == "instruction" and local_target is not None:
+        payload, _problem = _instruction_payload_path(remote_path)
         return resource_hash_path(payload) if payload is not None else ""
     return _entry_content_fingerprint(entry, remote_path)
 
@@ -4719,7 +5191,7 @@ def _entry_content_fingerprint(entry: RegistryItem | None, path: Path | None) ->
                 }
             )
         return ""
-    return resource_hash_path(path)
+    return _asset_resource_fingerprint(path, entry.kind)
 
 
 def _remote_asset_fingerprint(root: Path, entry: RegistryItem | None) -> str:
@@ -4756,10 +5228,11 @@ def _remote_content_path(root: Path, entry: RegistryItem | None) -> Path | None:
 
 
 def _safe_snapshot_member_path(root: Path, target: Path) -> Path | None:
-    """Return a snapshot member only when no path component is a symlink."""
+    """Return a snapshot member only through regular, no-follow components."""
     root_abs = root.expanduser().absolute()
     target_abs = target.expanduser().absolute()
-    if root_abs.is_symlink():
+    root_probe = probe_local_path(root_abs)
+    if root_probe.path_kind != "regular" or not root_probe.ready:
         return None
     try:
         relative = target_abs.relative_to(root_abs)
@@ -4772,9 +5245,27 @@ def _safe_snapshot_member_path(root: Path, target: Path) -> Path | None:
     current = root_abs
     for part in relative.parts:
         current /= part
-        if current.is_symlink():
+        probe = probe_local_path(current)
+        if probe.health == "missing":
+            continue
+        if probe.path_kind != "regular" or not probe.ready:
             return None
     return target_abs
+
+
+def _local_target_ancestor_problem(target: Path) -> str:
+    """Reject an existing linked/unreadable ancestor before any local write."""
+    logical = target.expanduser().absolute()
+    for component in reversed(logical.parents):
+        probe = probe_local_path(component)
+        if probe.health == "missing":
+            continue
+        if probe.is_link or not probe.ready:
+            return (
+                probe.problem
+                or f"The local target ancestor cannot be used safely: {component}"
+            )
+    return ""
 
 
 def _asset_status(
@@ -4978,8 +5469,17 @@ def _finalize_row_actions(row: AssetPlatformRow, snapshot: RemoteSnapshot) -> No
         and target_clear
         and remote_ready
     ):
-        actions.extend(["download", "copy-to-local", "set-platform-install-name"])
-    elif active and row.remote_exists and row.remote_writable and remote_ready:
+        if not row.blockers:
+            actions.extend(["download", "copy-to-local"])
+        if row.kind != "memory":
+            actions.append("set-platform-install-name")
+    elif (
+        row.kind != "memory"
+        and active
+        and row.remote_exists
+        and row.remote_writable
+        and remote_ready
+    ):
         actions.append("set-platform-install-name")
     if active and row.local_exists and remote_ready:
         if not row.remote_exists or row.remote_writable:
@@ -5056,7 +5556,7 @@ def _download_plan_blocker_refs(
                 "The target is unmanaged; explicitly confirm overwrite to continue.",
             )
         )
-    marker_problem = _file_prompt_marker_problem(row)
+    marker_problem = _sibling_marker_problem(row)
     if marker_problem:
         blockers.append(
             ui_message(
@@ -5065,13 +5565,13 @@ def _download_plan_blocker_refs(
                 detail=marker_problem,
             )
         )
-    prompt_problem = _file_prompt_payload_problem(row)
-    if prompt_problem:
+    payload_problem = _file_asset_payload_problem(row)
+    if payload_problem:
         blockers.append(
             ui_message(
                 "asset.blocker.prompt_payload_ambiguous",
-                prompt_problem,
-                detail=prompt_problem,
+                payload_problem,
+                detail=payload_problem,
             )
         )
     return blockers
@@ -5139,7 +5639,7 @@ def _copy_to_local_blocker_refs(
                 "The platform must be configured and enabled before copying locally.",
             )
         )
-    marker_problem = _file_prompt_marker_problem(row)
+    marker_problem = _sibling_marker_problem(row)
     if marker_problem:
         blockers.append(
             ui_message(
@@ -5148,13 +5648,13 @@ def _copy_to_local_blocker_refs(
                 detail=marker_problem,
             )
         )
-    prompt_problem = _file_prompt_payload_problem(row)
-    if prompt_problem:
+    payload_problem = _file_asset_payload_problem(row)
+    if payload_problem:
         blockers.append(
             ui_message(
                 "asset.blocker.prompt_payload_ambiguous",
-                prompt_problem,
-                detail=prompt_problem,
+                payload_problem,
+                detail=payload_problem,
             )
         )
     if new_name and registry.get(new_name, row.kind) is not None:
@@ -5260,10 +5760,27 @@ def _copy_local_target_state(
     platform = cfg.platforms.get(row.platform)
     if platform is None or not new_name:
         return None, False, "", False
-    target = platform.resolve_install_path(row.kind, new_name)
+    if (
+        row.kind == "memory"
+        and platform.memory_layout == "projects"
+        and new_name not in platform.memory_install_names
+    ):
+        return None, False, "", False
+    install_name = (
+        platform.memory_install_names[new_name]
+        if row.kind == "memory" and new_name in platform.memory_install_names
+        else new_name
+    )
+    target = (
+        platform.resolve_install_path("memory", new_name)
+        if row.kind == "memory"
+        else platform.resolve_install_path(row.kind, install_name)
+    )
     if target is None:
         return None, False, "", False
     target = target.expanduser().absolute()
+    if row.kind in {"instruction", "memory"} and _local_target_ancestor_problem(target):
+        return target, False, "", False
     if row.kind == "mcp":
         config = _read_mcp_server(target, new_name)
         exists = config is not None
@@ -5277,12 +5794,16 @@ def _copy_local_target_state(
         )
     else:
         exists = target.exists() or target.is_symlink()
-        fingerprint = resource_hash_path(target) if exists and not target.is_symlink() else ""
+        fingerprint = (
+            _asset_resource_fingerprint(target, row.kind)
+            if exists and not target.is_symlink()
+            else ""
+        )
         managed = (
             is_cc_port_managed(
                 target,
                 resource_key=f"{row.kind}:{new_name}",
-                file_target=row.kind == "prompt" and _is_file_prompt_target(target),
+                file_target=_uses_sibling_marker(row.kind, target),
             )
             if exists
             else False
@@ -5299,6 +5820,10 @@ def _install_name_collision(
     install_name: str,
     exclude_key: str,
 ) -> bool:
+    if kind == "memory":
+        # Memory slots are local-only profile configuration and never use the
+        # portable install-name mutation workflow.
+        return False
     profile = cfg.platforms.get(platform)
     if profile is None:
         profile = build_platform(platform)
@@ -5309,8 +5834,12 @@ def _install_name_collision(
     for entry in registry.items:
         if entry.resource_key == exclude_key:
             continue
-        other_name = entry.install_target_name(platform)
-        other = profile.resolve_install_path(entry.kind, other_name)
+        other_name = _entry_install_name(entry, profile)
+        other = _resolve_entry_install_path(
+            profile,
+            entry,
+            install_name=other_name,
+        )
         if other is None:
             continue
         if entry.kind == "mcp" and kind == "mcp":
@@ -5353,39 +5882,87 @@ def _apply_local_asset_action(
             "remote-unavailable",
             snapshot.warning or "The configured remote branch is unavailable.",
         )
-    if entry.kind == "plugin" and entry.plugin is not None:
-        if entry.plugin.track == "content":
-            return _apply_plugin_content_download(plan, cfg, snapshot, entry)
-        if plan.action == "align-plugin-state":
-            return _apply_plugin_reference_state(plan, cfg, snapshot, entry)
-
     profile = cfg.platforms.get(plan.platform)
+    if (
+        entry.kind == "plugin"
+        and entry.plugin is not None
+        and plan.action == "align-plugin-state"
+        and profile is None
+    ):
+        # Reference-state plans operate on the explicitly asserted state file
+        # discovered by the adapter and do not require a content install root.
+        return _apply_plugin_reference_state(plan, cfg, snapshot, entry)
     if profile is None or not profile.enabled:
         raise _StaleAssetTarget(
             "stale-platform",
             "The target platform is no longer configured and enabled.",
         )
+    if (
+        plan.tool_id != profile.effective_tool_id
+        or plan.environment_kind != profile.environment_kind
+        or plan.environment_name != profile.environment_name
+    ):
+        raise _StaleAssetTarget(
+            "stale-platform",
+            "The target platform identity changed after planning.",
+        )
+    environment_available, environment_problem = _profile_environment_state(profile)
+    if not environment_available:
+        raise _StaleAssetTarget(
+            "stale-platform",
+            environment_problem or "The configured runtime environment is unavailable.",
+        )
+    if entry.kind == "plugin" and entry.plugin is not None:
+        if entry.plugin.track == "content":
+            return _apply_plugin_content_download(plan, cfg, snapshot, entry)
+        if plan.action == "align-plugin-state":
+            return _apply_plugin_reference_state(plan, cfg, snapshot, entry)
+    profile = _effective_runtime_profile(cfg, profile, kind=entry.kind)
+    if (
+        entry.kind == "memory"
+        and plan.action == "copy-to-local"
+        and profile.memory_layout == "projects"
+        and plan.new_name not in profile.memory_install_names
+    ):
+        raise _StaleAssetTarget(
+            "stale-platform",
+            "The copied memory resource no longer has an exact local project-slot mapping.",
+        )
     install_name = (
-        plan.new_name
+        profile.memory_install_names.get(plan.new_name, plan.new_name)
         if plan.action == "copy-to-local"
-        else entry.install_target_name(plan.platform)
+        else _entry_install_name(entry, profile)
     )
-    target = profile.resolve_install_path(entry.kind, install_name)
+    target = _resolve_entry_install_path(
+        profile,
+        entry,
+        logical_name=plan.new_name if plan.action == "copy-to-local" else entry.name,
+        install_name=install_name,
+    )
     if target is None:
         raise _StaleAssetTarget(
             "stale-platform",
             "The platform no longer has a target for this resource kind.",
         )
     target = target.expanduser().absolute()
+    if entry.kind in {"instruction", "memory"}:
+        ancestor_problem = _local_target_ancestor_problem(target)
+        if ancestor_problem:
+            raise _StaleAssetTarget("stale-local-target", ancestor_problem)
+    if not _same_local_path(target, plan.target_path):
+        raise _StaleAssetTarget(
+            "stale-local-target",
+            "The local target path changed after planning. Refresh and create a new plan.",
+        )
     marker = (
         managed_marker_path(target, file_target=True)
-        if _is_file_prompt_target(target)
+        if _uses_sibling_marker(entry.kind, target)
         else None
     )
     if marker is not None and marker.is_symlink():
         raise _StaleAssetTarget(
             "stale-local-target",
-            "The Prompt ownership sidecar is a symbolic link.",
+            "The resource ownership sidecar is a symbolic link.",
         )
     current_exists, current_fingerprint, current_managed = _current_target_assertion(
         entry.kind,
@@ -5425,7 +6002,7 @@ def _apply_local_asset_action(
                 platform=plan.platform,
             )
         )
-    elif _is_file_prompt_target(target):
+    elif _uses_sibling_marker(entry.kind, target):
         targets.append(
             ChangeTarget(
                 path=managed_marker_path(target, file_target=True),
@@ -5447,6 +6024,10 @@ def _apply_local_asset_action(
     )
     transaction.mark_attempted(item.path for item in targets)
     try:
+        if entry.kind in {"instruction", "memory"}:
+            ancestor_problem = _local_target_ancestor_problem(target)
+            if ancestor_problem:
+                raise _StaleAssetTarget("stale-local-target", ancestor_problem)
         marker_entry = entry
         if plan.action == "copy-to-local":
             marker_entry = entry.model_copy(
@@ -5480,7 +6061,7 @@ def _apply_local_asset_action(
             verification_source = _installable_asset_source(source, target, entry.kind)
             _copy_asset_content(source, target, entry.kind)
             if marker is not None and marker.is_symlink():
-                raise AssetSyncError("The Prompt ownership sidecar became a symbolic link.")
+                raise AssetSyncError("The resource ownership sidecar became a symbolic link.")
             written_marker = write_managed_marker(
                 target,
                 marker_entry,
@@ -5496,7 +6077,10 @@ def _apply_local_asset_action(
                 )
             ):
                 raise AssetSyncError("Downloaded asset ownership verification failed.")
-            if resource_hash_path(verification_source) != resource_hash_path(target):
+            if _asset_resource_fingerprint(
+                verification_source,
+                entry.kind,
+            ) != _asset_resource_fingerprint(target, entry.kind):
                 raise AssetSyncError("Downloaded asset verification failed.")
         record = transaction.complete(
             message=f"Applied {plan.action} for {plan.target_resource_key}."
@@ -5985,10 +6569,51 @@ def _merge_package_dependencies(path: Path, dependencies: dict[str, str]) -> Non
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _assert_remote_plan_platform_identity(
+    plan: AssetActionPlan,
+    cfg: Config,
+) -> None:
+    """Revalidate the local-only profile behind a portable remote mutation."""
+    profile = cfg.platforms.get(plan.platform)
+    if profile is None or not profile.enabled:
+        raise _StaleAssetTarget(
+            "stale-platform",
+            "The source platform is no longer configured and enabled.",
+        )
+    if (
+        plan.tool_id != profile.effective_tool_id
+        or plan.environment_kind != profile.environment_kind
+        or plan.environment_name != profile.environment_name
+    ):
+        raise _StaleAssetTarget(
+            "stale-platform",
+            "The source platform identity changed after planning.",
+        )
+    environment_available, environment_problem = _profile_environment_state(profile)
+    if not environment_available:
+        raise _StaleAssetTarget(
+            "stale-platform",
+            environment_problem or "The source runtime environment is unavailable.",
+        )
+    try:
+        portable_tool_id = validate_portable_tool_id(plan.tool_id)
+        if plan.kind in {"instruction", "memory"}:
+            resolved = resolve_portable_resource_platforms(
+                cfg.platforms,
+                plan.kind,
+                [portable_tool_id],
+            )
+            if resolved != [portable_tool_id]:
+                raise ValueError("The source tool binding is not portable.")
+    except ValueError as exc:
+        raise _StaleAssetTarget("stale-platform", str(exc)) from exc
+
+
 def _apply_remote_asset_action(
     plan: AssetActionPlan,
     cfg: Config,
 ) -> AssetActionResult:
+    _assert_remote_plan_platform_identity(plan, cfg)
     blocker_ref = _legacy_write_blocker_message(cfg, fetch=True)
     if blocker_ref:
         return AssetActionResult(
@@ -6073,6 +6698,7 @@ def _apply_remote_asset_action(
                         "stale-local-source",
                         "The local source changed after planning.",
                     )
+                _validate_remote_batch_source(source_row, target_key.kind)
 
             changed = _mutate_remote_asset(
                 worktree,
@@ -6104,6 +6730,7 @@ def _apply_remote_asset_action(
             commit_resource_changes_unlocked(
                 worktree,
                 message=_asset_commit_message(plan),
+                config=cfg,
             )
             committed = git_ops.head_commit(worktree) or ""
             try:
@@ -6203,6 +6830,7 @@ def _apply_remote_asset_batch(
             prepared: list[tuple[AssetActionPlan, AssetPlatformRow]] = []
             for plan in plans:
                 try:
+                    _assert_remote_plan_platform_identity(plan, cfg)
                     target_key = ResourceKey.parse(plan.target_resource_key)
                     target_entry = registry.get(target_key.name, target_key.kind)
                     target_exists = target_entry is not None
@@ -6288,6 +6916,7 @@ def _apply_remote_asset_batch(
                 commit_resource_changes_unlocked(
                     worktree,
                     message=f"cc-port: batch upload {len(changed)} assets",
+                    config=cfg,
                 )
             except Exception as exc:  # noqa: BLE001 - no remote write occurred
                 return [
@@ -6399,6 +7028,9 @@ def _planned_local_source_matches(
         and row.link_health == plan.source_link_health
         and row.link_target == plan.source_link_target
         and row.reparse_tag == plan.source_reparse_tag
+        and row.tool_id == plan.tool_id
+        and row.environment_kind == plan.environment_kind
+        and row.environment_name == plan.environment_name
     )
 
 
@@ -6440,7 +7072,7 @@ def _validate_remote_batch_source(row: AssetPlatformRow, kind: ItemKind) -> None
         if not candidate.is_file() or candidate.is_symlink():
             continue
         relative = candidate.name if source.is_file() else candidate.relative_to(source)
-        if is_resource_path_excluded(Path(relative)):
+        if kind != "memory" and is_resource_path_excluded(Path(relative)):
             continue
         try:
             raw = candidate.read_bytes()
@@ -6471,15 +7103,24 @@ def _mutate_remote_asset(
     existing = registry.get(target_key.name, target_key.kind)
     registry_path = root / DEFAULT_REGISTRY_FILENAME
     if plan.action == "set-platform-install-name":
+        if target_key.kind == "memory":
+            raise AssetSyncError(
+                "Memory project-slot mappings are local-only and cannot be stored remotely."
+            )
         if existing is None or not _is_private_repo_asset(existing):
             raise _StaleAssetTarget(
                 "stale-target",
                 "The target asset is no longer writable in the private repository.",
             )
-        if existing.platform_install_dirs.get(plan.platform) == plan.new_install_name:
+        portable_platform = validate_portable_tool_id(plan.tool_id)
+        if not portable_platform:
+            raise AssetSyncError(
+                "The portable source tool identity is unavailable; local profile ids cannot be stored remotely."
+            )
+        if existing.platform_install_dirs.get(portable_platform) == plan.new_install_name:
             return False
         updated = existing.model_copy(deep=True)
-        updated.platform_install_dirs[plan.platform] = plan.new_install_name
+        updated.platform_install_dirs[portable_platform] = plan.new_install_name
         registry.upsert(updated)
         save_registry(registry, registry_path)
         return True
@@ -6517,6 +7158,19 @@ def _mutate_remote_asset(
 
     if source_row is None or source_row.local_path is None:
         raise _StaleAssetTarget("stale-local-source", "The local source is unavailable.")
+    source_tool_id = ""
+    if target_key.kind in {"instruction", "memory"}:
+        raw_source_tool_id = source_row.tool_id.strip()
+        if not raw_source_tool_id:
+            raise AssetSyncError(
+                "The portable source tool identity is unavailable; local profile ids cannot be stored remotely."
+            )
+        try:
+            source_tool_id = validate_portable_tool_id(raw_source_tool_id)
+        except ValueError as exc:
+            raise AssetSyncError(str(exc)) from exc
+        if target_key.kind == "memory" and source_tool_id != "claude-code":
+            raise AssetSyncError("Memory resources can only originate from Claude Code.")
     local_path = source_row.local_content_path or source_row.local_path
     local_mcp_config = (
         _read_mcp_server(local_path, source_row.install_name) if target_key.kind == "mcp" else None
@@ -6543,6 +7197,12 @@ def _mutate_remote_asset(
     root_abs = root.absolute()
     if destination == root_abs or root_abs not in destination.parents:
         raise AssetSyncError("The remote asset path is outside the resource repository.")
+    safe_destination = _safe_snapshot_member_path(root_abs, destination)
+    if safe_destination is None:
+        raise AssetSyncError(
+            "The remote asset path crosses a symbolic link or leaves the resource repository."
+        )
+    destination = safe_destination
 
     if target_key.kind == "mcp":
         if destination.exists():
@@ -6557,6 +7217,7 @@ def _mutate_remote_asset(
             local_path,
             logical_path=source_row.local_path,
             expected_fingerprint=plan.local_source_fingerprint,
+            kind=target_key.kind,
         ) as snapshot_path:
             _copy_asset_content(snapshot_path, destination, target_key.kind)
 
@@ -6581,6 +7242,8 @@ def _mutate_remote_asset(
     if existing is None:
         updated.source = "local"
     updated.path = relative_path
+    if target_key.kind in {"instruction", "memory"}:
+        updated.platforms = [source_tool_id]
     if target_key.kind == "plugin" and plugin_spec is not None:
         updated.plugin = _merge_plugin_installations(existing.plugin if existing else None, plugin_spec)
     for field_name in DERIVED_METADATA_FIELDS:
@@ -6715,7 +7378,10 @@ def _asset_commit_message(plan: AssetActionPlan) -> str:
         return f"cc-port: update {plan.target_resource_key}"
     if plan.action == "copy-to-remote":
         return f"cc-port: create {plan.target_resource_key}"
-    return f"cc-port: set install name for {plan.target_resource_key} on {plan.platform}"
+    return (
+        f"cc-port: set install name for {plan.target_resource_key} "
+        f"on {plan.tool_id or 'tool'}"
+    )
 
 
 def _current_target_assertion(
@@ -6735,12 +7401,16 @@ def _current_target_assertion(
         )
         return exists, fingerprint, managed
     exists = target.exists() or target.is_symlink()
-    fingerprint = resource_hash_path(target) if exists and not target.is_symlink() else ""
+    fingerprint = (
+        _asset_resource_fingerprint(target, kind)
+        if exists and not target.is_symlink()
+        else ""
+    )
     managed = (
         is_cc_port_managed(
             target,
             resource_key=resource_key,
-            file_target=kind == "prompt" and _is_file_prompt_target(target),
+            file_target=_uses_sibling_marker(kind, target),
         )
         if exists
         else False
@@ -6751,9 +7421,26 @@ def _current_target_assertion(
 def _copy_asset_content(source: Path, destination: Path, kind: ItemKind) -> None:
     if destination.is_symlink():
         _remove_asset_path(destination)
+    if kind == "memory":
+        validate_item(source, "memory")
+        if destination.exists() or destination.is_symlink():
+            _remove_asset_path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination, symlinks=False)
+        return
     if kind == "prompt" and _is_file_prompt_target(destination):
         payload = _installable_asset_source(source, destination, kind)
         copy_resource_tree(payload, destination)
+        return
+    if kind == "instruction" and destination.suffix.lower() == ".md":
+        payload = _installable_asset_source(source, destination, kind)
+        copy_resource_tree(payload, destination)
+        return
+    if kind == "instruction" and source.is_file():
+        if destination.exists() or destination.is_symlink():
+            _remove_asset_path(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        copy_resource_tree(source, destination / source.name)
         return
     if source.is_file() and kind in {"rule", "prompt", "plugin"}:
         if destination.exists() or destination.is_symlink():
@@ -6770,6 +7457,7 @@ def _ordinary_upload_snapshot(
     *,
     logical_path: Path,
     expected_fingerprint: str,
+    kind: ItemKind = "skill",
 ) -> Iterator[Path]:
     issues = resource_tree_issues(source)
     if issues:
@@ -6777,7 +7465,7 @@ def _ordinary_upload_snapshot(
             "stale-local-source",
             "The local source now contains nested links or unreadable entries.",
         )
-    if _safe_local_resource_fingerprint(source) != expected_fingerprint:
+    if _safe_local_resource_fingerprint(source, kind) != expected_fingerprint:
         raise _StaleAssetTarget(
             "stale-local-source",
             "The local source changed after planning.",
@@ -6787,13 +7475,17 @@ def _ordinary_upload_snapshot(
         ignore_cleanup_errors=True,
     ) as temporary:
         snapshot_path = Path(temporary) / (logical_path.name or "resource")
-        copy_resource_tree(source, snapshot_path)
+        if kind == "memory":
+            validate_item(source, "memory")
+            shutil.copytree(source, snapshot_path, symlinks=False)
+        else:
+            copy_resource_tree(source, snapshot_path)
         if resource_tree_issues(source):
             raise _StaleAssetTarget(
                 "stale-local-source",
                 "The local source changed while its upload snapshot was created.",
             )
-        if _safe_local_resource_fingerprint(source) != expected_fingerprint:
+        if _safe_local_resource_fingerprint(source, kind) != expected_fingerprint:
             raise _StaleAssetTarget(
                 "stale-local-source",
                 "The local source changed while its upload snapshot was created.",
@@ -6802,6 +7494,13 @@ def _ordinary_upload_snapshot(
 
 
 def _installable_asset_source(source: Path, destination: Path, kind: ItemKind) -> Path:
+    if kind == "instruction":
+        payload, problem = _instruction_payload_path(source)
+        if payload is None:
+            raise AssetSyncError(
+                problem or "The instruction has no installable Markdown payload."
+            )
+        return payload
     if kind != "prompt" or not _is_file_prompt_target(destination):
         return source
     payload, problem = _prompt_payload_path(source)
@@ -6810,7 +7509,10 @@ def _installable_asset_source(source: Path, destination: Path, kind: ItemKind) -
     return payload
 
 
-def _file_prompt_payload_problem(row: AssetPlatformRow) -> str:
+def _file_asset_payload_problem(row: AssetPlatformRow) -> str:
+    if row.kind == "instruction" and row.remote_path is not None:
+        _payload, problem = _instruction_payload_path(row.remote_path)
+        return problem
     if (
         row.kind != "prompt"
         or row.target_path is None
@@ -6822,15 +7524,32 @@ def _file_prompt_payload_problem(row: AssetPlatformRow) -> str:
     return problem
 
 
-def _file_prompt_marker_problem(row: AssetPlatformRow) -> str:
-    if (
-        row.kind != "prompt"
-        or row.target_path is None
-        or not _is_file_prompt_target(row.target_path)
-    ):
+def _instruction_payload_path(source: Path | None) -> tuple[Path | None, str]:
+    if source is None or not source.exists() or source.is_symlink():
+        return None, "The instruction payload is unavailable or unsafe."
+    if source.is_file():
+        if source.suffix.lower() == ".md":
+            return source, ""
+        return None, "The instruction payload must be a Markdown file."
+    markdown = sorted(
+        item
+        for item in source.iterdir()
+        if item.is_file() and not item.is_symlink() and item.suffix.lower() == ".md"
+    )
+    if len(markdown) != 1:
+        return (
+            None,
+            "An instruction resource requires exactly one root Markdown payload; "
+            f"found {len(markdown)}.",
+        )
+    return markdown[0], ""
+
+
+def _sibling_marker_problem(row: AssetPlatformRow) -> str:
+    if row.target_path is None or not _uses_sibling_marker(row.kind, row.target_path):
         return ""
     marker = managed_marker_path(row.target_path, file_target=True)
-    return "The Prompt ownership sidecar must not be a symbolic link." if marker.is_symlink() else ""
+    return "The asset ownership sidecar must not be a symbolic link." if marker.is_symlink() else ""
 
 
 def _prompt_payload_path(source: Path | None) -> tuple[Path | None, str]:
@@ -6856,6 +7575,12 @@ def _prompt_payload_path(source: Path | None) -> tuple[Path | None, str]:
 
 def _is_file_prompt_target(path: Path) -> bool:
     return path.suffix.lower() == ".md"
+
+
+def _uses_sibling_marker(kind: str, path: Path) -> bool:
+    return kind in {"instruction", "memory"} or (
+        kind == "prompt" and _is_file_prompt_target(path)
+    )
 
 
 def _remove_asset_path(path: Path) -> None:
@@ -7093,22 +7818,24 @@ def _legacy_write_blocker_message(
     return None
 
 
-def _save_asset_plan(plan: AssetActionPlan) -> Path:
-    path = _asset_plan_dir(plan.operation_id) / "plan.json"
+def _save_asset_plan(plan: AssetActionPlan, cfg: Config) -> Path:
+    path = _asset_plan_dir(plan.operation_id, config=cfg) / "plan.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_state_storage_path(path)
     _atomic_write_json(path, _jsonable(asdict(plan)))
     return path
 
 
-def _save_asset_result(result: AssetActionResult) -> Path:
-    path = _asset_plan_dir(result.operation_id) / "result.json"
+def _save_asset_result(result: AssetActionResult, cfg: Config) -> Path:
+    path = _asset_plan_dir(result.operation_id, config=cfg) / "result.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_state_storage_path(path)
     _atomic_write_json(path, _jsonable(asdict(result)))
     return path
 
 
-def _load_asset_result(operation_id: str) -> AssetActionResult | None:
-    path = _asset_plan_dir(operation_id) / "result.json"
+def _load_asset_result(operation_id: str, cfg: Config) -> AssetActionResult | None:
+    path = _asset_plan_dir(operation_id, config=cfg) / "result.json"
     if not path.is_file():
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -7142,18 +7869,28 @@ def _load_asset_result(operation_id: str) -> AssetActionResult | None:
     )
 
 
-def _asset_plan_dir(operation_id: str) -> Path:
+def _asset_plan_dir(
+    operation_id: str,
+    *,
+    config: Config | None = None,
+) -> Path:
     if (
         not operation_id
         or operation_id in {".", ".."}
         or any(char in operation_id for char in "/\\\0")
     ):
         raise AssetPlanInvalid("Invalid asset action operation id.")
-    return default_state_dir() / ASSET_PLAN_DIR / operation_id
+    cfg = config or load_config()
+    _assert_private_asset_boundaries(cfg)
+    target = default_state_dir() / ASSET_PLAN_DIR / operation_id
+    _assert_state_storage_path(target / "plan.json")
+    return target
 
 
 def _cleanup_expired_asset_plans(cfg: Config) -> None:
+    _assert_private_asset_boundaries(cfg)
     root = default_state_dir() / ASSET_PLAN_DIR
+    _assert_state_storage_path(root / ".cleanup-check")
     if not root.is_dir():
         return
     cutoff = datetime.now(timezone.utc).timestamp() - cfg.state.retention_days * 86400
@@ -7186,6 +7923,27 @@ def _checked_internal_path(path: Path, allowed_root: Path) -> Path:
     if target == root or root not in target.parents:
         raise ValueError(f"Refusing to access path outside internal state: {target}")
     return target
+
+
+def _assert_private_asset_boundaries(cfg: Config) -> None:
+    conflicts = resource_repo_private_path_conflicts(cfg)
+    if conflicts:
+        raise AssetPlanInvalid(
+            "The resource repository overlaps machine-local configuration, state, "
+            "or platform paths. Move one of the configured roots before planning."
+        )
+
+
+def _assert_state_storage_path(path: Path) -> None:
+    probe = probe_local_path(path)
+    unsafe_leaf = probe.health != "missing" and (
+        probe.path_kind != "regular" or not probe.ready
+    )
+    if unsafe_leaf or _local_target_ancestor_problem(path):
+        raise AssetPlanInvalid(
+            "The machine-local state path contains a linked, reparse, or unreadable "
+            "ancestor and cannot store asset plans safely."
+        )
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:

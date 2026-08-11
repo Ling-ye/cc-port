@@ -31,6 +31,16 @@ afterEach(() => {
 });
 
 describe("CollectGithubDialog", () => {
+  it("keeps instruction and memory out of collection until a tool binding is available", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByText("Advanced settings"));
+    const type = screen.getByLabelText("Type");
+    expect(within(type).queryByRole("option", { name: "instruction" })).not.toBeInTheDocument();
+    expect(within(type).queryByRole("option", { name: "memory" })).not.toBeInTheDocument();
+  });
+
   it("renders a dedicated GitHub form and submits a pinned reference", async () => {
     const user = userEvent.setup();
     vi.mocked(ccPortAction).mockResolvedValue({ entry: { kind: "skill", name: "demo" } });

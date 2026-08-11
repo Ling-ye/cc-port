@@ -20,6 +20,22 @@ def test_detect_local_resource_type_prefers_manifest(tmp_path: Path) -> None:
     assert detect_local_resource_type(resource) == "plugin"
 
 
+def test_detect_claude_instruction_file_as_instruction(tmp_path: Path) -> None:
+    instruction = tmp_path / "CLAUDE.md"
+    instruction.write_text("# User instructions\n", encoding="utf-8")
+
+    assert detect_local_resource_type(instruction) == "instruction"
+
+
+def test_detect_exact_auto_memory_directory_as_memory(tmp_path: Path) -> None:
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    (memory / "MEMORY.md").write_text("# Project memory\n", encoding="utf-8")
+    (memory / "debugging.md").write_text("Topic details.\n", encoding="utf-8")
+
+    assert detect_local_resource_type(memory) == "memory"
+
+
 def test_detect_remote_resource_prefers_manifest(monkeypatch) -> None:
     def fake_github_contents(parsed, path: str, *, token: str | None):
         assert token is None

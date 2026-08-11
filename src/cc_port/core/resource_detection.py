@@ -23,6 +23,10 @@ TYPE_ALIASES: dict[str, ItemKind] = {
     "prompts": "prompt",
     "plugin": "plugin",
     "plugins": "plugin",
+    "instruction": "instruction",
+    "instructions": "instruction",
+    "memory": "memory",
+    "memories": "memory",
 }
 MANIFEST_FILENAMES = {"cc-port.resource.json", "cc-port-resource.json"}
 
@@ -87,6 +91,15 @@ def detect_local_resource_type(path: Path, explicit_type: str | None = None) -> 
             return "plugin"
         if any((p / name).is_file() for name in ("mcp.yaml", "mcp.yml", "mcp.json")):
             return "mcp"
+        if (p / "MEMORY.md").is_file():
+            return "memory"
+        instruction_files = [
+            candidate
+            for candidate in (p / "CLAUDE.md", p / "AGENTS.md")
+            if candidate.is_file()
+        ]
+        if len(instruction_files) == 1 and len(list(p.glob("*.md"))) == 1:
+            return "instruction"
         rule_files = list(p.glob("*.md")) + list(p.glob("*.mdc"))
         if "rule" in p.name.lower() and rule_files:
             return "rule"
@@ -96,7 +109,9 @@ def detect_local_resource_type(path: Path, explicit_type: str | None = None) -> 
         lower = p.name.lower()
         if lower in {"mcp.yaml", "mcp.yml", "mcp.json"}:
             return "mcp"
-        if lower in {"agents.md", "claude.md", ".cursorrules"} or p.suffix.lower() == ".mdc":
+        if lower in {"agents.md", "claude.md"}:
+            return "instruction"
+        if lower == ".cursorrules" or p.suffix.lower() == ".mdc":
             return "rule"
         if p.suffix.lower() == ".md":
             parent_names = {parent.name.lower() for parent in p.parents}
@@ -107,7 +122,8 @@ def detect_local_resource_type(path: Path, explicit_type: str | None = None) -> 
             return "rule" if "rule" in lower else "prompt"
 
     raise ResourceDetectionError(
-        f"Could not detect resource type for {p}. Pass --type skill|mcp|rule|prompt|plugin."
+        "Could not detect resource type for "
+        f"{p}. Pass --type skill|mcp|rule|prompt|plugin|instruction|memory."
     )
 
 

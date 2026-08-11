@@ -20,6 +20,7 @@ from .installer import (
     SyncPreviewItem,
     SyncResult,
     _clone_path,
+    _entry_install_name,
     _install_path,
     create_install_plan,
     preview_sync_all,
@@ -473,17 +474,20 @@ def _remote_preview_roots(entry: RegistryItem, config: Config, registry_path: Pa
 def _target_states(entry: RegistryItem, config: Config) -> list[ResourceTargetState]:
     states: list[ResourceTargetState] = []
     for platform in config.platforms.enabled():
-        target = platform.resolve_install_path(
-            entry.kind,
-            entry.install_target_name(platform.name),
-        )
+        try:
+            target = platform.resolve_install_path(
+                entry.kind,
+                _entry_install_name(entry, platform),
+            )
+        except ValueError:
+            continue
         if target is None:
             continue
         states.append(
             ResourceTargetState(
                 platform=platform.name,
                 path=target,
-                supported=entry.supports_platform(platform.name),
+                supported=platform.supports_resource(entry.kind, entry.platforms),
                 exists=target.exists(),
                 installed=_target_installed(entry, platform, target),
             )
@@ -498,7 +502,7 @@ def _target_installed(entry: RegistryItem, platform: Any, target: Path) -> bool:
             mcp_path
             and has_mcp_server(
                 mcp_path,
-                entry.install_target_name(platform.name),
+                _entry_install_name(entry, platform),
             )
         )
     return target.exists()
@@ -515,13 +519,16 @@ def _platform_content_roots(
     if (
         platform is None
         or not platform.enabled
-        or not entry.supports_platform(platform.name)
+        or not platform.supports_resource(entry.kind, entry.platforms)
     ):
         return []
-    target = platform.resolve_install_path(
-        entry.kind,
-        entry.install_target_name(platform.name),
-    )
+    try:
+        target = platform.resolve_install_path(
+            entry.kind,
+            _entry_install_name(entry, platform),
+        )
+    except ValueError:
+        return []
     if target is None:
         return []
     if require_exists and not _target_installed(entry, platform, target):

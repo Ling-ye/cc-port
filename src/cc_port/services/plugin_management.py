@@ -25,6 +25,7 @@ from ..core.config import (
     load_raw_config,
     write_config,
 )
+from ..core.platforms import PlatformProfile
 from ..infrastructure import git_ops
 from .publisher import _slug
 
@@ -58,6 +59,9 @@ class DiscoveredPlugin:
     dependencies: dict[str, str] = field(default_factory=dict)
     complete: bool = True
     warnings: list[str] = field(default_factory=list)
+    tool_id: str = ""
+    environment_kind: str = ""
+    environment_name: str = ""
 
     @property
     def source_id(self) -> str:
@@ -71,7 +75,7 @@ class DiscoveredPlugin:
 
     @property
     def resource_name(self) -> str:
-        return plugin_resource_name(self.platform, self.origin_type, self.source_id)
+        return plugin_resource_name(self.tool_id or self.platform, self.origin_type, self.source_id)
 
 
 @dataclass(frozen=True)
@@ -199,19 +203,65 @@ def discover_plugins(
         selected = [item for item in selected if item.id in allowed]
 
     found: list[DiscoveredPlugin] = []
+    runtime_profiles = [
+        profile
+        for profile in config.platforms.enabled()
+        if profile.effective_tool_id in PLUGIN_PLATFORMS
+    ]
     if scan_global:
-        found.extend(_discover_codex(effective_home))
-        found.extend(_discover_claude(effective_home))
-        found.extend(_discover_opencode(effective_home))
+        if runtime_profiles:
+            for profile in runtime_profiles:
+                found.extend(
+                    _discover_profile_plugins(
+                        profile,
+                        runtime_home=effective_home,
+                    )
+                )
+        else:
+            found.extend(_discover_codex(effective_home))
+            found.extend(_discover_claude(effective_home))
+            found.extend(_discover_opencode(effective_home))
         found.extend(_discover_configured_content_plugins(config, home=effective_home))
     for project in selected:
         root = project.path_value
         if not root.is_dir():
             continue
-        found.extend(_discover_codex(effective_home, project=project))
-        found.extend(_discover_claude(effective_home, project=project))
-        found.extend(_discover_opencode(effective_home, project=project))
+        if runtime_profiles:
+            for profile in runtime_profiles:
+                found.extend(
+                    _discover_profile_plugins(
+                        profile,
+                        runtime_home=effective_home,
+                        project=project,
+                    )
+                )
+        else:
+            found.extend(_discover_codex(effective_home, project=project))
+            found.extend(_discover_claude(effective_home, project=project))
+            found.extend(_discover_opencode(effective_home, project=project))
     return _dedupe_plugins(found)
+
+
+def _discover_profile_plugins(
+    profile: PlatformProfile,
+    *,
+    runtime_home: Path,
+    project: PluginProjectConfig | None = None,
+) -> list[DiscoveredPlugin]:
+    profile_home = _profile_home(profile, runtime_home=runtime_home)
+    if profile.effective_tool_id == "codex":
+        items = _discover_codex(profile_home, project=project)
+    elif profile.effective_tool_id == "claude-code":
+        # CLI output belongs to the process runtime and cannot safely be
+        # attributed to a different configured Windows/WSL installation.
+        items = _discover_claude(profile_home, project=project, use_cli=False)
+    elif profile.effective_tool_id == "opencode":
+        items = _discover_opencode(profile_home, project=project)
+    else:
+        return []
+    for item in items:
+        _bind_plugin_to_profile(item, profile)
+    return items
 
 
 def _discover_configured_content_plugins(
@@ -225,19 +275,51 @@ def _discover_configured_content_plugins(
     }
     found: list[DiscoveredPlugin] = []
     for profile in config.platforms.enabled():
-        manifest_rel = manifest_by_platform.get(profile.name)
+        manifest_rel = manifest_by_platform.get(profile.effective_tool_id)
         if manifest_rel is None or not profile.plugins_dir:
             continue
-        plugins_root = _expand_home(profile.plugins_dir, home=home)
-        found.extend(
-            _content_directories(
+        plugins_root = _expand_home(
+            profile.plugins_dir,
+            home=_profile_home(profile, runtime_home=home),
+        )
+        items = _content_directories(
                 plugins_root,
-                profile.name,
+                profile.effective_tool_id,
                 "user",
                 manifest_rel,
             )
-        )
+        for item in items:
+            _bind_plugin_to_profile(item, profile)
+        found.extend(items)
     return found
+
+
+def _profile_home(profile: PlatformProfile, *, runtime_home: Path) -> Path:
+    if profile.home_dir and profile.home_dir != "~":
+        return _expand_home(profile.home_dir, home=runtime_home)
+    return runtime_home
+
+
+def _bind_plugin_to_profile(
+    item: DiscoveredPlugin,
+    profile: PlatformProfile,
+) -> None:
+    item.platform = profile.name
+    item.tool_id = profile.effective_tool_id
+    item.environment_kind = profile.environment_kind
+    item.environment_name = profile.environment_name
+    identity = "\0".join(
+        (
+            profile.name,
+            item.track,
+            item.origin_type,
+            item.source_id,
+            item.plugin_id,
+            item.scope,
+            item.project_id,
+        )
+    )
+    item.id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
 
 
 def _discover_codex(home: Path, project: PluginProjectConfig | None = None) -> list[DiscoveredPlugin]:
@@ -298,7 +380,12 @@ def _discover_codex(home: Path, project: PluginProjectConfig | None = None) -> l
     return out
 
 
-def _discover_claude(home: Path, project: PluginProjectConfig | None = None) -> list[DiscoveredPlugin]:
+def _discover_claude(
+    home: Path,
+    project: PluginProjectConfig | None = None,
+    *,
+    use_cli: bool = True,
+) -> list[DiscoveredPlugin]:
     claude_home = home / ".claude"
     scope = "user" if project is None else "project"
     project_root = project.path_value if project else None
@@ -316,7 +403,7 @@ def _discover_claude(home: Path, project: PluginProjectConfig | None = None) -> 
     known = _read_json(claude_home / "plugins" / "known_marketplaces.json")
     out: list[DiscoveredPlugin] = []
 
-    cli_items = _claude_cli_plugins(project_root)
+    cli_items = _claude_cli_plugins(project_root) if use_cli else []
     for item in cli_items:
         plugin_id, marketplace = _split_qualified(str(item.get("id") or item.get("name") or ""))
         if not plugin_id:

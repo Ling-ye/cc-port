@@ -13,6 +13,11 @@ import { useEffect, useRef, useState } from "react";
 import { ccPortAction, openExternalUrl } from "@/api/client";
 import { displayError, translateMessage, type TFunction } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
+import {
+  PlatformIdentityLabel,
+  platformDisplayName,
+  platformOptionLabel,
+} from "@/components/PlatformIdentity";
 import type {
   ConfigBindRepoResult,
   ConfigSettings,
@@ -167,7 +172,7 @@ export function SettingsView({
   const currentUrl = settings?.config.resources.repo_url.trim() || "";
   const currentRepoName = settings?.config.resources.repo_name || "";
   const visiblePlatforms = settings?.config.platforms.filter(
-    (platform) => SIMPLE_PLATFORM_NAME_SET.has(platform.name),
+    (platform) => SIMPLE_PLATFORM_NAME_SET.has(platform.tool_id || platform.name),
   );
   const initialLoading = !settings || !credentialStatus;
   const settingsPending = loading || (initialLoading && !loadError);
@@ -287,7 +292,36 @@ export function SettingsView({
               ? visiblePlatforms.map((platform) => (
                 <li className="platform-toggle-item" key={platform.name}>
                   <label className={`platform-toggle${controlsDisabled ? " is-disabled" : ""}`}>
-                    <strong>{platformDisplayName(platform.name)}</strong>
+                    <span className="platform-toggle-identity">
+                      <strong>
+                        <PlatformIdentityLabel identity={platform} profileId={platform.name} t={t} />
+                      </strong>
+                      {platform.tool_id && platform.name !== platform.tool_id ? (
+                        <small>{platform.name}</small>
+                      ) : null}
+                      {platform.instructions_path || platform.memories_dir || platform.settings_path ? (
+                        <span className="platform-profile-paths">
+                          {platform.instructions_path ? (
+                            <span>
+                              <span>{t("settings.profileInstructions")}</span>
+                              <code>{platform.instructions_path}</code>
+                            </span>
+                          ) : null}
+                          {platform.memories_dir ? (
+                            <span>
+                              <span>{t("settings.profileMemory")}</span>
+                              <code>{platform.memories_dir}</code>
+                            </span>
+                          ) : null}
+                          {platform.settings_path ? (
+                            <span>
+                              <span>{t("settings.profileSettings")}</span>
+                              <code>{platform.settings_path}</code>
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : null}
+                    </span>
                     <span className="platform-toggle-control">
                       {platformSaving === platform.name ? <RefreshCcw className="spin" size={15} /> : null}
                       <input
@@ -295,7 +329,7 @@ export function SettingsView({
                         checked={platform.enabled}
                         disabled={controlsDisabled}
                         onChange={(event) => void setPlatformEnabled(platform.name, event.target.checked)}
-                        aria-label={platformDisplayName(platform.name)}
+                        aria-label={platformOptionLabel(platform, platform.name, t)}
                       />
                     </span>
                   </label>
@@ -304,7 +338,7 @@ export function SettingsView({
               : SIMPLE_PLATFORM_NAMES.map((name) => (
                 <li className="platform-toggle-item" key={name}>
                   <div className="platform-toggle is-disabled">
-                    <strong>{platformDisplayName(name)}</strong>
+                    <strong>{platformDisplayName(undefined, name)}</strong>
                     <span className="platform-toggle-placeholder" aria-hidden="true" />
                   </div>
                 </li>
@@ -534,8 +568,9 @@ function doctorLabel(check: DoctorCheck, t: TFunction): string {
     install_target: t("settings.diagnostics.check.installTarget"),
   };
   if (check.id.startsWith("platform:")) {
+    const profileId = check.id.slice("platform:".length);
     return t("settings.diagnostics.check.platform", {
-      name: platformDisplayName(check.id.slice("platform:".length)),
+      name: platformOptionLabel(check.profile, profileId, t),
     });
   }
   return labels[check.id] || check.label;
@@ -577,14 +612,4 @@ function RebindModal({
       </div>
     </div>
   );
-}
-
-function platformDisplayName(name: string): string {
-  return {
-    codex: "Codex",
-    "claude-code": "Claude Code",
-    cursor: "Cursor",
-    windsurf: "Windsurf",
-    opencode: "opencode",
-  }[name] || name;
 }

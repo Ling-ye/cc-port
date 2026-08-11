@@ -7,8 +7,15 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from ..core.config import Config, default_state_dir, load_config
-from ..core.registry import load_registry
+import yaml
+
+from ..core.config import (
+    Config,
+    default_state_dir,
+    load_config,
+    resource_repo_private_path_conflicts,
+)
+from ..core.registry import DEFAULT_CC_PORT_FILENAME, load_cc_port_settings, load_registry
 from ..core.resource_files import is_resource_path_excluded
 from ..core.secret_scan import find_secret_text
 from ..infrastructure import git_ops
@@ -27,6 +34,8 @@ MANAGED_DIRECTORIES = {
     "prompts",
     "mcp",
     "plugins",
+    "instructions",
+    "memories",
     "resources",
 }
 MANAGED_EXACT_PATHS = {
@@ -38,6 +47,8 @@ RESOURCE_KIND_BY_DIR = {
     "prompts": "prompt",
     "mcp": "mcp",
     "plugins": "plugin",
+    "instructions": "instruction",
+    "memories": "memory",
 }
 
 
@@ -97,11 +108,13 @@ def build_resource_commit_plan(*, config: Config | None = None) -> ResourceCommi
     cfg = config or load_config()
     git_ops.configure_git_executable(cfg.git.executable)
     root = cfg.resources.local_path_value.expanduser().resolve()
+    if resource_repo_private_path_conflicts(cfg, resource_root=root):
+        return _build_resource_commit_plan_unlocked(root, config=cfg)
     with resource_repo_write_lock(
         root,
         timeout_seconds=cfg.state.lock_timeout_seconds,
     ):
-        return _build_resource_commit_plan_unlocked(root)
+        return _build_resource_commit_plan_unlocked(root, config=cfg)
 
 
 def commit_resource_changes(
@@ -112,15 +125,23 @@ def commit_resource_changes(
     cfg = config or load_config()
     git_ops.configure_git_executable(cfg.git.executable)
     root = cfg.resources.local_path_value.expanduser().resolve()
+    if resource_repo_private_path_conflicts(cfg, resource_root=root):
+        plan = _build_resource_commit_plan_unlocked(root, config=cfg)
+        raise ResourceCommitBlocked(plan)
     with resource_repo_write_lock(
         root,
         timeout_seconds=cfg.state.lock_timeout_seconds,
     ):
-        return commit_resource_changes_unlocked(root, message=message)
+        return commit_resource_changes_unlocked(root, message=message, config=cfg)
 
 
-def commit_resource_changes_unlocked(root: Path, *, message: str) -> ResourceCommitPlan:
-    plan = _build_resource_commit_plan_unlocked(root)
+def commit_resource_changes_unlocked(
+    root: Path,
+    *,
+    message: str,
+    config: Config | None = None,
+) -> ResourceCommitPlan:
+    plan = _build_resource_commit_plan_unlocked(root, config=config)
     if plan.blocked:
         raise ResourceCommitBlocked(plan)
     if not plan.managed_paths:
@@ -134,9 +155,14 @@ def validate_outgoing_resource_commits(
     root: Path,
     *,
     base_commit: str | None,
+    config: Config | None = None,
 ) -> None:
     blocked_paths: dict[str, ResourceCommitIssue] = {}
     findings: list[ResourceSecretFinding] = []
+    _add_private_boundary_issues(root, blocked_paths, config=config)
+    _add_cc_port_overlay_issue(root, blocked_paths)
+    registry_items = _load_registry_items(root, blocked_paths)
+    memory_roots = _registered_memory_roots(registry_items)
     for item in git_ops.outgoing_commit_files(root, base_commit=base_commit):
         if not is_managed_resource_path(item.path):
             blocked_paths.setdefault(
@@ -156,7 +182,17 @@ def validate_outgoing_resource_commits(
                 ),
             )
             continue
-        if is_resource_path_excluded(Path(item.path)):
+        memory_path = _matching_memory_root(item.path, memory_roots)
+        if memory_path is not None and Path(item.path).suffix.lower() != ".md":
+            blocked_paths.setdefault(
+                item.path,
+                ResourceCommitIssue(
+                    path=item.path,
+                    reason="memory resources may contain only Markdown files",
+                ),
+            )
+            continue
+        if memory_path is None and is_resource_path_excluded(Path(item.path)):
             blocked_paths.setdefault(
                 item.path,
                 ResourceCommitIssue(
@@ -202,12 +238,18 @@ def is_managed_resource_path(path: str) -> bool:
     return bool(normalized.parts and normalized.parts[0] in MANAGED_DIRECTORIES)
 
 
-def _build_resource_commit_plan_unlocked(root: Path) -> ResourceCommitPlan:
+def _build_resource_commit_plan_unlocked(
+    root: Path,
+    *,
+    config: Config | None = None,
+) -> ResourceCommitPlan:
     if not git_ops.is_repo(root):
         raise git_ops.GitError(f"Resource repo is not a git repository: {root}")
     entries = git_ops.status_entries(root)
     changed_paths: dict[str, str] = {}
     blocked: dict[str, ResourceCommitIssue] = {}
+    _add_private_boundary_issues(root, blocked, config=config)
+    _add_cc_port_overlay_issue(root, blocked)
     for entry in entries:
         for item_path in filter(None, (entry.path, entry.original_path)):
             changed_paths[item_path] = _merge_action(
@@ -223,7 +265,7 @@ def _build_resource_commit_plan_unlocked(root: Path) -> ResourceCommitPlan:
                     ),
                 )
 
-    registry_items = {}
+    registry_items: dict[str, object] = {}
     registry_path = root / "registry.yaml"
     if "registry.yaml" in changed_paths and changed_paths["registry.yaml"] == "deleted":
         blocked["registry.yaml"] = ResourceCommitIssue(
@@ -231,16 +273,9 @@ def _build_resource_commit_plan_unlocked(root: Path) -> ResourceCommitPlan:
             reason="the resource registry cannot be deleted",
         )
     elif registry_path.is_file():
-        try:
-            registry_items = {
-                item.resource_key: item
-                for item in load_registry(registry_path).items
-            }
-        except Exception as exc:
-            blocked["registry.yaml"] = ResourceCommitIssue(
-                path="registry.yaml",
-                reason=f"resource registry is invalid: {exc}",
-            )
+        registry_items = _load_registry_items(root, blocked)
+
+    memory_roots = _registered_memory_roots(registry_items)
 
     managed_paths = sorted(
         path for path in changed_paths if is_managed_resource_path(path)
@@ -263,7 +298,14 @@ def _build_resource_commit_plan_unlocked(root: Path) -> ResourceCommitPlan:
                 reason="symbolic links cannot be committed as managed resources",
             )
             continue
-        if is_resource_path_excluded(Path(item_path)):
+        memory_path = _matching_memory_root(item_path, memory_roots)
+        if memory_path is not None and Path(item_path).suffix.lower() != ".md":
+            blocked[item_path] = ResourceCommitIssue(
+                path=item_path,
+                reason="memory resources may contain only Markdown files",
+            )
+            continue
+        if memory_path is None and is_resource_path_excluded(Path(item_path)):
             blocked[item_path] = ResourceCommitIssue(
                 path=item_path,
                 reason="path is excluded by the resource file policy",
@@ -282,6 +324,106 @@ def _build_resource_commit_plan_unlocked(root: Path) -> ResourceCommitPlan:
         blocked_paths=sorted(blocked.values(), key=lambda item: item.path),
         secret_findings=findings,
         suggested_message=_suggested_message(changes),
+    )
+
+
+def _add_private_boundary_issues(
+    root: Path,
+    blocked: dict[str, ResourceCommitIssue],
+    *,
+    config: Config | None,
+) -> None:
+    cfg = config or load_config()
+    for label in resource_repo_private_path_conflicts(cfg, resource_root=root):
+        key = f"<machine-local:{label}>"
+        blocked.setdefault(
+            key,
+            ResourceCommitIssue(
+                path=key,
+                reason=(
+                    "the resource repository overlaps a machine-local path; "
+                    "move one of the configured roots before committing or pushing"
+                ),
+            ),
+        )
+
+
+def _add_cc_port_overlay_issue(
+    root: Path,
+    blocked: dict[str, ResourceCommitIssue],
+) -> None:
+    overlay = root / DEFAULT_CC_PORT_FILENAME
+    if overlay.is_symlink() or (overlay.exists() and not overlay.is_file()):
+        blocked.setdefault(
+            DEFAULT_CC_PORT_FILENAME,
+            ResourceCommitIssue(
+                path=DEFAULT_CC_PORT_FILENAME,
+                reason="cc-port.yaml must be a regular non-symlink file",
+            ),
+        )
+        return
+    try:
+        load_cc_port_settings(overlay)
+    except (OSError, UnicodeError, yaml.YAMLError, ValueError):
+        blocked.setdefault(
+            DEFAULT_CC_PORT_FILENAME,
+            ResourceCommitIssue(
+                path=DEFAULT_CC_PORT_FILENAME,
+                reason=(
+                    "cc-port.yaml is invalid; repair its portable resource settings "
+                    "before committing or pushing"
+                ),
+            ),
+        )
+
+
+def _load_registry_items(
+    root: Path,
+    blocked: dict[str, ResourceCommitIssue],
+) -> dict[str, object]:
+    registry_path = root / "registry.yaml"
+    if not registry_path.is_file() or registry_path.is_symlink():
+        blocked.setdefault(
+            "registry.yaml",
+            ResourceCommitIssue(
+                path="registry.yaml",
+                reason="resource registry must be a regular non-symlink file",
+            ),
+        )
+        return {}
+    try:
+        return {
+            item.resource_key: item
+            for item in load_registry(registry_path).items
+        }
+    except Exception:
+        blocked.setdefault(
+            "registry.yaml",
+            ResourceCommitIssue(
+                path="registry.yaml",
+                reason="resource registry is invalid and must be repaired before writing",
+            ),
+        )
+        return {}
+
+
+def _registered_memory_roots(registry_items: dict[str, object]) -> set[str]:
+    return {
+        str(getattr(item, "path", "") or "").strip("/")
+        for item in registry_items.values()
+        if getattr(item, "kind", "") == "memory"
+        and str(getattr(item, "path", "") or "").strip("/")
+    }
+
+
+def _matching_memory_root(path: str, memory_roots: set[str]) -> str | None:
+    return next(
+        (
+            root
+            for root in sorted(memory_roots, key=len, reverse=True)
+            if path.startswith(root + "/")
+        ),
+        None,
     )
 
 

@@ -34,7 +34,13 @@ from ..core.config import (
     load_config as load_application_config,
 )
 from ..core.models import ItemKind, RegistryItem
-from ..core.platforms import PLATFORM_PRESETS, PlatformProfile, PlatformsConfig, build_platform
+from ..core.platforms import (
+    PLATFORM_PRESETS,
+    PlatformProfile,
+    PlatformsConfig,
+    build_platform,
+    resolve_portable_resource_platforms,
+)
 from ..core.registry import find_registry_path, load_registry
 from ..core.resource_detection import detect_local_resource_type, detect_remote_resource
 from ..infrastructure import git_ops
@@ -130,7 +136,15 @@ def load_config() -> Config:
     return cfg
 
 
-ITEM_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
+ITEM_KINDS = {
+    "skill",
+    "mcp",
+    "rule",
+    "prompt",
+    "plugin",
+    "instruction",
+    "memory",
+}
 DEPRECATED_ACTIONS = {
     "resource_commit_plan",
     "resource_commit_push",
@@ -252,6 +266,11 @@ def _collect(payload: JsonDict) -> JsonDict:
         )
     if detected.kind != "mcp" and mcp_config is not None:
         raise ValueError("mcp_config is only valid when the collected resource kind is mcp.")
+    portable_platforms = _portable_resource_platforms(
+        cfg,
+        detected.kind,
+        _str_list(payload.get("platforms")),
+    )
     entry = publisher.add_external_skill(
         detected.repo_url,
         name=_optional_str(payload.get("name")) or detected.name_hint,
@@ -262,7 +281,7 @@ def _collect(payload: JsonDict) -> JsonDict:
         skip_verify=bool(payload.get("skip_verify", False)),
         token=None,
         tags=detected.tags,
-        platforms=_str_list(payload.get("platforms")),
+        platforms=portable_platforms,
     )
     push_result = _maybe_push(cfg, payload)
     return {"entry": entry, "detected": detected, "push": push_result}
@@ -271,14 +290,20 @@ def _collect(payload: JsonDict) -> JsonDict:
 def _upload(payload: JsonDict) -> JsonDict:
     source = Path(_required_str(payload, "path")).expanduser()
     kind = detect_local_resource_type(source, explicit_type=_optional_str(payload.get("kind")))
+    cfg = load_config()
+    portable_platforms = _portable_resource_platforms(
+        cfg,
+        kind,
+        _str_list(payload.get("platforms")),
+    )
     result = import_local_resource(
         source,
         kind=kind,
         name=_optional_str(payload.get("name")),
-        platforms=_str_list(payload.get("platforms")),
+        platforms=portable_platforms,
         overwrite=bool(payload.get("overwrite", False)),
     )
-    push_result = _push_after_upload(load_config(), payload)
+    push_result = _push_after_upload(cfg, payload)
     return {
         "entry": result.entry,
         "source_path": result.source_path,
@@ -313,6 +338,7 @@ def _upload_discovered_resources(payload: JsonDict) -> JsonDict:
         root_path=_optional_str(payload.get("root_path")),
     )
     overwrite = bool(payload.get("overwrite", False))
+    cfg = load_config()
     results: list[JsonDict] = []
     imported = 0
 
@@ -351,10 +377,17 @@ def _upload_discovered_resources(payload: JsonDict) -> JsonDict:
             )
             continue
         try:
+            portable_platforms = _portable_resource_platforms(
+                cfg,
+                candidate.kind,
+                [],
+                source_tool_id=candidate.tool_id or candidate.tool,
+            )
             result = import_local_resource(
                 candidate.content_path,
                 kind=candidate.kind,
                 name=name,
+                platforms=portable_platforms,
                 overwrite=overwrite,
             )
         except Exception as exc:  # noqa: BLE001 - batch uploads report per-item failures
@@ -384,7 +417,7 @@ def _upload_discovered_resources(payload: JsonDict) -> JsonDict:
             }
         )
 
-    push_result = _push_after_upload(load_config(), payload) if imported else None
+    push_result = _push_after_upload(cfg, payload) if imported else None
     return {
         "results": results,
         "imported": imported,
@@ -854,13 +887,14 @@ def _git_credential_status(_: JsonDict) -> Any:
 
 def _platform_set_enabled(payload: JsonDict) -> JsonDict:
     name = _required_str(payload, "name")
-    if name not in PLATFORM_PRESETS:
-        raise ValueError(f"Unsupported platform preset: {name}")
     enabled = payload.get("enabled")
     if not isinstance(enabled, bool):
         raise ValueError("enabled must be a boolean.")
 
     cfg = load_raw_config()
+    configured_names = {profile.name for profile in cfg.platforms.profiles}
+    if name not in PLATFORM_PRESETS and name not in configured_names:
+        raise ValueError(f"Unsupported platform profile: {name}")
     profiles = _platforms_with_presets(cfg.platforms.profiles)
     for profile in profiles:
         if profile.name == name:
@@ -908,12 +942,22 @@ def _platforms_with_presets(profiles: list[PlatformProfile]) -> list[PlatformPro
     out = [
         PlatformProfile(
             name=p.name,
+            tool_id=p.tool_id,
+            environment_kind=p.environment_kind,
+            environment_name=p.environment_name,
+            display_name=p.display_name,
+            home_dir=p.home_dir,
             enabled=p.enabled,
             skills_dir=p.skills_dir,
             mcp_json=p.mcp_json,
             rules_dir=p.rules_dir,
             prompts_dir=p.prompts_dir,
             plugins_dir=p.plugins_dir,
+            instructions_path=p.instructions_path,
+            memories_dir=p.memories_dir,
+            memory_layout=p.memory_layout,
+            settings_path=p.settings_path,
+            memory_install_names=dict(p.memory_install_names),
         )
         for p in profiles
     ]
@@ -930,12 +974,23 @@ def _platforms_with_presets(profiles: list[PlatformProfile]) -> list[PlatformPro
 def _platform_to_json(profile: PlatformProfile) -> JsonDict:
     return {
         "name": profile.name,
+        "tool_id": profile.effective_tool_id,
+        "environment_kind": profile.environment_kind,
+        "environment_name": profile.environment_name,
+        "display_name": profile.effective_display_name,
+        "runtime_namespace": profile.runtime_namespace,
+        "home_dir": profile.home_dir,
         "enabled": profile.enabled,
         "skills_dir": profile.skills_dir,
         "mcp_json": profile.mcp_json,
         "rules_dir": profile.rules_dir,
         "prompts_dir": profile.prompts_dir,
         "plugins_dir": profile.plugins_dir,
+        "instructions_path": profile.instructions_path,
+        "memories_dir": profile.memories_dir,
+        "memory_layout": profile.memory_layout,
+        "settings_path": profile.settings_path,
+        "memory_install_names": dict(profile.memory_install_names),
     }
 
 
@@ -1078,6 +1133,22 @@ def _str_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item)]
     raise ValueError("Expected a string list.")
+
+
+def _portable_resource_platforms(
+    cfg: Config,
+    kind: ItemKind,
+    values: list[str],
+    *,
+    source_tool_id: str = "",
+) -> list[str]:
+    """Convert local profile ids to portable tool ids before repository writes."""
+    return resolve_portable_resource_platforms(
+        cfg.platforms,
+        kind,
+        values,
+        source_tool_id=source_tool_id,
+    )
 
 
 def _optional_non_negative_int(value: Any) -> int | None:

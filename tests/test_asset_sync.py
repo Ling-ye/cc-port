@@ -31,7 +31,6 @@ from cc_port.services.asset_sync import RemoteSnapshot
 from cc_port.services.env_manager import DiscoveredTool, EnvDiscoveryResult
 from cc_port.services.local_path_probe import LocalPathProbe
 from cc_port.services.plugin_management import DiscoveredPlugin
-from cc_port.services.resource_commit import ResourceCommitBlocked
 from cc_port.services.resource_discovery import DiscoveredResource
 
 _GIT_RUNTIME = git_ops.discover_git_executable(configured="")
@@ -111,6 +110,37 @@ def _snapshot(root: Path, registry: Registry, *, commit: str = "abc123") -> Remo
         commit=commit,
         branch="main",
         repo_url="https://github.com/example/resources",
+    )
+
+
+def _minimal_remote_plan(
+    *,
+    platform: str,
+    tool_id: str,
+    environment_kind: str = "",
+    environment_name: str = "",
+) -> asset_sync.AssetActionPlan:
+    return asset_sync.AssetActionPlan(
+        operation_id="remote-platform-identity",
+        action="set-platform-install-name",
+        resource_key="skill:demo",
+        target_resource_key="skill:demo",
+        kind="skill",
+        name="demo",
+        platform=platform,
+        local_instance_id="expected",
+        local_locator="expected",
+        remote_commit="abc123",
+        remote_target_exists=True,
+        remote_target_fingerprint="remote",
+        local_source_fingerprint="",
+        target_path=None,
+        target_exists=False,
+        target_fingerprint="",
+        target_managed=False,
+        tool_id=tool_id,
+        environment_kind=environment_kind,
+        environment_name=environment_name,
     )
 
 
@@ -769,6 +799,114 @@ def test_upload_snapshot_materializes_ordinary_files(tmp_path: Path) -> None:
         assert snapshot.is_dir()
         assert snapshot.is_symlink() is False
         assert (snapshot / "SKILL.md").read_text(encoding="utf-8").endswith("body\n")
+
+
+def test_remote_apply_revalidates_profile_tool_and_environment_identity(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    profile = cfg.platforms.get("cursor")
+    assert profile is not None
+    plan = _minimal_remote_plan(platform="cursor", tool_id="cursor")
+
+    asset_sync._assert_remote_plan_platform_identity(plan, cfg)
+
+    profile.tool_id = "codex"
+    with pytest.raises(asset_sync._StaleAssetTarget, match="identity changed"):
+        asset_sync._assert_remote_plan_platform_identity(plan, cfg)
+
+    profile.tool_id = "cursor"
+    profile.environment_kind = "wsl"
+    profile.environment_name = "Ubuntu"
+    with pytest.raises(asset_sync._StaleAssetTarget, match="identity changed"):
+        asset_sync._assert_remote_plan_platform_identity(plan, cfg)
+
+
+def test_implicit_named_wsl_profile_requires_confirmed_current_distro(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = PlatformProfile(
+        name="claude-wsl",
+        tool_id="claude-code",
+        environment_kind="wsl",
+        environment_name="Ubuntu",
+        home_dir="~",
+    )
+    monkeypatch.setattr(
+        asset_sync,
+        "current_environment_identity",
+        lambda: ("wsl", ""),
+    )
+
+    available, problem = asset_sync._profile_environment_state(profile)
+
+    assert available is False
+    assert "explicit accessible home_dir" in problem
+
+def test_remote_apply_rejects_path_like_portable_tool_identity(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    profile = cfg.platforms.get("cursor")
+    assert profile is not None
+    profile.tool_id = r"C:\\Users\\alice"
+    plan = _minimal_remote_plan(
+        platform="cursor",
+        tool_id=r"C:\\Users\\alice",
+    )
+
+    with pytest.raises(asset_sync._StaleAssetTarget, match="portable tool ids"):
+        asset_sync._assert_remote_plan_platform_identity(plan, cfg)
+
+
+def test_batch_download_blocks_distinct_resources_sharing_one_physical_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    items: list[asset_sync.AssetBatchPlanItem] = []
+    for name in ("first-instructions", "second-instructions"):
+        plan = _minimal_remote_plan(platform="claude-windows", tool_id="claude-code")
+        plan.action = "download"
+        plan.kind = "instruction"
+        plan.resource_key = f"instruction:{name}"
+        plan.target_resource_key = f"instruction:{name}"
+        plan.target_path = target
+        items.append(
+            asset_sync.AssetBatchPlanItem(
+                id=f"download:{name}",
+                resource_key=plan.resource_key,
+                platform=plan.platform,
+                local_instance_id="expected",
+                action="download",
+                disposition="create",
+                target_resource_key=plan.target_resource_key,
+                plan=plan,
+            )
+        )
+
+    asset_sync._block_duplicate_batch_targets(items, direction="download")
+
+    assert {item.disposition for item in items} == {"blocked"}
+    assert all(item.plan is not None and item.plan.blocked for item in items)
+
+
+def test_new_asset_targets_reject_linked_missing_target_ancestors(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    outside = tmp_path / "outside"
+    home.mkdir()
+    outside.mkdir()
+    try:
+        (home / ".claude").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Directory symbolic links are unavailable: {exc}")
+
+    problem = asset_sync._local_target_ancestor_problem(
+        home / ".claude" / "projects" / "slot" / "memory"
+    )
+
+    assert problem
+    assert "link" in problem.lower() or "symbolic" in problem.lower()
+    assert not (outside / "projects" / "slot" / "memory").exists()
 
 
 def test_planned_local_source_rejects_link_retarget_with_same_content(
@@ -2485,8 +2623,62 @@ def test_upload_blocks_secret_like_content(
         config=cfg,
     )
 
-    with pytest.raises(ResourceCommitBlocked):
+    with pytest.raises(asset_sync.AssetSyncError, match="Secret-like content"):
         asset_sync.apply_asset_action_plan(plan.operation_id, config=cfg)
+
+
+@pytest.mark.parametrize("kind", ["instruction", "memory"])
+def test_single_claude_asset_upload_rechecks_secret_content_before_remote_write(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    _seed, bare = _seed_bare_remote(tmp_path)
+    home = tmp_path / "claude-home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "settings.json").write_text("{}\n", encoding="utf-8")
+    instruction = claude / "CLAUDE.md"
+    memory = claude / "projects" / "private-slot" / "memory"
+    if kind == "instruction":
+        instruction.write_text(
+            "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n",
+            encoding="utf-8",
+        )
+        name = "claude-code-user-instructions"
+    else:
+        memory.mkdir(parents=True)
+        (memory / "MEMORY.md").write_text(
+            "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n",
+            encoding="utf-8",
+        )
+        name = "private-memory"
+    profile = PlatformProfile(
+        name="claude-windows",
+        tool_id="claude-code",
+        environment_kind="windows",
+        home_dir=str(home),
+        instructions_path="~/.claude/CLAUDE.md",
+        settings_path="~/.claude/settings.json",
+        memories_dir="~/.claude/projects",
+        memory_install_names={"private-memory": "private-slot"},
+    )
+    cfg = _config(tmp_path, repo_url=str(bare))
+    cfg.platforms = PlatformsConfig(profiles=[profile])
+    plan = asset_sync.build_asset_action_plan(
+        "upload",
+        kind=kind,  # type: ignore[arg-type]
+        name=name,
+        platform=profile.name,
+        config=cfg,
+    )
+
+    with pytest.raises(asset_sync.AssetSyncError, match="Secret-like content"):
+        asset_sync.apply_asset_action_plan(plan.operation_id, config=cfg)
+
+    clone = tmp_path / f"verify-{kind}"
+    subprocess.run([str(GIT), "clone", str(bare), str(clone)], check=True, capture_output=True)
+    registry = load_registry(clone / "registry.yaml")
+    assert registry.get(name, kind) is None
 
 
 def test_download_failure_rolls_back_existing_target(
@@ -2570,6 +2762,90 @@ def test_asset_plan_json_does_not_trust_tampered_resource_fields(
 
     with pytest.raises(asset_sync.AssetPlanInvalid):
         asset_sync.load_asset_action_plan(plan.operation_id)
+
+
+def test_asset_inventory_refuses_state_root_inside_resource_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    state_root = Path(cfg.resources.local_path) / "memories" / "asset-plans"
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(state_root))
+
+    with pytest.raises(asset_sync.AssetPlanInvalid, match="overlaps machine-local"):
+        asset_sync.build_asset_inventory(
+            config=cfg,
+            scan_local=False,
+            remote_snapshot=_snapshot(tmp_path / "remote", Registry()),
+        )
+
+    assert not state_root.exists()
+
+
+def test_asset_inventory_refuses_profile_target_inside_resource_repository(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    repo = Path(cfg.resources.local_path)
+    cfg.platforms = PlatformsConfig(
+        profiles=[
+            PlatformProfile(
+                name="claude-windows",
+                tool_id="claude-code",
+                instructions_path=str(repo / "instructions" / "CLAUDE.md"),
+            )
+        ]
+    )
+
+    with pytest.raises(asset_sync.AssetPlanInvalid, match="overlaps machine-local"):
+        asset_sync.build_asset_inventory(
+            config=cfg,
+            scan_local=False,
+            remote_snapshot=_snapshot(tmp_path / "remote", Registry()),
+        )
+
+
+def test_asset_plan_state_rejects_linked_or_unreadable_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    monkeypatch.setattr(
+        asset_sync,
+        "_local_target_ancestor_problem",
+        lambda _path: "unsafe state ancestor",
+    )
+
+    with pytest.raises(asset_sync.AssetPlanInvalid, match="state path"):
+        asset_sync._asset_plan_dir("safe-operation", config=cfg)
+
+
+def test_snapshot_member_rejects_junction_or_reparse_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "snapshot"
+    ancestor = root / "memories"
+    target = ancestor / "shared" / "MEMORY.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# Memory\n", encoding="utf-8")
+    real_probe = asset_sync.probe_local_path
+
+    def fake_probe(path: Path | str) -> LocalPathProbe:
+        candidate = Path(path).absolute()
+        if candidate == ancestor.absolute():
+            return LocalPathProbe(
+                logical_path=candidate,
+                content_path=tmp_path / "outside",
+                path_kind="junction",
+                health="ready",
+                raw_target="private target must not be exposed",
+            )
+        return real_probe(candidate)
+
+    monkeypatch.setattr(asset_sync, "probe_local_path", fake_probe)
+
+    assert asset_sync._safe_snapshot_member_path(root, target) is None
 
 
 def _reference_spec(*, enabled: bool = True) -> PluginSpec:
@@ -3243,3 +3519,734 @@ def test_manual_plugin_delete_keeps_remote_record(
     assert result.status == "needs-action"
     assert result.remote_deleted is False
     assert called is False
+
+
+def _claude_runtime_config(tmp_path: Path) -> Config:
+    windows_home = tmp_path / "windows-home"
+    wsl_home = tmp_path / "wsl-home"
+    windows_home.mkdir(parents=True)
+    wsl_home.mkdir(parents=True)
+    return Config(
+        git=GitConfig(executable=str(GIT)),
+        install=InstallConfig(target=str(tmp_path / "install-cache")),
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-windows",
+                    tool_id="claude-code",
+                    environment_kind="windows",
+                    display_name="Claude Code (Windows)",
+                    home_dir=str(windows_home),
+                    instructions_path="~/.claude/CLAUDE.md",
+                    memories_dir="~/.claude/projects",
+                    memory_install_names={"cc-port-memory": "C--work-cc-port"},
+                ),
+                PlatformProfile(
+                    name="claude-wsl-ubuntu",
+                    tool_id="claude-code",
+                    environment_kind="wsl",
+                    environment_name="Ubuntu-24.04",
+                    display_name="Claude Code (WSL Ubuntu)",
+                    home_dir=str(wsl_home),
+                    instructions_path="~/.claude/CLAUDE.md",
+                    memories_dir="~/.claude/projects",
+                    memory_install_names={"cc-port-memory": "-mnt-d-code-cc-port"},
+                ),
+            ]
+        ),
+    )
+
+
+def test_instruction_rows_keep_windows_and_wsl_profiles_distinct_and_apply_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    instruction_dir = remote / "instructions" / "claude-code-user-instructions"
+    instruction_dir.mkdir(parents=True)
+    instruction_text = "# Shared Claude user instruction\n"
+    (instruction_dir / "CLAUDE.md").write_text(instruction_text, encoding="utf-8")
+    entry = RegistryItem(
+        name="claude-code-user-instructions",
+        kind="instruction",
+        source="local",
+        path="instructions/claude-code-user-instructions",
+        platforms=["claude-code"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    cfg = _claude_runtime_config(tmp_path)
+
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    rows = [row for row in inventory.rows if row.resource_key == entry.resource_key]
+
+    assert {
+        (
+            row.platform,
+            row.tool_id,
+            row.environment_kind,
+            row.environment_name,
+            row.display_name,
+            row.target_path,
+        )
+        for row in rows
+    } == {
+        (
+            "claude-windows",
+            "claude-code",
+            "windows",
+            "",
+            "Claude Code (Windows)",
+            tmp_path / "windows-home" / ".claude" / "CLAUDE.md",
+        ),
+        (
+            "claude-wsl-ubuntu",
+            "claude-code",
+            "wsl",
+            "Ubuntu-24.04",
+            "Claude Code (WSL Ubuntu)",
+            tmp_path / "wsl-home" / ".claude" / "CLAUDE.md",
+        ),
+    }
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="instruction",
+        name=entry.name,
+        platform="claude-windows",
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    monkeypatch.setattr(
+        asset_sync,
+        "_refresh_remote_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    result = asset_sync._apply_local_asset_action(plan, cfg)
+
+    windows_target = tmp_path / "windows-home" / ".claude" / "CLAUDE.md"
+    wsl_target = tmp_path / "wsl-home" / ".claude" / "CLAUDE.md"
+    assert result.status == "succeeded"
+    assert windows_target.read_text(encoding="utf-8") == instruction_text
+    assert managed_resource_key(windows_target, file_target=True) == entry.resource_key
+    assert managed_marker_path(windows_target, file_target=True).is_file()
+    assert not wsl_target.exists()
+
+
+def test_unbound_instruction_is_never_downloadable_to_claude_or_codex(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "remote"
+    instruction = remote / "instructions" / "unbound"
+    instruction.mkdir(parents=True)
+    (instruction / "CLAUDE.md").write_text("# Unbound\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="unbound",
+        kind="instruction",
+        source="local",
+        path="instructions/unbound",
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    cfg = _claude_runtime_config(tmp_path)
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    cfg.platforms.profiles.append(
+        PlatformProfile(
+            name="codex-wsl",
+            tool_id="codex",
+            environment_kind="wsl",
+            home_dir=str(codex_home),
+            instructions_path="~/.codex/AGENTS.md",
+        )
+    )
+
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    rows = [row for row in inventory.rows if row.resource_key == entry.resource_key]
+
+    assert {row.platform for row in rows} == {
+        "claude-windows",
+        "claude-wsl-ubuntu",
+        "codex-wsl",
+    }
+    assert all(not row.supported for row in rows)
+    assert all("explicit tool binding" in " ".join(row.blockers) for row in rows)
+    assert all("download" not in row.available_actions for row in rows)
+
+
+def test_instruction_and_memory_uploads_store_portable_payloads_and_tool_binding(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "remote"
+    registry = Registry()
+    save_registry(registry, remote / "registry.yaml")
+    instruction = tmp_path / "source" / "CLAUDE.md"
+    instruction.parent.mkdir()
+    instruction.write_text("# Claude only\n", encoding="utf-8")
+    memory = tmp_path / "source-memory"
+    memory.mkdir()
+    memory_text = "".join(f"line {index}\n" for index in range(1, 203))
+    (memory / "MEMORY.md").write_text(memory_text, encoding="utf-8")
+    (memory / "topic.md").write_text("# Topic\n", encoding="utf-8")
+    for nested in ("build", "cache", "tmp"):
+        nested_dir = memory / nested
+        nested_dir.mkdir()
+        (nested_dir / f"{nested}-topic.md").write_text(
+            f"# {nested} topic\n",
+            encoding="utf-8",
+        )
+    sibling_session = memory.parent / "session.jsonl"
+    sibling_session.write_text("private transcript\n", encoding="utf-8")
+
+    source_rows: dict[str, asset_sync.AssetPlatformRow] = {}
+    source_plans: dict[str, asset_sync.AssetActionPlan] = {}
+    for kind, name, source, install_name in (
+        ("instruction", "claude-code-user-instructions", instruction, "CLAUDE.md"),
+        ("memory", "cc-port-memory", memory, "C--private-project-slot"),
+    ):
+        fingerprint = asset_sync._safe_local_resource_fingerprint(source, kind)
+        row = asset_sync.AssetPlatformRow(
+            resource_key=f"{kind}:{name}",
+            kind=kind,
+            name=name,
+            platform="claude-windows",
+            local_instance_id=f"local-{kind}",
+            local_locator="configured",
+            install_name=install_name,
+            configured=True,
+            enabled=True,
+            detected=True,
+            supported=True,
+            remote_exists=False,
+            local_exists=True,
+            remote_writable=True,
+            read_only_reference=False,
+            remote_path=None,
+            local_path=source,
+            local_content_path=source,
+            target_path=source,
+            ownership="unmanaged",
+            status="local-only",
+            remote_commit="abc123",
+            local_fingerprint=fingerprint,
+            tool_id="claude-code",
+            environment_kind="windows",
+            memory_layout="projects" if kind == "memory" else "",
+        )
+        plan = asset_sync.AssetActionPlan(
+            operation_id=f"upload-{kind}",
+            action="upload",
+            resource_key=row.resource_key,
+            target_resource_key=row.resource_key,
+            kind=kind,
+            name=name,
+            platform=row.platform,
+            local_instance_id=row.local_instance_id,
+            local_locator=row.local_locator,
+            remote_commit="abc123",
+            remote_target_exists=False,
+            remote_target_fingerprint="",
+            local_source_fingerprint=fingerprint,
+            source_path=source,
+            source_content_path=source,
+            target_path=None,
+            target_exists=False,
+            target_fingerprint="",
+            target_managed=False,
+            tool_id="claude-code",
+            environment_kind="windows",
+        )
+        source_rows[kind] = row
+        source_plans[kind] = plan
+        assert asset_sync._mutate_remote_asset(remote, registry, plan, row) is True
+
+    stored = load_registry(remote / "registry.yaml")
+    stored_instruction = stored.get("claude-code-user-instructions", "instruction")
+    stored_memory = stored.get("cc-port-memory", "memory")
+    assert stored_instruction is not None and stored_instruction.platforms == ["claude-code"]
+    assert stored_memory is not None and stored_memory.platforms == ["claude-code"]
+    assert stored_memory.platform_install_dirs == {}
+    assert (remote / "instructions" / stored_instruction.name / "CLAUDE.md").read_text(
+        encoding="utf-8"
+    ) == "# Claude only\n"
+    assert (remote / "memories" / stored_memory.name / "MEMORY.md").read_text(
+        encoding="utf-8"
+    ) == memory_text
+    for nested in ("build", "cache", "tmp"):
+        assert (
+            remote
+            / "memories"
+            / stored_memory.name
+            / nested
+            / f"{nested}-topic.md"
+        ).is_file()
+    restored_memory = tmp_path / "restored-memory"
+    asset_sync._copy_asset_content(
+        remote / "memories" / stored_memory.name,
+        restored_memory,
+        "memory",
+    )
+    assert asset_sync._asset_resource_fingerprint(
+        restored_memory,
+        "memory",
+    ) == asset_sync._asset_resource_fingerprint(memory, "memory")
+    assert not (remote / "memories" / stored_memory.name / sibling_session.name).exists()
+    overlay = (remote / "cc-port.yaml").read_text(encoding="utf-8")
+    assert "C--private-project-slot" not in overlay
+
+    rejected_remote = tmp_path / "rejected-remote"
+    rejected_remote.mkdir()
+    rejected_registry = Registry()
+    save_registry(rejected_registry, rejected_remote / "registry.yaml")
+    instruction_row = source_rows["instruction"]
+    instruction_plan = source_plans["instruction"]
+    instruction_row.tool_id = ""
+    instruction_plan.target_resource_key = "instruction:rejected-instruction"
+    with pytest.raises(asset_sync.AssetSyncError, match="source tool identity"):
+        asset_sync._mutate_remote_asset(
+            rejected_remote,
+            rejected_registry,
+            instruction_plan,
+            instruction_row,
+        )
+    assert not (rejected_remote / "instructions" / "rejected-instruction").exists()
+    assert load_registry(rejected_remote / "registry.yaml").items == []
+
+    memory_row = source_rows["memory"]
+    memory_plan = source_plans["memory"]
+    memory_row.tool_id = "codex"
+    memory_plan.target_resource_key = "memory:rejected-memory"
+    with pytest.raises(asset_sync.AssetSyncError, match="only originate from Claude Code"):
+        asset_sync._mutate_remote_asset(
+            rejected_remote,
+            rejected_registry,
+            memory_plan,
+            memory_row,
+        )
+    assert not (rejected_remote / "memories" / "rejected-memory").exists()
+    assert load_registry(rejected_remote / "registry.yaml").items == []
+
+    linked_remote = tmp_path / "linked-remote"
+    linked_remote.mkdir()
+    save_registry(Registry(), linked_remote / "registry.yaml")
+    outside = tmp_path / "outside-remote-root"
+    outside.mkdir()
+    try:
+        (linked_remote / "instructions").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Directory symbolic links are unavailable: {exc}")
+    instruction_row.tool_id = "claude-code"
+    instruction_plan.target_resource_key = "instruction:escaped-instruction"
+    with pytest.raises(asset_sync.AssetSyncError, match="crosses a symbolic link"):
+        asset_sync._mutate_remote_asset(
+            linked_remote,
+            Registry(),
+            instruction_plan,
+            instruction_row,
+        )
+    assert not (outside / "escaped-instruction").exists()
+
+
+def test_memory_secret_scan_includes_cache_like_topic_directories(
+    tmp_path: Path,
+) -> None:
+    memory = tmp_path / "memory"
+    secret_topic = memory / "cache" / "private.md"
+    secret_topic.parent.mkdir(parents=True)
+    (memory / "MEMORY.md").write_text("# Memory\n", encoding="utf-8")
+    secret_topic.write_text(
+        "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n",
+        encoding="utf-8",
+    )
+    row = asset_sync.AssetPlatformRow(
+        resource_key="memory:private-memory",
+        kind="memory",
+        name="private-memory",
+        platform="claude-windows",
+        local_instance_id="memory-source",
+        local_locator="discovered-resource",
+        install_name="local-slot",
+        configured=True,
+        enabled=True,
+        detected=True,
+        supported=True,
+        remote_exists=False,
+        local_exists=True,
+        remote_writable=True,
+        read_only_reference=False,
+        remote_path=None,
+        local_path=memory,
+        local_content_path=memory,
+        target_path=memory,
+        ownership="unmanaged",
+        status="local-only",
+        remote_commit="abc123",
+        local_fingerprint=asset_sync._asset_resource_fingerprint(memory, "memory"),
+        tool_id="claude-code",
+        environment_kind="windows",
+    )
+
+    with pytest.raises(asset_sync.AssetSyncError, match="Secret-like content"):
+        asset_sync._validate_remote_batch_source(row, "memory")
+
+
+def test_memory_download_requires_local_project_mapping_and_rechecks_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    memory = remote / "memories" / "cc-port-memory"
+    memory.mkdir(parents=True)
+    (memory / "MEMORY.md").write_text("# Shared memory\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="cc-port-memory",
+        kind="memory",
+        source="local",
+        path="memories/cc-port-memory",
+        platforms=["claude-code"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    cfg = _claude_runtime_config(tmp_path)
+
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    rows = [row for row in inventory.rows if row.resource_key == entry.resource_key]
+    assert {row.target_path for row in rows} == {
+        tmp_path
+        / "windows-home"
+        / ".claude"
+        / "projects"
+        / "C--work-cc-port"
+        / "memory",
+        tmp_path
+        / "wsl-home"
+        / ".claude"
+        / "projects"
+        / "-mnt-d-code-cc-port"
+        / "memory",
+    }
+    assert all(not row.blockers for row in rows)
+    assert all("set-platform-install-name" not in row.available_actions for row in rows)
+
+    alias_plan = asset_sync.build_asset_action_plan(
+        "set-platform-install-name",
+        kind="memory",
+        name=entry.name,
+        platform="claude-windows",
+        new_install_name="must-remain-local",
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    assert alias_plan.blocked is True
+    assert "local profile configuration" in " ".join(alias_plan.blockers)
+    with pytest.raises(asset_sync.AssetSyncError, match="local-only"):
+        asset_sync._mutate_remote_asset(remote, snapshot.registry, alias_plan, None)
+
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="memory",
+        name=entry.name,
+        platform="claude-windows",
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    windows_profile = cfg.platforms.get("claude-windows")
+    assert windows_profile is not None
+    windows_profile.memory_install_names[entry.name] = "changed-slot"
+    monkeypatch.setattr(
+        asset_sync,
+        "_refresh_remote_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    with pytest.raises(asset_sync._StaleAssetTarget, match="target path changed"):
+        asset_sync._apply_local_asset_action(plan, cfg)
+
+    no_mapping_root = tmp_path / "no-mapping"
+    no_mapping = _claude_runtime_config(no_mapping_root)
+    for profile in no_mapping.platforms.profiles:
+        profile.memory_install_names = {}
+    blocked_inventory = asset_sync.build_asset_inventory(
+        config=no_mapping,
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    blocked_rows = [
+        row for row in blocked_inventory.rows if row.resource_key == entry.resource_key
+    ]
+    assert all("exact local Claude project slot" in " ".join(row.blockers) for row in blocked_rows)
+    assert all("download" not in row.available_actions for row in blocked_rows)
+
+    direct_home = tmp_path / "direct-home"
+    direct_home.mkdir()
+    direct_profile = PlatformProfile(
+        name="claude-direct",
+        tool_id="claude-code",
+        environment_kind="wsl",
+        home_dir=str(direct_home),
+        memories_dir="~/custom-memory",
+        memory_layout="direct",
+    )
+    direct_inventory = asset_sync.build_asset_inventory(
+        config=Config(platforms=PlatformsConfig(profiles=[direct_profile])),
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    direct_row = next(
+        row for row in direct_inventory.rows if row.resource_key == entry.resource_key
+    )
+    assert direct_row.target_path == direct_home / "custom-memory"
+    assert not direct_row.blockers
+    assert "download" in direct_row.available_actions
+
+
+def test_direct_auto_memory_override_plan_and_apply_use_the_same_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    remote_memory = remote / "memories" / "shared-memory"
+    remote_memory.mkdir(parents=True)
+    (remote_memory / "MEMORY.md").write_text("# Remote direct memory\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="shared-memory",
+        kind="memory",
+        source="local",
+        path="memories/shared-memory",
+        platforms=["claude-code"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    home = tmp_path / "home"
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    direct_target = home / "portable-memory"
+    settings.write_text(
+        json.dumps({"autoMemoryDirectory": "~/portable-memory"}),
+        encoding="utf-8",
+    )
+    profile = PlatformProfile(
+        name="claude-wsl",
+        tool_id="claude-code",
+        environment_kind="wsl",
+        environment_name="Ubuntu",
+        home_dir=str(home),
+        memories_dir="~/.claude/projects",
+        memory_layout="projects",
+        settings_path="~/.claude/settings.json",
+    )
+    cfg = Config(platforms=PlatformsConfig(profiles=[profile]))
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    row = next(row for row in inventory.rows if row.resource_key == entry.resource_key)
+    assert row.target_path == direct_target
+    assert row.memory_layout == "direct"
+    assert not row.blockers
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="memory",
+        name=entry.name,
+        platform=profile.name,
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    monkeypatch.setattr(
+        asset_sync,
+        "_refresh_remote_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    result = asset_sync._apply_local_asset_action(plan, cfg)
+
+    assert result.status == "succeeded"
+    assert (direct_target / "MEMORY.md").read_text(encoding="utf-8") == (
+        "# Remote direct memory\n"
+    )
+    assert managed_marker_path(direct_target, file_target=True).is_file()
+    assert not (home / ".claude" / "projects" / entry.name / "memory").exists()
+
+
+def test_untrusted_settings_and_offline_wsl_profiles_block_downloads(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "remote"
+    memory = remote / "memories" / "shared-memory"
+    memory.mkdir(parents=True)
+    (memory / "MEMORY.md").write_text("# Remote\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="shared-memory",
+        kind="memory",
+        source="local",
+        path="memories/shared-memory",
+        platforms=["claude-code"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+
+    corrupt_home = tmp_path / "corrupt-home"
+    settings = corrupt_home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{broken", encoding="utf-8")
+    corrupt = PlatformProfile(
+        name="claude-corrupt",
+        tool_id="claude-code",
+        environment_kind="windows",
+        home_dir=str(corrupt_home),
+        settings_path="~/.claude/settings.json",
+        memories_dir="~/.claude/projects",
+        memory_install_names={entry.name: "known-slot"},
+    )
+    offline = PlatformProfile(
+        name="claude-wsl-offline",
+        tool_id="claude-code",
+        environment_kind="wsl",
+        environment_name="Stopped-Distro",
+        home_dir=str(tmp_path / "missing-wsl-home"),
+        memories_dir="~/.claude/projects",
+        memory_install_names={entry.name: "known-slot"},
+    )
+    cfg = Config(platforms=PlatformsConfig(profiles=[corrupt, offline]))
+
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    rows = {row.platform: row for row in inventory.rows if row.resource_key == entry.resource_key}
+
+    assert "settings" in " ".join(rows["claude-corrupt"].blockers).lower()
+    assert "download" not in rows["claude-corrupt"].available_actions
+    assert "unavailable" in " ".join(rows["claude-wsl-offline"].blockers).lower()
+    assert "download" not in rows["claude-wsl-offline"].available_actions
+    assert not (tmp_path / "missing-wsl-home").exists()
+
+
+def test_apply_stops_when_wsl_home_becomes_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    instruction = remote / "instructions" / "claude-code-user-instructions"
+    instruction.mkdir(parents=True)
+    (instruction / "CLAUDE.md").write_text("# Remote\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="claude-code-user-instructions",
+        kind="instruction",
+        source="local",
+        path="instructions/claude-code-user-instructions",
+        platforms=["claude-code"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    home = tmp_path / "wsl-home"
+    home.mkdir()
+    profile = PlatformProfile(
+        name="claude-wsl",
+        tool_id="claude-code",
+        environment_kind="wsl",
+        environment_name="Ubuntu",
+        home_dir=str(home),
+        instructions_path="~/.claude/CLAUDE.md",
+    )
+    cfg = Config(platforms=PlatformsConfig(profiles=[profile]))
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="instruction",
+        name=entry.name,
+        platform=profile.name,
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    home.rmdir()
+    monkeypatch.setattr(
+        asset_sync,
+        "_refresh_remote_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    with pytest.raises(asset_sync._StaleAssetTarget, match="unavailable"):
+        asset_sync._apply_local_asset_action(plan, cfg)
+
+    assert not home.exists()
+
+
+def test_memory_mapping_is_applied_once_during_plan_and_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = tmp_path / "remote"
+    remote_memory = remote / "memories" / "shared-memory"
+    remote_memory.mkdir(parents=True)
+    (remote_memory / "MEMORY.md").write_text("# Remote\n", encoding="utf-8")
+    entry = RegistryItem(
+        name="shared-memory",
+        kind="memory",
+        source="local",
+        path="memories/shared-memory",
+        platforms=["claude-code"],
+    )
+    snapshot = _snapshot(remote, Registry(items=[entry]))
+    home = tmp_path / "home"
+    home.mkdir()
+    profile = PlatformProfile(
+        name="claude-wsl",
+        tool_id="claude-code",
+        environment_kind="wsl",
+        home_dir=str(home),
+        memories_dir="~/.claude/projects",
+        memory_install_names={
+            "shared-memory": "slot-b",
+            "slot-b": "slot-c",
+        },
+    )
+    cfg = Config(platforms=PlatformsConfig(profiles=[profile]))
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=False,
+        remote_snapshot=snapshot,
+    )
+    row = next(row for row in inventory.rows if row.resource_key == entry.resource_key)
+    expected = home / ".claude" / "projects" / "slot-b" / "memory"
+    assert row.install_name == "slot-b"
+    assert row.target_path == expected
+    plan = asset_sync.build_asset_action_plan(
+        "download",
+        kind="memory",
+        name=entry.name,
+        platform=profile.name,
+        config=cfg,
+        _remote_snapshot=snapshot,
+        _inventory=inventory,
+        _persist=False,
+    )
+    monkeypatch.setattr(asset_sync, "_refresh_remote_snapshot", lambda *_a, **_kw: snapshot)
+
+    result = asset_sync._apply_local_asset_action(plan, cfg)
+
+    assert result.status == "succeeded"
+    assert (expected / "MEMORY.md").is_file()
+    assert not (home / ".claude" / "projects" / "slot-c" / "memory").exists()

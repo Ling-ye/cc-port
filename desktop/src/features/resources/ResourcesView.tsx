@@ -28,6 +28,10 @@ import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
 import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
+import {
+  PlatformIdentityLabel,
+  platformOptionLabel,
+} from "@/components/PlatformIdentity";
 import { CollectGithubDialog } from "@/features/resources/CollectGithubDialog";
 import { ImportLocalDialog } from "@/features/resources/ImportLocalDialog";
 import { ScanLocalDialog, type ScanScope } from "@/features/resources/ScanLocalDialog";
@@ -42,11 +46,13 @@ import type {
   AssetInventory,
   AssetLocalInstance,
   AssetLocalStatus,
+  AssetPlatformRow,
   AssetRemoteStatus,
   AssetResourceRow,
   AssetStatus,
   ConfigSettings,
   KnownResourceKind,
+  PlatformIdentity,
   PlatformProfile,
   RegistryAuditIssue,
   RegistryRepairChoice,
@@ -55,7 +61,16 @@ import type {
   ResourceKind,
 } from "@/types/cc-port";
 
-const kinds: Array<"all" | KnownResourceKind> = ["all", "skill", "mcp", "rule", "prompt", "plugin"];
+const kinds: Array<"all" | KnownResourceKind> = [
+  "all",
+  "skill",
+  "mcp",
+  "rule",
+  "prompt",
+  "plugin",
+  "instruction",
+  "memory",
+];
 const statuses: Array<"all" | AssetStatus> = [
   "all",
   "local-only",
@@ -129,10 +144,20 @@ export function ResourcesView({
   const selectVisibleRef = useRef<HTMLInputElement>(null);
 
   const resources = inventory?.resources ?? emptyResources;
-  const tools = useMemo(
-    () => Array.from(new Set(resources.flatMap((item) => item.local_instances.map((instance) => instance.platform)))).sort(),
-    [resources],
-  );
+  const tools = useMemo(() => {
+    const byProfileId = new Map<string, AssetLocalInstance>();
+    resources.forEach((resource) => {
+      resource.local_instances.forEach((instance) => {
+        const current = byProfileId.get(instance.platform);
+        if (!current || (!hasPlatformMetadata(current) && hasPlatformMetadata(instance))) {
+          byProfileId.set(instance.platform, instance);
+        }
+      });
+    });
+    return Array.from(byProfileId, ([id, identity]) => ({ id, identity }))
+      .sort((left, right) => platformOptionLabel(left.identity, left.id, t)
+        .localeCompare(platformOptionLabel(right.identity, right.id, t)));
+  }, [resources, t]);
   const visible = useMemo(
     () => {
       const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -400,7 +425,9 @@ export function ResourcesView({
             </Filter>
             <Filter label={t("assets.filterTool")} value={toolFilter} onChange={setToolFilter}>
               <option value="all">{t("assets.allValues")}</option>
-              {tools.map((value) => <option key={value} value={value}>{value}</option>)}
+              {tools.map(({ id, identity }) => (
+                <option key={id} value={id}>{platformOptionLabel(identity, id, t)}</option>
+              ))}
             </Filter>
             <button
               className="secondary asset-clear-filters"
@@ -915,7 +942,9 @@ function ResourceDetail({
             <div>
               <strong>{t("assets.localDescriptions")}</strong>
               {resource.local_instances.map((instance) => (
-                <p key={instance.id}>{instance.platform}: {instance.description || "-"}</p>
+                <p key={instance.id}>
+                  {platformOptionLabel(instance, instance.platform, t)}: {instance.description || "-"}
+                </p>
               ))}
             </div>
           </div>
@@ -955,7 +984,12 @@ function ResourceDetail({
         <div className="asset-instance-list">
           {resource.local_instances.map((instance) => (
             <div className="asset-instance-card" key={instance.id}>
-              <div><strong>{instance.platform}</strong><StatusPill value={instance.status} label={assetStatusLabel(instance.status, t)} /></div>
+              <div>
+                <strong>
+                  <PlatformIdentityLabel identity={instance} profileId={instance.platform} t={t} />
+                </strong>
+                <StatusPill value={instance.status} label={assetStatusLabel(instance.status, t)} />
+              </div>
               <small>{instance.install_name}</small>
               <small>{instance.path || "-"}</small>
               {instance.path_kind && instance.path_kind !== "regular" ? (
@@ -1086,7 +1120,7 @@ function AssetContentDiffDialog({
             <select value={instanceId} onChange={(event) => setInstanceId(event.target.value)}>
               {resource.local_instances.map((instance) => (
                 <option key={instance.id} value={instance.id}>
-                  {instance.platform} / {instance.install_name}
+                  {platformOptionLabel(instance, instance.platform, t)} / {instance.install_name}
                 </option>
               ))}
             </select>
@@ -1222,7 +1256,7 @@ function BatchDialog({
             platform: "",
             local_instance_id: instance.id,
             resolution: "rename",
-            new_name: `${resource.name}-${safeNamePart(instance.platform)}-${index + 1}`,
+            new_name: `${resource.name}-variant-${index + 1}`,
           };
         });
       }
@@ -1315,6 +1349,18 @@ function BatchDialog({
   const checkedResourcesByKey = new Map(
     checkedResources.map((item) => [item.resource_key, item]),
   );
+  const platformIdentityById = new Map<string, PlatformIdentity>(
+    platforms.map((platform) => [platform.name, platform]),
+  );
+  const localIdentityByInstanceId = new Map<string, AssetLocalInstance>();
+  checkedResources.forEach((resource) => {
+    resource.local_instances?.forEach((instance) => {
+      localIdentityByInstanceId.set(instance.id, instance);
+      if (!platformIdentityById.has(instance.platform)) {
+        platformIdentityById.set(instance.platform, instance);
+      }
+    });
+  });
   const checking = direction === "upload" && busy && !plan;
   const choiceResources = selectedResources.filter((resource) => {
     if (direction === "download") return true;
@@ -1323,10 +1369,22 @@ function BatchDialog({
       ? needsUploadChoiceEditor(resource, checkedResource)
       : false;
   });
+  const requiredMemoryNamesComplete = selectedResources.every((resource) => {
+    const checkedResource = checkedResourcesByKey.get(resource.resource_key);
+    if (!requiresMemoryRemoteName(resource, checkedResource)) return true;
+    return memoryRemoteNameChoiceComplete(resource, checkedResource, choices);
+  });
   const canApply = Boolean(
     plan
     && !plan.blocked_count
+    && requiredMemoryNamesComplete
     && (plan.executable_count || plan.items.some((item) => item.disposition === "manual")),
+  );
+  const downloadTargetStateById = new Map(
+    platforms.map((platform) => [
+      platform.name,
+      downloadTargetState(platform, selectedResources, inventory?.rows ?? [], t),
+    ]),
   );
   const planGroups = plan
     ? (["create", "update", "rename", "unchanged", "skip", "manual", "blocked"] as const)
@@ -1349,23 +1407,29 @@ function BatchDialog({
         {direction === "download" ? (
           <div className="asset-platform-picker">
             <div><strong>{t("assets.targetTools")}</strong><small>{t("assets.targetToolsHint")}</small></div>
-            {platforms.map((platform) => (
-              <label key={platform.name} className={!platform.enabled ? "disabled" : ""}>
-                <input
-                  type="checkbox"
-                  checked={targetPlatforms.includes(platform.name)}
-                  disabled={!platform.enabled}
-                  onChange={() => {
-                    setTargetPlatforms((current) => current.includes(platform.name)
-                      ? current.filter((item) => item !== platform.name)
-                      : [...current, platform.name]);
-                    setPlan(null);
-                  }}
-                />
-                <span>{platform.name}</span>
-                <small>{platform.enabled ? t("assets.enabled") : t("assets.disabled")}</small>
-              </label>
-            ))}
+            {platforms.map((platform) => {
+              const targetState = downloadTargetStateById.get(platform.name)!;
+              return (
+                <label key={platform.name} className={!targetState.selectable ? "disabled" : ""}>
+                  <input
+                    type="checkbox"
+                    aria-label={platformOptionLabel(platform, platform.name, t)}
+                    checked={targetPlatforms.includes(platform.name)}
+                    disabled={!targetState.selectable}
+                    onChange={() => {
+                      setTargetPlatforms((current) => current.includes(platform.name)
+                        ? current.filter((item) => item !== platform.name)
+                        : [...current, platform.name]);
+                      setPlan(null);
+                    }}
+                  />
+                  <PlatformIdentityLabel identity={platform} profileId={platform.name} t={t} />
+                  <small>{targetState.selectable
+                    ? t("assets.enabled")
+                    : targetState.messages.join("; ") || t("assets.disabled")}</small>
+                </label>
+              );
+            })}
             {platforms.some((platform) => !platform.enabled) ? (
               <button className="secondary" onClick={onOpenSettings}><ExternalLink size={15} />{t("assets.goSettings")}</button>
             ) : null}
@@ -1403,7 +1467,7 @@ function BatchDialog({
                 key={resource.resource_key}
                 resource={resource}
                 direction={direction}
-                platforms={targetPlatforms}
+                platforms={platforms.filter((platform) => targetPlatforms.includes(platform.name))}
                 choices={choices}
                 checkedResource={checkedResourcesByKey.get(resource.resource_key)}
                 t={t}
@@ -1428,9 +1492,22 @@ function BatchDialog({
                   {group.items.map((item) => (
                     <div key={item.id} className={`asset-plan-item disposition-${item.disposition}`}>
                       <strong>{item.resource_key}</strong>
-                      <span>{item.platform || "-"}</span>
+                      <span>
+                        {item.platform ? (
+                          <PlatformIdentityLabel
+                            identity={hasPlatformMetadata(item)
+                              ? item
+                              : localIdentityByInstanceId.get(item.local_instance_id)
+                                ?? platformIdentityById.get(item.platform)}
+                            profileId={item.platform}
+                            t={t}
+                          />
+                        ) : "-"}
+                      </span>
                       <span>{batchDispositionLabel(item.disposition, t)}</span>
-                      <small>{translateMessage(item.reason_ref, t, item.reason) || item.target_resource_key}</small>
+                      {batchPlanItemMessages(item, t).map((message, index) => (
+                        <small key={`${item.id}:message:${index}`}>{message}</small>
+                      ))}
                       {direction === "download" && item.plan?.target_exists && !item.plan.target_managed ? (
                         <label className="checkline">
                           <input
@@ -1456,7 +1533,11 @@ function BatchDialog({
             <button
               className="secondary"
               onClick={() => void createPlan()}
-              disabled={busy || (direction === "download" && !targetPlatforms.length)}
+              disabled={
+                busy
+                || (direction === "download" && !targetPlatforms.length)
+                || (direction === "upload" && !requiredMemoryNamesComplete)
+              }
             >
               {busy
                 ? t("common.working")
@@ -1496,7 +1577,7 @@ function BatchChoiceEditor({
 }: {
   resource: AssetResourceRow;
   direction: "upload" | "download";
-  platforms: string[];
+  platforms: PlatformProfile[];
   choices: Record<string, AssetBatchChoice>;
   checkedResource?: AssetBatchResourceCheck;
   t: TFunction;
@@ -1508,9 +1589,12 @@ function BatchChoiceEditor({
   ) => void;
   onToggleSeparate: (resource: AssetResourceRow, enabled: boolean) => void;
 }) {
-  const targetRows = direction === "download" ? (platforms.length ? platforms : [""]) : [""];
+  const targetRows: Array<PlatformProfile | null> = direction === "download"
+    ? (platforms.length ? platforms : [null])
+    : [null];
   const localInstances = checkedResource?.local_instances ?? resource.local_instances;
   const canSeparate = direction === "upload" && checkedResource?.local_status === "variants";
+  const memoryRemoteNameRequired = requiresMemoryRemoteName(resource, checkedResource);
   const showResolution = direction === "download" || isUploadConflict(checkedResource);
   const separate = canSeparate && localInstances.length > 1
     && localInstances.every((instance) => (
@@ -1537,7 +1621,9 @@ function BatchChoiceEditor({
         const choice = choices[id];
         return (
           <div className="asset-choice-fields" key={id}>
-            <strong>{instance.platform} / {instance.install_name}</strong>
+            <strong>
+              {platformOptionLabel(instance, instance.platform, t)} / {instance.install_name}
+            </strong>
             <label>
               <span>{t("assets.newName")}</span>
               <input
@@ -1566,24 +1652,41 @@ function BatchChoiceEditor({
           </div>
         );
       }) : targetRows.map((platform) => {
-        const id = batchChoiceId(resource.resource_key, platform);
-        const choice = choices[id] ?? { resource_key: resource.resource_key, platform, resolution: "overwrite" as const };
+        const platformId = platform?.name || "";
+        const id = batchChoiceId(resource.resource_key, platformId);
+        const choice = choices[id] ?? {
+          resource_key: resource.resource_key,
+          platform: platformId,
+          resolution: "overwrite" as const,
+        };
         const selectedInstance = localInstances.find(
           (instance) => instance.id === choice.local_instance_id,
         ) ?? localInstances[0];
         return (
           <div className="asset-choice-fields" key={id}>
-            {platform ? <strong>{platform}</strong> : null}
+            {platform ? (
+              <strong>
+                <PlatformIdentityLabel identity={platform} profileId={platformId} t={t} />
+              </strong>
+            ) : null}
             {direction === "upload" && checkedResource?.local_status === "variants" ? (
               <label>
                 <span>{t("assets.sourceInstance")}</span>
                 <select
                   value={choice.local_instance_id || ""}
-                  onChange={(event) => onChange(resource.resource_key, platform, { local_instance_id: event.target.value })}
+                  onChange={(event) => onChange(resource.resource_key, platformId, { local_instance_id: event.target.value })}
                 >
-                  <option value="">{checkedResource.local_status === "variants" ? "-" : localInstances[0]?.platform || "-"}</option>
+                  <option value="">
+                    {checkedResource.local_status === "variants"
+                      ? "-"
+                      : localInstances[0]
+                        ? platformOptionLabel(localInstances[0], localInstances[0].platform, t)
+                        : "-"}
+                  </option>
                   {localInstances.map((instance) => (
-                    <option value={instance.id} key={instance.id}>{instance.platform} / {instance.install_name}</option>
+                    <option value={instance.id} key={instance.id}>
+                      {platformOptionLabel(instance, instance.platform, t)} / {instance.install_name}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -1595,10 +1698,28 @@ function BatchChoiceEditor({
                 t={t}
                 onChange={(checked) => onChange(
                   resource.resource_key,
-                  platform,
+                  platformId,
                   { link_target_confirmed: checked },
                 )}
               />
+            ) : null}
+            {memoryRemoteNameRequired ? (
+              <label>
+                <span>{t("assets.memoryRemoteName")}</span>
+                <input
+                  required
+                  aria-label={t("assets.memoryRemoteName")}
+                  aria-invalid={!choice.new_name?.trim()}
+                  value={choice.new_name || ""}
+                  onChange={(event) => onChange(resource.resource_key, platformId, {
+                    resolution: "rename",
+                    new_name: event.target.value,
+                  })}
+                />
+                {!choice.new_name?.trim() ? (
+                  <small>{t("assets.memoryRemoteNameRequired")}</small>
+                ) : null}
+              </label>
             ) : null}
             {direction === "upload" && resource.kind === "plugin" && checkedResource?.remote_status === "missing" && resource.plugin_track === "content" ? (
               <div className="plugin-ownership-choice">
@@ -1606,7 +1727,7 @@ function BatchChoiceEditor({
                   <span>{t("plugin.firstUploadChoice")}</span>
                   <select
                     value={choice.plugin_track || ""}
-                    onChange={(event) => onChange(resource.resource_key, platform, {
+                    onChange={(event) => onChange(resource.resource_key, platformId, {
                       plugin_track: event.target.value as AssetBatchChoice["plugin_track"],
                       ownership_confirmed: false,
                     })}
@@ -1620,7 +1741,7 @@ function BatchChoiceEditor({
                 {choice.plugin_track === "content" ? (
                   <>
                     <label className="checkline">
-                      <input type="checkbox" checked={Boolean(choice.ownership_confirmed)} onChange={(event) => onChange(resource.resource_key, platform, { ownership_confirmed: event.target.checked })} />
+                      <input type="checkbox" checked={Boolean(choice.ownership_confirmed)} onChange={(event) => onChange(resource.resource_key, platformId, { ownership_confirmed: event.target.checked })} />
                       <span>{t("plugin.ownershipConfirmation")}</span>
                     </label>
                     {resource.plugin_platform === "opencode" ? (
@@ -1629,7 +1750,7 @@ function BatchChoiceEditor({
                         <textarea
                           value={dependencyText(choice.plugin_dependencies)}
                           placeholder="package=^1.0.0"
-                          onChange={(event) => onChange(resource.resource_key, platform, { plugin_dependencies: parseDependencies(event.target.value) })}
+                          onChange={(event) => onChange(resource.resource_key, platformId, { plugin_dependencies: parseDependencies(event.target.value) })}
                         />
                       </label>
                     ) : null}
@@ -1639,12 +1760,12 @@ function BatchChoiceEditor({
                   <div className="plugin-reference-origin-inline">
                     <label>
                       <span>{t("plugin.originType")}</span>
-                      <select value={choice.reference_origin?.type || "marketplace"} onChange={(event) => onChange(resource.resource_key, platform, { reference_origin: { ...choice.reference_origin, type: event.target.value } })}>
+                      <select value={choice.reference_origin?.type || "marketplace"} onChange={(event) => onChange(resource.resource_key, platformId, { reference_origin: { ...choice.reference_origin, type: event.target.value } })}>
                         <option value="marketplace">marketplace</option><option value="npm">npm</option><option value="git">Git</option>
                       </select>
                     </label>
-                    <label><span>{t("plugin.source")}</span><input value={referenceOriginValue(choice)} onChange={(event) => onChange(resource.resource_key, platform, { reference_origin: updateReferenceOrigin(choice.reference_origin, event.target.value) })} /></label>
-                    <label><span>{t("plugin.selector")}</span><input value={choice.reference_origin?.selector || ""} onChange={(event) => onChange(resource.resource_key, platform, { reference_origin: { ...choice.reference_origin, selector: event.target.value } })} /></label>
+                    <label><span>{t("plugin.source")}</span><input value={referenceOriginValue(choice)} onChange={(event) => onChange(resource.resource_key, platformId, { reference_origin: updateReferenceOrigin(choice.reference_origin, event.target.value) })} /></label>
+                    <label><span>{t("plugin.selector")}</span><input value={choice.reference_origin?.selector || ""} onChange={(event) => onChange(resource.resource_key, platformId, { reference_origin: { ...choice.reference_origin, selector: event.target.value } })} /></label>
                   </div>
                 ) : null}
               </div>
@@ -1654,7 +1775,7 @@ function BatchChoiceEditor({
                 <span>{t("assets.resolution")}</span>
                 <select
                   value={choice.resolution || "overwrite"}
-                  onChange={(event) => onChange(resource.resource_key, platform, { resolution: event.target.value as "overwrite" | "rename" })}
+                  onChange={(event) => onChange(resource.resource_key, platformId, { resolution: event.target.value as "overwrite" | "rename" })}
                 >
                   <option value="overwrite">{t("assets.overwrite")}</option>
                   <option value="rename">{t("assets.rename")}</option>
@@ -1664,7 +1785,7 @@ function BatchChoiceEditor({
             {showResolution && choice.resolution === "rename" ? (
               <label>
                 <span>{t("assets.newName")}</span>
-                <input value={choice.new_name || ""} onChange={(event) => onChange(resource.resource_key, platform, { new_name: event.target.value })} />
+                <input value={choice.new_name || ""} onChange={(event) => onChange(resource.resource_key, platformId, { new_name: event.target.value })} />
               </label>
             ) : null}
           </div>
@@ -1687,6 +1808,7 @@ function needsUploadChoiceEditor(
   check: AssetBatchResourceCheck,
 ): boolean {
   return isUploadConflict(check)
+    || requiresMemoryRemoteName(resource, check)
     || check.local_status === "variants"
     || Boolean(check.local_instances?.some(requiresLinkTargetConfirmation))
     || (
@@ -1703,6 +1825,19 @@ function requiresLinkTargetConfirmation(
     instance
     && (instance.path_kind === "symlink" || instance.path_kind === "junction")
     && !instance.link_target_trusted,
+  );
+}
+
+function requiresMemoryRemoteName(
+  resource: AssetResourceRow,
+  check: AssetBatchResourceCheck | undefined,
+): boolean {
+  return Boolean(
+    resource.kind === "memory"
+    && check
+    && check.remote_status === "missing"
+    && check.local_status !== "missing"
+    && check.local_status !== "unknown",
   );
 }
 
@@ -1785,8 +1920,111 @@ function batchChoiceId(resourceKey: string, platform = "", slot = ""): string {
   return `${resourceKey}|${platform}|${slot}`;
 }
 
-function safeNamePart(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "local";
+function hasPlatformMetadata(value: {
+  tool_id?: string;
+  environment_kind?: string;
+  environment_name?: string;
+  display_name?: string;
+}): boolean {
+  return Boolean(
+    value.tool_id
+    || value.environment_kind
+    || value.environment_name
+    || value.display_name,
+  );
+}
+
+function memoryRemoteNameChoiceComplete(
+  resource: AssetResourceRow,
+  check: AssetBatchResourceCheck | undefined,
+  choices: Record<string, AssetBatchChoice>,
+): boolean {
+  const localInstances = check?.local_instances ?? resource.local_instances;
+  const separateVariants = check?.local_status === "variants"
+    && localInstances.length > 1
+    && localInstances.every((instance) => {
+      const choice = choices[batchChoiceId(resource.resource_key, "", instance.id)];
+      return choice?.resolution === "rename" && Boolean(choice.new_name?.trim());
+    });
+  return separateVariants
+    || Boolean(choices[batchChoiceId(resource.resource_key)]?.new_name?.trim());
+}
+
+function batchPlanItemMessages(
+  item: AssetBatchPlan["items"][number],
+  t: TFunction,
+): string[] {
+  const blockers = translateMessageList(item.blocker_refs, item.blockers, t).filter(Boolean);
+  if (blockers.length) return blockers;
+  return [translateMessage(item.reason_ref, t, item.reason) || item.target_resource_key];
+}
+
+function downloadTargetState(
+  platform: PlatformProfile,
+  resources: AssetResourceRow[],
+  rows: AssetPlatformRow[],
+  t: TFunction,
+): { selectable: boolean; messages: string[] } {
+  if (!platform.enabled) {
+    return {
+      selectable: false,
+      messages: [translateMessage({
+        code: "asset.batch.platform_disabled",
+        fallback: "The target platform is not enabled.",
+      }, t)],
+    };
+  }
+
+  const remoteResources = resources.filter((resource) => resource.remote.exists);
+  if (!remoteResources.length) {
+    return {
+      selectable: false,
+      messages: [translateMessage({
+        code: "asset.batch.remote_asset_missing",
+        fallback: "No remote asset exists.",
+      }, t)],
+    };
+  }
+
+  const messages: string[] = [];
+  for (const resource of remoteResources) {
+    const candidates = rows.filter((row) => (
+      row.resource_key === resource.resource_key && row.platform === platform.name
+    ));
+    if (candidates.some((row) => (
+      row.configured
+      && row.enabled
+      && row.supported
+      && !row.blockers.length
+      && !row.blocker_refs?.length
+    ))) {
+      continue;
+    }
+
+    const blockerMessages = candidates.flatMap((row) => (
+      translateMessageList(row.blocker_refs, row.blockers, t)
+    ));
+    if (blockerMessages.length) {
+      messages.push(...blockerMessages);
+    } else if (candidates.some((row) => !row.configured)) {
+      messages.push(translateMessage({
+        code: "asset.blocker.platform_not_configured",
+        fallback: "The platform is detected but not configured; configure it before downloading.",
+      }, t));
+    } else if (candidates.some((row) => !row.enabled)) {
+      messages.push(translateMessage({
+        code: "asset.batch.platform_disabled",
+        fallback: "The target platform is not enabled.",
+      }, t));
+    } else {
+      messages.push(translateMessage({
+        code: "asset.batch.platform_incompatible",
+        fallback: "The resource is not compatible with this platform.",
+      }, t));
+    }
+  }
+  const uniqueMessages = Array.from(new Set(messages.filter(Boolean)));
+  return { selectable: uniqueMessages.length === 0, messages: uniqueMessages };
 }
 
 function shortCommit(commit?: string | null): string {

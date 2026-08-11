@@ -240,6 +240,233 @@ def test_sync_installs_plugin_to_platform_plugin_dir(tmp_path: Path) -> None:
     assert (plugin_target / "demo-plugin" / "plugin.json").is_file()
 
 
+def test_legacy_sync_defers_instruction_to_environment_aware_asset_sync(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "instructions" / "claude-code-user-instructions"
+    source.mkdir(parents=True)
+    (source / "CLAUDE.md").write_text("# Portable instruction\n", encoding="utf-8")
+    target = tmp_path / "claude-home" / ".claude" / "CLAUDE.md"
+    entry = RegistryItem(
+        name="claude-code-user-instructions",
+        kind="instruction",
+        source="local",
+        path="instructions/claude-code-user-instructions",
+        platforms=["claude-code"],
+    )
+    cfg = _config(
+        root,
+        tmp_path / "install",
+        platforms=[
+            PlatformProfile(
+                name="claude-wsl",
+                tool_id="claude-code",
+                environment_kind="wsl",
+                home_dir=str(tmp_path / "claude-home"),
+                instructions_path="~/.claude/CLAUDE.md",
+            )
+        ],
+    )
+
+    result = installer.sync_one(entry, config=cfg, registry_root=root)
+
+    assert result.action == installer.SyncAction.SKIPPED
+    assert "environment-aware asset sync" in result.detail
+    assert not target.exists()
+    assert not managed_marker_path(target, file_target=True).exists()
+    assert installer.uninstall_one(entry, config=cfg) is False
+
+
+def test_legacy_sync_defers_memory_to_environment_aware_asset_sync(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "memories" / "shared-memory"
+    source.mkdir(parents=True)
+    (source / "MEMORY.md").write_text("# Portable memory\n", encoding="utf-8")
+    (source / "topic.md").write_text("# Topic\n", encoding="utf-8")
+    projects = tmp_path / "claude-home" / ".claude" / "projects"
+    target = projects / "slot-b" / "memory"
+    entry = RegistryItem(
+        name="shared-memory",
+        kind="memory",
+        source="local",
+        path="memories/shared-memory",
+        platforms=["claude-code"],
+    )
+    cfg = _config(
+        root,
+        tmp_path / "install",
+        platforms=[
+            PlatformProfile(
+                name="claude-wsl",
+                tool_id="claude-code",
+                environment_kind="wsl",
+                home_dir=str(tmp_path / "claude-home"),
+                memories_dir="~/.claude/projects",
+                memory_install_names={
+                    "shared-memory": "slot-b",
+                    "slot-b": "slot-c",
+                },
+            )
+        ],
+    )
+
+    result = installer.sync_one(entry, config=cfg, registry_root=root)
+
+    plan = installer.create_install_plan(
+        entry,
+        config=cfg,
+        registry_root=root,
+    )
+    assert result.action == installer.SyncAction.SKIPPED
+    assert plan.targets == []
+    assert "environment-aware asset sync" in " ".join(plan.warnings)
+    assert not target.exists()
+    assert not managed_marker_path(target, file_target=True).exists()
+    assert not (projects / "slot-c" / "memory").exists()
+
+
+def test_legacy_memory_sync_requires_mapping_for_new_projects_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "memories" / "shared-memory"
+    source.mkdir(parents=True)
+    (source / "MEMORY.md").write_text("# Portable memory\n", encoding="utf-8")
+    projects = tmp_path / "claude-home" / ".claude" / "projects"
+    entry = RegistryItem(
+        name="shared-memory",
+        kind="memory",
+        source="local",
+        path="memories/shared-memory",
+        platforms=["claude-code"],
+    )
+    cfg = _config(
+        root,
+        tmp_path / "install",
+        platforms=[
+            PlatformProfile(
+                name="claude-wsl",
+                tool_id="claude-code",
+                environment_kind="wsl",
+                home_dir=str(tmp_path / "claude-home"),
+                memories_dir="~/.claude/projects",
+            )
+        ],
+    )
+
+    plan = installer.create_install_plan(entry, config=cfg, registry_root=root)
+    result = installer.sync_one(entry, config=cfg, registry_root=root)
+
+    assert plan.targets == []
+    assert "environment-aware asset sync" in " ".join(plan.warnings)
+    assert result.action == installer.SyncAction.SKIPPED
+    assert not (projects / entry.name / "memory").exists()
+
+
+def test_legacy_memory_sync_never_bypasses_direct_runtime_settings(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "memories" / "shared-memory"
+    source.mkdir(parents=True)
+    (source / "MEMORY.md").write_text("# Direct memory\n", encoding="utf-8")
+    target = tmp_path / "claude-home" / "direct-memory"
+    entry = RegistryItem(
+        name="shared-memory",
+        kind="memory",
+        source="local",
+        path="memories/shared-memory",
+        platforms=["claude-code"],
+    )
+    cfg = _config(
+        root,
+        tmp_path / "install",
+        platforms=[
+            PlatformProfile(
+                name="claude-wsl",
+                tool_id="claude-code",
+                environment_kind="wsl",
+                home_dir=str(tmp_path / "claude-home"),
+                memories_dir="~/direct-memory",
+                memory_layout="direct",
+            )
+        ],
+    )
+
+    result = installer.sync_one(entry, config=cfg, registry_root=root)
+
+    assert result.action == installer.SyncAction.SKIPPED
+    assert "environment-aware asset sync" in result.detail
+    assert not target.exists()
+
+
+def test_legacy_sync_skips_instruction_without_explicit_tool_binding(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resources"
+    source = root / "instructions" / "unbound"
+    source.mkdir(parents=True)
+    (source / "CLAUDE.md").write_text("# Must not install\n", encoding="utf-8")
+    target = tmp_path / "claude-home" / ".claude" / "CLAUDE.md"
+    entry = RegistryItem(
+        name="unbound",
+        kind="instruction",
+        source="local",
+        path="instructions/unbound",
+    )
+    cfg = _config(
+        root,
+        tmp_path / "install",
+        platforms=[
+            PlatformProfile(
+                name="claude-wsl",
+                tool_id="claude-code",
+                home_dir=str(tmp_path / "claude-home"),
+                instructions_path="~/.claude/CLAUDE.md",
+            )
+        ],
+    )
+
+    plan = installer.create_install_plan(entry, config=cfg, registry_root=root)
+    result = installer.sync_one(entry, config=cfg, registry_root=root)
+
+    assert plan.targets == []
+    assert result.action == installer.SyncAction.SKIPPED
+    assert "environment-aware asset sync" in result.detail
+    assert not target.exists()
+
+
+def test_memory_is_never_supported_by_non_claude_profile(tmp_path: Path) -> None:
+    profile = PlatformProfile(
+        name="codex-custom",
+        tool_id="codex",
+        memories_dir=str(tmp_path / "must-not-write"),
+        memory_layout="direct",
+    )
+    entry = RegistryItem(
+        name="shared-memory",
+        kind="memory",
+        source="local",
+        path="memories/shared-memory",
+        platforms=["codex"],
+    )
+    source = tmp_path / "resources" / "memories" / "shared-memory"
+    source.mkdir(parents=True)
+    (source / "MEMORY.md").write_text("# Memory\n", encoding="utf-8")
+
+    plan = installer.create_install_plan(
+        entry,
+        config=_config(tmp_path / "resources", tmp_path / "install", platforms=[profile]),
+        registry_root=tmp_path / "resources",
+    )
+
+    assert profile.supports_resource("memory", ["codex"]) is False
+    assert plan.targets == []
+
+
 def test_sync_updates_and_uninstalls_file_prompt_with_marker(tmp_path: Path) -> None:
     root = tmp_path / "resources"
     source = root / "prompts" / "demo-prompt"
@@ -631,3 +858,33 @@ def test_mcp_backup_names_stay_unique_when_clock_does_not_advance(
     assert json.loads(backups[1].read_text(encoding="utf-8"))["mcpServers"]["demo"] == {
         "command": "demo"
     }
+
+
+def test_legacy_local_source_rejects_linked_registry_ancestors(
+    tmp_path: Path,
+) -> None:
+    registry_root = tmp_path / "registry"
+    registry_root.mkdir()
+    outside = tmp_path / "outside"
+    skill = outside / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: demo\n---\n",
+        encoding="utf-8",
+    )
+    try:
+        (registry_root / "skills").symlink_to(
+            outside,
+            target_is_directory=True,
+        )
+    except OSError as exc:
+        pytest.skip(f"Directory symbolic links are unavailable: {exc}")
+    entry = RegistryItem(
+        name="demo",
+        kind="skill",
+        source="local",
+        path="skills/demo",
+    )
+
+    with pytest.raises(ValueError, match="link|symbolic",):
+        installer._local_source_path(entry, registry_root=registry_root)

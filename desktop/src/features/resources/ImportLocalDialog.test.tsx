@@ -32,6 +32,16 @@ afterEach(() => {
 });
 
 describe("ImportLocalDialog", () => {
+  it("keeps instruction and memory out of manual import until a tool binding is available", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByText("Advanced settings"));
+    const type = screen.getByLabelText("Type");
+    expect(within(type).queryByRole("option", { name: "instruction" })).not.toBeInTheDocument();
+    expect(within(type).queryByRole("option", { name: "memory" })).not.toBeInTheDocument();
+  });
+
   it("renders a dedicated local form and keeps manual input when folder selection is cancelled", async () => {
     const user = userEvent.setup();
     vi.mocked(selectDirectory)

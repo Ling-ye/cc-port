@@ -13,9 +13,11 @@ import yaml
 
 from ..core.models import ItemKind, RegistryItem
 from ..core.registry import find_registry_path, load_registry, save_registry
+from ..core.secret_scan import find_secret_text
 from ..core.secrets import sanitize_mcp_config_for_storage
 from ..core.validator import parse_skill, validate_item
 from .install_planner import copy_resource_tree
+from .local_path_probe import probe_local_path, resource_tree_issues
 from .publisher import _slug
 
 LOCAL_SOURCE = "local"
@@ -46,7 +48,16 @@ def import_local_resource(
     mcp_config: dict[str, Any] | None = None,
 ) -> ImportLocalResult:
     """Copy a local resource into the resource repository and record it in registry.yaml."""
-    src = Path(source).expanduser().resolve()
+    logical_source = Path(source).expanduser().absolute()
+    _assert_regular_source_chain(logical_source)
+    source_probe = probe_local_path(logical_source)
+    if source_probe.path_kind != "regular" or not source_probe.ready:
+        raise ValueError(
+            "Direct resource import requires a regular source path. "
+            "Use the asset upload workflow to review a linked source."
+        )
+    assert source_probe.content_path is not None
+    src = source_probe.content_path
     reg_path = registry_path or find_registry_path()
     root = repo_root_for_registry(reg_path)
 
@@ -55,26 +66,51 @@ def import_local_resource(
     relative_parent = _resource_parent(kind, category)
     relative_path = relative_parent / item_name
     dest = root / relative_path
+    _assert_regular_destination_chain(root, dest)
 
-    if src == dest or dest in src.parents:
+    if src == dest or dest in src.parents or src in dest.parents:
         raise ValueError("Source path cannot be the destination resource path.")
-    if dest.exists():
-        if not overwrite:
-            raise FileExistsError(f"{dest} already exists. Pass --force to overwrite.")
-        if dest.is_dir():
+    destination_exists = dest.exists() or dest.is_symlink()
+    if destination_exists and not overwrite:
+        raise FileExistsError(f"{dest} already exists. Pass --force to overwrite.")
+
+    if kind in {"instruction", "memory"}:
+        _reject_unsafe_personal_resource_tree(src)
+    validate_item(src, kind, mcp_config=mcp_config)
+    if kind in {"instruction", "memory"}:
+        _reject_secret_content(src)
+    if destination_exists:
+        if dest.is_dir() and not dest.is_symlink():
             shutil.rmtree(dest)
         else:
             dest.unlink()
 
-    validate_item(src, kind, mcp_config=mcp_config)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if src.is_file() and kind in {"prompt", "rule"}:
+    _assert_regular_destination_chain(root, dest)
+    if src.is_file() and kind in {"prompt", "rule", "instruction"}:
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest / src.name)
     elif src.is_dir():
-        copy_resource_tree(src, dest)
+        if kind == "memory":
+            # Claude memory accepts Markdown topics under directories whose
+            # names overlap generic build/cache exclusions. Validation above
+            # defines the complete safe tree, so preserve it exactly.
+            shutil.copytree(src, dest, symlinks=True)
+        else:
+            copy_resource_tree(src, dest)
     else:
         shutil.copy2(src, dest)
+
+    if kind in {"instruction", "memory"}:
+        try:
+            validate_item(dest, kind)
+            _reject_secret_content(dest)
+        except Exception:
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            elif dest.exists() or dest.is_symlink():
+                dest.unlink()
+            raise
 
     effective_mcp_config = mcp_config
     if kind == "mcp" and effective_mcp_config is None:
@@ -101,6 +137,80 @@ def import_local_resource(
     registry.upsert(entry)
     save_registry(registry, reg_path)
     return ImportLocalResult(entry=entry, source_path=src, stored_path=dest)
+
+
+def _reject_secret_content(source: Path) -> None:
+    """Fail before copying a personal instruction or memory snapshot."""
+    candidates = [source] if source.is_file() else sorted(source.rglob("*.md"))
+    for candidate in candidates:
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("Personal resource content cannot be read safely.") from exc
+        finding = find_secret_text(text)
+        if finding is None:
+            continue
+        relative = Path(candidate.name) if source.is_file() else candidate.relative_to(source)
+        raise ValueError(
+            f"Secret-like content in {relative.as_posix()}: {finding.reason}. "
+            "Replace credentials with environment placeholders before importing."
+        )
+
+
+def _reject_unsafe_personal_resource_tree(source: Path) -> None:
+    """Reject nested links/reparse points before a direct personal-resource import."""
+    issues = resource_tree_issues(source)
+    if not issues:
+        return
+    preview = ", ".join(
+        f"{issue.relative_path} ({issue.code})" for issue in issues[:3]
+    )
+    remaining = len(issues) - 3
+    if remaining > 0:
+        preview += f", and {remaining} more"
+    raise ValueError(
+        "Personal resource tree contains unsafe linked, reparse-point, cyclic, "
+        f"or unreadable entries: {preview}."
+    )
+
+
+def _assert_regular_destination_chain(root: Path, destination: Path) -> None:
+    """Reject links/reparse points anywhere below the repository root."""
+    root = root.absolute()
+    destination = destination.absolute()
+    try:
+        relative = destination.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Destination resource path escapes the repository root.") from exc
+    current = root
+    parts = relative.parts
+    for index, part in enumerate(parts):
+        current /= part
+        probe = probe_local_path(current)
+        if probe.health == "missing":
+            return
+        if probe.path_kind != "regular" or not probe.ready:
+            raise ValueError(
+                "Destination resource path contains a link or unsupported reparse point."
+            )
+        if index < len(parts) - 1 and (
+            probe.content_path is None or not probe.content_path.is_dir()
+        ):
+            raise ValueError("Destination resource path has a non-directory ancestor.")
+
+
+def _assert_regular_source_chain(source: Path) -> None:
+    """Reject linked/reparse ancestors that direct import cannot confirm safely."""
+    logical = source.expanduser().absolute()
+    for ancestor in reversed(logical.parents):
+        probe = probe_local_path(ancestor)
+        if probe.path_kind != "regular" or not probe.ready:
+            raise ValueError(
+                "Direct resource import requires regular, non-linked source ancestors. "
+                "Use the asset upload workflow to review a linked source."
+            )
+        if probe.content_path is None or not probe.content_path.is_dir():
+            raise ValueError("Direct resource import source has a non-directory ancestor.")
 
 
 def export_claude_plugin(
@@ -165,6 +275,8 @@ def _resource_parent(kind: ItemKind, category: str) -> Path:
         "mcp": "mcp",
         "prompt": "prompts",
         "plugin": "plugins",
+        "instruction": "instructions",
+        "memory": "memories",
     }[kind]
     clean_category = _slug(category) if category else ""
     return Path(base) / clean_category if clean_category else Path(base)

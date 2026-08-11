@@ -175,6 +175,55 @@ def test_desktop_upload_allows_explicit_no_push(tmp_path: Path, monkeypatch) -> 
     assert result["data"]["push"] is None
 
 
+def test_portable_resource_platforms_never_persist_local_profile_ids() -> None:
+    cfg = Config(
+        platforms=PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-windows",
+                    tool_id="claude-code",
+                    environment_kind="windows",
+                ),
+                PlatformProfile(
+                    name="codex-wsl-ubuntu",
+                    tool_id="codex",
+                    environment_kind="wsl",
+                    environment_name="Ubuntu-24.04",
+                ),
+            ]
+        )
+    )
+
+    assert desktop_api._portable_resource_platforms(
+        cfg,
+        "instruction",
+        ["claude-windows", "claude-code"],
+    ) == ["claude-code"]
+    assert desktop_api._portable_resource_platforms(cfg, "memory", []) == [
+        "claude-code"
+    ]
+    with pytest.raises(ValueError, match="explicit portable tool binding"):
+        desktop_api._portable_resource_platforms(cfg, "instruction", [])
+    with pytest.raises(ValueError, match="only be bound to Claude Code"):
+        desktop_api._portable_resource_platforms(
+            cfg,
+            "memory",
+            ["codex-wsl-ubuntu"],
+        )
+    with pytest.raises(ValueError, match="exactly one portable source tool"):
+        desktop_api._portable_resource_platforms(
+            cfg,
+            "instruction",
+            ["claude-windows", "codex-wsl-ubuntu"],
+        )
+    with pytest.raises(ValueError, match="Unknown platform"):
+        desktop_api._portable_resource_platforms(
+            cfg,
+            "skill",
+            ["claude-wsl-typo"],
+        )
+
+
 def test_desktop_collect_mcp_requires_and_forwards_portable_config(monkeypatch) -> None:
     detected = DetectedRemoteResource(
         repo_url="https://github.com/example/demo-mcp",
@@ -368,8 +417,17 @@ def test_platform_toggle_preserves_hidden_and_custom_configuration(
                 ),
                 PlatformProfile(
                     name="private-tool",
+                    tool_id="claude-code",
+                    environment_kind="wsl",
+                    environment_name="Ubuntu-24.04",
+                    display_name="Claude Code",
+                    home_dir="//wsl.localhost/Ubuntu-24.04/home/lingye",
                     enabled=True,
                     skills_dir="D:/custom/private/skills",
+                    instructions_path="D:/custom/private/CLAUDE.md",
+                    memories_dir="D:/custom/private/projects",
+                    settings_path="D:/custom/private/settings.json",
+                    memory_install_names={"project-one": "wsl-project-slot"},
                 ),
             ]
         ),
@@ -385,12 +443,45 @@ def test_platform_toggle_preserves_hidden_and_custom_configuration(
     assert updated.platforms.get("cursor").skills_dir == "D:/custom/cursor/skills"
     assert updated.platforms.get("cursor").prompts_dir == "D:/custom/cursor/commands"
     assert updated.platforms.get("private-tool").enabled is True
+    assert updated.platforms.get("private-tool").tool_id == "claude-code"
+    assert updated.platforms.get("private-tool").environment_kind == "wsl"
+    assert updated.platforms.get("private-tool").environment_name == "Ubuntu-24.04"
+    assert updated.platforms.get("private-tool").home_dir == (
+        "//wsl.localhost/Ubuntu-24.04/home/lingye"
+    )
+    assert updated.platforms.get("private-tool").instructions_path.endswith("CLAUDE.md")
+    assert updated.platforms.get("private-tool").memories_dir.endswith("projects")
+    assert updated.platforms.get("private-tool").settings_path.endswith("settings.json")
+    assert updated.platforms.get("private-tool").memory_install_names == {
+        "project-one": "wsl-project-slot"
+    }
     assert updated.github.repo_prefix == "keep-"
     assert updated.git.executable == "D:/Git/bin/git.exe"
     assert updated.resources.local_path == "D:/private/resources"
     assert updated.resources.branch == "release"
     assert updated.resources.credential_mode == "auto"
     assert updated.state.retention_days == 17
+
+    custom_result = desktop_api.run_action(
+        "platform_set_enabled",
+        {"name": "private-tool", "enabled": False},
+    )
+    custom_updated = load_raw_config(config_path)
+
+    assert custom_result["ok"] is True
+    assert custom_updated.platforms.get("private-tool").enabled is False
+    custom_json = next(
+        item
+        for item in custom_result["data"]["config"]["platforms"]
+        if item["name"] == "private-tool"
+    )
+    assert custom_json["tool_id"] == "claude-code"
+    assert custom_json["environment_kind"] == "wsl"
+    assert custom_json["home_dir"] == "//wsl.localhost/Ubuntu-24.04/home/lingye"
+    assert custom_json["settings_path"] == "D:/custom/private/settings.json"
+    assert custom_json["memory_install_names"] == {
+        "project-one": "wsl-project-slot"
+    }
 
 
 def test_desktop_environment_actions_are_removed() -> None:

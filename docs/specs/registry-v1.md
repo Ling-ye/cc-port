@@ -16,6 +16,7 @@ Registry 不保存以下信息：
 - 内容哈希、可达性、检查时间、仓库可见性和观测版本；
 - 删除历史、安装状态和项目状态；
 - 平台白名单、安装别名、插件启用范围等 CC Port 专属意图；
+- 本机 profile id、`tool_id`、Windows/WSL 环境、用户目录和原生目标路径；
 - MCP 启动配置的第二份副本；
 - 真实凭据或凭据化 URL。
 
@@ -69,7 +70,7 @@ resources:
 - 解析后不能越出仓库根目录；
 - 路径及其任何祖先不能是符号链接或不受支持的 reparse point。
 
-CC Port 原生认识 `skill`、`mcp`、`rule`、`prompt` 和 `plugin`。其他安全 `kind` 必须原样往返保存并只读展示。已知类型不接受拼错或多余字段；未知类型可以携带额外数据，规范化重写时必须保留这些数据。
+CC Port 原生认识 `skill`、`mcp`、`rule`、`prompt`、`plugin`、`instruction` 和 `memory`。其他安全 `kind` 必须原样往返保存并只读展示。已知类型不接受拼错或多余字段；未知类型可以携带额外数据，规范化重写时必须保留这些数据。新增已知 kind 不增加 Registry 字段，也不改变 v1 schema。
 
 ### 2.2 外部来源
 
@@ -94,14 +95,16 @@ CC Port 原生支持 `git`、`npm` 和 `marketplace`。未知来源类型不是 
 
 ## 3. 内容布局与元数据
 
-自动发现只扫描五个约定根目录的直接子项：
+自动发现只扫描七个约定根目录的直接子项：
 
 ```text
-skills/*   -> skill
-mcp/*      -> mcp
-rules/*    -> rule
-prompts/*  -> prompt
-plugins/*  -> plugin
+skills/*        -> skill
+mcp/*           -> mcp
+rules/*         -> rule
+prompts/*       -> prompt
+plugins/*       -> plugin
+instructions/*  -> instruction
+memories/*      -> memory
 ```
 
 直接子文件或目录按相应类型验证；Skill 必须通过 `SKILL.md` 规则，MCP 配置位于 `mcp/<name>/mcp.json|yaml|yml`，其他类型复用 CC Port 的现有内容验证器。审计不递归发现资源内部目录，也不扫描未知根目录。
@@ -145,7 +148,7 @@ resources:
           enabled: true
 ```
 
-Overlay 用资源键关联设置。指向不存在资源的设置被忽略但保留，不反向创建 Registry 条目。资源来源和版本只写在 Registry 的 `source` 中；插件 content/reference 轨道由 `path` 或 `source` 推导；观测版本只保存在本机。
+Overlay 用资源键关联设置。指向不存在资源的设置被忽略但保留，不反向创建 Registry 条目。资源来源和版本只写在 Registry 的 `source` 中；插件 content/reference 轨道由 `path` 或 `source` 推导；观测版本只保存在本机。`instruction` 与 `memory` 的逻辑资源级工具兼容 allowlist 和通用安装别名可以进入 overlay；具体 Windows/WSL profile、用户目录、目标路径以及 `memory_install_names` project slot 映射只属于本机配置与操作计划，不能进入 Registry 或 overlay。
 
 ## 6. 仓库审计
 

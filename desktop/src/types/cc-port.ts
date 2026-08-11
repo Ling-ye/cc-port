@@ -1,8 +1,34 @@
-export type KnownResourceKind = "skill" | "mcp" | "rule" | "prompt" | "plugin";
+export type KnownResourceKind =
+  | "skill"
+  | "mcp"
+  | "rule"
+  | "prompt"
+  | "plugin"
+  | "instruction"
+  | "memory";
 export type ResourceKind = KnownResourceKind | (string & {});
 export type DiscoveryScope = "global" | "directory";
 export type ResourceLifecycle = "active" | "removed";
 export type RemovedEffect = "index_only" | "local_files_deleted" | "remote_repo_deleted" | "";
+
+export type PlatformEnvironmentKind =
+  | "windows"
+  | "wsl"
+  | "linux"
+  | "macos"
+  | "unknown"
+  | (string & {});
+
+/**
+ * Human-readable platform metadata. The profile id remains the separate
+ * `name`/`platform` field and is the only value sent back to planning APIs.
+ */
+export interface PlatformIdentity {
+  tool_id?: string;
+  environment_kind?: PlatformEnvironmentKind;
+  environment_name?: string;
+  display_name?: string;
+}
 
 export type UiMessageParam = string | number | boolean | null;
 
@@ -142,7 +168,7 @@ export interface PluginProject {
   exists: boolean;
 }
 
-export interface PluginDeleteInstancePlan {
+export interface PluginDeleteInstancePlan extends PlatformIdentity {
   id: string;
   platform: PluginPlatform;
   scope: PluginScope;
@@ -216,7 +242,7 @@ export interface ResourceLocalState {
   targets: ResourceTargetState[];
 }
 
-export interface ResourceTargetState {
+export interface ResourceTargetState extends PlatformIdentity {
   platform: string;
   path: string;
   supported: boolean;
@@ -266,14 +292,20 @@ export interface ResourceDeleteResult {
   remote_repo_deleted: boolean;
 }
 
-export interface PlatformProfile {
+export interface PlatformProfile extends PlatformIdentity {
   name: string;
+  home_dir?: string;
   enabled: boolean;
   skills_dir: string;
   mcp_json: string;
   rules_dir: string;
   prompts_dir: string;
   plugins_dir: string;
+  instructions_path?: string;
+  memories_dir?: string;
+  memory_layout?: string;
+  settings_path?: string;
+  memory_install_names?: Record<string, string>;
 }
 
 export type ResourceCredentialMode = "auto" | "native" | "token";
@@ -329,7 +361,7 @@ export type LocalPathKind =
   | "unreadable"
   | "missing";
 
-export interface AssetPlatformRow {
+export interface AssetPlatformRow extends PlatformIdentity {
   resource_key: string;
   kind: ResourceKind;
   name: string;
@@ -384,6 +416,7 @@ export interface AssetInventory {
   legacy_write_blocker: string;
   legacy_write_blocker_ref?: UiMessageRef | null;
   registry_health?: RegistryHealthSummary | null;
+  rows: AssetPlatformRow[];
   resources: AssetResourceRow[];
 }
 
@@ -451,7 +484,7 @@ export interface RegistryRepairResult {
 export type AssetLocalStatus = "unknown" | "missing" | "single" | "identical-copies" | "variants";
 export type AssetRemoteStatus = "present" | "missing" | "read-only" | "unavailable";
 
-export interface AssetLocalInstance {
+export interface AssetLocalInstance extends PlatformIdentity {
   id: string;
   platform: string;
   install_name: string;
@@ -527,7 +560,7 @@ export interface AssetDiffFile {
   truncated: boolean;
 }
 
-export interface AssetContentDiff {
+export interface AssetContentDiff extends PlatformIdentity {
   resource_key: string;
   local_instance_id: string;
   platform: string;
@@ -554,7 +587,7 @@ export interface AssetBatchChoice {
   plugin_dependencies?: Record<string, string>;
 }
 
-export interface AssetBatchPlanItem {
+export interface AssetBatchPlanItem extends PlatformIdentity {
   id: string;
   resource_key: string;
   platform: string;
@@ -600,7 +633,7 @@ export interface AssetBatchResult {
   stale_plan?: AssetBatchPlan | null;
 }
 
-export interface AssetActionPlan {
+export interface AssetActionPlan extends PlatformIdentity {
   operation_id: string;
   action: AssetAction;
   resource_key: string;
@@ -637,7 +670,7 @@ export interface AssetActionPlan {
   schema_version: number;
 }
 
-export interface AssetActionResult {
+export interface AssetActionResult extends PlatformIdentity {
   operation_id: string;
   action: AssetAction;
   status: string;
@@ -735,7 +768,7 @@ export interface DiagnosticsState {
   error: string;
 }
 
-export interface DiscoveredResource {
+export interface DiscoveredResource extends PlatformIdentity {
   id: string;
   tool: string;
   source: DiscoveryScope;
@@ -785,7 +818,7 @@ export interface DiscoveryUploadResult {
 }
 
 
-export interface DiscoveredTool {
+export interface DiscoveredTool extends PlatformIdentity {
   id: string;
   name: string;
   root_path: string;
@@ -797,7 +830,7 @@ export interface DiscoveredTool {
   supports_kinds: ResourceKind[];
 }
 
-export interface DiscoveredMcpServer {
+export interface DiscoveredMcpServer extends PlatformIdentity {
   id: string;
   tool: string;
   name: string;

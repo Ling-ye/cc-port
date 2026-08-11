@@ -18,6 +18,14 @@ CC_PORT_RULE_FILENAME = "cc-port-skills.md"
 CC_PORT_LINK_MARKER = ".cc-port-linked"
 
 
+def _profile_install_name(entry: RegistryItem, platform_name: str, tool_id: str) -> str:
+    return (
+        entry.platform_install_dirs.get(tool_id)
+        or entry.install_dir
+        or entry.name
+    )
+
+
 def _project_cursor_dir(project: Path) -> Path:
     return project / ".cursor"
 
@@ -35,7 +43,11 @@ def _global_skill_path(config: Config, entry: RegistryItem) -> Path | None:
     for plat in config.platforms.enabled():
         sp = plat.skills_path()
         if sp:
-            candidate = sp / entry.install_target_name(plat.name)
+            candidate = sp / _profile_install_name(
+                entry,
+                plat.name,
+                plat.effective_tool_id,
+            )
             if candidate.exists():
                 return candidate
     fallback = config.install.target_path / entry.install_target_name()

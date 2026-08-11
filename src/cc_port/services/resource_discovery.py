@@ -10,7 +10,7 @@ import frontmatter
 
 from ..core.models import ItemKind
 from ..core.registry import load_registry
-from ..core.validator import RULE_FILE_NAMES, RULE_FILE_SUFFIXES, parse_skill
+from ..core.validator import RULE_FILE_NAMES, RULE_FILE_SUFFIXES, parse_skill, validate_item
 from .install_planner import MANIFEST_FILENAMES, load_resource_manifest
 from .local_path_probe import (
     LocalPathProbe,
@@ -25,6 +25,8 @@ DiscoveryScope = str
 DEFAULT_MAX_DEPTH = 4
 PREVIEW_MAX_CHARS = 20_000
 TEXT_SAMPLE_BYTES = 64_000
+CLAUDE_MEMORY_STARTUP_MAX_BYTES = 25 * 1024
+CLAUDE_MEMORY_STARTUP_MAX_LINES = 200
 
 EXCLUDED_DIR_NAMES = {
     ".cache",
@@ -52,6 +54,12 @@ EXCLUDED_DIR_NAMES = {
 ALLOWED_HIDDEN_DIR_NAMES = {".claude", ".codex", ".cursor"}
 PROMPT_DIR_NAMES = {"commands", "prompts"}
 RULE_DIR_NAMES = {"rules"}
+INSTRUCTION_FILE_NAMES = {
+    "agents.md",
+    "agents.override.md",
+    "claude.md",
+    "claude.local.md",
+}
 
 
 @dataclass
@@ -75,6 +83,11 @@ class DiscoveredResource:
     status: str = "ready"
     warnings: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
+    tool_id: str = ""
+    environment_kind: str = ""
+    environment_name: str = ""
+    display_name: str = ""
+    install_name_hint: str = ""
 
 
 @dataclass
@@ -127,6 +140,159 @@ def discover_resources(
     return sorted(candidates, key=lambda item: (item.tool, item.kind, item.name_hint, str(item.path)))
 
 
+def discover_exact_resource(
+    path: Path | str,
+    *,
+    tool: str,
+    kind: ItemKind,
+    name_hint: str,
+    source: str = "configured",
+    warnings: list[str] | None = None,
+) -> DiscoveredResource | None:
+    """Discover one explicitly scoped file/directory without scanning its parents."""
+    logical = Path(path).expanduser().absolute()
+    probe = probe_local_path(logical)
+    if probe.health == "missing":
+        return None
+    if not probe.ready or probe.content_path is None:
+        blocked = _blocked_resource_from_probe(
+            logical,
+            probe,
+            tool=tool,
+            source=source,
+            kind_hint=kind,
+        )
+        if blocked is not None:
+            blocked.name_hint = _slug(name_hint)
+        return blocked
+    content_path = probe.content_path
+    validation_error = ""
+    try:
+        validate_item(content_path, kind)
+    except Exception as exc:  # noqa: BLE001 - discovery surfaces validation as a warning
+        validation_error = str(exc)
+        validation_warnings = list(warnings or [])
+    else:
+        validation_warnings = list(warnings or [])
+    if kind == "memory" and content_path.is_dir():
+        validation_warnings.extend(_memory_entrypoint_warnings(content_path))
+    resource = _resource(
+        path=logical,
+        content_path=content_path,
+        probe=probe,
+        marker=content_path,
+        tool=tool,
+        source=source,
+        kind=kind,
+        name_hint=_slug(name_hint),
+        description=_file_description(content_path) if content_path.is_file() else "",
+        warnings=validation_warnings,
+    )
+    if validation_error:
+        resource.blockers.append(validation_error)
+        resource.status = "blocked"
+    return resource
+
+
+def _memory_entrypoint_warnings(memory_path: Path) -> list[str]:
+    """Warn about Claude's bounded startup load without modifying the payload."""
+    entrypoint = memory_path / "MEMORY.md"
+    try:
+        over_limit = _claude_memory_startup_over_limit(entrypoint)
+    except (OSError, UnicodeError):
+        return []
+    if not over_limit:
+        return []
+    return [
+        "Claude Code only loads the first 200 lines or 25 KiB of MEMORY.md "
+        "at startup; CC Port preserves the complete file during migration."
+    ]
+
+
+def _claude_memory_startup_over_limit(path: Path) -> bool:
+    """Stream Claude's effective startup text with a bounded visible buffer."""
+    visible = ""
+    in_comment = False
+    with path.open("r", encoding="utf-8") as handle:
+        first = handle.readline()
+        if first.strip() == "---":
+            candidate, candidate_in_comment = _append_visible_memory_text(
+                "",
+                first,
+                in_comment=False,
+            )
+            candidate_over_limit = _visible_memory_over_limit(candidate)
+            closed_frontmatter = False
+            for line in handle:
+                if line.strip() in {"---", "..."}:
+                    closed_frontmatter = True
+                    break
+                if not candidate_over_limit:
+                    candidate, candidate_in_comment = _append_visible_memory_text(
+                        candidate,
+                        line,
+                        in_comment=candidate_in_comment,
+                    )
+                    candidate_over_limit = _visible_memory_over_limit(candidate)
+            if not closed_frontmatter:
+                return candidate_over_limit
+        else:
+            visible, in_comment = _append_visible_memory_text(
+                visible,
+                first,
+                in_comment=in_comment,
+            )
+        if _visible_memory_over_limit(visible):
+            return True
+        for line in handle:
+            visible, in_comment = _append_visible_memory_text(
+                visible,
+                line,
+                in_comment=in_comment,
+            )
+            if _visible_memory_over_limit(visible):
+                return True
+    return False
+
+
+def _append_visible_memory_text(
+    current: str,
+    text: str,
+    *,
+    in_comment: bool,
+) -> tuple[str, bool]:
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        if in_comment:
+            closing = text.find("-->", cursor)
+            if closing < 0:
+                return _bounded_visible_text(current + "".join(output)), True
+            cursor = closing + 3
+            in_comment = False
+            continue
+        opening = text.find("<!--", cursor)
+        if opening < 0:
+            output.append(text[cursor:])
+            break
+        output.append(text[cursor:opening])
+        cursor = opening + 4
+        in_comment = True
+    return _bounded_visible_text(current + "".join(output)), in_comment
+
+
+def _bounded_visible_text(text: str) -> str:
+    max_chars = CLAUDE_MEMORY_STARTUP_MAX_BYTES + CLAUDE_MEMORY_STARTUP_MAX_LINES + 1
+    return text[:max_chars]
+
+
+def _visible_memory_over_limit(text: str) -> bool:
+    return (
+        len(text.encode("utf-8")) > CLAUDE_MEMORY_STARTUP_MAX_BYTES
+        or len(text.splitlines()) > CLAUDE_MEMORY_STARTUP_MAX_LINES
+    )
+
+
 def read_discovered_resource(
     resource_id: str,
     *,
@@ -170,7 +336,11 @@ def _roots_for_scope(
         home = Path.home()
         return [
             ("codex", home / ".codex"),
-            ("claude-code", home / ".claude"),
+            # Claude's config root also contains credentials, transcripts,
+            # history, caches, and per-project state.  Only scan the documented
+            # portable roots; user instructions are handled as one exact file.
+            ("claude-code", home / ".claude" / "skills"),
+            ("claude-code", home / ".claude" / "rules"),
             ("cursor", home / ".cursor"),
             ("windsurf", home / ".windsurf"),
             ("opencode", home / ".config" / "opencode"),
@@ -421,12 +591,30 @@ def _candidate_from_file(
     source: str,
     kind_hint: ItemKind | None = None,
 ) -> DiscoveredResource | None:
-    kind = _file_kind(path, kind_hint=kind_hint)
+    if source == "global" and _is_global_user_instruction_location(path, tool=tool):
+        # User instructions are profile-bound resources.  The generic scanner
+        # has no configured profile/home identity, so exposing them here would
+        # mislabel Windows content as WSL (or vice versa).  Environment-aware
+        # discovery owns this resource type.
+        return None
+    kind = _file_kind(
+        path,
+        kind_hint=kind_hint,
+        allow_instruction=_is_scoped_instruction_path(
+            path,
+            tool=tool,
+            source=source,
+        ),
+    )
     if kind is None:
+        return None
+    if kind == "instruction" and tool == "codex" and not _has_non_whitespace_text(
+        content_path
+    ):
         return None
     name_hint = _slug(path.stem if path.stem else path.name.lstrip("."))
     description = _file_description(content_path)
-    return _resource(
+    resource = _resource(
         path=path,
         content_path=content_path,
         probe=probe,
@@ -438,6 +626,24 @@ def _candidate_from_file(
         description=description,
         warnings=[],
     )
+    if kind == "instruction" and source == "directory":
+        resource.blockers.append(
+            "Project instruction files are observation-only until a project-specific "
+            "target identity is configured; they cannot be migrated as user instructions."
+        )
+        resource.status = "blocked"
+    if (
+        kind == "rule"
+        and source == "directory"
+        and tool == "claude-code"
+        and _has_parent_named(path, {".claude"})
+    ):
+        resource.blockers.append(
+            "Project Claude rules are observation-only until a project-specific "
+            "target identity is configured; they cannot be promoted to user rules."
+        )
+        resource.status = "blocked"
+    return resource
 
 
 def _resource(
@@ -483,11 +689,22 @@ def _resource(
     )
 
 
-def _file_kind(path: Path, *, kind_hint: ItemKind | None = None) -> ItemKind | None:
+def _file_kind(
+    path: Path,
+    *,
+    kind_hint: ItemKind | None = None,
+    allow_instruction: bool = False,
+) -> ItemKind | None:
     lower = path.name.lower()
     suffix = path.suffix.lower()
     if kind_hint == "prompt" and suffix == ".md":
         return "prompt"
+    if kind_hint == "rule" and suffix in RULE_FILE_SUFFIXES:
+        return "rule"
+    if suffix == ".md" and _has_parent_named(path, RULE_DIR_NAMES):
+        return "rule"
+    if allow_instruction and lower in INSTRUCTION_FILE_NAMES:
+        return "instruction"
     if lower in {"mcp.json", "mcp.yaml", "mcp.yml"}:
         return "mcp"
     if lower in RULE_FILE_NAMES:
@@ -501,6 +718,38 @@ def _file_kind(path: Path, *, kind_hint: ItemKind | None = None) -> ItemKind | N
     if _has_parent_named(path, RULE_DIR_NAMES):
         return "rule"
     return None
+
+
+def _is_scoped_instruction_path(path: Path, *, tool: str, source: str) -> bool:
+    lower = path.name.casefold()
+    if lower not in INSTRUCTION_FILE_NAMES:
+        return False
+    return source == "directory"
+
+
+def _is_global_user_instruction_location(path: Path, *, tool: str) -> bool:
+    lower = path.name.casefold()
+    parent = path.parent.name.casefold()
+    if tool == "claude-code":
+        return lower == "claude.md" and parent == ".claude"
+    return (
+        tool == "codex"
+        and parent == ".codex"
+        and lower in {"agents.md", "agents.override.md"}
+    )
+
+
+def _has_non_whitespace_text(path: Path) -> bool:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            while chunk := handle.read(8192):
+                if chunk.strip():
+                    return True
+    except (OSError, UnicodeError):
+        # Keep unreadable candidates visible so their path safety problem is not
+        # silently converted into absence.
+        return True
+    return False
 
 
 def _file_description(path: Path) -> str:

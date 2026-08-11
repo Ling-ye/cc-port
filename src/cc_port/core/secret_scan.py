@@ -42,6 +42,12 @@ def find_secret_text(text: str) -> SecretTextMatch | None:
             reason="high-risk token pattern",
             preview=_line_preview(text, high_risk.start()),
         )
+    credential_url = CREDENTIAL_URL_RE.search(text)
+    if credential_url and not is_secret_placeholder(credential_url.group("secret")):
+        return SecretTextMatch(
+            reason="credentialized URL",
+            preview=_line_preview(text, credential_url.start()),
+        )
     return None
 
 

@@ -52,24 +52,108 @@ max_backup_mb = 2048
 # these directories during sync even when the corresponding tool is absent.
 # File-style Prompt targets use prompts_dir/<install-name>.md. If prompts_dir is
 # empty, custom platforms retain the legacy rules_dir/<install-name> behavior.
+#
+# The [platforms.<profile-id>] key is the stable, unique profile name used by
+# discovery and write plans. tool_id selects the tool's native resource
+# semantics. CC Port never infers tool/environment identity from profile-id.
+# Windows-native and WSL installations are independent profiles, even when they
+# belong to the same tool. home_dir makes each profile's "~/" paths resolve in
+# that installation's own user directory.
+#
+# mcp_json and settings_path are discovery inputs. settings_path points to this
+# profile's native user-level file (Claude settings.json or Codex config.toml).
+# Each profile parses only this one explicit user-level/native config input. It
+# does not merge Claude managed policy, trusted project/local settings, or
+# temporary --settings sources, and does not derive the complete effective
+# runtime configuration. If one of those sources overrides autoMemoryDirectory,
+# configure a separate explicit direct profile/path. CC Port may extract a
+# redacted MCP projection from mcp_json and may read Claude's autoMemoryDirectory
+# from settings_path, but never migrates either whole file.
+# rules_dir is the profile's user/global rules target. Project .claude/rules
+# found by a directory-scope scan remain read-only and are never promoted into
+# this user directory because the current model has no project target identity.
 
-[platforms.codex]
+[platforms.codex-windows]
+tool_id = "codex"
+environment_kind = "windows"
+environment_name = ""
+display_name = "Codex"
+home_dir = "C:/Users/example"
 enabled = true
 skills_dir = "~/.codex/skills"
 mcp_json = ""
 rules_dir = ""
 prompts_dir = ""
 plugins_dir = "~/.codex/plugins"
+instructions_path = "~/.codex/AGENTS.md"
+settings_path = "~/.codex/config.toml"
 
-[platforms.claude-code]
+[platforms.codex-wsl-ubuntu]
+tool_id = "codex"
+environment_kind = "wsl"
+environment_name = "Ubuntu-24.04"
+display_name = "Codex"
+home_dir = '\\wsl.localhost\Ubuntu-24.04\home\example'
+enabled = true
+skills_dir = "~/.codex/skills"
+mcp_json = ""
+rules_dir = ""
+prompts_dir = ""
+plugins_dir = "~/.codex/plugins"
+instructions_path = "~/.codex/AGENTS.md"
+settings_path = "~/.codex/config.toml"
+
+[platforms.claude-windows]
+tool_id = "claude-code"
+environment_kind = "windows"
+environment_name = ""
+display_name = "Claude Code"
+home_dir = "C:/Users/example"
 enabled = true
 skills_dir = "~/.claude/skills"
 mcp_json = "~/.claude.json"
-rules_dir = ""
+rules_dir = "~/.claude/rules"
 prompts_dir = ""
 plugins_dir = "~/.claude/plugins"
+instructions_path = "~/.claude/CLAUDE.md"
+memories_dir = "~/.claude/projects"
+memory_layout = "projects"
+settings_path = "~/.claude/settings.json"
+# Discovery uses claude-memory-<slot-hash> so a slot containing a local path or
+# username is not exposed as a candidate name. Map the user-chosen remote
+# logical name to the exact existing child under this profile's projects/.
+memory_install_names = { "cc-port-memory" = "replace-with-windows-project-slot" }
 
-[platforms.cursor]
+[platforms.claude-wsl-ubuntu]
+tool_id = "claude-code"
+environment_kind = "wsl"
+environment_name = "Ubuntu-24.04"
+display_name = "Claude Code"
+home_dir = '\\wsl.localhost\Ubuntu-24.04\home\example'
+enabled = true
+skills_dir = "~/.claude/skills"
+mcp_json = "~/.claude.json"
+rules_dir = "~/.claude/rules"
+prompts_dir = ""
+plugins_dir = "~/.claude/plugins"
+instructions_path = "~/.claude/CLAUDE.md"
+memories_dir = "~/.claude/projects"
+memory_layout = "projects"
+settings_path = "~/.claude/settings.json"
+# The same portable resource may use a different exact slot in WSL. This map is
+# machine-local and is never written to registry.yaml or cc-port.yaml.
+memory_install_names = { "cc-port-memory" = "replace-with-wsl-project-slot" }
+# If settings_path points to settings.json and it declares autoMemoryDirectory,
+# that value is the final memory
+# directory itself. CC Port switches to direct layout and does not append a
+# project key or another memory/ component; direct layout needs no slot map.
+
+[platforms.cursor-windows]
+tool_id = "cursor"
+environment_kind = "windows"
+environment_name = ""
+display_name = "Cursor"
+home_dir = "C:/Users/example"
 enabled = true
 skills_dir = "~/.cursor/skills"
 mcp_json = "~/.cursor/mcp.json"
@@ -77,7 +161,12 @@ rules_dir = ""
 prompts_dir = "~/.cursor/commands"
 plugins_dir = ""
 
-[platforms.windsurf]
+[platforms.windsurf-windows]
+tool_id = "windsurf"
+environment_kind = "windows"
+environment_name = ""
+display_name = "Windsurf"
+home_dir = "C:/Users/example"
 enabled = true
 skills_dir = "~/.windsurf/skills"
 mcp_json = "~/.windsurf/mcp.json"
@@ -85,7 +174,12 @@ rules_dir = ""
 prompts_dir = ""
 plugins_dir = ""
 
-[platforms.opencode]
+[platforms.opencode-windows]
+tool_id = "opencode"
+environment_kind = "windows"
+environment_name = ""
+display_name = "OpenCode"
+home_dir = "C:/Users/example"
 enabled = true
 skills_dir = "~/.config/opencode/skills"
 mcp_json = "~/.config/opencode/opencode.json"

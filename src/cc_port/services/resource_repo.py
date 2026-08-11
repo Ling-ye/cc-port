@@ -23,7 +23,15 @@ from .resource_binding import configured_github_owner
 from .resource_commit import commit_resource_changes_unlocked
 from .resource_repo_lock import resource_repo_write_lock
 
-RESOURCE_DIRS = ("skills", "rules", "prompts", "mcp", "plugins")
+RESOURCE_DIRS = (
+    "skills",
+    "rules",
+    "prompts",
+    "mcp",
+    "plugins",
+    "instructions",
+    "memories",
+)
 CC_PORT_HOMEPAGE = "https://github.com/Ling-ye/cc-port"
 
 
@@ -241,6 +249,7 @@ def prepare_local_resource_repo(
             local_path,
             branch=branch,
             token=token,
+            config=cfg,
         )
 
 
@@ -348,7 +357,7 @@ def push_resource_repo(message: str = "cc-port: update resources", config: Confi
         _assert_expected_remote(cfg, root)
         ensure_structure(root)
         if git_ops.status_short(root):
-            commit_resource_changes_unlocked(root, message=message)
+            commit_resource_changes_unlocked(root, message=message, config=cfg)
         from .resource_sync import push_resource_sync
 
         push_resource_sync(config=cfg)
@@ -408,11 +417,18 @@ def _is_generated_empty_scaffold(root: Path) -> bool:
     return True
 
 
-def _commit_and_push_if_needed(path: Path, *, branch: str, token: str | None) -> None:
+def _commit_and_push_if_needed(
+    path: Path,
+    *,
+    branch: str,
+    token: str | None,
+    config: Config,
+) -> None:
     if git_ops.status_short(path):
         commit_resource_changes_unlocked(
             path,
             message="cc-port: initialize resource repository",
+            config=config,
         )
     git_ops.push(path, branch=branch, token=token)
 

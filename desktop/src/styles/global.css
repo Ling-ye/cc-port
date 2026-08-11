@@ -833,6 +833,55 @@ button {
 .kind-rule { background: #9b6a12; }
 .kind-prompt { background: #2f6690; }
 .kind-plugin { background: #8e3d4f; }
+.kind-instruction { background: #4f5fa8; }
+.kind-memory { background: #5f6f3c; }
+
+.platform-identity-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.platform-display-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.platform-environment-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid #cfd9df;
+  border-radius: 999px;
+  background: #edf2f4;
+  color: #4f5f69;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.platform-environment-badge.environment-windows {
+  border-color: #b8d2eb;
+  background: #edf6ff;
+  color: #2d5f8a;
+}
+
+.platform-environment-badge.environment-wsl,
+.platform-environment-badge.environment-linux {
+  border-color: #c9d9bd;
+  background: #f0f7eb;
+  color: #496b36;
+}
+
+.platform-environment-badge.environment-macos {
+  border-color: #d4cbe2;
+  background: #f5f1fa;
+  color: #66517f;
+}
 
 .description-list {
   display: grid;
@@ -1578,6 +1627,41 @@ button {
 
 .platform-toggle > strong {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.platform-toggle-identity {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.platform-toggle-identity > strong {
+  min-width: 0;
+}
+
+.platform-toggle-identity > small {
+  color: #6a7881;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.platform-profile-paths {
+  display: grid;
+  gap: 3px;
+}
+
+.platform-profile-paths > span {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  color: #6a7881;
+  font-size: 11px;
+}
+
+.platform-profile-paths code {
+  color: #4f5d66;
+  font-size: 11px;
   overflow-wrap: anywhere;
 }
 

@@ -116,6 +116,7 @@ function makeInventory(overrides: Partial<AssetInventory> = {}): AssetInventory 
     scanned_local: false,
     generated_at: "2026-07-23T08:00:00.000Z",
     legacy_write_blocker: "",
+    rows: [],
     resources: [],
     ...overrides,
   };

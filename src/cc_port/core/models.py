@@ -10,11 +10,20 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 ITEM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 RESOURCE_KIND_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+SAFE_INSTALL_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,255}$")
 
 # Keep old name as alias for backward compatibility
 SKILL_NAME_RE = ITEM_NAME_RE
 
-ItemKind = Literal["skill", "mcp", "rule", "prompt", "plugin"]
+ItemKind = Literal[
+    "skill",
+    "mcp",
+    "rule",
+    "prompt",
+    "plugin",
+    "instruction",
+    "memory",
+]
 ItemLifecycle = Literal["active", "removed"]
 RemovedEffect = Literal["", "index_only", "local_files_deleted", "remote_repo_deleted"]
 PluginTrack = Literal["content", "reference"]
@@ -251,7 +260,15 @@ class RegistryResource(BaseModel):
     def _validate_location(self) -> RegistryResource:
         if bool(self.path) == bool(self.source):
             raise ValueError("resource must contain exactly one of path or source.")
-        if self.kind in {"skill", "mcp", "rule", "prompt", "plugin"} and self.model_extra:
+        if self.kind in {
+            "skill",
+            "mcp",
+            "rule",
+            "prompt",
+            "plugin",
+            "instruction",
+            "memory",
+        } and self.model_extra:
             raise ValueError(
                 f"known resource kind {self.kind!r} contains unsupported fields: "
                 + ", ".join(sorted(self.model_extra))
@@ -319,7 +336,9 @@ class ResolvedResource(BaseModel):
     name: str = Field(..., description="Lower-case, hyphenated unique identifier (<=64 chars).")
     kind: str = Field(
         default="skill",
-        description="Resource type: skill | mcp | rule | prompt | plugin.",
+        description=(
+            "Resource type: skill | mcp | rule | prompt | plugin | instruction | memory."
+        ),
     )
     repo: str = Field(default="", description="HTTPS GitHub URL of the repository.")
     source: Literal["owned", "external", "local"] = Field(
@@ -458,12 +477,18 @@ class ResolvedResource(BaseModel):
         for platform, install_name in values.items():
             platform_name = str(platform).strip()
             target_name = str(install_name).strip()
-            if not platform_name:
-                raise ValueError("platform_install_dirs must not contain an empty platform.")
-            if not ITEM_NAME_RE.match(target_name):
+            if not RESOURCE_KIND_RE.fullmatch(platform_name):
+                raise ValueError(
+                    "platform_install_dirs keys must be portable tool ids using "
+                    "lowercase letters, digits, '.', '_' or '-'."
+                )
+            if (
+                target_name in {".", ".."}
+                or not SAFE_INSTALL_SEGMENT_RE.fullmatch(target_name)
+            ):
                 raise ValueError(
                     "platform_install_dirs values must be safe single path segments "
-                    "using [a-z0-9-]."
+                    "using letters, digits, '.', '_' or '-'."
                 )
             normalized[platform_name] = target_name
         return normalized
@@ -475,8 +500,11 @@ class ResolvedResource(BaseModel):
         seen: set[str] = set()
         for value in values:
             name = str(value).strip()
-            if not name:
-                raise ValueError("platforms must not contain empty names.")
+            if not RESOURCE_KIND_RE.fullmatch(name):
+                raise ValueError(
+                    "platforms must contain only portable tool ids using lowercase "
+                    "letters, digits, '.', '_' or '-'."
+                )
             if name not in seen:
                 normalized.append(name)
                 seen.add(name)
@@ -555,6 +583,23 @@ class CcPortResourceSettings(BaseModel):
     install_names: dict[str, str] = Field(default_factory=dict)
     plugin: CcPortPluginSettings | None = None
 
+    @field_validator("platforms")
+    @classmethod
+    def _validate_platforms(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            tool_id = str(value).strip()
+            if not RESOURCE_KIND_RE.fullmatch(tool_id):
+                raise ValueError(
+                    "platforms must contain only portable tool ids using lowercase "
+                    "letters, digits, '.', '_' or '-'."
+                )
+            if tool_id not in seen:
+                normalized.append(tool_id)
+                seen.add(tool_id)
+        return normalized
+
     @field_validator("install_name")
     @classmethod
     def _validate_install_name(cls, value: str) -> str:
@@ -570,8 +615,14 @@ class CcPortResourceSettings(BaseModel):
         for platform, name in values.items():
             platform_name = str(platform).strip()
             install_name = str(name).strip()
-            if not platform_name or not ITEM_NAME_RE.fullmatch(install_name):
-                raise ValueError("install_names requires safe platform and install names.")
+            if (
+                not RESOURCE_KIND_RE.fullmatch(platform_name)
+                or install_name in {".", ".."}
+                or not SAFE_INSTALL_SEGMENT_RE.fullmatch(install_name)
+            ):
+                raise ValueError(
+                    "install_names requires portable tool ids and safe install names."
+                )
             normalized[platform_name] = install_name
         return normalized
 
@@ -588,8 +639,24 @@ class CcPortSettings(BaseModel):
     def _validate_version_and_keys(self) -> CcPortSettings:
         if self.version != 1:
             raise ValueError(f"Unsupported cc-port.yaml version: {self.version}.")
-        for key in self.resources:
-            ResourceKey.parse(key)
+        for key, settings in self.resources.items():
+            resource_key = ResourceKey.parse(key)
+            if resource_key.kind == "instruction" and len(settings.platforms) != 1:
+                raise ValueError(
+                    "Instruction resources in cc-port.yaml must be bound to exactly "
+                    "one portable source tool."
+                )
+            if resource_key.kind == "memory" and (
+                settings.install_name or settings.install_names
+            ):
+                raise ValueError(
+                    "Memory install names are machine-local and cannot be stored "
+                    "in cc-port.yaml; configure platform memory_install_names instead."
+                )
+            if resource_key.kind == "memory" and settings.platforms != ["claude-code"]:
+                raise ValueError(
+                    "Memory resources in cc-port.yaml must be bound only to Claude Code."
+                )
         return self
 
 
@@ -699,6 +766,7 @@ class RegistryCatalog(BaseModel):
 
     def upsert(self, entry: RegistryItem) -> None:
         resource = self._portable_resource(entry)
+        settings = self._portable_settings(entry)
         entry.external_source = resource.source
         for index, current in enumerate(self.resources):
             if current.resource_key == resource.resource_key:
@@ -707,7 +775,6 @@ class RegistryCatalog(BaseModel):
         else:
             self.resources.append(resource)
         self.resources.sort(key=lambda item: (item.kind, item.name))
-        settings = self._portable_settings(entry)
         if settings is None:
             self.cc_port.resources.pop(entry.resource_key, None)
         else:
@@ -721,6 +788,7 @@ class RegistryCatalog(BaseModel):
         for index, resource in enumerate(self.resources):
             if resource.resource_key == entry.resource_key:
                 self.resources.pop(index)
+                self.cc_port.resources.pop(entry.resource_key, None)
                 self._resolved_items.pop(entry.resource_key, None)
                 return entry
         return None
@@ -810,6 +878,13 @@ class RegistryCatalog(BaseModel):
 
     @staticmethod
     def _portable_settings(entry: RegistryItem) -> CcPortResourceSettings | None:
+        if entry.kind == "memory" and (
+            entry.install_dir or entry.platform_install_dirs
+        ):
+            raise ValueError(
+                "Memory install names are machine-local and cannot be stored "
+                "in cc-port.yaml; configure platform memory_install_names instead."
+            )
         plugin_settings = None
         if entry.plugin is not None:
             plugin_settings = CcPortPluginSettings(

@@ -343,6 +343,74 @@ describe("SettingsView native Git settings", () => {
     });
   });
 
+  it("renders Windows and WSL profiles separately and toggles the stable profile id", async () => {
+    const initial = settings();
+    const claudeBase = initial.config.platforms.find((profile) => profile.name === "claude-code")!;
+    initial.config.platforms = [
+      ...initial.config.platforms.filter((profile) => profile.name !== "claude-code"),
+      {
+        ...claudeBase,
+        name: "profile-a",
+        tool_id: "claude-code",
+        environment_kind: "windows",
+        environment_name: "Windows",
+        display_name: "Claude Code",
+        instructions_path: "C:/Users/test/.claude/CLAUDE.md",
+        memories_dir: "C:/Users/test/.claude/projects",
+        settings_path: "C:/Users/test/.claude/settings.json",
+      },
+      {
+        ...claudeBase,
+        name: "profile-b",
+        tool_id: "claude-code",
+        environment_kind: "wsl",
+        environment_name: "Ubuntu-24.04",
+        display_name: "Claude Code",
+        instructions_path: "/home/test/.claude/CLAUDE.md",
+        memories_dir: "/home/test/.claude/projects",
+        settings_path: "/home/test/.claude/settings.json",
+      },
+    ];
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
+      if (action === "config_get") return initial;
+      if (action === "git_credential_status") return credentialStatus();
+      if (action === "platform_set_enabled") return initial;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    renderView();
+    const user = userEvent.setup();
+
+    const windows = await screen.findByRole("checkbox", {
+      name: "Claude Code · Windows native",
+    });
+    const wsl = screen.getByRole("checkbox", {
+      name: "Claude Code · WSL · Ubuntu-24.04",
+    });
+    expect(windows).toBeEnabled();
+    expect(wsl).toBeEnabled();
+    expect(screen.getByText("Windows native", { selector: ".platform-environment-badge" }))
+      .toBeVisible();
+    expect(screen.getByText("WSL · Ubuntu-24.04", { selector: ".platform-environment-badge" }))
+      .toBeVisible();
+    expect(screen.getByText("profile-a", { selector: ".platform-toggle-identity small" }))
+      .toBeVisible();
+    expect(screen.getByText("profile-b", { selector: ".platform-toggle-identity small" }))
+      .toBeVisible();
+    expect(screen.getByText("C:/Users/test/.claude/CLAUDE.md")).toBeVisible();
+    expect(screen.getByText("/home/test/.claude/CLAUDE.md")).toBeVisible();
+    expect(screen.getByText("C:/Users/test/.claude/projects")).toBeVisible();
+    expect(screen.getByText("/home/test/.claude/projects")).toBeVisible();
+    expect(screen.getByText("C:/Users/test/.claude/settings.json")).toBeVisible();
+    expect(screen.getByText("/home/test/.claude/settings.json")).toBeVisible();
+
+    await user.click(wsl);
+
+    expect(vi.mocked(ccPortAction)).toHaveBeenCalledWith("platform_set_enabled", {
+      name: "profile-b",
+      enabled: false,
+    });
+  });
+
   it("renders diagnostics as a button and status line without expandable content", async () => {
     mockInitial();
     renderView();

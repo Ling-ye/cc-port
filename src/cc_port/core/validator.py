@@ -146,6 +146,71 @@ def validate_prompt_path(prompt_path: Path) -> None:
         raise SkillValidationError(f"No .md prompt files found in {prompt_path}.")
 
 
+def validate_instruction_path(instruction_path: Path) -> None:
+    """Validate a portable user-instruction document without following imports."""
+    instruction_path = instruction_path.expanduser().absolute()
+    if instruction_path.is_symlink():
+        raise SkillValidationError(
+            f"{instruction_path} must not be a symbolic link."
+        )
+    payload = instruction_path
+    if instruction_path.is_dir():
+        entries = sorted(instruction_path.iterdir(), key=lambda path: path.name.casefold())
+        if (
+            len(entries) != 1
+            or entries[0].is_symlink()
+            or not entries[0].is_file()
+            or entries[0].suffix.lower() != ".md"
+        ):
+            raise SkillValidationError(
+                f"{instruction_path} must contain only one regular root Markdown instruction file."
+            )
+        payload = entries[0]
+    elif not instruction_path.is_file():
+        raise SkillValidationError(f"{instruction_path} must be an instruction file.")
+    if payload.suffix.lower() != ".md":
+        raise SkillValidationError(f"{payload} must be a Markdown instruction file.")
+    try:
+        payload.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise SkillValidationError(
+            f"{payload} must be readable UTF-8 text."
+        ) from exc
+
+
+def validate_memory_path(memory_path: Path) -> None:
+    """Validate one exact Claude Code auto-memory directory."""
+    memory_path = memory_path.expanduser().absolute()
+    if memory_path.is_symlink() or not memory_path.is_dir():
+        raise SkillValidationError(f"{memory_path} must be an auto-memory directory.")
+    entrypoint = memory_path / "MEMORY.md"
+    if not entrypoint.is_file() or entrypoint.is_symlink():
+        raise SkillValidationError(
+            f"{memory_path} must contain a regular MEMORY.md entrypoint."
+        )
+    for path in memory_path.rglob("*"):
+        if path.is_symlink():
+            raise SkillValidationError(
+                f"{memory_path} may not contain symbolic links."
+            )
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise SkillValidationError(
+                f"{memory_path} may contain only regular Markdown files and directories."
+            )
+        if path.suffix.lower() != ".md":
+            raise SkillValidationError(
+                f"{memory_path} may contain only Markdown memory files."
+            )
+        try:
+            path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise SkillValidationError(
+                f"{path} must be readable UTF-8 text."
+            ) from exc
+
+
 def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None = None) -> None:
     """Dispatch validation based on item kind."""
     if kind == "skill":
@@ -165,3 +230,7 @@ def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None 
             return
         if not resolved.is_dir():
             raise SkillValidationError(f"{path} is not a plugin directory or .js/.ts plugin file.")
+    elif kind == "instruction":
+        validate_instruction_path(path)
+    elif kind == "memory":
+        validate_memory_path(path)

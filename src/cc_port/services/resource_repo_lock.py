@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..core.config import DEFAULT_LOCK_TIMEOUT_SECONDS
+from ..core.config import DEFAULT_LOCK_TIMEOUT_SECONDS, default_state_dir
 from .state_lock import TargetLockSet, acquire_target_locks
 
 _LOCKS_GUARD = threading.Lock()
@@ -21,9 +21,19 @@ def resource_repo_write_lock(
     repo_path: Path,
     *,
     timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+    allow_state_target: bool = False,
 ) -> Iterator[None]:
     """Serialize all mutating Git workflows for one resource repository."""
     target = repo_path.expanduser().resolve(strict=False)
+    state_root = default_state_dir().expanduser().resolve(strict=False)
+    if not allow_state_target and (
+        target == state_root
+        or target in state_root.parents
+        or state_root in target.parents
+    ):
+        raise ValueError(
+            "The machine-local state directory must not overlap the resource repository."
+        )
     key = os.path.normcase(str(target))
     with _LOCKS_GUARD:
         local_lock = _LOCAL_LOCKS.setdefault(key, threading.RLock())

@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 
 import cc_port.services.env_manager as env_manager
+import cc_port.services.resource_discovery as resource_discovery
 from cc_port.core.config import Config
 from cc_port.core.platforms import PlatformProfile, PlatformsConfig
+from cc_port.services.resource_discovery import discover_resources
 
 
 def test_discovery_finds_resources_and_marks_mcp_secret_fields(tmp_path: Path) -> None:
@@ -277,3 +279,156 @@ def test_removed_environment_mutation_api_is_not_exposed() -> None:
     }
 
     assert all(not hasattr(env_manager, name) for name in removed)
+
+
+def test_gemini_discovery_only_adapter_keeps_commands_and_rules(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    command = home / ".gemini" / "commands" / "review.md"
+    rule = home / ".gemini" / "rules" / "safety.md"
+    command.parent.mkdir(parents=True)
+    rule.parent.mkdir(parents=True)
+    command.write_text("# Review command\n", encoding="utf-8")
+    rule.write_text("# Safety rule\n", encoding="utf-8")
+
+    result = env_manager.discover_environment(home=home)
+
+    gemini = next(tool for tool in result.tools if tool.id == "gemini")
+    assert gemini.detected is True
+    assert {
+        (resource.kind, resource.name_hint, resource.path)
+        for resource in result.resources
+        if resource.tool == "gemini"
+    } == {
+        ("prompt", "review", command.resolve()),
+        ("rule", "safety", rule.resolve()),
+    }
+
+
+def test_plugin_discovery_keeps_same_tool_windows_and_wsl_instances_separate(
+    tmp_path: Path,
+) -> None:
+    profiles: list[PlatformProfile] = []
+    expected: set[tuple[str, str, str, Path]] = set()
+    for name, environment_kind in (
+        ("claude-windows", "windows"),
+        ("claude-wsl-ubuntu", "wsl"),
+    ):
+        home = tmp_path / name
+        plugin = home / ".claude" / "plugins" / "same-plugin"
+        manifest = plugin / ".claude-plugin" / "plugin.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"name": "same-plugin"}), encoding="utf-8")
+        profiles.append(
+            PlatformProfile(
+                name=name,
+                tool_id="claude-code",
+                environment_kind=environment_kind,
+                environment_name="Ubuntu" if environment_kind == "wsl" else "",
+                home_dir=str(home),
+                plugins_dir="~/.claude/plugins",
+            )
+        )
+        expected.add((name, "claude-code", environment_kind, plugin.resolve()))
+
+    result = env_manager.discover_environment(
+        home=tmp_path / "unused",
+        config=Config(platforms=PlatformsConfig(profiles=profiles)),
+    )
+
+    matches = [item for item in result.plugins if item.plugin_id == "same-plugin"]
+    assert {
+        (item.platform, item.tool_id, item.environment_kind, item.path)
+        for item in matches
+    } == expected
+    assert len({item.id for item in matches}) == 2
+
+
+def test_project_instruction_files_are_detected_but_observation_only(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    files = [
+        project / "CLAUDE.md",
+        project / "CLAUDE.local.md",
+        project / ".claude" / "CLAUDE.md",
+        project / "AGENTS.md",
+        project / "AGENTS.override.md",
+    ]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {path.name}\n", encoding="utf-8")
+
+    resources = discover_resources(scope="directory", root_path=project)
+    instructions = [resource for resource in resources if resource.kind == "instruction"]
+
+    assert {resource.path for resource in instructions} == {path.resolve() for path in files}
+    assert all(resource.status == "blocked" for resource in instructions)
+    assert all("observation-only" in " ".join(resource.blockers) for resource in instructions)
+
+
+def test_project_claude_rules_are_not_promoted_to_user_rules(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    rule = project / ".claude" / "rules" / "security" / "CLAUDE.md"
+    rule.parent.mkdir(parents=True)
+    rule.write_text("# Project-only security rule\n", encoding="utf-8")
+
+    resources = discover_resources(scope="directory", root_path=project)
+    candidate = next(resource for resource in resources if resource.path == rule.resolve())
+
+    assert candidate.kind == "rule"
+    assert candidate.status == "blocked"
+    assert "cannot be promoted to user rules" in " ".join(candidate.blockers)
+
+
+def test_global_generic_scan_defers_claude_user_instruction_to_profiles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    claude = tmp_path / ".claude"
+    instruction = claude / "CLAUDE.md"
+    rule = claude / "rules" / "nested" / "CLAUDE.md"
+    rule.parent.mkdir(parents=True)
+    instruction.write_text("# User instruction\n", encoding="utf-8")
+    rule.write_text("# User rule with an instruction-like basename\n", encoding="utf-8")
+    monkeypatch.setattr(
+        resource_discovery,
+        "_roots_for_scope",
+        lambda **_kwargs: [
+            ("claude-code", claude / "rules"),
+            ("claude-code", instruction),
+        ],
+    )
+
+    resources = discover_resources(scope="global")
+
+    assert {(item.path, item.kind) for item in resources} == {
+        (rule.resolve(), "rule"),
+    }
+
+
+def test_global_generic_scan_defers_codex_user_instruction_to_profiles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    codex = tmp_path / ".codex"
+    codex.mkdir()
+    base = codex / "AGENTS.md"
+    override = codex / "AGENTS.override.md"
+    base.write_text("# Base\n", encoding="utf-8")
+    override.write_text("  \n", encoding="utf-8")
+    monkeypatch.setattr(
+        resource_discovery,
+        "_roots_for_scope",
+        lambda **_kwargs: [("codex", codex)],
+    )
+
+    assert not discover_resources(scope="global")
+
+    base.write_text("\n", encoding="utf-8")
+    assert not [
+        item
+        for item in discover_resources(scope="global")
+        if item.kind == "instruction"
+    ]

@@ -38,13 +38,23 @@ RegistryStatus = Literal[
     "unavailable",
 ]
 
-KNOWN_KINDS = {"skill", "mcp", "rule", "prompt", "plugin"}
+KNOWN_KINDS = {
+    "skill",
+    "mcp",
+    "rule",
+    "prompt",
+    "plugin",
+    "instruction",
+    "memory",
+}
 RESOURCE_ROOTS = {
     "skills": "skill",
     "mcp": "mcp",
     "rules": "rule",
     "prompts": "prompt",
     "plugins": "plugin",
+    "instructions": "instruction",
+    "memories": "memory",
 }
 
 

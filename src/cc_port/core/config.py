@@ -16,7 +16,13 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - py310 fallback
     import tomli as tomllib
 
-from .platforms import PlatformsConfig, default_platform_profiles, load_platforms_from_dict
+from .platforms import (
+    PlatformsConfig,
+    default_platform_profiles,
+    load_platforms_from_dict,
+    validate_portable_tool_id,
+    validate_profile_id,
+)
 
 CONFIG_ENV_VAR = "CC_PORT_GITHUB_TOKEN"
 CONFIG_PATH_ENV_VAR = "CC_PORT_CONFIG"
@@ -137,6 +143,75 @@ def default_state_dir() -> Path:
     return Path.home() / ".local" / "state" / "cc-port"
 
 
+def resource_repo_private_path_conflicts(
+    cfg: Config,
+    *,
+    resource_root: Path | None = None,
+    config_path: Path | None = None,
+) -> list[str]:
+    """Return private machine-local path classes that overlap the resource repo.
+
+    The returned values are labels rather than paths so callers can report a
+    fail-closed error without echoing a username, WSL distro path, or Claude
+    project slot into logs or UI payloads.
+    """
+    root = _boundary_path(resource_root or cfg.resources.local_path_value)
+    candidates: list[tuple[str, Path]] = [
+        ("state directory", default_state_dir()),
+        ("config file", config_path or cfg.source_path or default_config_path()),
+        ("legacy install target", cfg.install.target_path),
+    ]
+    if cfg.source_path is not None and config_path is not None:
+        candidates.append(("loaded config file", cfg.source_path))
+
+    profile_path_fields = (
+        "skills_dir",
+        "mcp_json",
+        "rules_dir",
+        "prompts_dir",
+        "plugins_dir",
+        "instructions_path",
+        "memories_dir",
+        "settings_path",
+    )
+    for profile in cfg.platforms.profiles:
+        for field_name in profile_path_fields:
+            raw = str(getattr(profile, field_name, "") or "").strip()
+            if not raw:
+                continue
+            candidates.append(
+                (
+                    f"platform {field_name}",
+                    profile.expand_profile_path(raw),
+                )
+            )
+
+    conflicts: list[str] = []
+    for label, candidate in candidates:
+        if _paths_overlap(root, _boundary_path(candidate)) and label not in conflicts:
+            conflicts.append(label)
+    return conflicts
+
+
+def _boundary_path(path: Path) -> Path:
+    """Canonicalize a boundary path, including any existing ancestor links."""
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = expanded.absolute()
+    try:
+        return expanded.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return expanded
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return (
+        first == second
+        or first in second.parents
+        or second in first.parents
+    )
+
+
 def load_config(path: Path | None = None, *, apply_env: bool = True) -> Config:
     cfg_path = path or default_config_path()
     existing_config = cfg_path.is_file()
@@ -252,6 +327,14 @@ def load_raw_config(path: Path | None = None) -> Config:
 def write_config(cfg: Config, path: Path | None = None) -> Path:
     """Write a config TOML file (used by ``cc-port init``)."""
     out = path or default_config_path()
+    conflicts = resource_repo_private_path_conflicts(cfg, config_path=out)
+    if conflicts:
+        raise ValueError(
+            "The resource repository must not overlap machine-local configuration, "
+            "state, or platform paths (conflicts: "
+            + ", ".join(conflicts)
+            + ")."
+        )
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "# CC Port config -- edit this file, then run `cc-port doctor` to verify.",
@@ -295,7 +378,14 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
     ]
 
     for profile in cfg.platforms.profiles:
-        lines.append(f"[platforms.{profile.name}]")
+        validate_profile_id(profile.name)
+        validate_portable_tool_id(profile.effective_tool_id)
+        lines.append(f'[platforms."{_escape(profile.name)}"]')
+        lines.append(f'tool_id = "{_escape(profile.effective_tool_id)}"')
+        lines.append(f'environment_kind = "{_escape(profile.environment_kind)}"')
+        lines.append(f'environment_name = "{_escape(profile.environment_name)}"')
+        lines.append(f'display_name = "{_escape(profile.display_name)}"')
+        lines.append(f'home_dir = "{_escape(profile.home_dir)}"')
         lines.append(f"enabled = {str(profile.enabled).lower()}")
         lines.append(f'skills_dir = "{_escape(profile.skills_dir)}"')
         lines.append(f'mcp_json = "{_escape(profile.mcp_json)}"')
@@ -303,6 +393,19 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         lines.append(f'prompts_dir = "{_escape(profile.prompts_dir)}"')
         if profile.plugins_dir:
             lines.append(f'plugins_dir = "{_escape(profile.plugins_dir)}"')
+        if profile.instructions_path:
+            lines.append(f'instructions_path = "{_escape(profile.instructions_path)}"')
+        if profile.memories_dir:
+            lines.append(f'memories_dir = "{_escape(profile.memories_dir)}"')
+            lines.append(f'memory_layout = "{_escape(profile.memory_layout)}"')
+        if profile.settings_path:
+            lines.append(f'settings_path = "{_escape(profile.settings_path)}"')
+        if profile.memory_install_names:
+            mappings = ", ".join(
+                f'"{_escape(resource)}" = "{_escape(slot)}"'
+                for resource, slot in sorted(profile.memory_install_names.items())
+            )
+            lines.append(f"memory_install_names = {{ {mappings} }}")
         lines.append("")
 
     for project in cfg.plugin_projects:

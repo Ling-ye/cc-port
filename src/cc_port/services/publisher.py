@@ -84,9 +84,18 @@ def publish_local_skill(
         private: True = private repo, False = public, None = use config default.
         update_visibility: When True and an existing repo has a different
             visibility than requested, flip it via the GitHub API.
-        kind: Resource type to publish (skill, mcp, rule, prompt, plugin).
+        kind: Resource type to publish as a dedicated GitHub repository.
+            Personal instruction and memory resources must use the private
+            resource-repository upload workflow instead.
         mcp_config: MCP server configuration dict (only for kind=mcp).
     """
+    if kind in {"instruction", "memory"}:
+        raise ValueError(
+            "Instruction and memory resources cannot be published by initializing "
+            "their source directory as a Git repository. Use `cc-port upload` or "
+            "the asset upload workflow, which validates and snapshots the payload."
+        )
+
     skill_dir = Path(path).expanduser().resolve()
 
     if kind == "skill":

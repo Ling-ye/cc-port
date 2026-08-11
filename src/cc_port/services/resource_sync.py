@@ -345,6 +345,7 @@ def _push_resource_sync_unlocked(*, cfg: Config) -> ResourceSyncPlan:
     validate_outgoing_resource_commits(
         plan.repo_path,
         base_commit=plan.remote_commit,
+        config=cfg,
     )
     git_ops.push(
         plan.repo_path,

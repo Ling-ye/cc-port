@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cc_port.core.config import (
     DEFAULT_RESOURCE_REPO_NAME,
     LEGACY_RESOURCE_REPO_NAME,
@@ -63,6 +65,54 @@ def test_cursor_prompt_commands_directory_round_trips_through_config(
     loaded = load_config(path)
 
     assert loaded.platforms.get("cursor").prompts_dir == "D:/Users/demo/.cursor/commands"
+
+
+def test_dotted_profile_id_round_trips_as_one_quoted_toml_key(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    write_config(
+        Config(
+            platforms=PlatformsConfig(
+                profiles=[
+                    PlatformProfile(
+                        name="claude.wsl",
+                        tool_id="claude-code",
+                        environment_kind="wsl",
+                    )
+                ]
+            )
+        ),
+        path,
+    )
+
+    loaded = load_config(path)
+
+    assert '[platforms."claude.wsl"]' in path.read_text(encoding="utf-8")
+    assert [profile.name for profile in loaded.platforms.profiles] == ["claude.wsl"]
+
+
+def test_platform_profile_ids_must_be_safe_and_unique() -> None:
+    with pytest.raises(ValueError, match="profile ids"):
+        PlatformsConfig(profiles=[PlatformProfile(name="claude\nprivate")])
+    with pytest.raises(ValueError, match="Duplicate platform profile id"):
+        PlatformsConfig(
+            profiles=[
+                PlatformProfile(name="claude-wsl"),
+                PlatformProfile(name="claude-wsl"),
+            ]
+        )
+
+
+def test_config_write_rejects_machine_local_file_inside_resource_repo(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "resources"
+    cfg = Config(resources=ResourcesConfig(local_path=str(repo)))
+    path = repo / "instructions" / "config.toml"
+
+    with pytest.raises(ValueError, match="must not overlap"):
+        write_config(cfg, path)
+
+    assert not path.exists()
 
 
 def test_plugin_projects_round_trip_without_entering_registry(tmp_path: Path) -> None:

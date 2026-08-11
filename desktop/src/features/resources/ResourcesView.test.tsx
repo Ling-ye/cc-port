@@ -10,6 +10,7 @@ import type {
   AssetBatchPlan,
   AssetBatchResult,
   AssetInventory,
+  AssetPlatformRow,
   AssetResourceRow,
   RegistryRepairPlan,
 } from "@/types/cc-port";
@@ -60,6 +61,51 @@ function resource(overrides: Partial<AssetResourceRow> = {}): AssetResourceRow {
   };
 }
 
+function platformRow(
+  item: AssetResourceRow,
+  platform: string,
+  overrides: Partial<AssetPlatformRow> = {},
+): AssetPlatformRow {
+  const instance = item.local_instances.find((candidate) => candidate.platform === platform)
+    ?? item.local_instances[0];
+  return {
+    resource_key: item.resource_key,
+    kind: item.kind,
+    name: item.name,
+    platform,
+    local_instance_id: instance?.id ?? `expected-${platform}-${item.name}`,
+    local_locator: "expected",
+    install_name: instance?.install_name ?? item.name,
+    configured: true,
+    enabled: true,
+    detected: true,
+    supported: true,
+    remote_exists: item.remote.exists,
+    local_exists: Boolean(instance),
+    remote_writable: item.remote.writable,
+    read_only_reference: item.remote.read_only,
+    remote_path: item.remote.path,
+    local_path: instance?.path,
+    target_path: instance?.path,
+    ownership: instance?.ownership ?? "missing",
+    status: instance?.status ?? item.status,
+    remote_commit: item.remote.commit,
+    reference_commit: "",
+    remote_content_fingerprint: "remote-content",
+    remote_asset_fingerprint: "remote-asset",
+    local_fingerprint: instance?.fingerprint ?? "",
+    local_content_path: instance?.content_path ?? instance?.path,
+    metadata_differences: item.metadata_differences,
+    diff_summary: item.diff_summary,
+    blockers: instance?.blockers ?? [],
+    blocker_refs: instance?.blocker_refs,
+    warnings: instance?.warnings ?? [],
+    warning_refs: instance?.warning_refs,
+    available_actions: item.available_actions,
+    ...overrides,
+  };
+}
+
 function inventory(resources: AssetResourceRow[]): AssetInventory {
   return {
     branch: "main",
@@ -70,6 +116,9 @@ function inventory(resources: AssetResourceRow[]): AssetInventory {
     scanned_local: true,
     generated_at: "2026-07-17T00:00:00Z",
     legacy_write_blocker: "",
+    rows: resources.flatMap((item) => (
+      item.local_instances.map((instance) => platformRow(item, instance.platform))
+    )),
     resources,
   };
 }
@@ -258,6 +307,61 @@ describe("ResourcesView unified inventory", () => {
     }
   });
 
+  it("shows Claude instructions and memory with explicit Windows and WSL identities", async () => {
+    const user = userEvent.setup();
+    const instruction = resource({
+      resource_key: "instruction:claude-user",
+      kind: "instruction",
+      name: "claude-user",
+      local_instances: [{
+        ...resource().local_instances[0],
+        id: "claude-user-windows",
+        platform: "profile-a",
+        tool_id: "claude-code",
+        environment_kind: "windows",
+        environment_name: "Windows",
+        display_name: "Claude Code",
+        path: "C:/Users/test/.claude/CLAUDE.md",
+      }],
+    });
+    const memory = resource({
+      resource_key: "memory:claude-memory",
+      kind: "memory",
+      name: "claude-memory",
+      local_instances: [{
+        ...resource().local_instances[0],
+        id: "claude-memory-wsl",
+        platform: "profile-b",
+        tool_id: "claude-code",
+        environment_kind: "wsl",
+        environment_name: "Ubuntu-24.04",
+        display_name: "Claude Code",
+        path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\test\\.claude\\projects\\demo\\memory",
+      }],
+    });
+
+    renderView([instruction, memory]);
+
+    expect(screen.getByRole("option", { name: "instruction" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "memory" })).toBeVisible();
+    expect(screen.getByText("Windows native", { selector: ".platform-environment-badge" }))
+      .toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "More filters" }));
+    const toolFilter = screen.getByLabelText("AI tool");
+    expect(within(toolFilter).getByRole("option", {
+      name: "Claude Code · Windows native",
+    })).toHaveValue("profile-a");
+    expect(within(toolFilter).getByRole("option", {
+      name: "Claude Code · WSL · Ubuntu-24.04",
+    })).toHaveValue("profile-b");
+
+    await user.selectOptions(toolFilter, "profile-b");
+    expect(screen.getByRole("row", { name: /memory:claude-memory/ })).toBeVisible();
+    expect(screen.queryByRole("row", { name: /instruction:claude-user/ }))
+      .not.toBeInTheDocument();
+  });
+
   it("renders structured resource messages in Chinese and English", () => {
     const localOnly = resource({
       status: "local-only",
@@ -298,16 +402,25 @@ describe("ResourcesView unified inventory", () => {
     const user = userEvent.setup();
     const plan = batchPlan("upload", "blocked");
     plan.items[0].reason_ref = {
-      code: "asset.batch.select_source_instance",
+      code: "asset.batch.blocked",
       fallback: plan.items[0].reason,
+      params: { detail: plan.items[0].reason },
     };
+    plan.items[0].blockers = [
+      "Instruction resources require an explicit tool binding before download.",
+    ];
+    plan.items[0].blocker_refs = [{
+      code: "asset.blocker.instruction_tool_binding_required",
+      fallback: plan.items[0].blockers[0],
+    }];
     vi.mocked(ccPortAction).mockResolvedValue(plan);
     renderView([resource()], { language: "zh" });
 
     await user.click(screen.getByRole("checkbox", { name: "demo" }));
     await user.click(screen.getByRole("button", { name: "上传到仓库" }));
 
-    expect(await screen.findByText("存在多个本地版本，请选择来源实例。")).toBeVisible();
+    expect(await screen.findByText("下载指令资源前必须明确绑定目标工具。")).toBeVisible();
+    expect(screen.queryByText(/资产计划已阻断/)).not.toBeInTheDocument();
   });
 
   it("shows only progress and cancel while upload status checking is pending", async () => {
@@ -742,7 +855,7 @@ describe("ResourcesView unified inventory", () => {
     expect(screen.getAllByText("Remote demo description").length).toBeGreaterThan(0);
     expect(screen.getAllByText("content differs").length).toBeGreaterThan(0);
     expect(screen.getByText("Local and remote content differ.")).toBeVisible();
-    expect(screen.getAllByText("cursor").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Cursor").length).toBeGreaterThan(0);
     expect(screen.getByText("managed")).toBeVisible();
   });
 
@@ -896,6 +1009,205 @@ describe("ResourcesView unified inventory", () => {
     }));
   });
 
+  it("targets one Claude environment by stable profile id during download", async () => {
+    const user = userEvent.setup();
+    const plan = batchPlan("download");
+    plan.target_platforms = ["profile-b"];
+    plan.items[0].id = "skill:demo|profile-b";
+    plan.items[0].platform = "profile-b";
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
+      if (action === "config_get") {
+        return {
+          config: {
+            platforms: [
+              {
+                name: "profile-a",
+                tool_id: "claude-code",
+                environment_kind: "windows",
+                environment_name: "Windows",
+                display_name: "Claude Code",
+                enabled: true,
+                skills_dir: "C:/Users/test/.claude/skills",
+                mcp_json: "",
+                rules_dir: "",
+                prompts_dir: "",
+                plugins_dir: "",
+              },
+              {
+                name: "profile-b",
+                tool_id: "claude-code",
+                environment_kind: "wsl",
+                environment_name: "Ubuntu-24.04",
+                display_name: "Claude Code",
+                enabled: true,
+                skills_dir: "/home/test/.claude/skills",
+                mcp_json: "",
+                rules_dir: "",
+                prompts_dir: "",
+                plugins_dir: "",
+              },
+            ],
+          },
+        };
+      }
+      if (action === "asset_batch_plan") return plan;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    const selected = resource();
+    renderView([selected], {
+      inventory: {
+        ...inventory([selected]),
+        rows: [
+          platformRow(selected, "profile-a", {
+            tool_id: "claude-code",
+            environment_kind: "windows",
+            display_name: "Claude Code",
+          }),
+          platformRow(selected, "profile-b", {
+            tool_id: "claude-code",
+            environment_kind: "wsl",
+            environment_name: "Ubuntu-24.04",
+            display_name: "Claude Code",
+          }),
+        ],
+      },
+    });
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "Install to tools" }));
+    const dialog = screen.getByRole("dialog");
+    const windows = await within(dialog).findByRole("checkbox", {
+      name: "Claude Code · Windows native",
+    });
+    const wsl = within(dialog).getByRole("checkbox", {
+      name: "Claude Code · WSL · Ubuntu-24.04",
+    });
+    expect(windows).not.toBeChecked();
+    expect(wsl).not.toBeChecked();
+
+    await user.click(wsl);
+    await user.click(within(dialog).getByRole("button", { name: "Create safety plan" }));
+
+    await waitFor(() => expect(ccPortAction).toHaveBeenCalledWith(
+      "asset_batch_plan",
+      expect.objectContaining({
+        direction: "download",
+        target_platforms: ["profile-b"],
+      }),
+    ));
+    expect(within(dialog).getAllByText("WSL · Ubuntu-24.04", {
+      selector: ".platform-environment-badge",
+    }).length).toBeGreaterThan(0);
+  });
+
+  it("disables offline and incompatible download environments from inventory rows", async () => {
+    const user = userEvent.setup();
+    const remoteMemory = resource({
+      resource_key: "memory:team-memory",
+      kind: "memory",
+      name: "team-memory",
+      local_status: "missing",
+      status: "remote-only",
+      local_instances: [],
+    });
+    const windowsRow = platformRow(remoteMemory, "claude-windows", {
+      tool_id: "claude-code",
+      environment_kind: "windows",
+      display_name: "Claude Code",
+    });
+    const wslRow = platformRow(remoteMemory, "claude-wsl", {
+      tool_id: "claude-code",
+      environment_kind: "wsl",
+      environment_name: "Ubuntu-24.04",
+      display_name: "Claude Code",
+      blockers: [],
+      blocker_refs: [{
+        code: "asset.blocker.environment_unavailable",
+        fallback: "The configured WSL home is unavailable.",
+        params: { detail: "WSL distribution is stopped." },
+      }],
+    });
+    const codexRow = platformRow(remoteMemory, "codex-windows", {
+      tool_id: "codex",
+      environment_kind: "windows",
+      display_name: "Codex",
+      supported: false,
+    });
+    vi.mocked(ccPortAction).mockImplementation(async (action) => {
+      if (action === "config_get") {
+        return {
+          config: {
+            platforms: [
+              {
+                name: "claude-windows",
+                tool_id: "claude-code",
+                environment_kind: "windows",
+                display_name: "Claude Code",
+                enabled: true,
+                skills_dir: "",
+                mcp_json: "",
+                rules_dir: "",
+                prompts_dir: "",
+                plugins_dir: "",
+              },
+              {
+                name: "claude-wsl",
+                tool_id: "claude-code",
+                environment_kind: "wsl",
+                environment_name: "Ubuntu-24.04",
+                display_name: "Claude Code",
+                enabled: true,
+                skills_dir: "",
+                mcp_json: "",
+                rules_dir: "",
+                prompts_dir: "",
+                plugins_dir: "",
+              },
+              {
+                name: "codex-windows",
+                tool_id: "codex",
+                environment_kind: "windows",
+                display_name: "Codex",
+                enabled: true,
+                skills_dir: "",
+                mcp_json: "",
+                rules_dir: "",
+                prompts_dir: "",
+                plugins_dir: "",
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    renderView([remoteMemory], {
+      inventory: {
+        ...inventory([remoteMemory]),
+        rows: [windowsRow, wslRow, codexRow],
+      },
+    });
+
+    await user.click(screen.getByRole("checkbox", { name: remoteMemory.name }));
+    await user.click(screen.getByRole("button", { name: "Install to tools" }));
+    const dialog = screen.getByRole("dialog");
+    expect(await within(dialog).findByRole("checkbox", {
+      name: "Claude Code · Windows native",
+    })).toBeEnabled();
+    expect(within(dialog).getByRole("checkbox", {
+      name: "Claude Code · WSL · Ubuntu-24.04",
+    })).toBeDisabled();
+    expect(within(dialog).getByRole("checkbox", {
+      name: "Codex · Windows native",
+    })).toBeDisabled();
+    expect(within(dialog).getByText(
+      "The selected runtime environment is unavailable: WSL distribution is stopped.",
+    )).toBeVisible();
+    expect(within(dialog).getByText(
+      "The resource is not compatible with this platform.",
+    )).toBeVisible();
+  });
+
   it("rejects a stale apply and presents the rebuilt plan for review", async () => {
     const user = userEvent.setup();
     const initial = batchPlan("upload");
@@ -922,6 +1234,94 @@ describe("ResourcesView unified inventory", () => {
 
     expect(await screen.findByText(/Assets changed after review/)).toBeVisible();
     expect(screen.getByText("Choose a source instance.")).toBeVisible();
+  });
+
+  it("requires a portable remote logical name for a local-only Memory upload", async () => {
+    const user = userEvent.setup();
+    const localMemory = resource({
+      resource_key: "memory:claude-memory-a1b2c3d4e5f6",
+      kind: "memory",
+      name: "claude-memory-a1b2c3d4e5f6",
+      local_status: "single",
+      remote_status: "missing",
+      status: "local-only",
+      remote: {
+        exists: false,
+        status: "missing",
+        writable: true,
+        read_only: false,
+        commit: "",
+        path: null,
+        description: "",
+      },
+      local_instances: [{
+        ...resource().local_instances[0],
+        id: "claude-memory-wsl",
+        platform: "claude-wsl",
+        tool_id: "claude-code",
+        environment_kind: "wsl",
+        environment_name: "Ubuntu-24.04",
+        display_name: "Claude Code",
+        install_name: "opaque-project-slot",
+        path: "/home/test/.claude/projects/opaque-project-slot/memory",
+      }],
+    });
+    const initial = batchPlan("upload", "create");
+    initial.resource_keys = [localMemory.resource_key];
+    initial.items[0] = {
+      ...initial.items[0],
+      id: `upload:${localMemory.resource_key}:claude-memory-wsl`,
+      resource_key: localMemory.resource_key,
+      local_instance_id: "claude-memory-wsl",
+      platform: "claude-wsl",
+      target_resource_key: localMemory.resource_key,
+    };
+    initial.checked_resources = [{
+      resource_key: localMemory.resource_key,
+      local_status: "single",
+      remote_status: "missing",
+      status: "local-only",
+    }];
+    const renamed = {
+      ...initial,
+      plan_hash: "renamed-memory-plan",
+      items: [{
+        ...initial.items[0],
+        disposition: "rename" as const,
+        target_resource_key: "memory:team-memory",
+      }],
+    };
+    vi.mocked(ccPortAction)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(renamed);
+    renderView([localMemory]);
+
+    await user.click(screen.getByRole("checkbox", { name: localMemory.name }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
+
+    const remoteName = await screen.findByRole("textbox", { name: "Remote logical name" });
+    const recheck = screen.getByRole("button", { name: "Check again" });
+    expect(remoteName).toHaveAttribute("aria-invalid", "true");
+    expect(recheck).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Upload to remote repository" }))
+      .not.toBeInTheDocument();
+
+    await user.type(remoteName, "team-memory");
+    expect(recheck).toBeEnabled();
+    await user.click(recheck);
+
+    await waitFor(() => expect(ccPortAction).toHaveBeenLastCalledWith(
+      "asset_batch_plan",
+      expect.objectContaining({
+        direction: "upload",
+        choices: [expect.objectContaining({
+          resource_key: localMemory.resource_key,
+          platform: "",
+          resolution: "rename",
+          new_name: "team-memory",
+        })],
+      }),
+    ));
   });
 
   it("plans every different local instance as a separately renamed upload", async () => {
@@ -958,12 +1358,12 @@ describe("ResourcesView unified inventory", () => {
         choices: expect.arrayContaining([
           expect.objectContaining({
             local_instance_id: "expected-cursor-demo",
-            new_name: "demo-cursor-1",
+            new_name: "demo-variant-1",
             resolution: "rename",
           }),
           expect.objectContaining({
             local_instance_id: "expected-codex-demo",
-            new_name: "demo-codex-2",
+            new_name: "demo-variant-2",
             resolution: "rename",
           }),
         ]),

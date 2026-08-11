@@ -1,6 +1,6 @@
 # CC Port
 
-> 把分散在 Codex、Claude Code、Cursor、Windsurf 和 OpenCode 的 Skill、MCP、Rule、Prompt、Plugin，安全同步到你控制的通用 Git 资源仓库。
+> 把分散在 Codex、Claude Code、Cursor、Windsurf 和 OpenCode 的 Skill、MCP、Rule、Prompt、Plugin、用户指令和 Claude auto memory，安全同步到你控制的通用 Git 资源仓库。
 
 [English](README.en.md) · [下载 Windows 安装器](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4) · [快速开始](docs/getting-started.md) · [报告问题](https://github.com/Ling-ye/cc-port/issues)
 
@@ -19,7 +19,7 @@ CC Port 是一个面向多 AI coding 工具的本地桌面资源管理器。它�
 
 ## 它解决什么问题
 
-- **配置散落**：Skill、MCP、Rule、Prompt 和 Plugin 分别藏在多个工具目录中，难以盘点。
+- **配置散落**：Skill、MCP、Rule、Prompt、Plugin、用户指令和 Claude auto memory 分别藏在多个工具目录中，难以盘点。
 - **多设备漂移**：同一资源在不同电脑和工具中逐渐变成不同版本。
 - **同步不安全**：复制目录容易覆盖手工配置，删除和失败操作也难以恢复。
 - **凭据风险**：MCP 配置可能混入 Token 或环境变量字面值，不适合直接提交。
@@ -36,7 +36,42 @@ CC Port 将远端仓库快照与每个平台的本地实例逐项比较。上传
 
 WSL 创建的 LX 符号链接与 Windows 原生符号链接不是同一种 reparse point，Windows 桌面服务不会尝试经由 WSL 桥接读取它。遇到此类阻断时，请在 Windows 中重建原生链接，或用资源安装器的复制模式（例如 `npx skills add ... --copy`）重新安装。
 
-本地资产扫描会同时检查所有已启用平台配置的 `skills_dir`、`mcp_json` 和 `plugins_dir`，因此 Claude Code 安装在 WSL 时，可以分别配置为 `\\wsl.localhost\<发行版>\home\<用户>\.claude\skills`、`\\wsl.localhost\<发行版>\home\<用户>\.claude.json` 和 `\\wsl.localhost\<发行版>\home\<用户>\.claude\plugins`。普通 WSL 路径中的 Skill、MCP 和内容型 Plugin 都可以下载并进入上传计划；首次上传内容型 Plugin 仍要求确认其为自有源码。目录中的 Linux 符号链接仍按 WSL LX 链接单项阻断。配置路径与平台默认目录相同时会自动去重，不会重复展示资源。
+### Windows 与 WSL 独立运行环境
+
+Windows 原生安装和每个 WSL 发行版都是独立 profile；Codex 与 Claude Code 都遵循这条规则。`[platforms.<profile-id>]` 中的 `<profile-id>` 是稳定且唯一的 `name`，用于发现、选择、上传和下载计划；`tool_id` 只描述工具的原生资源语义。环境由 `environment_kind`、`environment_name`、`display_name` 和 `home_dir` 显式描述，CC Port 不会从 `name` 文案反推工具或环境，也不会因为两个 profile 具有相同 `tool_id` 而合并写入目标。
+
+Profile id 必须匹配 `[a-z0-9][a-z0-9._-]{0,127}`，在整份配置中唯一，且不能包含路径分隔符、控制字符或本机私有路径。id 中包含 `.` 时必须写成带引号的 TOML 表键，例如 `[platforms."claude.wsl"]`；CC Port 对非法或重复 id 直接拒绝加载，不会自动改名或合并。
+
+```toml
+[platforms.claude-windows]
+tool_id = "claude-code"
+environment_kind = "windows"
+display_name = "Claude Code"
+home_dir = "C:/Users/example"
+
+[platforms.claude-wsl-ubuntu]
+tool_id = "claude-code"
+environment_kind = "wsl"
+environment_name = "Ubuntu-24.04"
+display_name = "Claude Code"
+home_dir = '\\wsl.localhost\Ubuntu-24.04\home\example'
+```
+
+每个启用 profile 会独立扫描其 `skills_dir`、`mcp_json`、`rules_dir`、`prompts_dir`、`plugins_dir`、`instructions_path`、`memories_dir` 和 `settings_path`。`settings_path` 指向工具原生的用户级配置文件，例如 Claude Code 的 `settings.json` 或 Codex 的 `config.toml`；当前每个 profile 只解析这一个显式 user-level/native config 输入。CC Port 不自动合并 Claude managed policy、工作区受信任后才生效的 project/local settings 或 `--settings` 临时来源，也不宣称已完整推导 Claude 运行时最终配置。若这些更高或项目作用域的来源覆盖 `autoMemoryDirectory`，必须另建显式 direct profile/path。WSL profile 可用 `home_dir` 把 `~` 展开到对应发行版的 UNC 用户目录；Codex 的 Windows/WSL profile 也应使用不同 `name`。普通 UNC 内容可以进入计划，目录中的 Linux 符号链接仍按 WSL LX 链接单项阻断。WSL 发行版未运行或 UNC 不可达时，该 profile 显示为 unavailable 并阻断写入，不能把不可达误判为资源缺失或删除信号。完整示例见[配置示例](config/config.example.toml)。
+
+资源仓库必须与 CC Port 配置文件、本机状态/备份目录、legacy install target，以及所有 profile 的资源目标和 `settings_path` 完全分离；任一方等于、包含或位于另一方之内都属于重叠。配置保存和 asset 扫描、计划、应用会 fail closed，必须先移动冲突目录，不能把机器状态或工具原生配置混入 Git 仓库。
+
+Claude Code 用户指令 `~/.claude/CLAUDE.md` 作为 `instruction` 迁移，但个人 `instruction` 与 `memory` 只由配置 profile 的 environment-aware asset inventory 识别和迁移。通用 global/directory discover 不会把全局用户指令或 auto memory 暴露为可上传候选；项目指令仍只读展示。配置的用户 `rules_dir`（默认 `~/.claude/rules/`）会在 profile-aware 全局用户扫描中递归发现 Markdown；当前只有该目录根级 Markdown 可直接迁移。嵌套用户规则使用 `claude-rule-<relative-path-hash>` 生成不含相对路径明文的唯一候选名，但保持阻断，用户必须先整理成明确的可移植 rule 目录或布局；该哈希只用于区分条目，不是可还原的路径编码。项目 `.claude/rules/**/*.md` 与用户 rules 作用域不同；directory-scope 扫描中的项目规则保持只读和阻断，因为当前没有 project target identity，不能把它们提升或下载到用户全局 `rules_dir`。项目级 `CLAUDE.md`、`.claude/CLAUDE.md` 和 `CLAUDE.local.md` 同样不会被误当成全局指令。默认 auto memory 只扫描 `~/.claude/projects/<project-key>/memory/`；如果可信的 `settings.json` 声明 `autoMemoryDirectory`，其值就是最终 memory 目录，不能再附加 `<project-key>/memory`。memory 的所有权 marker 写在目录旁，不会进入 memory 内容树。
+
+Memory 目录是精确快照：只要内容符合普通 UTF-8 Markdown 契约，名为 `build/`、`cache/`、`tmp/` 的 topic 目录也会原样上传和恢复，不套用 Skill 等资源的通用排除规则。上传前和应用时会扫描目录内全部 Markdown 的疑似秘密；命中时整体阻断，并且错误不回显秘密值。
+
+Claude project slot 可能包含本机绝对路径或用户名，因此 projects memory 的默认发现候选名是 `claude-memory-<slot-hash>`，不包含 slot 明文；哈希同时纳入 profile id，两个未绑定 profile 即使 slot 文本相同也不会自动聚合。direct memory 也以 profile id 与本机路径生成不透明候选名。确切 slot 只保留在本机发现结果的 `install_name_hint` 和 profile 的 `memory_install_names` 中；用户上传时可以把候选项重命名为有意义的远端逻辑名，例如 `cc-port-memory`。
+
+Windows 与 WSL 的 slot 即使对应同一 Git 仓库，也可能不同；CC Port 不会根据路径、内容相同或 hash 候选名自动认定并聚合它们。要把两边绑定到同一远端 Memory，用户应选择同一个远端逻辑名，并在每个目标 profile 的本机 `memory_install_names` 中分别映射到 `projects/` 下确切的现有 slot。目标尚不存在且缺少映射时，计划会阻断，不会猜路径。direct memory 布局不需要此映射。候选 slot 明文和 `memory_install_names` 都不得写入 Registry 或 `cc-port.yaml`。
+
+`cc-port publish` 子命令和 MCP 的 `publish_local_skill` 是 dedicated-repository 发布入口，会拒绝 `instruction` 与 `memory`；legacy `sync`、`check` 和安装计划也不会处理这两个 kind。受支持的个人资源入口只有 profile-aware asset workflow：桌面端资产批量流程、CLI 的 `cc-port asset ...`，或 MCP 的 `asset_inventory`、`asset_action_plan`/`asset_action_apply`、`asset_batch_plan`/`asset_batch_apply`。MCP 发现本机实例时调用 `asset_inventory(scan_local=true)`；`platform`/`target_platforms` 参数使用精确 profile id，plan/apply 两阶段继续校验 operation id 或 `plan_hash`，不能绕过重新扫描和 stale-plan 检查。
+
+CC Port 不整体迁移 `~/.claude.json`、Claude `settings.json` 或 Codex `config.toml`；`~/.claude.json` 只用于脱敏 MCP 投影，settings/config 文件只用于原生路径和能力识别。Claude/Codex 的认证、session、聊天历史、file-history、plans、todos、日志、遥测、plugin cache，以及精确 memory 目录之外的运行时 cache 都不进入资源仓库。只有已经由用户绑定为同一 `kind:name` 的多 profile 实例才按指纹显示 identical copies 或 variants；不同 Claude project slot 不会仅凭内容相同自动合并。完整的官方语义、边界和验收规则见 [Claude Code 指令、记忆与多运行环境规格](docs/specs/claude-memory-and-runtime-environments.md)。
 
 ### 通用 Registry v1 与仓库检查
 
@@ -56,7 +91,9 @@ resources:
       revision: latest
 ```
 
-描述、版本、作者、许可证、标签、哈希和检查时间不写入 Registry；MCP 配置保存在 `mcp/<name>/mcp.json|yaml|yml`。平台白名单、安装别名和插件启用意图可以进入可选的 `cc-port.yaml`，其他工具无需读取它。完整字段见 [Registry v1 规格](docs/specs/registry-v1.md)。
+描述、版本、作者、许可证、标签、哈希和检查时间不写入 Registry；MCP 配置保存在 `mcp/<name>/mcp.json|yaml|yml`。profile id、`tool_id`、Windows/WSL 环境、用户目录和本机目标路径同样不得进入 Registry。平台/工具白名单、安装别名和插件启用意图可以进入可选的 `cc-port.yaml`，其他工具无需读取它。`instruction` 与 `memory` 只增加已知 kind 和 `instructions/`、`memories/` 约定目录，不改变 Registry v1 schema。完整字段见 [Registry v1 规格](docs/specs/registry-v1.md)。
+
+`cc-port.yaml` 虽然可选，但一旦存在就必须是普通非链接文件，并完整通过 YAML 与 portable overlay 语义校验。损坏、语义非法绑定或包含本机 memory slot/install alias 的 overlay 会使远端清单 fail closed；CC Port 不把它当成空配置继续上传或下载，也不会通过 Registry 修复静默改写它。
 
 每次远端刷新都会对同一个 commit 只读检查 Registry，但不会自动修改仓库。资源页的“检查仓库”会预览待新增、待移除、人工处理项和最终 YAML diff；用户确认后，CC Port 才以一次只包含 `registry.yaml` 的提交修复并普通推送。修复绝不改写、移动或删除资源内容，也不修改 `cc-port.yaml`。
 
@@ -89,6 +126,7 @@ cc-port resource registry-repair --yes --choices choices.yaml
 - **悬空链接只替换链接本身**：下载目标是根级 Windows 原生悬空符号链接时，只有明确确认覆盖未接管目标后才会删除链接本身并写入普通内容，不会跟随或修改链接指向的位置。
 - **可恢复写入**：安装、卸载、部署和恢复使用持久化事务、备份与失败回滚。
 - **MCP 密钥占位**：采集 MCP 配置时，环境变量字面值会替换为 `${SECRET_NAME}` 占位符。
+- **本机目录与资源仓库隔离**：配置、状态/备份和任何 profile 原生目标不得与 Git 资源仓库互为父子目录。
 - **缺失不等于删除**：远端缺少某项资源不会触发隐式删除。
 
 发现安全问题时，请不要创建公开 Issue；按照[安全策略](SECURITY.md)使用 GitHub 的私密漏洞报告。
@@ -104,13 +142,24 @@ cc-port resource registry-repair --yes --choices choices.yaml
 | Rule | ✓ | ✓ | ✓ |
 | Prompt | ✓ | ✓ | ✓ |
 | Plugin | ✓ | ✓ | ✓ |
+| Instruction | ✓ | ✓ | ✓ |
+| Memory | ✓ | ✓ | ✓ |
+
+Instruction 与 Memory 的“扫描与登记”仅指已配置 profile 的 environment-aware asset inventory；通用 global/directory discover 不提供这两类个人资源的上传入口。
+
+### Instruction 与 Memory 兼容性
+
+| 类型 | Codex | Claude Code | 跨工具规则 |
+| --- | --- | --- | --- |
+| Instruction | 用户级 `AGENTS.override.md` 或 `AGENTS.md` | 用户级 `~/.claude/CLAUDE.md` | 只写回来源工具语义，不在两种格式间自动转换 |
+| Memory | 不支持 Claude auto memory 契约 | 默认 project memory 或 `autoMemoryDirectory` 指定的最终目录 | 只安装到 Claude Code profile，不改名为 Codex 指令 |
 
 ### AI coding 工具
 
 | 工具 | 状态 | 默认可写资源 |
 | --- | --- | --- |
-| Codex | 稳定 | Skill |
-| Claude Code | 稳定 | Skill、MCP、Plugin |
+| Codex | 稳定 | Skill、Instruction |
+| Claude Code | 稳定 | Skill、MCP、Rule、Plugin、Instruction、Memory |
 | Cursor | 稳定 | Skill、MCP、Prompt |
 | Windsurf | 实验性 | Skill、MCP |
 | OpenCode | 实验性 | Skill、MCP、Rule、Prompt、Plugin |
@@ -156,6 +205,7 @@ Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
 - [开发指南](docs/development.md)
 - [架构](docs/architecture.md)
 - [Registry v1 规格](docs/specs/registry-v1.md)
+- [Claude Code 指令、记忆与多运行环境规格](docs/specs/claude-memory-and-runtime-environments.md)
 - [桌面打包与发布](docs/packaging-and-deployment.md)
 - [v0.5.4 发布说明](docs/releases/v0.5.4.md)
 - [功能规格](docs/specs/)

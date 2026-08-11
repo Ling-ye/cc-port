@@ -5,7 +5,13 @@ import type { KnownResourceKind } from "@/types/cc-port";
 
 export type AddKind = "auto" | KnownResourceKind;
 
-const resourceKinds: KnownResourceKind[] = ["skill", "mcp", "rule", "prompt", "plugin"];
+const resourceKinds: KnownResourceKind[] = [
+  "skill",
+  "mcp",
+  "rule",
+  "prompt",
+  "plugin",
+];
 
 export function ResourceDialogFrame({
   dialogId,

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from cc_port.core.config import Config, ResourcesConfig
+from cc_port.core.platforms import PlatformProfile, PlatformsConfig
 from cc_port.services.resource_commit import (
     ResourceCommitBlocked,
     build_resource_commit_plan,
@@ -119,6 +120,150 @@ def test_placeholder_secret_values_are_allowed(tmp_path: Path) -> None:
 
     assert plan.secret_findings == []
     assert plan.blocked is False
+
+
+def test_commit_and_push_validation_reject_invalid_private_overlay(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    cfg = Config(resources=ResourcesConfig(local_path=str(repo)))
+    private_slot = "C--Users-private-work-project"
+    (repo / "cc-port.yaml").write_text(
+        "version: 1\nresources:\n  memory:shared:\n"
+        f"    install_name: {private_slot}\n",
+        encoding="utf-8",
+    )
+
+    plan = build_resource_commit_plan(config=cfg)
+
+    assert plan.blocked is True
+    issue = next(item for item in plan.blocked_paths if item.path == "cc-port.yaml")
+    assert "invalid" in issue.reason
+    assert private_slot not in issue.reason
+    with pytest.raises(ResourceCommitBlocked):
+        commit_resource_changes(message="cc-port: unsafe overlay", config=cfg)
+
+    _commit(repo, "manual invalid overlay")
+    with pytest.raises(ResourceCommitBlocked):
+        validate_outgoing_resource_commits(repo, base_commit="HEAD~1", config=cfg)
+
+
+def test_commit_plan_rejects_state_root_inside_resource_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    state_root = repo / "memories" / "asset-plans"
+    monkeypatch.setenv("CC_PORT_STATE_HOME", str(state_root))
+    cfg = Config(resources=ResourcesConfig(local_path=str(repo)))
+    skill = repo / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Demo\n", encoding="utf-8")
+
+    plan = build_resource_commit_plan(config=cfg)
+
+    assert plan.blocked is True
+    assert any(item.path == "<machine-local:state directory>" for item in plan.blocked_paths)
+    with pytest.raises(ResourceCommitBlocked):
+        commit_resource_changes(message="cc-port: unsafe state", config=cfg)
+    assert not state_root.exists()
+
+
+@pytest.mark.parametrize("private_kind", ["config", "profile"])
+def test_commit_plan_rejects_config_or_profile_target_inside_resource_repo(
+    tmp_path: Path,
+    private_kind: str,
+) -> None:
+    repo = _repo(tmp_path)
+    cfg = Config(resources=ResourcesConfig(local_path=str(repo)))
+    if private_kind == "config":
+        cfg.source_path = repo / "instructions" / "config.toml"
+        expected = "<machine-local:config file>"
+    else:
+        cfg.platforms = PlatformsConfig(
+            profiles=[
+                PlatformProfile(
+                    name="claude-windows",
+                    tool_id="claude-code",
+                    instructions_path=str(repo / "instructions" / "CLAUDE.md"),
+                )
+            ]
+        )
+        expected = "<machine-local:platform instructions_path>"
+    skill = repo / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Demo\n", encoding="utf-8")
+
+    plan = build_resource_commit_plan(config=cfg)
+
+    assert plan.blocked is True
+    assert any(item.path == expected for item in plan.blocked_paths)
+
+
+def test_memory_markdown_in_generic_excluded_directories_round_trips_commit_guard(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    cfg = Config(resources=ResourcesConfig(local_path=str(repo)))
+    (repo / "registry.yaml").write_text(
+        "version: 1\nresources:\n"
+        "- kind: memory\n  name: shared\n  path: memories/shared\n",
+        encoding="utf-8",
+    )
+    for relative in ("cache/topic.md", "build/notes.md", "tmp/context.md"):
+        target = repo / "memories" / "shared" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"# {relative}\n", encoding="utf-8")
+
+    plan = build_resource_commit_plan(config=cfg)
+
+    assert plan.blocked is False
+    assert plan.secret_findings == []
+    commit_resource_changes(message="cc-port: add exact memory", config=cfg)
+    validate_outgoing_resource_commits(repo, base_commit=base, config=cfg)
+
+
+def test_memory_excluded_directory_markdown_is_still_secret_scanned(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    cfg = Config(resources=ResourcesConfig(local_path=str(repo)))
+    (repo / "registry.yaml").write_text(
+        "version: 1\nresources:\n"
+        "- kind: memory\n  name: shared\n  path: memories/shared\n",
+        encoding="utf-8",
+    )
+    secret = repo / "memories" / "shared" / "cache" / "token.md"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("token: ghp_1234567890abcdefghijkl\n", encoding="utf-8")
+
+    plan = build_resource_commit_plan(config=cfg)
+
+    assert plan.blocked is True
+    assert [item.path for item in plan.secret_findings] == [
+        "memories/shared/cache/token.md"
+    ]
+
+
+def test_memory_non_markdown_file_is_not_allowed_by_exact_tree_exception(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    cfg = Config(resources=ResourcesConfig(local_path=str(repo)))
+    (repo / "registry.yaml").write_text(
+        "version: 1\nresources:\n"
+        "- kind: memory\n  name: shared\n  path: memories/shared\n",
+        encoding="utf-8",
+    )
+    invalid = repo / "memories" / "shared" / "cache" / "state.json"
+    invalid.parent.mkdir(parents=True)
+    invalid.write_text("{}\n", encoding="utf-8")
+
+    plan = build_resource_commit_plan(config=cfg)
+
+    assert plan.blocked is True
+    assert any(item.path == "memories/shared/cache/state.json" for item in plan.blocked_paths)
 
 
 def test_configured_git_identity_is_used_without_device_trailer(tmp_path: Path) -> None:

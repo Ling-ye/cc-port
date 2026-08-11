@@ -353,9 +353,14 @@ def _platform_check(profile: PlatformProfile) -> DoctorCheck:
 
 def _platform_path_problems(profile: PlatformProfile) -> list[str]:
     problems: list[str] = []
+    if profile.home_dir and profile.home_dir != "~" and not profile.home_path().is_dir():
+        problems.append(f"home_dir is unavailable: {profile.home_path()}")
     for label, path in (
         ("skills_dir", profile.skills_path()),
         ("rules_dir", profile.rules_path()),
+        ("prompts_dir", profile.prompts_path()),
+        ("plugins_dir", profile.plugins_path()),
+        ("memories_dir", profile.memories_path()),
     ):
         if path is None or not path.exists():
             continue
@@ -369,17 +374,32 @@ def _platform_path_problems(profile: PlatformProfile) -> list[str]:
         problems.append(f"mcp_json is a directory: {mcp_json}")
     elif mcp_json and mcp_json.parent.exists() and not os.access(mcp_json.parent, os.W_OK):
         problems.append(f"mcp_json parent is not writable: {mcp_json.parent}")
+    instruction = profile.instructions_file()
+    if instruction and instruction.exists() and not instruction.is_file():
+        problems.append(f"instructions_path is not a file: {instruction}")
+    elif (
+        instruction
+        and instruction.parent.exists()
+        and not os.access(instruction.parent, os.W_OK)
+    ):
+        problems.append(f"instructions_path parent is not writable: {instruction.parent}")
     return problems
 
 
 def _platform_details(profile: PlatformProfile) -> list[str]:
-    details = ["enabled"]
+    details = ["enabled", f"runtime {profile.runtime_namespace}"]
+    if profile.home_dir:
+        details.append(f"home_dir {profile.home_path()}")
     if profile.skills_dir:
         details.append(f"skills_dir {profile.skills_path()}")
     if profile.mcp_json:
         details.append(f"mcp_json {profile.mcp_json_path()}")
     if profile.rules_dir:
         details.append(f"rules_dir {profile.rules_path()}")
+    if profile.instructions_path:
+        details.append(f"instructions_path {profile.instructions_file()}")
+    if profile.memories_dir:
+        details.append(f"memories_dir {profile.memories_path()}")
     return details
 
 

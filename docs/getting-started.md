@@ -39,11 +39,11 @@ v0.5.4 尚未代码签名。Windows SmartScreen 可能显示“未知发布者�
 - Visibility 选择 **Private**。
 - 不要在仓库或 URL 中放入 Token。
 - 默认分支使用 `main`。
-- 仓库只用于保存可同步资源、工具中立的 `registry.yaml`，以及可选的 `cc-port.yaml` 消费者设置；不要把应用备份目录放进去。
+- 仓库只用于保存可同步资源、工具中立的 `registry.yaml`，以及可选的 `cc-port.yaml` 消费者设置；不要把 CC Port 配置、状态/备份、legacy install target 或任何 AI 工具的 profile 目标放进去，也不要让这些路径与仓库互为父子目录。
 
 CC Port 不会替你创建、删除仓库或改变仓库可见性。
 
-新仓库初始化后包含 `version: 1` 的 Registry 和 `skills/`、`mcp/`、`rules/`、`prompts/`、`plugins/` 五个约定目录。该仓库不是 CC Port 私有格式，其他工具可以按 [Registry v1 规格](specs/registry-v1.md)独立维护。
+新仓库初始化后包含 `version: 1` 的 Registry 和 `skills/`、`mcp/`、`rules/`、`prompts/`、`plugins/`、`instructions/`、`memories/` 七个约定目录。该仓库不是 CC Port 私有格式，其他工具可以按 [Registry v1 规格](specs/registry-v1.md)独立维护。
 
 ## 4. 连接仓库
 
@@ -65,18 +65,28 @@ CC Port 不会替你创建、删除仓库或改变仓库可见性。
 
 1. 打开“资源”页。
 2. 选择要扫描的全局或项目范围。
-3. 点击扫描，检查发现的 Skill、MCP、Rule、Prompt 和 Plugin。
+3. 点击扫描，检查各个已配置 profile 发现的 Skill、MCP、Rule、Prompt、Plugin、Instruction 和 Memory。个人 Instruction 与 Memory 只来自 environment-aware asset inventory；通用 global/directory discover 不会把全局用户指令或 auto memory 变成可上传候选。
 4. 查看远端卡片的 Registry 健康状态；需要审计时点击“检查仓库”，先审阅问题和 YAML diff。
 5. 对某个资源选择：
    - **上传到仓库**：将本地实例写入私有仓库。
    - **安装到工具**：将远端资源写入选中的工具目录。
    - **另存副本**：保留当前实例并使用新名称。
-
-远端刷新只检查，不自动修复。Registry 缺失、YAML 损坏或本身是链接时，先按诊断手工修正仓库；此时本地扫描继续可用，但远端上传与安装动作会阻断。
    - **设置安装别名**：同一逻辑资源在不同平台使用不同目录名。
-5. 检查操作计划、警告与阻断项，确认后再执行。
+6. 检查操作计划、警告与阻断项，确认后再执行。
+
+远端刷新只检查，不自动修复。Registry 缺失、YAML 损坏或本身是链接时，先按诊断手工修正仓库；此时本地扫描继续可用，但远端上传与安装动作会阻断。可选的 `cc-port.yaml` 一旦存在，也必须是普通非链接文件并通过完整校验；损坏、非法绑定或包含本机 Memory slot/install alias 时同样 fail closed，不能按空 overlay 继续操作，Registry 修复也不会改写它。
 
 CC Port 不会把“远端缺失”解释为删除命令，也不会静默覆盖没有 CC Port 所有权标记的同名本地内容。
+
+`[platforms.<profile-id>]` 的 id 必须匹配 `[a-z0-9][a-z0-9._-]{0,127}` 并在整份配置中唯一。含 `.` 的 id 使用引号，例如 `[platforms."claude.wsl"]`；非法或重复 id 会使配置加载失败。资源仓库不得与配置文件、本机状态/备份目录、legacy install target 或任一 profile 的 `skills_dir`、`mcp_json`、`rules_dir`、`prompts_dir`、`plugins_dir`、`instructions_path`、`memories_dir`、`settings_path` 相等或互为父子目录，否则配置写入与 asset 计划都会阻断。
+
+每个 Windows 或 WSL profile 使用自己的 `settings_path` 指向工具原生的用户级配置文件：Claude Code 通常是 `settings.json`，Codex 通常是 `config.toml`。当前每个 profile 只解析这一个显式 user-level/native config 输入，不自动合并 Claude managed policy、工作区受信任后才生效的 project/local settings 或 `--settings` 临时来源，也不宣称已完整推导运行时最终配置。若这些来源覆盖 `autoMemoryDirectory`，应另建显式 direct profile/path。该文件只用于识别原生路径和能力，不会作为资源上传或整体迁移。
+
+Memory 是精确目录快照。符合普通 UTF-8 Markdown 契约的 `build/`、`cache/`、`tmp/` topic 目录也会原样上传和恢复，不应用 Skill 的通用排除规则；上传计划和 apply 会扫描目录内全部 Markdown，疑似秘密会阻断且不会在错误中回显值。
+
+`cc-port publish` 和 MCP `publish_local_skill` 是 dedicated-repository 发布入口，会拒绝 `instruction` 与 `memory`；legacy `sync`、`check` 和安装计划也不处理这两个 kind。个人资源只能走 profile-aware asset workflow：桌面端资产批量流程、CLI `cc-port asset ...`，或 MCP 的 `asset_inventory`、`asset_action_plan`/`asset_action_apply`、`asset_batch_plan`/`asset_batch_apply`。通过 MCP 发现本机实例时设置 `asset_inventory(scan_local=true)`；平台参数使用精确 profile id，apply 必须携带原 operation id 或 `plan_hash` 并接受重新扫描与 stale-plan 校验。
+
+Claude 项目 `.claude/rules/**/*.md` 与配置的用户 `rules_dir` 作用域不同。只有全局用户扫描从用户 `rules_dir` 发现且满足可移植布局的规则可迁移；directory-scope 项目规则只读并阻断，因为当前没有 project target identity，不能把它们提升或下载到用户全局 rules。
 
 ### Cursor Prompt 命令
 

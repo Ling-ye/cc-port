@@ -49,6 +49,10 @@ class ToolAdapter:
     rules_dir: str = ""
     prompts_dir: str = ""
     plugins_dir: str = ""
+    instructions_path: str = ""
+    memories_dir: str = ""
+    memory_layout: str = "projects"
+    settings_path: str = ""
 
     def install_mechanism(self, kind: ItemKind) -> str:
         return self.install_mechanisms.get(kind, "copy_directory")
@@ -59,8 +63,11 @@ TOOL_ADAPTERS: tuple[ToolAdapter, ...] = (
         id="codex",
         name="Codex",
         stability="stable",
-        supports_kinds=("skill",),
-        install_mechanisms={"skill": "copy_skills_dir"},
+        supports_kinds=("skill", "instruction"),
+        install_mechanisms={
+            "skill": "copy_skills_dir",
+            "instruction": "copy_instruction_file",
+        },
         signals=(
             ToolSignal("known_skills_dir", "~/.codex/skills"),
             ToolSignal("config_file", "~/.codex/config.toml", soft=True),
@@ -70,16 +77,20 @@ TOOL_ADAPTERS: tuple[ToolAdapter, ...] = (
         resource_dirs=("skills", "prompts", "rules", "plugins"),
         skills_dir="~/.codex/skills",
         plugins_dir="~/.codex/plugins",
+        instructions_path="~/.codex/AGENTS.md",
+        settings_path="~/.codex/config.toml",
     ),
     ToolAdapter(
         id="claude-code",
         name="Claude Code",
         stability="stable",
-        supports_kinds=("skill", "mcp", "plugin"),
+        supports_kinds=("skill", "mcp", "rule", "plugin", "instruction", "memory"),
         install_mechanisms={
             "skill": "claude_plugin_or_copy",
             "mcp": "json_mcp_servers_patch",
             "plugin": "claude_plugin_manifest",
+            "instruction": "copy_instruction_file",
+            "memory": "copy_auto_memory_directory",
         },
         signals=(
             ToolSignal("command", "claude"),
@@ -92,7 +103,12 @@ TOOL_ADAPTERS: tuple[ToolAdapter, ...] = (
         mcp_config_files=("../.claude.json",),
         skills_dir="~/.claude/skills",
         mcp_json="~/.claude.json",
+        rules_dir="~/.claude/rules",
         plugins_dir="~/.claude/plugins",
+        instructions_path="~/.claude/CLAUDE.md",
+        memories_dir="~/.claude/projects",
+        memory_layout="projects",
+        settings_path="~/.claude/settings.json",
     ),
     ToolAdapter(
         id="cursor",

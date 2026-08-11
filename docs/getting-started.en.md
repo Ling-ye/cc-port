@@ -47,14 +47,17 @@ Create a private repository on GitHub, for example `ai-coding-resources`:
 - Do not put a token in the repository or its URL.
 - Use `main` as the default branch.
 - Store only synchronized resources, the tool-neutral `registry.yaml`, and the
-  optional `cc-port.yaml` consumer settings there; do not put the application
-  backup directory in the repository.
+  optional `cc-port.yaml` consumer settings there. Do not put CC Port
+  configuration, state/backups, the legacy install target, or any AI-tool
+  profile target in the repository, and do not make either path an ancestor of
+  the other.
 
 CC Port does not create or delete repositories, or change their visibility.
 
-An initialized repository contains a version 1 Registry and the conventional
-`skills/`, `mcp/`, `rules/`, `prompts/`, and `plugins/` directories. This is not
-a CC Port-private format; other tools can maintain it using the
+An initialized repository contains a version 1 Registry and the seven
+conventional `skills/`, `mcp/`, `rules/`, `prompts/`, `plugins/`,
+`instructions/`, and `memories/` directories. This is not a CC Port-private
+format; other tools can maintain it using the
 [Registry v1 specification](specs/registry-v1.md).
 
 ## 4. Connect the repository
@@ -79,24 +82,75 @@ expire, return to Settings and verify the connection again.
 
 1. Open **Resources**.
 2. Choose the global or project scopes to scan.
-3. Start a scan and review the discovered Skills, MCP servers, Rules, Prompts,
-   and Plugins.
+3. Start a scan and review the Skills, MCP servers, Rules, Prompts, Plugins,
+   Instructions, and Memories found for each configured profile. Personal
+   Instructions and Memories come only from the environment-aware asset
+   inventory; generic global or directory discovery never turns a global user
+   instruction or auto memory into an upload candidate.
 4. Review the Registry health on the remote card. Use **Check repository** to
    inspect issues and the proposed YAML diff.
 5. Choose an action for an individual resource:
    - **Upload to repository** writes a local instance to the private repository.
    - **Install to tool** writes a remote resource to the selected tool directory.
+   - **Save as copy** preserves the current instance under a new name.
+   - **Set install alias** uses a different directory name on each platform.
+6. Review the operation plan, warnings, and blockers before confirming.
 
 Remote refresh audits but never repairs automatically. A missing, malformed, or
 linked Registry must be corrected manually; local discovery remains available,
-while remote upload and installation actions are blocked.
-   - **Save as copy** preserves the current instance under a new name.
-   - **Set install alias** uses a different directory name on each platform.
-5. Review the operation plan, warnings, and blockers before confirming.
+while remote upload and installation actions are blocked. Once present, the
+optional `cc-port.yaml` must also be a regular non-symlink file and pass full
+validation. A malformed file, invalid binding, or machine-local Memory
+slot/install alias fails closed instead of being treated as an empty overlay;
+Registry repair never rewrites it.
 
 CC Port does not interpret a missing remote resource as a deletion request and
 does not silently overwrite same-name local content that lacks CC Port ownership
 metadata.
+
+Each `[platforms.<profile-id>]` id must match
+`[a-z0-9][a-z0-9._-]{0,127}` and be unique across the configuration. Quote an
+id containing `.` as `[platforms."claude.wsl"]`; invalid or duplicate ids make
+configuration loading fail. The resource repository must not equal, contain,
+or sit under the configuration file, local state/backups, legacy install
+target, or any profile's `skills_dir`, `mcp_json`, `rules_dir`, `prompts_dir`,
+`plugins_dir`, `instructions_path`, `memories_dir`, or `settings_path`.
+Configuration writes and asset planning are blocked until the overlap is fixed.
+
+Each Windows or WSL profile uses its own `settings_path` for the tool's native
+user-level configuration file: normally `settings.json` for Claude Code and
+`config.toml` for Codex. Each profile currently parses only that one explicit
+user-level/native configuration input. CC Port does not merge Claude managed
+policy, project/local settings that become active after workspace trust, or
+temporary `--settings` sources, and does not claim to have derived the complete
+effective runtime configuration. If one of those sources overrides
+`autoMemoryDirectory`, configure a separate explicit direct profile/path. The
+configured file is used only for native-path and capability discovery and is
+never uploaded or migrated wholesale.
+
+A Memory is an exact directory snapshot. Topic directories named `build/`,
+`cache/`, or `tmp/` are uploaded and restored unchanged when they satisfy the
+regular UTF-8 Markdown contract; generic Skill exclusions do not apply. The
+upload plan and apply scan every Markdown file, block secret-like content, and
+never echo the matched value.
+
+The `cc-port publish` command and MCP `publish_local_skill` tool are
+dedicated-repository publishing entry points and reject `instruction` and
+`memory`; legacy `sync`, `check`, and installation planning skip both kinds.
+Personal resources use only the profile-aware asset workflow: desktop asset
+batches, `cc-port asset ...`, or the MCP tools `asset_inventory`,
+`asset_action_plan`/`asset_action_apply`, and
+`asset_batch_plan`/`asset_batch_apply`. Set `scan_local=true` on
+`asset_inventory` to discover local instances through MCP. Platform arguments
+use exact profile ids; apply must carry the original operation id or
+`plan_hash` and pass rescanning and stale-plan validation.
+
+Claude project `.claude/rules/**/*.md` files have a different scope from the
+configured user `rules_dir`. Only rules discovered from the user `rules_dir` by
+a global user scan and already in a portable layout can migrate. Project rules
+found by a directory-scope scan stay read-only and blocked because the current
+model has no project target identity; they cannot be promoted or downloaded
+into global user rules.
 
 ### Cursor Prompt commands
 
