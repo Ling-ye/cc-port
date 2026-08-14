@@ -11,7 +11,12 @@ export {
   type TFunction,
   type TranslationValues,
 } from "@/app/i18n/core";
-export { resourceKindLabel } from "@/app/i18n/domainLabels";
+export {
+  pluginDistributionLabel,
+  pluginOriginTypeLabel,
+  pluginScopeLabel,
+  resourceKindLabel,
+} from "@/app/i18n/domainLabels";
 export {
   displayError,
   translateMessage,

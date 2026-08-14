@@ -26,21 +26,19 @@ credential management for Git for Windows before starting CC Port.
 
 ## 2. Install CC Port
 
-1. Open the [CC Port v0.5.4 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4).
-2. Download `cc-port_0.5.4_windows_x64_setup.exe`.
+1. Open the [CC Port v0.6.0 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.6.0).
+2. Download `cc-port_0.6.0_windows_x64_setup.exe`.
 3. Verify its hash against `SHA256SUMS.txt` from the same Release.
 4. Run the installer and follow its prompts.
 
-The v0.5.4 installer is not code-signed. Windows SmartScreen may show an
+The v0.6.0 installer is not code-signed. Windows SmartScreen may show an
 unknown-publisher warning. After confirming that the file came from
 `github.com/Ling-ye/cc-port` and that its SHA-256 matches, select **More info**
 to continue.
 
-New installers contain the desktop application, Desktop API sidecar, and
+The v0.6.0 installer contains the desktop application, Desktop API sidecar, and
 standalone `cc-port.exe` CLI/MCP agent. You do not need to install Python,
-Node.js, or Rust. The already-published v0.5.4 installer predates the AI agent
-integration and does not include `cc-port.exe`; section 5 applies to a later
-build that contains this capability.
+Node.js, or Rust; section 5 explains how to enable AI invocation.
 
 ## 3. Create a resource repository
 

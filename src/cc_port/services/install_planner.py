@@ -143,6 +143,16 @@ def plan_install(
             "Instruction and memory resources require environment-aware asset sync; "
             "legacy installation planning is disabled for these resource kinds."
         )
+    if (
+        entry.kind == "plugin"
+        and entry.plugin is not None
+        and entry.plugin.track == "reference"
+    ):
+        enabled = []
+        warnings.append(
+            "Reference plugins require the profile-aware asset workflow and the "
+            "platform's native installer; legacy content installation is disabled."
+        )
     if platform_filter:
         enabled = [p for p in enabled if p.name == platform_filter]
         selected_profile = next((p for p in platforms if p.name == platform_filter), None)
@@ -169,7 +179,14 @@ def plan_install(
                 continue
         else:
             install_name = (
-                entry.platform_install_dirs.get(platform.effective_tool_id)
+                entry.plugin.plugin_id
+                if (
+                    entry.kind == "plugin"
+                    and entry.plugin is not None
+                    and entry.plugin.platform == "claude-code"
+                    and platform.effective_tool_id == "claude-code"
+                )
+                else entry.platform_install_dirs.get(platform.effective_tool_id)
                 or entry.install_dir
                 or entry.name
             )

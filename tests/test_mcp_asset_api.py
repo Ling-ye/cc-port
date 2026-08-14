@@ -102,9 +102,7 @@ def test_mcp_asset_inventory_forwards_scope_and_preserves_profile_identity(
                             fingerprint="local-fingerprint",
                             description="Claude memory",
                             status="local-only",
-                            content_path=Path(
-                                "/home/lingye/.claude/projects/slot/memory"
-                            ),
+                            content_path=Path("/home/lingye/.claude/projects/slot/memory"),
                             link_target="/home/lingye/private/memory",
                             tool_id="claude-code",
                             environment_kind="wsl",
@@ -113,6 +111,8 @@ def test_mcp_asset_inventory_forwards_scope_and_preserves_profile_identity(
                             memory_layout="projects",
                         )
                     ],
+                    plugin_marketplace="team-tools",
+                    plugin_marketplace_source="acme/claude-plugins",
                 )
             ],
         )
@@ -155,6 +155,8 @@ def test_mcp_asset_inventory_forwards_scope_and_preserves_profile_identity(
     assert instance.path == "${PRIVATE_PATH}"
     assert instance.content_path == "${PRIVATE_PATH}"
     assert instance.link_target == "${PRIVATE_PATH}"
+    assert result.data.resources[0].plugin_marketplace == "team-tools"
+    assert result.data.resources[0].plugin_marketplace_source == "acme/claude-plugins"
     remote_path = result.data.resources[0].remote.path
     assert remote_path is not None
     assert remote_path.replace("\\", "/") == "memories/claude-memory-deadbeef"
@@ -296,11 +298,11 @@ def test_mcp_single_asset_plan_and_apply_forward_revalidation_identity(
         "new_name": "",
         "new_install_name": "-c-Users-Lingye-project",
         "overwrite_unmanaged": True,
-            "link_target_confirmed": True,
-            "remote_commit": "abc123",
-            "remote_repo_hash": "",
-            "remote_branch": "",
-        }
+        "link_target_confirmed": True,
+        "remote_commit": "abc123",
+        "remote_repo_hash": "",
+        "remote_branch": "",
+    }
     assert "C:/Users/Lingye" not in str(approval.metadata)
     assert applied.data is not None
     assert applied.data.approval_status == "consumed"

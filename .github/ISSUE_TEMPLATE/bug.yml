@@ -14,7 +14,7 @@ body:
     attributes:
       label: CC Port 版本
       description: 可在安装包、应用说明页或 Release 中查看。
-      placeholder: 0.5.4
+      placeholder: 0.6.0
     validations:
       required: true
   - type: dropdown

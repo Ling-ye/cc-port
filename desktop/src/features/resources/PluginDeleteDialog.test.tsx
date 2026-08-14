@@ -22,7 +22,7 @@ const plan = {
       enabled: true,
       writable: true,
       selectable: true,
-      method: "claude plugin uninstall --scope user",
+      method: "claude-cli",
       detail: "Uninstall the user-scoped plugin.",
     },
     {
@@ -33,7 +33,7 @@ const plan = {
       enabled: true,
       writable: false,
       selectable: false,
-      method: "manual",
+      method: "managed-policy",
       detail: "Managed by organization policy.",
     },
   ],
@@ -67,6 +67,16 @@ describe("PluginDeleteDialog", () => {
             fallback: plan.instances[1].detail,
           },
         },
+        {
+          ...plan.instances[0],
+          id: "skills-directory-instance",
+          method: "delete-content",
+          detail: "Delete the selected skills-directory plugin content.",
+          detail_ref: {
+            code: "plugin.delete.detail.delete_content",
+            fallback: "Delete the selected skills-directory plugin content.",
+          },
+        },
       ],
     } as never);
 
@@ -83,6 +93,13 @@ describe("PluginDeleteDialog", () => {
 
     expect(await screen.findByText("对 demo 执行带作用域的 Claude 插件卸载。")).toBeVisible();
     expect(screen.getByText("该实例由组织策略控制，CC Port 无法卸载。")).toBeVisible();
+    expect(screen.getByText("以事务方式删除所选本地插件内容路径。")).toBeVisible();
+    expect(screen.getAllByText("Claude Code / 用户")).not.toHaveLength(0);
+    expect(screen.getByText("Claude Code / 受管")).toBeVisible();
+    expect(screen.queryByText("claude-code")).not.toBeInTheDocument();
+    expect(screen.queryByText("claude-cli")).not.toBeInTheDocument();
+    expect(screen.queryByText("managed-policy")).not.toBeInTheDocument();
+    expect(screen.queryByText("delete-content")).not.toBeInTheDocument();
   });
 
   it("keeps managed instances unselectable and applies the revalidated selected plan", async () => {

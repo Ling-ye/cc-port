@@ -163,7 +163,11 @@ class PlatformProfile:
         if kind == "mcp":
             return self.mcp_json_path()
         if kind == "plugin":
-            base = self.plugins_path()
+            base = (
+                self.skills_path()
+                if self.effective_tool_id == "claude-code"
+                else self.plugins_path()
+            )
             return base / item_name if base else None
         if kind == "instruction":
             return self.instructions_file()

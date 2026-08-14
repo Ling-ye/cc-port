@@ -26,7 +26,7 @@ from cc_port.services.install_planner import MANIFEST_FILENAMES as PLANNER_MANIF
 from cc_port.services.linker import CC_PORT_LINK_MARKER, CC_PORT_RULE_FILENAME
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.5.4"
+EXPECTED_VERSION = "0.6.0"
 HISTORICAL_IDENTITY_ALLOWLIST = {
     "docs/adr/0003-rename-project-identity-to-cc-port.md",
     "docs/specs/project-identity-rename.md",

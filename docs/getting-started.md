@@ -23,16 +23,15 @@ git config --global --get-all credential.helper
 
 ## 2. 安装 CC Port
 
-1. 打开 [CC Port v0.5.4 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4)。
-2. 下载 `cc-port_0.5.4_windows_x64_setup.exe`。
+1. 打开 [CC Port v0.6.0 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.6.0)。
+2. 下载 `cc-port_0.6.0_windows_x64_setup.exe`。
 3. 对照同一 Release 中的 `SHA256SUMS.txt` 验证文件哈希。
 4. 双击安装器并按提示完成安装。
 
-v0.5.4 尚未代码签名。Windows SmartScreen 可能显示“未知发布者”；确认下载地址为 `github.com/Ling-ye/cc-port` 且 SHA-256 一致后，选择“更多信息”继续安装。
+v0.6.0 尚未代码签名。Windows SmartScreen 可能显示“未知发布者”；确认下载地址为 `github.com/Ling-ye/cc-port` 且 SHA-256 一致后，选择“更多信息”继续安装。
 
-新版本安装包会包含桌面程序、Desktop API sidecar 与独立的 `cc-port.exe` CLI/MCP agent，
-不需要额外安装 Python、Node.js 或 Rust。已经发布的 v0.5.4 安装器早于 AI agent 集成，
-尚不包含 `cc-port.exe`；第 5 节适用于包含该能力的后续构建。
+v0.6.0 安装包包含桌面程序、Desktop API sidecar 与独立的 `cc-port.exe` CLI/MCP agent，
+不需要额外安装 Python、Node.js 或 Rust；第 5 节说明如何启用 AI 调用。
 
 ## 3. 创建资源仓库
 

@@ -569,6 +569,7 @@ class CcPortPluginSettings(BaseModel):
 
     platform: PluginPlatform
     plugin_id: str
+    marketplace: str = ""
     installations: list[PluginInstallation] = Field(default_factory=list)
     dependencies: dict[str, str] = Field(default_factory=dict)
 
@@ -809,7 +810,9 @@ class RegistryCatalog(BaseModel):
             origin = PluginOrigin(
                 type=origin_type,
                 marketplace=(
-                    source.locator.split("/", 1)[0]
+                    settings.plugin.marketplace
+                    if settings.plugin.marketplace
+                    else source.locator.split("/", 1)[0]
                     if source and origin_type == "marketplace"
                     else ""
                 ),
@@ -852,7 +855,7 @@ class RegistryCatalog(BaseModel):
         if source is None and entry.plugin is not None:
             origin = entry.plugin.origin
             locator = (
-                f"{origin.marketplace}/{entry.plugin.plugin_id}"
+                origin.source or origin.marketplace
                 if origin.type == "marketplace"
                 else origin.package
                 if origin.type == "npm"
@@ -890,6 +893,7 @@ class RegistryCatalog(BaseModel):
             plugin_settings = CcPortPluginSettings(
                 platform=entry.plugin.platform,
                 plugin_id=entry.plugin.plugin_id,
+                marketplace=entry.plugin.origin.marketplace,
                 installations=list(entry.plugin.installations),
                 dependencies=dict(entry.plugin.dependencies),
             )

@@ -19,6 +19,9 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ccPortAction, openPath } from "@/api/client";
 import {
   displayError,
+  pluginDistributionLabel,
+  pluginOriginTypeLabel,
+  pluginScopeLabel,
   resourceKindLabel,
   translateMessage,
   translateMessageList,
@@ -30,6 +33,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { KindBadge } from "@/components/KindBadge";
 import {
   PlatformIdentityLabel,
+  platformDisplayName,
   platformOptionLabel,
 } from "@/components/PlatformIdentity";
 import { CollectGithubDialog } from "@/features/resources/CollectGithubDialog";
@@ -507,7 +511,23 @@ export function ResourcesView({
                   <td>
                     <div className="asset-resource-name">
                       <KindBadge kind={resource.kind} label={resourceKindLabel(resource.kind, t)} />
-                      <span><strong>{resource.name}</strong><small>{resource.resource_key}</small></span>
+                      <span>
+                        <strong>{resource.name}</strong>
+                        <small>
+                          {resource.resource_key}
+                          {resource.kind === "plugin" ? (
+                            <>
+                              {" · "}{resource.plugin_platform ? platformDisplayName(undefined, resource.plugin_platform) : "-"}
+                              {" · "}{pluginDistributionLabel(
+                                resource.plugin_platform || "",
+                                resource.plugin_track || "",
+                                resource.plugin_source_kind || "",
+                                t,
+                              )}
+                            </>
+                          ) : null}
+                        </small>
+                      </span>
                     </div>
                   </td>
                   <td className="asset-description-cell" title={resource.description || "-"}>
@@ -969,10 +989,18 @@ function ResourceDetail({
         </dl>
         {resource.kind === "plugin" ? (
           <dl className="description-list asset-description-list plugin-description-list">
-            <div><dt>{t("plugin.track")}</dt><dd>{resource.plugin_track === "content" ? t("plugin.trackContent") : t("plugin.trackReference")}</dd></div>
-            <div><dt>{t("plugin.platform")}</dt><dd>{resource.plugin_platform || "-"}</dd></div>
-            <div><dt>{t("plugin.originType")}</dt><dd>{resource.plugin_source_kind || "-"}</dd></div>
-            <div><dt>{t("plugin.source")}</dt><dd>{resource.plugin_source_id || "-"}</dd></div>
+            <div><dt>{t("plugin.distribution")}</dt><dd>{pluginDistributionLabel(resource.plugin_platform || "", resource.plugin_track || "", resource.plugin_source_kind || "", t)}</dd></div>
+            <div><dt>{t("plugin.platform")}</dt><dd>{resource.plugin_platform ? platformDisplayName(undefined, resource.plugin_platform) : "-"}</dd></div>
+            <div><dt>{t("plugin.pluginId")}</dt><dd>{resource.plugin_id || "-"}</dd></div>
+            <div><dt>{t("plugin.originType")}</dt><dd>{resource.plugin_source_kind ? pluginOriginTypeLabel(resource.plugin_source_kind, t) : "-"}</dd></div>
+            {resource.plugin_source_kind === "marketplace" ? (
+              <>
+                <div><dt>{t("plugin.marketplaceName")}</dt><dd>{resource.plugin_marketplace || "-"}</dd></div>
+                <div><dt>{t("plugin.marketplaceSource")}</dt><dd>{resource.plugin_marketplace_source || "-"}</dd></div>
+              </>
+            ) : (
+              <div><dt>{t("plugin.source")}</dt><dd>{resource.plugin_source_id || "-"}</dd></div>
+            )}
             <div><dt>{t("plugin.selector")}</dt><dd>{resource.plugin_selector || t("plugin.floating")}</dd></div>
             <div><dt>{t("plugin.observedVersion")}</dt><dd>{resource.plugin_observed_version || "-"}</dd></div>
           </dl>
@@ -1001,8 +1029,8 @@ function ResourceDetail({
               <small>{instance.ownership}</small>
               {resource.kind === "plugin" ? (
                 <>
-                  <small>{instance.track === "content" ? t("plugin.trackContent") : t("plugin.trackReference")} / {instance.scope || "-"}</small>
-                  <small>{instance.source_kind || "-"}: {instance.source_id || "-"}</small>
+                  <small>{pluginDistributionLabel(resource.plugin_platform || "", instance.track || "", instance.source_kind || "", t)} / {instance.scope ? pluginScopeLabel(instance.scope, t) : "-"}</small>
+                  <small>{instance.source_kind ? pluginOriginTypeLabel(instance.source_kind, t) : "-"}: {instance.source_id || "-"}</small>
                   <small>{instance.selector || t("plugin.floating")} · {instance.observed_version || "-"}</small>
                 </>
               ) : null}
@@ -1602,7 +1630,16 @@ function BatchChoiceEditor({
     ));
   return (
     <div className="asset-batch-choice-card">
-      <div><KindBadge kind={resource.kind} label={resourceKindLabel(resource.kind, t)} /><strong>{resource.name}</strong></div>
+      <div>
+        <KindBadge kind={resource.kind} label={resourceKindLabel(resource.kind, t)} />
+        <strong>{resource.name}</strong>
+        {resource.kind === "plugin" ? (
+          <small>
+            {resource.plugin_platform ? platformDisplayName(undefined, resource.plugin_platform) : "-"}
+            {" · "}{pluginDistributionLabel(resource.plugin_platform || "", resource.plugin_track || "", resource.plugin_source_kind || "", t)}
+          </small>
+        ) : null}
+      </div>
       {canSeparate ? (
         <label className="checkline">
           <input
@@ -1727,10 +1764,15 @@ function BatchChoiceEditor({
                   <span>{t("plugin.firstUploadChoice")}</span>
                   <select
                     value={choice.plugin_track || ""}
-                    onChange={(event) => onChange(resource.resource_key, platformId, {
-                      plugin_track: event.target.value as AssetBatchChoice["plugin_track"],
-                      ownership_confirmed: false,
-                    })}
+                    onChange={(event) => {
+                      const pluginTrack = event.target.value as AssetBatchChoice["plugin_track"];
+                      onChange(resource.resource_key, platformId, {
+                        plugin_track: pluginTrack,
+                        ownership_confirmed: false,
+                        reference_origin: pluginTrack === "reference" ? { type: "marketplace" } : {},
+                        plugin_dependencies: {},
+                      });
+                    }}
                   >
                     <option value="">-</option>
                     <option value="content">{t("plugin.confirmOwnedSource")}</option>
@@ -1760,12 +1802,76 @@ function BatchChoiceEditor({
                   <div className="plugin-reference-origin-inline">
                     <label>
                       <span>{t("plugin.originType")}</span>
-                      <select value={choice.reference_origin?.type || "marketplace"} onChange={(event) => onChange(resource.resource_key, platformId, { reference_origin: { ...choice.reference_origin, type: event.target.value } })}>
-                        <option value="marketplace">marketplace</option><option value="npm">npm</option><option value="git">Git</option>
+                      <select
+                        value={referenceOriginType(choice)}
+                        disabled={resource.plugin_platform === "claude-code"}
+                        onChange={(event) => onChange(resource.resource_key, platformId, {
+                          reference_origin: changeReferenceOriginType(
+                            choice.reference_origin,
+                            event.target.value,
+                          ),
+                        })}
+                      >
+                        <option value="marketplace">{t("plugin.originMarketplace")}</option>
+                        {resource.plugin_platform !== "claude-code" ? (
+                          <>
+                            <option value="npm">{t("plugin.originNpm")}</option>
+                            <option value="git">{t("plugin.originGit")}</option>
+                          </>
+                        ) : null}
                       </select>
                     </label>
-                    <label><span>{t("plugin.source")}</span><input value={referenceOriginValue(choice)} onChange={(event) => onChange(resource.resource_key, platformId, { reference_origin: updateReferenceOrigin(choice.reference_origin, event.target.value) })} /></label>
-                    <label><span>{t("plugin.selector")}</span><input value={choice.reference_origin?.selector || ""} onChange={(event) => onChange(resource.resource_key, platformId, { reference_origin: { ...choice.reference_origin, selector: event.target.value } })} /></label>
+                    {referenceOriginType(choice) === "marketplace" ? (
+                      <>
+                        <label>
+                          <span>{t("plugin.marketplaceName")}</span>
+                          <input
+                            required
+                            aria-label={t("plugin.marketplaceName")}
+                            value={referenceOriginFieldValue(choice.reference_origin, "marketplace")}
+                            onChange={(event) => onChange(resource.resource_key, platformId, {
+                              reference_origin: updateReferenceOriginField(choice.reference_origin, "marketplace", event.target.value),
+                            })}
+                          />
+                        </label>
+                        <label>
+                          <span>{t("plugin.marketplaceSource")}</span>
+                          <input
+                            required={resource.plugin_platform === "claude-code"}
+                            aria-label={t("plugin.marketplaceSource")}
+                            value={referenceOriginFieldValue(choice.reference_origin, "source")}
+                            onChange={(event) => onChange(resource.resource_key, platformId, {
+                              reference_origin: updateReferenceOriginField(choice.reference_origin, "source", event.target.value),
+                            })}
+                          />
+                        </label>
+                      </>
+                    ) : (
+                      <label>
+                        <span>{referenceOriginType(choice) === "npm" ? t("plugin.package") : t("plugin.repo")}</span>
+                        <input
+                          required
+                          aria-label={referenceOriginType(choice) === "npm" ? t("plugin.package") : t("plugin.repo")}
+                          value={referenceOriginFieldValue(choice.reference_origin, referenceOriginType(choice) === "npm" ? "package" : "repo")}
+                          onChange={(event) => onChange(resource.resource_key, platformId, {
+                            reference_origin: updateReferenceOriginField(
+                              choice.reference_origin,
+                              referenceOriginType(choice) === "npm" ? "package" : "repo",
+                              event.target.value,
+                            ),
+                          })}
+                        />
+                      </label>
+                    )}
+                    <label>
+                      <span>{t("plugin.selector")}</span>
+                      <input
+                        value={choice.reference_origin?.selector || ""}
+                        onChange={(event) => onChange(resource.resource_key, platformId, {
+                          reference_origin: updateReferenceOriginField(choice.reference_origin, "selector", event.target.value),
+                        })}
+                      />
+                    </label>
                   </div>
                 ) : null}
               </div>
@@ -1887,22 +1993,45 @@ function StatusPill({ value, label }: { value: string; label: string }) {
   return <span className={`asset-pill asset-status status-${value}`}>{label}</span>;
 }
 
-function referenceOriginValue(choice: AssetBatchChoice): string {
-  const origin = choice.reference_origin ?? {};
-  if (origin.type === "npm") return origin.package ?? "";
-  if (origin.type === "git") return origin.repo ?? "";
-  return origin.marketplace ?? "";
+function referenceOriginType(choice: AssetBatchChoice): string {
+  return choice.reference_origin?.type || "marketplace";
 }
 
-function updateReferenceOrigin(
+function changeReferenceOriginType(
   current: Record<string, string> | undefined,
+  type: string,
+): Record<string, string> {
+  const next: Record<string, string> = { type };
+  if (current?.selector) next.selector = current.selector;
+  return next;
+}
+
+function referenceOriginFieldValue(
+  current: Record<string, string> | undefined,
+  field: string,
+): string {
+  return current?.[field] || "";
+}
+
+function updateReferenceOriginField(
+  current: Record<string, string> | undefined,
+  field: string,
   value: string,
 ): Record<string, string> {
-  const origin: Record<string, string> = { ...current, type: current?.type || "marketplace" };
-  if (origin.type === "npm") origin.package = value;
-  else if (origin.type === "git") origin.repo = value;
-  else origin.marketplace = value;
-  return origin;
+  const type = current?.type || "marketplace";
+  const next: Record<string, string> = { type };
+  if (current?.selector) next.selector = current.selector;
+  if (type === "marketplace") {
+    if (current?.marketplace) next.marketplace = current.marketplace;
+    if (current?.source) next.source = current.source;
+  } else if (type === "npm" && current?.package) {
+    next.package = current.package;
+  } else if (type === "git" && current?.repo) {
+    next.repo = current.repo;
+  }
+  if (value) next[field] = value;
+  else delete next[field];
+  return next;
 }
 
 function dependencyText(dependencies?: Record<string, string>): string {

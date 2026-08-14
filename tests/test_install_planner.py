@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from cc_port.core.config import Config, InstallConfig, PlatformsConfig, ResourcesConfig
-from cc_port.core.models import Registry, RegistryItem
+from cc_port.core.models import (
+    PluginInstallation,
+    PluginOrigin,
+    PluginSpec,
+    Registry,
+    RegistryItem,
+)
 from cc_port.core.ownership import is_cc_port_managed, managed_marker_path
 from cc_port.core.platforms import PlatformProfile
 from cc_port.core.registry import save_registry
@@ -238,6 +244,48 @@ def test_sync_installs_plugin_to_platform_plugin_dir(tmp_path: Path) -> None:
     assert result.action == installer.SyncAction.INSTALLED
     assert result.platforms_installed == ["opencode"]
     assert (plugin_target / "demo-plugin" / "plugin.json").is_file()
+
+
+def test_legacy_sync_defers_claude_marketplace_reference_to_asset_workflow(
+    tmp_path: Path,
+) -> None:
+    entry = RegistryItem(
+        name="claude-marketplace-review-tools",
+        kind="plugin",
+        source="external",
+        plugin=PluginSpec(
+            track="reference",
+            platform="claude-code",
+            plugin_id="review-tools",
+            origin=PluginOrigin(
+                type="marketplace",
+                marketplace="team-tools",
+                source="acme/claude-plugins",
+            ),
+            installations=[PluginInstallation(scope="user", enabled=True)],
+        ),
+    )
+    profile = PlatformProfile(
+        name="claude-windows",
+        tool_id="claude-code",
+        home_dir=str(tmp_path / "home"),
+        skills_dir="~/.claude/skills",
+        settings_path="~/.claude/settings.json",
+    )
+    cfg = _config(
+        tmp_path / "resources",
+        tmp_path / "install",
+        platforms=[profile],
+    )
+
+    plan = installer.create_install_plan(entry, config=cfg)
+    result = installer.sync_one(entry, config=cfg)
+
+    assert plan.targets == []
+    assert "native installer" in " ".join(plan.warnings)
+    assert result.action == installer.SyncAction.SKIPPED
+    assert "profile-aware asset sync" in result.detail
+    assert not profile.skills_path().exists()
 
 
 def test_legacy_sync_defers_instruction_to_environment_aware_asset_sync(

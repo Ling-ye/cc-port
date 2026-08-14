@@ -28,6 +28,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - py310 fallback
     import tomli as tomllib
 
+from ..core.claude_plugins import inspect_claude_plugin, inspect_claude_skill
 from ..core.config import (
     Config,
     default_state_dir,
@@ -71,6 +72,13 @@ from ..core.secrets import sanitize_mcp_config_for_storage
 from ..core.tool_adapters import tool_adapter_by_id
 from ..core.validator import validate_item
 from ..infrastructure import git_ops
+from .claude_plugin_installer import (
+    claude_cli_context,
+    install_marketplace_plugin,
+    installable_marketplace_source,
+    marketplace_install_ready,
+    set_marketplace_plugin_enabled,
+)
 from .env_manager import EnvDiscoveryResult, discover_environment
 from .install_planner import copy_resource_tree
 from .local_path_probe import (
@@ -206,6 +214,8 @@ class AssetPlatformRow:
     plugin_project_id: str = ""
     plugin_source_kind: str = ""
     plugin_source_id: str = ""
+    plugin_marketplace: str = ""
+    plugin_marketplace_source: str = ""
     plugin_selector: str = ""
     plugin_observed_version: str = ""
     plugin_enabled: bool | None = None
@@ -307,6 +317,8 @@ class AssetResourceRow:
     plugin_id: str = ""
     plugin_source_kind: str = ""
     plugin_source_id: str = ""
+    plugin_marketplace: str = ""
+    plugin_marketplace_source: str = ""
     plugin_selector: str = ""
     plugin_observed_version: str = ""
 
@@ -607,9 +619,7 @@ def build_asset_inventory(
         )
     assert snapshot.registry is not None
     registry_entries = snapshot.registry.items
-    known_entries = [
-        entry for entry in registry_entries if entry.kind in RESOURCE_PARENT_BY_KIND
-    ]
+    known_entries = [entry for entry in registry_entries if entry.kind in RESOURCE_PARENT_BY_KIND]
     unknown_entries = [
         entry for entry in registry_entries if entry.kind not in RESOURCE_PARENT_BY_KIND
     ]
@@ -700,8 +710,7 @@ def build_asset_inventory(
     )
     inventory.resources = _aggregate_resource_rows(inventory)
     inventory.resources.extend(
-        _unknown_registry_resource(entry, inventory, snapshot.root)
-        for entry in unknown_entries
+        _unknown_registry_resource(entry, inventory, snapshot.root) for entry in unknown_entries
     )
     inventory.resources.sort(key=lambda item: (item.kind, item.name))
     return inventory
@@ -722,24 +731,19 @@ def build_asset_content_diff(
         refresh_remote=False,
         remote_snapshot=snapshot,
     )
-    matching_rows = [
-        row for row in inventory.rows if row.resource_key == resource_key
-    ]
+    matching_rows = [row for row in inventory.rows if row.resource_key == resource_key]
     if not matching_rows:
         raise ValueError(f"Resource is not available: {resource_key}")
     row = next(
         (
             candidate
             for candidate in matching_rows
-            if candidate.local_instance_id == local_instance_id
-            and candidate.local_exists
+            if candidate.local_instance_id == local_instance_id and candidate.local_exists
         ),
         None,
     )
     if row is None:
-        raise ValueError(
-            f"Local instance is not available: {local_instance_id}"
-        )
+        raise ValueError(f"Local instance is not available: {local_instance_id}")
     if not row.remote_exists:
         raise ValueError(f"Remote content is not available: {resource_key}")
 
@@ -760,11 +764,7 @@ def build_asset_content_diff(
         ):
             continue
         status: Literal["added", "deleted", "modified"] = (
-            "added"
-            if remote_blob is None
-            else "deleted"
-            if local_blob is None
-            else "modified"
+            "added" if remote_blob is None else "deleted" if local_blob is None else "modified"
         )
         file_diff = _asset_diff_file(path, status, remote_blob, local_blob)
         remaining = ASSET_DIFF_MAX_TOTAL_CHARS - total_chars
@@ -805,9 +805,7 @@ def _asset_diff_file_maps(
             else None
         )
         local_config = (
-            sanitize_mcp_config_for_storage(
-                _read_mcp_server(local_mcp_path, row.install_name)
-            )
+            sanitize_mcp_config_for_storage(_read_mcp_server(local_mcp_path, row.install_name))
             if local_mcp_path is not None
             else None
         )
@@ -849,11 +847,7 @@ def _asset_diff_file_maps(
     if remote_source.is_file() and local_source.is_file():
         remote_blob = _asset_diff_read_file(remote_source)
         local_blob = _asset_diff_read_file(local_source)
-        display_name = (
-            remote_source.name
-            if remote_source.name == local_source.name
-            else "content"
-        )
+        display_name = remote_source.name if remote_source.name == local_source.name else "content"
         return (
             {display_name: remote_blob},
             {display_name: local_blob},
@@ -937,8 +931,7 @@ def _asset_diff_file(
     local_data = local_blob.data if local_blob is not None else b""
     binary = _asset_diff_is_binary(remote_data) or _asset_diff_is_binary(local_data)
     truncated = bool(
-        (remote_blob and remote_blob.truncated)
-        or (local_blob and local_blob.truncated)
+        (remote_blob and remote_blob.truncated) or (local_blob and local_blob.truncated)
     )
     if binary:
         return AssetDiffFile(
@@ -1058,9 +1051,7 @@ def _requires_configured_resource_discovery(cfg: Config) -> bool:
         )
         for configured_path, default_value, path_type in configured_paths:
             if configured_path is None or not (
-                configured_path.is_file()
-                if path_type == "file"
-                else configured_path.is_dir()
+                configured_path.is_file() if path_type == "file" else configured_path.is_dir()
             ):
                 continue
             default_path = Path(default_value).expanduser() if default_value else None
@@ -1081,6 +1072,12 @@ def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow
         exemplar = rows[0]
         entry = next((row.entry for row in rows if row.entry is not None), None)
         local_rows = [row for row in rows if row.local_exists]
+        local_marketplaces = _unique_strings(
+            [row.plugin_marketplace for row in local_rows if row.plugin_marketplace]
+        )
+        local_marketplace_sources = _unique_strings(
+            [row.plugin_marketplace_source for row in local_rows if row.plugin_marketplace_source]
+        )
         local_instances = [_local_instance_summary(row) for row in local_rows]
         local_descriptions = _unique_strings(
             [item.description for item in local_instances if item.description]
@@ -1156,13 +1153,53 @@ def _aggregate_resource_rows(inventory: AssetInventory) -> list[AssetResourceRow
                 available_actions=_unique_strings(
                     [item for row in rows for item in row.available_actions]
                 ),
-                plugin_track=(entry.plugin.track if entry and entry.plugin else exemplar.plugin_track),
-                plugin_platform=(entry.plugin.platform if entry and entry.plugin else exemplar.platform if exemplar.kind == "plugin" else ""),
-                plugin_id=(entry.plugin.plugin_id if entry and entry.plugin else exemplar.plugin_id),
-                plugin_source_kind=(entry.plugin.origin.type if entry and entry.plugin else exemplar.plugin_source_kind),
-                plugin_source_id=(_plugin_origin_source_id(entry.plugin.origin) if entry and entry.plugin else exemplar.plugin_source_id),
-                plugin_selector=(entry.plugin.origin.selector if entry and entry.plugin else exemplar.plugin_selector),
-                plugin_observed_version=(entry.plugin.observed_version if entry and entry.plugin else exemplar.plugin_observed_version),
+                plugin_track=(
+                    entry.plugin.track if entry and entry.plugin else exemplar.plugin_track
+                ),
+                plugin_platform=(
+                    entry.plugin.platform
+                    if entry and entry.plugin
+                    else exemplar.platform
+                    if exemplar.kind == "plugin"
+                    else ""
+                ),
+                plugin_id=(
+                    entry.plugin.plugin_id if entry and entry.plugin else exemplar.plugin_id
+                ),
+                plugin_source_kind=(
+                    entry.plugin.origin.type
+                    if entry and entry.plugin
+                    else exemplar.plugin_source_kind
+                ),
+                plugin_source_id=(
+                    _plugin_origin_source_id(entry.plugin.origin)
+                    if entry and entry.plugin
+                    else exemplar.plugin_source_id
+                ),
+                plugin_marketplace=(
+                    entry.plugin.origin.marketplace
+                    if entry and entry.plugin and entry.plugin.origin.type == "marketplace"
+                    else local_marketplaces[0]
+                    if len(local_marketplaces) == 1
+                    else ""
+                ),
+                plugin_marketplace_source=(
+                    entry.plugin.origin.source
+                    if entry and entry.plugin and entry.plugin.origin.type == "marketplace"
+                    else local_marketplace_sources[0]
+                    if len(local_marketplace_sources) == 1
+                    else ""
+                ),
+                plugin_selector=(
+                    entry.plugin.origin.selector
+                    if entry and entry.plugin
+                    else exemplar.plugin_selector
+                ),
+                plugin_observed_version=(
+                    entry.plugin.observed_version
+                    if entry and entry.plugin
+                    else exemplar.plugin_observed_version
+                ),
             )
         )
     resources.sort(key=lambda item: (item.kind, item.name))
@@ -1560,9 +1597,7 @@ def build_asset_action_plan(
             )
         if kind == "memory" and row.tool_id and row.tool_id != "claude-code":
             blockers.append("Memory resources can only originate from Claude Code.")
-        target_entry = (
-            registry.get(normalized_new_name, kind) if normalized_new_name else None
-        )
+        target_entry = registry.get(normalized_new_name, kind) if normalized_new_name else None
         remote_target_exists = target_entry is not None
         remote_target_fingerprint = (
             _remote_asset_fingerprint(snapshot.root, target_entry)
@@ -1588,7 +1623,7 @@ def build_asset_action_plan(
                     registry,
                     cfg,
                     normalized_install_name,
-                )
+                ),
             )
 
     if action in REMOTE_WRITE_ACTIONS:
@@ -1713,10 +1748,7 @@ def apply_asset_action_plan(
     current_snapshot = _refresh_remote_snapshot(cfg, refresh=True)
     current_repo_hash = _remote_repo_hash(current_snapshot.repo_url)
     current_branch = current_snapshot.branch
-    if (
-        plan.remote_repo_hash != current_repo_hash
-        or plan.remote_branch != current_branch
-    ):
+    if plan.remote_repo_hash != current_repo_hash or plan.remote_branch != current_branch:
         result = AssetActionResult(
             operation_id=plan.operation_id,
             action=plan.action,
@@ -1863,7 +1895,9 @@ def build_asset_batch_plan(
                             resource_key=resource_key,
                             platform=platform,
                             local_instance_id=instance.local_instance_id,
-                            resolution=download_choice.resolution if download_choice else "overwrite",
+                            resolution=download_choice.resolution
+                            if download_choice
+                            else "overwrite",
                             new_name=download_choice.new_name if download_choice else "",
                             overwrite_unmanaged=(
                                 download_choice.overwrite_unmanaged if download_choice else False
@@ -2065,7 +2099,9 @@ def add_plugin_reference(
         raise AssetSyncError("No remote resource repository URL is configured.")
     last_error: Exception | None = None
     for attempt in range(2):
-        with tempfile.TemporaryDirectory(prefix="cc-port-plugin-reference-", ignore_cleanup_errors=True) as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="cc-port-plugin-reference-", ignore_cleanup_errors=True
+        ) as temporary:
             worktree = Path(temporary) / "repo"
             _clone_remote_for_write(repo_url, worktree, cfg)
             registry_path = worktree / DEFAULT_REGISTRY_FILENAME
@@ -2195,7 +2231,8 @@ def build_plugin_delete_plan(
                 row
                 for row in local_rows
                 if row.plugin_scope == installation.scope
-                and row.plugin_data.get("plugin", {}).get("installations", [{}])[0].get("project") == project
+                and row.plugin_data.get("plugin", {}).get("installations", [{}])[0].get("project")
+                == project
             ),
             None,
         )
@@ -2303,7 +2340,11 @@ def apply_plugin_delete_plan(
     if pending:
         successes = [item for item in results if item.status in {"succeeded", "unchanged"}]
         return PluginDeleteResult(
-            status="partial" if successes else "needs-action" if all(item.status == "needs-action" for item in pending) else "failed",
+            status="partial"
+            if successes
+            else "needs-action"
+            if all(item.status == "needs-action" for item in pending)
+            else "failed",
             resource_key=resource_key,
             plan_hash=current.plan_hash,
             results=results,
@@ -2356,9 +2397,11 @@ def _plugin_delete_instance(
     row: AssetPlatformRow | None,
 ) -> PluginDeleteInstancePlan:
     installation_data = installation.model_dump(mode="json")
-    instance_id = row.local_instance_id if row is not None else _json_fingerprint(
-        {"platform": spec.platform, "installation": installation_data}
-    )[:24]
+    instance_id = (
+        row.local_instance_id
+        if row is not None
+        else _json_fingerprint({"platform": spec.platform, "installation": installation_data})[:24]
+    )
     if installation.scope == "managed":
         method = "managed-policy"
         detail_ref = ui_message(
@@ -2373,7 +2416,12 @@ def _plugin_delete_instance(
             "No matching local installation was found; only desired remote state will be removed.",
         )
         selectable = True
-    elif spec.platform == "claude-code" and shutil.which("claude"):
+    elif (
+        spec.platform == "claude-code"
+        and spec.track == "reference"
+        and spec.origin.type == "marketplace"
+        and shutil.which("claude")
+    ):
         method = "claude-cli"
         detail_ref = ui_message(
             "plugin.delete.detail.claude_cli",
@@ -2381,7 +2429,11 @@ def _plugin_delete_instance(
             plugin_id=spec.plugin_id,
         )
         selectable = True
-    elif spec.platform == "opencode" and spec.origin.type == "npm" and row.plugin_data.get("state_path"):
+    elif (
+        spec.platform == "opencode"
+        and spec.origin.type == "npm"
+        and row.plugin_data.get("state_path")
+    ):
         method = "opencode-config"
         detail_ref = ui_message(
             "plugin.delete.detail.opencode_config",
@@ -2415,7 +2467,9 @@ def _plugin_delete_instance(
         detail=detail,
         detail_ref=detail_ref,
         local_path=row.local_path if row else None,
-        state_path=Path(str(row.plugin_data.get("state_path"))) if row and row.plugin_data.get("state_path") else None,
+        state_path=Path(str(row.plugin_data.get("state_path")))
+        if row and row.plugin_data.get("state_path")
+        else None,
         installation=installation_data,
         plugin_id=spec.plugin_id,
         source_id=(
@@ -2459,7 +2513,14 @@ def _apply_plugin_delete_instance(
         )
     if instance.method == "claude-cli":
         result = subprocess.run(
-            ["claude", "plugin", "uninstall", instance.source_id or instance.plugin_id, "--scope", instance.scope],
+            [
+                "claude",
+                "plugin",
+                "uninstall",
+                instance.source_id or instance.plugin_id,
+                "--scope",
+                instance.scope,
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -2498,7 +2559,14 @@ def _apply_plugin_delete_instance(
         )
     transaction = LocalChangeTransaction.begin(
         "plugin-delete",
-        [ChangeTarget(path=target, change_action="plugin-delete", resource=resource_key, platform=instance.platform)],
+        [
+            ChangeTarget(
+                path=target,
+                change_action="plugin-delete",
+                resource=resource_key,
+                platform=instance.platform,
+            )
+        ],
         metadata={"resource_key": resource_key, "instance_id": instance.id},
         lock_timeout_seconds=cfg.state.lock_timeout_seconds,
     )
@@ -2514,7 +2582,9 @@ def _apply_plugin_delete_instance(
                 for value in declared
                 if _split_plugin_package(str(value))[0] != instance.source_id
             ]
-            target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            target.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
         else:
             _remove_asset_path(target)
         record = transaction.complete(message=f"Removed plugin instance {instance.id}.")
@@ -2576,11 +2646,15 @@ def _remove_plugin_remote_installations(
     selected_identities = {
         json.dumps(item.installation, sort_keys=True, separators=(",", ":")) for item in selected
     }
-    with tempfile.TemporaryDirectory(prefix="cc-port-plugin-delete-", ignore_cleanup_errors=True) as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="cc-port-plugin-delete-", ignore_cleanup_errors=True
+    ) as temporary:
         worktree = Path(temporary) / "repo"
         _clone_remote_for_write(repo_url, worktree, cfg)
         if (git_ops.head_commit(worktree) or "") != plan.remote_commit:
-            raise _StaleAssetTarget("stale-target", "The remote registry changed after deletion planning.")
+            raise _StaleAssetTarget(
+                "stale-target", "The remote registry changed after deletion planning."
+            )
         registry_path = worktree / DEFAULT_REGISTRY_FILENAME
         registry = load_registry(registry_path)
         key = ResourceKey.parse(plan.resource_key)
@@ -2591,7 +2665,8 @@ def _remove_plugin_remote_installations(
         updated.plugin.installations = [
             item
             for item in updated.plugin.installations
-            if json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) not in selected_identities
+            if json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+            not in selected_identities
         ]
         deleted = not updated.plugin.installations
         if deleted:
@@ -2661,9 +2736,7 @@ def _build_batch_upload_item(
         )
     selected: AssetPlatformRow | None = None
     reference_rows = [
-        row
-        for row in local_rows
-        if row.kind == "plugin" and row.plugin_track == "reference"
+        row for row in local_rows if row.kind == "plugin" and row.plugin_track == "reference"
     ]
     if reference_rows and len(reference_rows) == len(local_rows):
         selected = sorted(
@@ -2891,7 +2964,13 @@ def _build_batch_download_item(
         and remote_row.entry.plugin is not None
         and remote_row.entry.plugin.track == "reference"
     ):
-        return _build_plugin_reference_download_item(resource_key, platform, rows, remote_row.entry)
+        return _build_plugin_reference_download_item(
+            resource_key,
+            platform,
+            rows,
+            remote_row.entry,
+            cfg,
+        )
     if remote_row.read_only_reference:
         return _batch_non_action_item(
             resource_key,
@@ -3011,9 +3090,7 @@ def _build_batch_download_item(
         target_resource_key=plan.target_resource_key,
         reason=reason,
         reason_ref=(
-            ui_message("asset.batch.blocked", reason, detail=reason)
-            if plan.blocked
-            else None
+            ui_message("asset.batch.blocked", reason, detail=reason) if plan.blocked else None
         ),
         warnings=list(plan.warnings),
         warning_refs=list(plan.warning_refs),
@@ -3028,9 +3105,12 @@ def _build_plugin_reference_download_item(
     platform: str,
     rows: list[AssetPlatformRow],
     entry: RegistryItem,
+    cfg: Config | None = None,
 ) -> AssetBatchPlanItem:
+    cfg = cfg or Config()
     spec = entry.plugin
-    if spec is None or platform != spec.platform:
+    profile = cfg.platforms.get(platform) or build_platform(platform)
+    if spec is None or profile is None or profile.effective_tool_id != spec.platform:
         return _batch_non_action_item(
             resource_key,
             action="download",
@@ -3057,18 +3137,44 @@ def _build_plugin_reference_download_item(
                 row
                 for row in local_rows
                 if row.plugin_scope == installation.scope
-                and (row.plugin_data.get("plugin", {}).get("installations", [{}])[0].get("project") == project)
+                and (
+                    row.plugin_data.get("plugin", {}).get("installations", [{}])[0].get("project")
+                    == project
+                )
             ),
             None,
         )
         if installation.scope == "managed":
-            pending.append("managed: organization policy requires this state; no local write is allowed")
+            pending.append(
+                "managed: organization policy requires this state; no local write is allowed"
+            )
         elif match is None:
-            pending.append(_plugin_install_instruction(spec, installation))
+            install_alignment = _claude_plugin_install_alignment(
+                cfg,
+                profile,
+                spec,
+                installation,
+            )
+            if install_alignment is not None:
+                alignments.append(install_alignment)
+            else:
+                pending.append(_plugin_install_instruction(spec, installation))
         elif match.plugin_enabled != installation.enabled:
             state_path = str(match.plugin_data.get("state_path") or "")
-            method = _plugin_alignment_method(spec, match, state_path)
+            method = _plugin_alignment_method(spec, match, state_path, profile)
             if method:
+                state_target, project_root = _claude_plugin_state_target(
+                    cfg,
+                    profile,
+                    installation,
+                )
+                if spec.platform == "claude-code" and (
+                    state_target is None or not _same_local_path(state_target, Path(state_path))
+                ):
+                    pending.append(
+                        f"{installation.scope}: the configured Claude plugin state target does not match this profile"
+                    )
+                    continue
                 alignments.append(
                     {
                         "method": method,
@@ -3080,6 +3186,8 @@ def _build_plugin_reference_download_item(
                         "state_fingerprint": (
                             resource_hash_path(Path(state_path)) if state_path else ""
                         ),
+                        "state_exists": True,
+                        "project_root": (str(project_root) if project_root is not None else ""),
                     }
                 )
             else:
@@ -3112,16 +3220,18 @@ def _build_plugin_reference_download_item(
             ),
             local_source_fingerprint="",
             target_path=first_path,
-            target_exists=first_path.exists(),
-            target_fingerprint=resource_hash_path(first_path),
+            target_exists=first_path.is_file(),
+            target_fingerprint=(resource_hash_path(first_path) if first_path.is_file() else ""),
             target_managed=False,
+            tool_id=profile.effective_tool_id,
+            environment_kind=profile.environment_kind,
+            environment_name=profile.environment_name,
             warnings=list(pending),
             plugin_data=plugin_data,
             created_at=_utc_now(),
         )
-        reason = (
-            f"Align {len(alignments)} installed plugin state(s)."
-            + (" Remaining manual actions: " + "; ".join(pending) if pending else "")
+        reason = f"Align {len(alignments)} installed plugin state(s)." + (
+            " Remaining manual actions: " + "; ".join(pending) if pending else ""
         )
         return AssetBatchPlanItem(
             id=f"download:{resource_key}:{platform}:state",
@@ -3129,7 +3239,14 @@ def _build_plugin_reference_download_item(
             platform=platform,
             local_instance_id=plan.local_instance_id,
             action="align-plugin-state",
-            disposition="update",
+            disposition=(
+                "create"
+                if any(
+                    str(alignment.get("method") or "") == "claude-install"
+                    for alignment in alignments
+                )
+                else "update"
+            ),
             target_resource_key=resource_key,
             reason=reason,
             reason_ref=ui_message(
@@ -3163,10 +3280,74 @@ def _build_plugin_reference_download_item(
     )
 
 
+def _claude_plugin_install_alignment(
+    cfg: Config,
+    profile: PlatformProfile,
+    spec: PluginSpec,
+    installation: PluginInstallation,
+) -> dict[str, Any] | None:
+    if (
+        spec.platform != "claude-code"
+        or spec.origin.type != "marketplace"
+        or installation.scope == "managed"
+        or claude_cli_context(profile) is None
+    ):
+        return None
+    state_path, project_root = _claude_plugin_state_target(
+        cfg,
+        profile,
+        installation,
+    )
+    if state_path is None:
+        return None
+    if not marketplace_install_ready(
+        profile,
+        spec,
+        project_root=project_root,
+    ):
+        return None
+    state_exists = state_path.is_file() and not state_path.is_symlink()
+    return {
+        "method": "claude-install",
+        "scope": installation.scope,
+        "project": (installation.project.model_dump(mode="json") if installation.project else None),
+        "enabled": installation.enabled,
+        "local_instance_id": "",
+        "state_path": str(state_path),
+        "state_exists": state_exists,
+        "state_fingerprint": resource_hash_path(state_path) if state_exists else "",
+        "project_root": str(project_root) if project_root is not None else "",
+    }
+
+
+def _claude_plugin_state_target(
+    cfg: Config,
+    profile: PlatformProfile,
+    installation: PluginInstallation,
+) -> tuple[Path | None, Path | None]:
+    if installation.scope == "user":
+        return profile.settings_file(), None
+    if installation.scope not in {"project", "local"} or installation.project is None:
+        return None, None
+    mapping = next(
+        (
+            item
+            for item in cfg.plugin_projects
+            if item.repo == installation.project.repo and item.subdir == installation.project.subdir
+        ),
+        None,
+    )
+    if mapping is None or not mapping.path_value.is_dir():
+        return None, None
+    filename = "settings.local.json" if installation.scope == "local" else "settings.json"
+    return mapping.path_value / ".claude" / filename, mapping.path_value
+
+
 def _plugin_alignment_method(
     spec: PluginSpec,
     row: AssetPlatformRow,
     state_path: str,
+    profile: PlatformProfile,
 ) -> str:
     if not row.plugin_writable or row.plugin_scope == "managed" or not state_path:
         return ""
@@ -3174,7 +3355,7 @@ def _plugin_alignment_method(
     if not path.is_file() or path.is_symlink():
         return ""
     if spec.platform == "claude-code":
-        return "claude-cli" if shutil.which("claude") else "claude-config"
+        return "claude-cli" if claude_cli_context(profile) is not None else "claude-config"
     if spec.platform == "opencode":
         return "opencode-config"
     if spec.platform == "codex":
@@ -3242,9 +3423,7 @@ def _block_duplicate_batch_targets(
         if direction == "download":
             if item.plan.target_path is None:
                 continue
-            target_path = os.path.normcase(
-                str(item.plan.target_path.expanduser().absolute())
-            )
+            target_path = os.path.normcase(str(item.plan.target_path.expanduser().absolute()))
             target_key = ResourceKey.parse(item.plan.target_resource_key)
             target = (
                 target_path,
@@ -3337,9 +3516,7 @@ def _batch_plan_assertions(plan: AssetActionPlan | None) -> dict[str, Any]:
         "local_source_fingerprint": plan.local_source_fingerprint,
         "source_path": str(plan.source_path) if plan.source_path is not None else "",
         "source_content_path": (
-            str(plan.source_content_path)
-            if plan.source_content_path is not None
-            else ""
+            str(plan.source_content_path) if plan.source_content_path is not None else ""
         ),
         "source_path_kind": plan.source_path_kind,
         "source_link_health": plan.source_link_health,
@@ -3455,9 +3632,7 @@ def load_asset_action_plan(
         target_managed=bool(data.get("target_managed", False)),
         source_path=Path(source_path_value) if source_path_value else None,
         source_content_path=(
-            Path(source_content_path_value)
-            if source_content_path_value
-            else None
+            Path(source_content_path_value) if source_content_path_value else None
         ),
         source_path_kind=str(data.get("source_path_kind") or "regular"),
         source_link_health=str(data.get("source_link_health") or "ready"),
@@ -3730,12 +3905,7 @@ def _latest_cached_snapshot(root: Path) -> Path | None:
 def _snapshot_format_is_current(root: Path) -> bool:
     marker = root / REMOTE_SNAPSHOT_FORMAT_FILE
     health = root / REMOTE_SNAPSHOT_REGISTRY_HEALTH_FILE
-    if (
-        not marker.is_file()
-        or marker.is_symlink()
-        or not health.is_file()
-        or health.is_symlink()
-    ):
+    if not marker.is_file() or marker.is_symlink() or not health.is_file() or health.is_symlink():
         return False
     try:
         return marker.read_text(encoding="utf-8").strip() == REMOTE_SNAPSHOT_FORMAT_VERSION
@@ -3991,13 +4161,10 @@ def _profile_environment_state(profile: PlatformProfile) -> tuple[bool, str]:
     configured_kind = profile.environment_kind.strip().lower()
     if profile.home_dir in {"", "~"} and configured_kind:
         kind_matches = configured_kind == current_kind
-        name_matches = (
-            configured_kind != "wsl"
-            or (
-                bool(profile.environment_name)
-                and bool(current_name)
-                and profile.environment_name.casefold() == current_name.casefold()
-            )
+        name_matches = configured_kind != "wsl" or (
+            bool(profile.environment_name)
+            and bool(current_name)
+            and profile.environment_name.casefold() == current_name.casefold()
         )
         if not kind_matches or not name_matches:
             return (
@@ -4094,9 +4261,7 @@ def _expected_row(
         reference_commit = _reference_commit(entry, cfg, reference_commits)
 
     target_ancestor_problem = (
-        _local_target_ancestor_problem(target)
-        if entry.kind in {"instruction", "memory"}
-        else ""
+        _local_target_ancestor_problem(target) if entry.kind in {"instruction", "memory"} else ""
     )
     if target_ancestor_problem:
         local_exists = False
@@ -4120,7 +4285,9 @@ def _expected_row(
     local_content_path = (
         local_probe.content_path
         if local_probe is not None and local_probe.ready
-        else target if entry.kind == "mcp" and local_exists else None
+        else target
+        if entry.kind == "mcp" and local_exists
+        else None
     )
     metadata_differences: list[str] = []
     if local_fingerprint and local_content_path is not None:
@@ -4128,9 +4295,7 @@ def _expected_row(
             entry.kind,
             local_content_path,
             mcp_config=(
-                _read_mcp_server(local_content_path, install_name)
-                if entry.kind == "mcp"
-                else None
+                _read_mcp_server(local_content_path, install_name) if entry.kind == "mcp" else None
             ),
         )
         metadata_differences = _metadata_differences(entry, local_metadata)
@@ -4223,7 +4388,9 @@ def _expected_row(
             ),
         )
     elif not context.environment_available:
-        problem = context.environment_problem or "The configured runtime environment is unavailable."
+        problem = (
+            context.environment_problem or "The configured runtime environment is unavailable."
+        )
         _append_message(
             blockers,
             blocker_refs,
@@ -4394,9 +4561,7 @@ def _expected_plugin_rows(
                 else ""
             )
             local_fingerprint = (
-                resource_hash_path(target)
-                if local_exists and target is not None
-                else ""
+                resource_hash_path(target) if local_exists and target is not None else ""
             )
             status = _asset_status(
                 remote_exists=True,
@@ -4426,6 +4591,25 @@ def _expected_plugin_rows(
                         "Managed plugin installations are read-only.",
                     ),
                 )
+            plugin_data: dict[str, Any] = {"plugin": installation_spec.model_dump(mode="json")}
+            if spec.platform == "claude-code" and spec.track == "content":
+                state_path, project_root = _claude_plugin_state_target(
+                    cfg,
+                    profile,
+                    installation,
+                )
+                if state_path is not None:
+                    state_exists = state_path.is_file() and not state_path.is_symlink()
+                    plugin_data.update(
+                        {
+                            "state_path": str(state_path),
+                            "state_exists": state_exists,
+                            "state_fingerprint": (
+                                resource_hash_path(state_path) if state_exists else ""
+                            ),
+                            "project_root": (str(project_root) if project_root is not None else ""),
+                        }
+                    )
             local_id = _instance_id(
                 "plugin-expected",
                 entry.resource_key,
@@ -4433,52 +4617,70 @@ def _expected_plugin_rows(
                 target or Path(project_id or installation.scope),
                 installation.scope,
             )
-            rows.append(AssetPlatformRow(
-                resource_key=entry.resource_key,
-                kind="plugin",
-                name=entry.name,
-                platform=profile.name,
-                local_instance_id=local_id,
-                local_locator="plugin-expected",
-                install_name=spec.plugin_id,
-                configured=context.configured or (spec.track == "content" and target is not None),
-                enabled=context.profile.enabled if context.configured else target is not None,
-                detected=context.detected,
-                supported=profile.supports_resource(entry.kind, entry.platforms),
-                remote_exists=True,
-                local_exists=local_exists,
-                remote_writable=True,
-                read_only_reference=False,
-                remote_path=remote_path,
-                local_path=target if local_exists else None,
-                target_path=target,
-                ownership=("managed" if local_exists and target is not None and target.is_dir() and is_cc_port_managed(target, resource_key=entry.resource_key) else "unmanaged" if local_exists else "missing"),
-                status=status,
-                remote_commit=snapshot.commit,
-                remote_content_fingerprint=remote_content,
-                remote_asset_fingerprint=_remote_asset_fingerprint(snapshot.root, entry),
-                local_fingerprint=local_fingerprint,
-                diff_summary=_diff_summary(status, []),
-                diff_summary_refs=_diff_summary_refs(status, []),
-                blockers=blockers,
-                blocker_refs=blocker_refs,
-                entry=entry,
-                plugin_track=spec.track,
-                plugin_id=spec.plugin_id,
-                plugin_scope=installation.scope,
-                plugin_project_id=project_id,
-                plugin_source_kind=spec.origin.type,
-                plugin_source_id=_plugin_origin_source_id(spec.origin),
-                plugin_selector=spec.origin.selector,
-                plugin_observed_version=spec.observed_version,
-                plugin_enabled=installation.enabled,
-                plugin_writable=installation.scope != "managed",
-                plugin_data={"plugin": installation_spec.model_dump(mode="json")},
-                tool_id=profile.effective_tool_id,
-                environment_kind=profile.environment_kind,
-                environment_name=profile.environment_name,
-                display_name=profile.effective_display_name,
-            ))
+            rows.append(
+                AssetPlatformRow(
+                    resource_key=entry.resource_key,
+                    kind="plugin",
+                    name=entry.name,
+                    platform=profile.name,
+                    local_instance_id=local_id,
+                    local_locator="plugin-expected",
+                    install_name=spec.plugin_id,
+                    configured=context.configured
+                    or (spec.track == "content" and target is not None),
+                    enabled=context.profile.enabled if context.configured else target is not None,
+                    detected=context.detected,
+                    supported=profile.supports_resource(entry.kind, entry.platforms),
+                    remote_exists=True,
+                    local_exists=local_exists,
+                    remote_writable=True,
+                    read_only_reference=False,
+                    remote_path=remote_path,
+                    local_path=target if local_exists else None,
+                    target_path=target,
+                    ownership=(
+                        "managed"
+                        if local_exists
+                        and target is not None
+                        and target.is_dir()
+                        and is_cc_port_managed(target, resource_key=entry.resource_key)
+                        else "unmanaged"
+                        if local_exists
+                        else "missing"
+                    ),
+                    status=status,
+                    remote_commit=snapshot.commit,
+                    remote_content_fingerprint=remote_content,
+                    remote_asset_fingerprint=_remote_asset_fingerprint(snapshot.root, entry),
+                    local_fingerprint=local_fingerprint,
+                    diff_summary=_diff_summary(status, []),
+                    diff_summary_refs=_diff_summary_refs(status, []),
+                    blockers=blockers,
+                    blocker_refs=blocker_refs,
+                    entry=entry,
+                    plugin_track=spec.track,
+                    plugin_id=spec.plugin_id,
+                    plugin_scope=installation.scope,
+                    plugin_project_id=project_id,
+                    plugin_source_kind=spec.origin.type,
+                    plugin_source_id=_plugin_origin_source_id(spec.origin),
+                    plugin_marketplace=(
+                        spec.origin.marketplace if spec.origin.type == "marketplace" else ""
+                    ),
+                    plugin_marketplace_source=(
+                        spec.origin.source if spec.origin.type == "marketplace" else ""
+                    ),
+                    plugin_selector=spec.origin.selector,
+                    plugin_observed_version=spec.observed_version,
+                    plugin_enabled=installation.enabled,
+                    plugin_writable=installation.scope != "managed",
+                    plugin_data=plugin_data,
+                    tool_id=profile.effective_tool_id,
+                    environment_kind=profile.environment_kind,
+                    environment_name=profile.environment_name,
+                    display_name=profile.effective_display_name,
+                )
+            )
     return rows
 
 
@@ -4508,8 +4710,7 @@ def _discovered_rows(
         key = _safe_resource_key(marker_key, candidate.kind, candidate.name_hint)
         entry = snapshot.registry.get(key.name, key.kind)
         local_content_path = (
-            candidate.content_path
-            or candidate.path
+            candidate.content_path or candidate.path
             if candidate.link_health == "ready" and not candidate.blockers
             else None
         )
@@ -4581,7 +4782,9 @@ def _discovered_rows(
             if entry is not None
             else _plugin_candidate_resource_key(snapshot.registry, candidate)
         )
-        context = contexts.get(candidate.platform) or _detected_context(candidate.platform, "plugin")
+        context = contexts.get(candidate.platform) or _detected_context(
+            candidate.platform, "plugin"
+        )
         rows.append(_plugin_candidate_row(candidate, key, entry, snapshot, context))
     return rows
 
@@ -4667,8 +4870,7 @@ def _plugin_candidate_row(
     blocker_refs: list[UiMessageRef] = []
     if context.configured and not context.environment_available:
         problem = (
-            context.environment_problem
-            or "The configured runtime environment is unavailable."
+            context.environment_problem or "The configured runtime environment is unavailable."
         )
         _append_message(
             blockers,
@@ -4708,9 +4910,7 @@ def _plugin_candidate_row(
         configured=context.configured,
         enabled=context.profile.enabled if context.configured else False,
         detected=True,
-        supported=(
-            entry is None or context.profile.supports_resource(entry.kind, entry.platforms)
-        ),
+        supported=(entry is None or context.profile.supports_resource(entry.kind, entry.platforms)),
         remote_exists=remote_exists,
         local_exists=True,
         remote_writable=bool(entry is None or entry.plugin is not None),
@@ -4736,6 +4936,12 @@ def _plugin_candidate_row(
         plugin_project_id=candidate.project_id,
         plugin_source_kind=candidate.origin_type,
         plugin_source_id=candidate.source_id,
+        plugin_marketplace=(
+            candidate.marketplace if candidate.origin_type == "marketplace" else ""
+        ),
+        plugin_marketplace_source=(
+            candidate.origin_source if candidate.origin_type == "marketplace" else ""
+        ),
         plugin_selector=candidate.selector,
         plugin_observed_version=candidate.observed_version,
         plugin_enabled=candidate.enabled,
@@ -4793,6 +4999,16 @@ def _content_plugin_reference_data(
         return {}, "Reference conversion requires marketplace, npm, or git origin fields."
     base = json.loads(json.dumps(row.plugin_data))
     plugin = base.get("plugin", {})
+    plugin_platform = str(plugin.get("platform") or row.tool_id or row.platform).strip()
+    claude_error = _claude_plugin_reference_error(
+        platform=plugin_platform,
+        origin_type=origin_type,
+        marketplace=str(origin.get("marketplace") or ""),
+        source=str(origin.get("source") or ""),
+        selector=str(origin.get("selector") or ""),
+    )
+    if claude_error:
+        return {}, claude_error
     plugin["track"] = "reference"
     plugin["origin"] = {
         "type": origin_type,
@@ -4809,6 +5025,28 @@ def _content_plugin_reference_data(
     except Exception as exc:  # noqa: BLE001 - return a stable batch blocker
         return {}, f"Invalid plugin reference origin: {exc}"
     return base, ""
+
+
+def _claude_plugin_reference_error(
+    *,
+    platform: str,
+    origin_type: str,
+    marketplace: str,
+    source: str,
+    selector: str,
+) -> str:
+    if platform != "claude-code":
+        return ""
+    if origin_type != "marketplace":
+        return "Claude Code reference plugins require a marketplace origin."
+    if not marketplace.strip() or not source.strip():
+        return (
+            "Claude Code marketplace references require both a marketplace name "
+            "and a portable marketplace source."
+        )
+    if not installable_marketplace_source(source, selector):
+        return "Claude Code marketplace source is not safely installable."
+    return ""
 
 
 def _plugin_origin_source_id(origin: PluginOrigin) -> str:
@@ -4846,7 +5084,9 @@ def _matching_plugin_installation(
     wanted = raw_installations[0]
     for installation in spec.installations:
         current = installation.model_dump(mode="json")
-        if current.get("scope") == wanted.get("scope") and current.get("project") == wanted.get("project"):
+        if current.get("scope") == wanted.get("scope") and current.get("project") == wanted.get(
+            "project"
+        ):
             return installation
     return None
 
@@ -4879,7 +5119,9 @@ def _plugin_content_target(
             (
                 item
                 for item in cfg.plugin_projects
-                if project is not None and item.repo == project.repo and item.subdir == project.subdir
+                if project is not None
+                and item.repo == project.repo
+                and item.subdir == project.subdir
             ),
             None,
         )
@@ -4890,9 +5132,17 @@ def _plugin_content_target(
         elif spec.platform == "codex":
             base = mapping.path_value / ".agents" / "plugins"
         elif spec.platform == "claude-code":
-            base = mapping.path_value / ".claude" / "plugins"
+            if installation.scope == "local":
+                # Claude has no local-only skills-directory location.  A local
+                # marketplace install is a different reference-track workflow.
+                return None
+            base = mapping.path_value / ".claude" / "skills"
     else:
-        base = context.profile.plugins_path()
+        base = (
+            context.profile.skills_path()
+            if spec.platform == "claude-code"
+            else context.profile.plugins_path()
+        )
     if base is None:
         return None
     source_name = Path(spec.origin.source).name if spec.origin.source else ""
@@ -4900,6 +5150,8 @@ def _plugin_content_target(
         return None
     if spec.platform == "opencode" and Path(source_name).suffix.lower() in {".js", ".ts"}:
         return (base / source_name).expanduser().absolute()
+    if spec.platform == "claude-code":
+        return (base / spec.plugin_id).expanduser().absolute()
     return (base / _entry_install_name(entry, context.profile)).expanduser().absolute()
 
 
@@ -4953,9 +5205,7 @@ def _local_candidate_row(
     remote_exists = entry is not None
     remote_path = _remote_content_path(snapshot.root, entry) if entry else None
     remote_content = (
-        _platform_content_fingerprint(entry, remote_path, effective_local_path)
-        if entry
-        else ""
+        _platform_content_fingerprint(entry, remote_path, effective_local_path) if entry else ""
     )
     remote_asset = _remote_asset_fingerprint(snapshot.root, entry) if entry else ""
     read_only = bool(entry and not _is_private_repo_asset(entry))
@@ -4969,9 +5219,7 @@ def _local_candidate_row(
             key.kind,
             effective_local_path,
             mcp_config=(
-                _read_mcp_server(effective_local_path, install_name)
-                if key.kind == "mcp"
-                else None
+                _read_mcp_server(effective_local_path, install_name) if key.kind == "mcp" else None
             ),
         )
         if local_fingerprint
@@ -4986,9 +5234,8 @@ def _local_candidate_row(
         metadata_differences=metadata_differences,
         read_only=read_only,
     )
-    supported = (
-        (not context.supported_kinds or key.kind in context.supported_kinds)
-        and (entry is None or context.profile.supports_resource(entry.kind, entry.platforms))
+    supported = (not context.supported_kinds or key.kind in context.supported_kinds) and (
+        entry is None or context.profile.supports_resource(entry.kind, entry.platforms)
     )
     blockers: list[str] = list(discovery_blockers or [])
     blocker_refs: list[UiMessageRef] = []
@@ -5003,8 +5250,7 @@ def _local_candidate_row(
         blocker_refs.append(ui_message(message_key, blocker, detail=blocker))
     if context.configured and not context.environment_available:
         problem = (
-            context.environment_problem
-            or "The configured runtime environment is unavailable."
+            context.environment_problem or "The configured runtime environment is unavailable."
         )
         _append_message(
             blockers,
@@ -5207,11 +5453,7 @@ def _platform_content_fingerprint(
     remote_path: Path | None,
     local_target: Path | None,
 ) -> str:
-    if (
-        entry.kind == "prompt"
-        and local_target is not None
-        and _is_file_prompt_target(local_target)
-    ):
+    if entry.kind == "prompt" and local_target is not None and _is_file_prompt_target(local_target):
         payload, _problem = _prompt_payload_path(remote_path)
         return resource_hash_path(payload) if payload is not None else ""
     if entry.kind == "instruction" and local_target is not None:
@@ -5305,10 +5547,7 @@ def _local_target_ancestor_problem(target: Path) -> str:
         if probe.health == "missing":
             continue
         if probe.is_link or not probe.ready:
-            return (
-                probe.problem
-                or f"The local target ancestor cannot be used safely: {component}"
-            )
+            return probe.problem or f"The local target ancestor cannot be used safely: {component}"
     return ""
 
 
@@ -5480,10 +5719,10 @@ def _finalize_row_actions(row: AssetPlatformRow, snapshot: RemoteSnapshot) -> No
     actions: list[str] = []
     active = row.entry is None or row.entry.lifecycle == "active"
     target_clear = row.status != "target-conflict"
-    registry_available = (
-        snapshot.registry_health is None
-        or snapshot.registry_health.status in {"healthy", "issues"}
-    )
+    registry_available = snapshot.registry_health is None or snapshot.registry_health.status in {
+        "healthy",
+        "issues",
+    }
     remote_ready = snapshot.available and registry_available
     if not registry_available:
         _append_message(
@@ -6102,6 +6341,8 @@ def _apply_local_asset_action(
             source = _remote_content_path(snapshot.root, entry)
             if source is None or not source.exists() or source.is_symlink():
                 raise AssetSyncError("The remote asset content is unavailable or unsafe.")
+            if entry.kind == "skill" and profile.effective_tool_id == "claude-code":
+                inspect_claude_skill(source)
             verification_source = _installable_asset_source(source, target, entry.kind)
             _copy_asset_content(source, target, entry.kind)
             if marker is not None and marker.is_symlink():
@@ -6112,13 +6353,10 @@ def _apply_local_asset_action(
                 platform=plan.platform,
                 file_target=marker is not None,
             )
-            if (
-                written_marker is None
-                or not is_cc_port_managed(
-                    target,
-                    resource_key=marker_entry.resource_key,
-                    file_target=marker is not None,
-                )
+            if written_marker is None or not is_cc_port_managed(
+                target,
+                resource_key=marker_entry.resource_key,
+                file_target=marker is not None,
             ):
                 raise AssetSyncError("Downloaded asset ownership verification failed.")
             if _asset_resource_fingerprint(
@@ -6170,6 +6408,12 @@ def _apply_plugin_content_download(
     source = _plugin_remote_content_source(_remote_content_path(snapshot.root, entry), spec)
     if source is None or not source.exists() or source.is_symlink():
         raise AssetSyncError("The remote plugin content is unavailable or unsafe.")
+    if spec.platform == "claude-code":
+        metadata = inspect_claude_plugin(source, require_manifest=True)
+        if metadata.name != spec.plugin_id:
+            raise AssetSyncError(
+                "The Claude plugin manifest name no longer matches the planned plugin id."
+            )
     current_exists = target.exists() and not target.is_symlink()
     current_fingerprint = resource_hash_path(target) if current_exists else ""
     current_managed = bool(
@@ -6200,6 +6444,67 @@ def _apply_plugin_content_download(
             platform=plan.platform,
         )
     ]
+    claude_state_path: Path | None = None
+    claude_installation: PluginInstallation | None = None
+    if spec.platform == "claude-code":
+        raw_plugin = plan.plugin_data.get("plugin")
+        planned_spec = PluginSpec.model_validate(raw_plugin)
+        if len(planned_spec.installations) != 1:
+            raise _StaleAssetTarget(
+                "stale-target",
+                "The Claude content plugin plan does not identify one installation.",
+            )
+        claude_installation = planned_spec.installations[0]
+        profile = cfg.platforms.get(plan.platform)
+        if profile is None:
+            raise _StaleAssetTarget(
+                "stale-platform",
+                "The Claude plugin profile is unavailable.",
+            )
+        expected_state_path, expected_project_root = _claude_plugin_state_target(
+            cfg,
+            profile,
+            claude_installation,
+        )
+        asserted_state_path = Path(str(plan.plugin_data.get("state_path") or ""))
+        asserted_project_root = str(plan.plugin_data.get("project_root") or "")
+        if (
+            expected_state_path is None
+            or not _same_local_path(expected_state_path, asserted_state_path)
+            or (
+                asserted_project_root
+                and (
+                    expected_project_root is None
+                    or not _same_local_path(
+                        expected_project_root,
+                        Path(asserted_project_root),
+                    )
+                )
+            )
+        ):
+            raise _StaleAssetTarget(
+                "stale-local-target",
+                "The Claude plugin settings target changed after planning.",
+            )
+        state_exists = asserted_state_path.is_file() and not asserted_state_path.is_symlink()
+        if state_exists != bool(plan.plugin_data.get("state_exists")) or (
+            state_exists
+            and resource_hash_path(asserted_state_path)
+            != str(plan.plugin_data.get("state_fingerprint") or "")
+        ):
+            raise _StaleAssetTarget(
+                "stale-local-target",
+                "The Claude plugin settings changed after planning.",
+            )
+        claude_state_path = asserted_state_path
+        targets.append(
+            ChangeTarget(
+                path=claude_state_path,
+                change_action="align-plugin-state",
+                resource=plan.target_resource_key,
+                platform=plan.platform,
+            )
+        )
     if package_json is not None and spec.dependencies:
         targets.append(
             ChangeTarget(
@@ -6232,8 +6537,24 @@ def _apply_plugin_content_download(
                 write_managed_marker(target, entry, platform=plan.platform)
         if package_json is not None and spec.dependencies:
             _merge_package_dependencies(package_json, spec.dependencies)
+        if claude_state_path is not None and claude_installation is not None:
+            _write_claude_plugin_state(
+                claude_state_path,
+                spec,
+                claude_installation.enabled,
+            )
         if resource_hash_path(source) != resource_hash_path(target):
             raise AssetSyncError("Downloaded plugin content verification failed.")
+        if (
+            claude_state_path is not None
+            and claude_installation is not None
+            and not _configured_plugin_state_matches(
+                claude_state_path,
+                spec,
+                claude_installation.enabled,
+            )
+        ):
+            raise AssetSyncError("Claude skills-directory plugin state verification failed.")
         record = transaction.complete(
             message=f"Downloaded plugin content for {plan.target_resource_key}."
         )
@@ -6276,8 +6597,23 @@ def _apply_plugin_reference_state(
     alignments = [item for item in raw_alignments if isinstance(item, dict)]
     if not alignments:
         raise _StaleAssetTarget("stale-target", "The plugin reference alignment is empty.")
+    requires_native_cli = any(
+        str(item.get("method") or "") in {"claude-install", "claude-cli"} for item in alignments
+    )
+    configured_profile = cfg.platforms.get(plan.platform)
+    if requires_native_cli and (
+        configured_profile is None
+        or not configured_profile.enabled
+        or configured_profile.effective_tool_id != spec.platform
+    ):
+        raise _StaleAssetTarget(
+            "stale-platform",
+            "The selected plugin runtime profile is no longer enabled.",
+        )
+    profile = configured_profile or build_platform(spec.platform)
     targets: list[ChangeTarget] = []
     for alignment in alignments:
+        method = str(alignment.get("method") or "")
         scope = str(alignment.get("scope") or "")
         project = alignment.get("project")
         enabled = bool(alignment.get("enabled"))
@@ -6296,19 +6632,57 @@ def _apply_plugin_reference_state(
                 "The desired plugin installation state changed after planning.",
             )
         state_path = Path(str(alignment.get("state_path") or ""))
-        if not state_path.is_file() or state_path.is_symlink():
-            raise _StaleAssetTarget("stale-local-target", "The plugin state file is unavailable.")
-        if resource_hash_path(state_path) != str(alignment.get("state_fingerprint") or ""):
-            raise _StaleAssetTarget(
-                "stale-local-target",
-                "The plugin state file changed after planning.",
+        if method in {"claude-install", "claude-cli"}:
+            expected_state_path, expected_project_root = _claude_plugin_state_target(
+                cfg,
+                profile,
+                desired,
             )
+            asserted_project_root = str(alignment.get("project_root") or "")
+            if (
+                expected_state_path is None
+                or not _same_local_path(expected_state_path, state_path)
+                or (
+                    asserted_project_root
+                    and (
+                        expected_project_root is None
+                        or not _same_local_path(
+                            expected_project_root,
+                            Path(asserted_project_root),
+                        )
+                    )
+                )
+            ):
+                raise _StaleAssetTarget(
+                    "stale-local-target",
+                    "The Claude plugin installation target changed after planning.",
+                )
+            state_exists = state_path.is_file() and not state_path.is_symlink()
+            if state_exists != bool(alignment.get("state_exists")) or (
+                state_exists
+                and resource_hash_path(state_path) != str(alignment.get("state_fingerprint") or "")
+            ):
+                raise _StaleAssetTarget(
+                    "stale-local-target",
+                    "The Claude plugin settings changed after planning.",
+                )
+        else:
+            if not state_path.is_file() or state_path.is_symlink():
+                raise _StaleAssetTarget(
+                    "stale-local-target",
+                    "The plugin state file is unavailable.",
+                )
+            if resource_hash_path(state_path) != str(alignment.get("state_fingerprint") or ""):
+                raise _StaleAssetTarget(
+                    "stale-local-target",
+                    "The plugin state file changed after planning.",
+                )
         targets.append(
             ChangeTarget(
                 path=state_path,
                 change_action="align-plugin-state",
                 resource=entry.resource_key,
-                platform=spec.platform,
+                platform=plan.platform,
             )
         )
     transaction = LocalChangeTransaction.begin(
@@ -6328,8 +6702,36 @@ def _apply_plugin_reference_state(
             state_path = Path(str(alignment.get("state_path") or ""))
             enabled = bool(alignment.get("enabled"))
             scope = str(alignment.get("scope") or "user")
-            if method == "claude-cli":
-                _run_claude_plugin_state(spec, scope, enabled, state_path)
+            if method == "claude-install":
+                project_root_value = str(alignment.get("project_root") or "")
+                desired = next(
+                    item
+                    for item in spec.installations
+                    if item.scope == scope
+                    and (item.project.model_dump(mode="json") if item.project else None)
+                    == alignment.get("project")
+                )
+                install_marketplace_plugin(
+                    profile,
+                    spec,
+                    desired,
+                    project_root=(Path(project_root_value) if project_root_value else None),
+                )
+            elif method == "claude-cli":
+                project_root_value = str(alignment.get("project_root") or "")
+                desired = next(
+                    item
+                    for item in spec.installations
+                    if item.scope == scope
+                    and (item.project.model_dump(mode="json") if item.project else None)
+                    == alignment.get("project")
+                )
+                set_marketplace_plugin_enabled(
+                    profile,
+                    spec,
+                    desired,
+                    project_root=(Path(project_root_value) if project_root_value else None),
+                )
             elif method == "claude-config":
                 _write_claude_plugin_state(state_path, spec, enabled)
             elif method == "opencode-config":
@@ -6343,11 +6745,7 @@ def _apply_plugin_reference_state(
             state_path = Path(str(alignment.get("state_path") or ""))
             enabled = bool(alignment.get("enabled"))
             scope = str(alignment.get("scope") or "user")
-            verified = (
-                _claude_plugin_state_matches(spec, scope, enabled, state_path)
-                if method == "claude-cli"
-                else _configured_plugin_state_matches(state_path, spec, enabled)
-            )
+            verified = _configured_plugin_state_matches(state_path, spec, enabled)
             if not verified:
                 raise AssetSyncError(
                     f"Plugin state verification failed for {spec.platform} {scope}."
@@ -6391,42 +6789,15 @@ def _plugin_reference_source_label(spec: PluginSpec) -> str:
         return f"{spec.plugin_id}@{spec.origin.marketplace}"
     if spec.origin.type == "npm":
         return spec.origin.package
+    if spec.platform == "claude-code" and spec.origin.type == "local":
+        return f"{spec.plugin_id}@skills-dir"
     return spec.plugin_id
 
 
-def _run_claude_plugin_state(
-    spec: PluginSpec,
-    scope: str,
-    enabled: bool,
-    state_path: Path,
-) -> None:
-    executable = shutil.which("claude")
-    if not executable:
-        raise AssetSyncError("Claude CLI is no longer available.")
-    cwd = state_path.parent.parent if scope in {"project", "local"} else None
-    result = subprocess.run(
-        [
-            executable,
-            "plugin",
-            "enable" if enabled else "disable",
-            _plugin_reference_source_label(spec),
-            "--scope",
-            scope,
-        ],
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise AssetSyncError(
-            (result.stderr or result.stdout or "Claude plugin state update failed.").strip()
-        )
-
-
 def _write_claude_plugin_state(path: Path, spec: PluginSpec, enabled: bool) -> None:
-    payload = _read_json_object(path, label="Claude settings")
+    if path.is_symlink():
+        raise AssetSyncError("Claude settings must not be a symbolic link.")
+    payload = _read_json_object(path, label="Claude settings") if path.is_file() else {}
     current = payload.get("enabledPlugins", {})
     if current is None:
         current = {}
@@ -6434,6 +6805,7 @@ def _write_claude_plugin_state(path: Path, spec: PluginSpec, enabled: bool) -> N
         raise AssetSyncError("Claude enabledPlugins is not an object.")
     current[_plugin_reference_source_label(spec)] = enabled
     payload["enabledPlugins"] = current
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -6466,8 +6838,7 @@ def _write_codex_plugin_state(path: Path, spec: PluginSpec, enabled: bool) -> No
         (
             index
             for index, line in enumerate(lines)
-            if line.strip() == header
-            or line.strip().startswith(header + " #")
+            if line.strip() == header or line.strip().startswith(header + " #")
         ),
         None,
     )
@@ -6498,7 +6869,9 @@ def _write_codex_plugin_state(path: Path, spec: PluginSpec, enabled: bool) -> No
         comment = ""
         if "#" in lines[enabled_line]:
             comment = " #" + lines[enabled_line].split("#", 1)[1].rstrip("\r\n")
-        lines[enabled_line] = f"{indent}enabled = {'true' if enabled else 'false'}{comment}{newline}"
+        lines[enabled_line] = (
+            f"{indent}enabled = {'true' if enabled else 'false'}{comment}{newline}"
+        )
     updated = "".join(lines)
     try:
         parsed = tomllib.loads(updated)
@@ -6533,7 +6906,11 @@ def _configured_plugin_state_matches(
         except (OSError, tomllib.TOMLDecodeError):
             return False
         plugins = toml_payload.get("plugins", {}) if isinstance(toml_payload, dict) else {}
-        state = plugins.get(_plugin_reference_source_label(spec), {}) if isinstance(plugins, dict) else {}
+        state = (
+            plugins.get(_plugin_reference_source_label(spec), {})
+            if isinstance(plugins, dict)
+            else {}
+        )
         return isinstance(state, dict) and bool(state.get("enabled", True)) is enabled
     try:
         payload = _read_json_object(path, label="Plugin configuration")
@@ -6541,7 +6918,10 @@ def _configured_plugin_state_matches(
         return False
     if spec.platform == "claude-code":
         current = payload.get("enabledPlugins", {})
-        return isinstance(current, dict) and current.get(_plugin_reference_source_label(spec)) is enabled
+        return (
+            isinstance(current, dict)
+            and current.get(_plugin_reference_source_label(spec)) is enabled
+        )
     if spec.platform == "opencode":
         declared = payload.get("plugin", [])
         if not isinstance(declared, list):
@@ -6553,46 +6933,14 @@ def _configured_plugin_state_matches(
     return False
 
 
-def _claude_plugin_state_matches(
-    spec: PluginSpec,
-    scope: str,
-    enabled: bool,
-    state_path: Path,
-) -> bool:
-    executable = shutil.which("claude")
-    if not executable:
-        return False
-    cwd = state_path.parent.parent if scope in {"project", "local"} else None
-    try:
-        result = subprocess.run(
-            [executable, "plugin", "list", "--json"],
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        payload = json.loads(result.stdout) if result.returncode == 0 else []
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        return False
-    values = payload if isinstance(payload, list) else payload.get("plugins", payload.get("installed", [])) if isinstance(payload, dict) else []
-    if not isinstance(values, list):
-        return False
-    source_label = _plugin_reference_source_label(spec)
-    for item in values:
-        if not isinstance(item, dict):
-            continue
-        identity = str(item.get("id") or item.get("name") or "")
-        item_scope = str(item.get("scope") or "user")
-        if identity in {source_label, spec.plugin_id} and item_scope == scope:
-            return bool(item.get("enabled", True)) is enabled
-    return False
-
-
 def _opencode_dependency_target(target: Path, spec: PluginSpec) -> Path | None:
     if spec.platform != "opencode" or not spec.dependencies:
         return None
-    plugins_dir = target.parent if target.is_file() or target.suffix.lower() in {".js", ".ts"} else target.parent
+    plugins_dir = (
+        target.parent
+        if target.is_file() or target.suffix.lower() in {".js", ".ts"}
+        else target.parent
+    )
     return plugins_dir.parent / "package.json"
 
 
@@ -7096,6 +7444,17 @@ def _validate_remote_batch_source(row: AssetPlatformRow, kind: ItemKind) -> None
             part.lower() for part in plugin_source_path.parts
         }:
             raise AssetSyncError("Plugin cache content is never an uploadable source.")
+        if spec.platform == "claude-code":
+            if plugin_source_path is None:
+                raise AssetSyncError("The Claude plugin source is unavailable.")
+            metadata = inspect_claude_plugin(
+                plugin_source_path,
+                require_manifest=True,
+            )
+            if metadata.name != spec.plugin_id:
+                raise AssetSyncError(
+                    "The Claude plugin manifest name does not match the discovered plugin id."
+                )
     source = row.local_content_path or row.local_path
     if source is None:
         raise AssetSyncError("The local source is unavailable.")
@@ -7110,7 +7469,10 @@ def _validate_remote_batch_source(row: AssetPlatformRow, kind: ItemKind) -> None
         )
         return
 
-    validate_item(source, kind)
+    if kind == "skill" and row.tool_id == "claude-code":
+        inspect_claude_skill(source)
+    else:
+        validate_item(source, kind)
     candidates = [source] if source.is_file() else sorted(source.rglob("*"))
     for candidate in candidates:
         if not candidate.is_file() or candidate.is_symlink():
@@ -7224,6 +7586,8 @@ def _mutate_remote_asset(
         if not local_mcp_config:
             raise AssetSyncError("The local MCP source cannot be parsed safely.")
         validate_item(local_path, "mcp", mcp_config=local_mcp_config)
+    elif target_key.kind == "skill" and source_row.tool_id == "claude-code":
+        inspect_claude_skill(local_path)
     else:
         validate_item(local_path, target_key.kind)
 
@@ -7289,7 +7653,9 @@ def _mutate_remote_asset(
     if target_key.kind in {"instruction", "memory"}:
         updated.platforms = [source_tool_id]
     if target_key.kind == "plugin" and plugin_spec is not None:
-        updated.plugin = _merge_plugin_installations(existing.plugin if existing else None, plugin_spec)
+        updated.plugin = _merge_plugin_installations(
+            existing.plugin if existing else None, plugin_spec
+        )
     for field_name in DERIVED_METADATA_FIELDS:
         value = derived.get(field_name)
         if value not in (None, ""):
@@ -7311,6 +7677,15 @@ def _mutate_plugin_reference(
     description: str,
     preserve_selector: bool = False,
 ) -> bool:
+    claude_error = _claude_plugin_reference_error(
+        platform=plugin_spec.platform,
+        origin_type=plugin_spec.origin.type,
+        marketplace=plugin_spec.origin.marketplace,
+        source=plugin_spec.origin.source,
+        selector=plugin_spec.origin.selector,
+    )
+    if claude_error:
+        raise AssetSyncError(claude_error)
     duplicate = next(
         (
             item
@@ -7343,7 +7718,8 @@ def _mutate_plugin_reference(
             current.platform != plugin_spec.platform
             or current.plugin_id != plugin_spec.plugin_id
             or current.origin.type != plugin_spec.origin.type
-            or _plugin_origin_source_id(current.origin) != _plugin_origin_source_id(plugin_spec.origin)
+            or _plugin_origin_source_id(current.origin)
+            != _plugin_origin_source_id(plugin_spec.origin)
         ):
             raise _StaleAssetTarget(
                 "stale-target",
@@ -7422,10 +7798,7 @@ def _asset_commit_message(plan: AssetActionPlan) -> str:
         return f"cc-port: update {plan.target_resource_key}"
     if plan.action == "copy-to-remote":
         return f"cc-port: create {plan.target_resource_key}"
-    return (
-        f"cc-port: set install name for {plan.target_resource_key} "
-        f"on {plan.tool_id or 'tool'}"
-    )
+    return f"cc-port: set install name for {plan.target_resource_key} on {plan.tool_id or 'tool'}"
 
 
 def _current_target_assertion(
@@ -7441,14 +7814,14 @@ def _current_target_assertion(
             _json_fingerprint(sanitize_mcp_config_for_storage(config) or {}) if exists else ""
         )
         managed = (
-            is_cc_port_managed_mcp(target, install_name, resource_key=resource_key) if exists else False
+            is_cc_port_managed_mcp(target, install_name, resource_key=resource_key)
+            if exists
+            else False
         )
         return exists, fingerprint, managed
     exists = target.exists() or target.is_symlink()
     fingerprint = (
-        _asset_resource_fingerprint(target, kind)
-        if exists and not target.is_symlink()
-        else ""
+        _asset_resource_fingerprint(target, kind) if exists and not target.is_symlink() else ""
     )
     managed = (
         is_cc_port_managed(
@@ -7541,9 +7914,7 @@ def _installable_asset_source(source: Path, destination: Path, kind: ItemKind) -
     if kind == "instruction":
         payload, problem = _instruction_payload_path(source)
         if payload is None:
-            raise AssetSyncError(
-                problem or "The instruction has no installable Markdown payload."
-            )
+            raise AssetSyncError(problem or "The instruction has no installable Markdown payload.")
         return payload
     if kind != "prompt" or not _is_file_prompt_target(destination):
         return source
@@ -7622,9 +7993,7 @@ def _is_file_prompt_target(path: Path) -> bool:
 
 
 def _uses_sibling_marker(kind: str, path: Path) -> bool:
-    return kind in {"instruction", "memory"} or (
-        kind == "prompt" and _is_file_prompt_target(path)
-    )
+    return kind in {"instruction", "memory"} or (kind == "prompt" and _is_file_prompt_target(path))
 
 
 def _remove_asset_path(path: Path) -> None:
@@ -7647,11 +8016,15 @@ def _read_mcp_server(path: Path, server_name: str) -> dict[str, Any] | None:
 
 
 def _read_portable_mcp_resource(path: Path) -> dict[str, Any] | None:
-    candidates = [path] if path.is_file() else [
-        path / "mcp.json",
-        path / "mcp.yaml",
-        path / "mcp.yml",
-    ]
+    candidates = (
+        [path]
+        if path.is_file()
+        else [
+            path / "mcp.json",
+            path / "mcp.yaml",
+            path / "mcp.yml",
+        ]
+    )
     for candidate in candidates:
         if not candidate.is_file() or candidate.is_symlink():
             continue
@@ -7980,9 +8353,7 @@ def _assert_private_asset_boundaries(cfg: Config) -> None:
 
 def _assert_state_storage_path(path: Path) -> None:
     probe = probe_local_path(path)
-    unsafe_leaf = probe.health != "missing" and (
-        probe.path_kind != "regular" or not probe.ready
-    )
+    unsafe_leaf = probe.health != "missing" and (probe.path_kind != "regular" or not probe.ready)
     if unsafe_leaf or _local_target_ancestor_problem(path):
         raise AssetPlanInvalid(
             "The machine-local state path contains a linked, reparse, or unreadable "

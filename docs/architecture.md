@@ -44,10 +44,12 @@ flowchart LR
 | --- | --- | --- |
 | `core.models` / `core.registry` | `RegistryCatalog`、`RegistryResource`、`ExternalSource`、`CcPortSettings` 与 canonical v1 读写 | Registry 只保存工具中立声明；派生元数据和本机状态不得写回 |
 | `core.tool_adapters` | 工具能力、默认路径、发现信号和安装机制 | 当前仅内部使用，不承诺第三方兼容性 |
+| `core.claude_plugins` | Claude Plugin manifest、组件路径和内容结构验证 | skills-directory Plugin 与普通 Skill 必须先分类；不执行 Plugin 内容；不解释 Codex manifest |
 | `core.resource_files` | 资源复制与同步共用的文件策略 | 排除真实 `.env`、构建产物、依赖目录和符号链接 |
 | `core.secret_scan` | 资源文本的凭据模式检查 | 只返回脱敏预览，不在日志中保存真实值 |
 | `core.ownership` | 目录与 MCP entry 的所有权 | 未管理目标不能被普通覆盖或卸载 |
 | `services.asset_sync` | 受管远端镜像刷新、commit 快照、逻辑资源并集、批量计划、哈希重验证、批量上传单提交与逐项安装事务 | 不信任前端路径或指纹；不强推；不隐式删除 |
+| `services.claude_plugin_installer` | 按精确 runtime profile 调用 Claude CLI 注册 Marketplace、安装 Plugin 并验证原生状态 | 不自行写 Plugin cache；不跨 Windows/WSL 环境借用 CLI；参数不经 shell |
 | `agent.contracts` | CLI 与 MCP 共用的严格机器协议、版本化 envelope、状态与退出码映射 | 输入默认拒绝未知字段；机器输出只产生一个 JSON 文档；不得为不同 adapter 复制 schema |
 | `services.approval` | 本机一次性审批请求及其状态转换 | 授权绑定 kind、operation id、plan hash 和完整 scope hash；过期、拒绝、已消费或不匹配的授权都不能写入 |
 | `services.ai_integration` | 为精确 profile 计划、安装、验证和卸载 CC Port Skill 与 MCP 注册 | 只修改展示并获批的目标；保留未受管内容；目标变化返回新计划并要求新审批；本地写入使用共享事务 |

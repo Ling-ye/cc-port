@@ -8,6 +8,7 @@ from pathlib import Path
 
 import frontmatter
 
+from ..core.claude_plugins import CLAUDE_PLUGIN_MANIFEST, inspect_claude_skill
 from ..core.models import ItemKind
 from ..core.registry import load_registry
 from ..core.validator import RULE_FILE_NAMES, RULE_FILE_SUFFIXES, parse_skill, validate_item
@@ -106,6 +107,7 @@ def discover_resources(
     registry_path: Path | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
     file_kind_hint: ItemKind | None = None,
+    tool_hint: str = "",
 ) -> list[DiscoveredResource]:
     """Discover resource candidates without modifying any source directory."""
     roots = _roots_for_scope(scope=scope, root_path=root_path)
@@ -124,7 +126,7 @@ def discover_resources(
         root_probe = probe_local_path(root)
         if not root_probe.ready:
             continue
-        effective_tool = _infer_tool(root, default=tool)
+        effective_tool = tool_hint or _infer_tool(root, default=tool)
         candidates.extend(
             _scan_root(
                 root.absolute(),
@@ -501,6 +503,30 @@ def _candidate_from_directory(
     if manifest_candidate is not None:
         return manifest_candidate
 
+    # Claude skills directories contain two different native formats.  A
+    # manifest-backed child is a plugin even when it also has a root SKILL.md;
+    # a child with only SKILL.md remains a plain skill.
+    if tool == "claude-code":
+        plugin_manifest = content_path / CLAUDE_PLUGIN_MANIFEST
+        plugin_probe = probe_local_path(plugin_manifest)
+        if plugin_probe.health != "missing":
+            return _resource(
+                path=path,
+                content_path=content_path,
+                probe=probe,
+                marker=(
+                    plugin_probe.content_path
+                    if plugin_probe.ready and plugin_probe.content_path is not None
+                    else content_path
+                ),
+                tool=tool,
+                source=source,
+                kind="plugin",
+                name_hint=_slug(path.name),
+                description="",
+                warnings=[],
+            )
+
     skill_md = content_path / "SKILL.md"
     skill_probe = probe_local_path(skill_md)
     if skill_probe.health != "missing" and (
@@ -527,7 +553,11 @@ def _candidate_from_directory(
         name_hint = _slug(path.name)
         description = ""
         try:
-            meta = parse_skill(content_path)
+            meta = (
+                inspect_claude_skill(content_path)
+                if tool == "claude-code"
+                else parse_skill(content_path)
+            )
             name_hint = _slug(meta.name)
             description = meta.description
         except Exception as exc:  # noqa: BLE001 - discovery reports invalid metadata as a warning

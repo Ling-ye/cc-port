@@ -554,7 +554,7 @@ try {
     }
 
     Invoke-Test "Release manifest versions agree" {
-        Assert-Equal -Expected "0.5.4" -Actual (Get-CcPortReleaseVersion -RepoRoot $RepoRoot) -Message "Release version"
+        Assert-Equal -Expected "0.6.0" -Actual (Get-CcPortReleaseVersion -RepoRoot $RepoRoot) -Message "Release version"
     }
 
     Invoke-Test "Release manifest mismatch is rejected" {
@@ -567,8 +567,8 @@ try {
             "desktop\src-tauri\Cargo.toml",
             "desktop\src-tauri\Cargo.lock",
             "desktop\src-tauri\tauri.conf.json",
-            "docs\releases\v0.5.4.md",
-            "docs\releases\v0.5.4.en.md"
+            "docs\releases\v0.6.0.md",
+            "docs\releases\v0.6.0.en.md"
         )
         foreach ($relativePath in $versionFiles) {
             $destination = Join-Path $versionRoot $relativePath
@@ -591,16 +591,16 @@ try {
         $nsisDirectory = Join-Path $verified "nsis"
         $publishRoot = Join-Path $tempRoot "public-output"
         New-Item -ItemType Directory -Path $msiDirectory, $nsisDirectory | Out-Null
-        [IO.File]::WriteAllText((Join-Path $msiDirectory "CC Port_0.5.4_x64_en-US.msi"), "msi")
-        $sourceInstaller = Join-Path $nsisDirectory "CC Port_0.5.4_x64-setup.exe"
+        [IO.File]::WriteAllText((Join-Path $msiDirectory "CC Port_0.6.0_x64_en-US.msi"), "msi")
+        $sourceInstaller = Join-Path $nsisDirectory "CC Port_0.6.0_x64-setup.exe"
         [IO.File]::WriteAllText($sourceInstaller, "verified installer")
 
         $artifacts = @(Publish-CcPortPublicReleaseBundle `
             -VerifiedReleaseDirectory $verified `
             -PublishRoot $publishRoot `
-            -Version "0.5.4")
-        $final = Join-Path $publishRoot "v0.5.4"
-        $installerName = "cc-port_0.5.4_windows_x64_setup.exe"
+            -Version "0.6.0")
+        $final = Join-Path $publishRoot "v0.6.0"
+        $installerName = "cc-port_0.6.0_windows_x64_setup.exe"
         $installer = Join-Path $final $installerName
         $checksum = Join-Path $final "SHA256SUMS.txt"
         $files = @(Get-ChildItem -LiteralPath $final -File | Sort-Object Name)

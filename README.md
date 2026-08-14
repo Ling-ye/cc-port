@@ -2,7 +2,7 @@
 
 > 把分散在 Codex、Claude Code、Cursor、Windsurf 和 OpenCode 的 Skill、MCP、Rule、Prompt、Plugin、用户指令和 Claude auto memory，安全同步到你控制的通用 Git 资源仓库。
 
-[English](README.en.md) · [下载 Windows 安装器](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4) · [快速开始](docs/getting-started.md) · [报告问题](https://github.com/Ling-ye/cc-port/issues)
+[English](README.en.md) · [下载 Windows 安装器](https://github.com/Ling-ye/cc-port/releases/tag/v0.6.0) · [快速开始](docs/getting-started.md) · [报告问题](https://github.com/Ling-ye/cc-port/issues)
 
 [![CI](https://github.com/Ling-ye/cc-port/actions/workflows/ci.yml/badge.svg)](https://github.com/Ling-ye/cc-port/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -59,6 +59,8 @@ home_dir = '\\wsl.localhost\Ubuntu-24.04\home\example'
 
 每个启用 profile 会独立扫描其 `skills_dir`、`mcp_json`、`rules_dir`、`prompts_dir`、`plugins_dir`、`instructions_path`、`memories_dir` 和 `settings_path`。`settings_path` 指向工具原生的用户级配置文件，例如 Claude Code 的 `settings.json` 或 Codex 的 `config.toml`；当前每个 profile 只解析这一个显式 user-level/native config 输入。CC Port 不自动合并 Claude managed policy、工作区受信任后才生效的 project/local settings 或 `--settings` 临时来源，也不宣称已完整推导 Claude 运行时最终配置。若这些更高或项目作用域的来源覆盖 `autoMemoryDirectory`，必须另建显式 direct profile/path。WSL profile 可用 `home_dir` 把 `~` 展开到对应发行版的 UNC 用户目录；Codex 的 Windows/WSL profile 也应使用不同 `name`。普通 UNC 内容可以进入计划，目录中的 Linux 符号链接仍按 WSL LX 链接单项阻断。WSL 发行版未运行或 UNC 不可达时，该 profile 显示为 unavailable 并阻断写入，不能把不可达误判为资源缺失或删除信号。完整示例见[配置示例](config/config.example.toml)。
 
+Claude Code 的普通 Skill 与 Plugin 共用 `skills_dir`，但不是同一格式：`<name>/SKILL.md` 且没有 manifest 时是普通 Skill；存在 `<name>/.claude-plugin/plugin.json` 时是 `<manifest-name>@skills-dir` Plugin，内部 `skills/*/SKILL.md` 不再作为顶层 Skill 重复发现。Claude Skill 的命令名来自目录名，frontmatter 的 `name` 和 `description` 不强制必填。skills-directory Plugin 以普通文件快照同步到用户 `skills_dir` 或项目 `.claude/skills`；Marketplace Plugin 只同步可移植引用，并由目标 profile 同一运行环境的 `claude plugin marketplace add/install` 原生安装。桌面端分别标识 Skills 目录插件和 Marketplace 插件，并把 Marketplace 注册名与可移植来源分开显示和编辑。`~/.claude/plugins`、Plugin cache 和 Marketplace checkout 只用于状态观察，不能作为上传源码。Codex 的 `.codex-plugin/plugin.json`、TOML 状态和安装流程保持独立，绝不转换成 Claude 格式。完整合同见 [Claude Code Plugin 与 Skill 安装规格](docs/specs/claude-plugin-and-skill-installation.md)。
+
 资源仓库必须与 CC Port 配置文件、本机状态/备份目录、legacy install target，以及所有 profile 的资源目标和 `settings_path` 完全分离；任一方等于、包含或位于另一方之内都属于重叠。配置保存和 asset 扫描、计划、应用会 fail closed，必须先移动冲突目录，不能把机器状态或工具原生配置混入 Git 仓库。
 
 Claude Code 用户指令 `~/.claude/CLAUDE.md` 作为 `instruction` 迁移，但个人 `instruction` 与 `memory` 只由配置 profile 的 environment-aware asset inventory 识别和迁移。通用 global/directory discover 不会把全局用户指令或 auto memory 暴露为可上传候选；项目指令仍只读展示。配置的用户 `rules_dir`（默认 `~/.claude/rules/`）会在 profile-aware 全局用户扫描中递归发现 Markdown；当前只有该目录根级 Markdown 可直接迁移。嵌套用户规则使用 `claude-rule-<relative-path-hash>` 生成不含相对路径明文的唯一候选名，但保持阻断，用户必须先整理成明确的可移植 rule 目录或布局；该哈希只用于区分条目，不是可还原的路径编码。项目 `.claude/rules/**/*.md` 与用户 rules 作用域不同；directory-scope 扫描中的项目规则保持只读和阻断，因为当前没有 project target identity，不能把它们提升或下载到用户全局 `rules_dir`。项目级 `CLAUDE.md`、`.claude/CLAUDE.md` 和 `CLAUDE.local.md` 同样不会被误当成全局指令。默认 auto memory 只扫描 `~/.claude/projects/<project-key>/memory/`；如果可信的 `settings.json` 声明 `autoMemoryDirectory`，其值就是最终 memory 目录，不能再附加 `<project-key>/memory`。memory 的所有权 marker 写在目录旁，不会进入 memory 内容树。
@@ -109,12 +111,12 @@ cc-port resource registry-repair --dry-run
 ## 五步开始
 
 1. 安装 [Git for Windows](https://git-scm.com/download/win)，并确认 Git Credential Manager 可用。
-2. 从 [v0.5.4 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4) 下载 `cc-port_0.5.4_windows_x64_setup.exe`。
+2. 从 [v0.6.0 Public Beta](https://github.com/Ling-ye/cc-port/releases/tag/v0.6.0) 下载 `cc-port_0.6.0_windows_x64_setup.exe`。
 3. 在 GitHub 创建一个空的私有仓库，作为你自己的资源仓库。
 4. 启动 CC Port，在“设置”中粘贴仓库的 HTTPS 地址并完成验证。
 5. 扫描本机资源，在资源页逐项选择上传到仓库或安装到目标工具。
 
-本仓库的新 Windows 构建会同时包含桌面程序、Desktop API sidecar 和独立的 `cc-port.exe` CLI/MCP agent；普通用户不需要安装 Python、Node.js 或 Rust。已经发布的 v0.5.4 安装器早于这项能力，尚不包含 agent；请等待包含该功能的新版本。完整流程、首次配置、AI 集成和卸载方式见[快速开始](docs/getting-started.md)。
+v0.6.0 Windows 安装包同时包含桌面程序、Desktop API sidecar 和独立的 `cc-port.exe` CLI/MCP agent；普通用户不需要安装 Python、Node.js 或 Rust。完整流程、首次配置、AI 集成和卸载方式见[快速开始](docs/getting-started.md)。
 
 开发环境可运行 `Set-ExecutionPolicy -Scope Process Bypass -Force; & .\scripts\setup.ps1` 自动检查并安装所需工具和依赖。脚本列出操作后会直接执行，不再要求输入 `y/n`；`-CheckOnly` 仍只检查而不修改环境。
 
@@ -200,7 +202,7 @@ AI 首选 MCP discovery，并执行 `status → inventory(scan_local=true) → d
 ## 当前限制
 
 - Public Beta 仅正式支持 Windows 10/11 x64。
-- v0.5.4 安装器尚未代码签名，Windows SmartScreen 可能显示“未知发布者”。
+- v0.6.0 安装器尚未代码签名，Windows SmartScreen 可能显示“未知发布者”。
 - 目标电脑必须安装 Git for Windows，并配置 Git Credential Manager。
 - 桌面端不会替你创建、删除仓库或修改仓库可见性。
 - 当前没有自动更新；升级时请从 Releases 下载新版本。
@@ -216,9 +218,10 @@ AI 首选 MCP discovery，并执行 `status → inventory(scan_local=true) → d
 - [架构](docs/architecture.md)
 - [Registry v1 规格](docs/specs/registry-v1.md)
 - [Claude Code 指令、记忆与多运行环境规格](docs/specs/claude-memory-and-runtime-environments.md)
+- [Claude Code Plugin 与 Skill 安装规格](docs/specs/claude-plugin-and-skill-installation.md)
 - [AI Agent 自动发现、审批与调用规格](docs/specs/ai-agent-interface.md)
 - [桌面打包与发布](docs/packaging-and-deployment.md)
-- [v0.5.4 发布说明](docs/releases/v0.5.4.md)
+- [v0.6.0 发布说明](docs/releases/v0.6.0.md)
 - [功能规格](docs/specs/)
 - [变更记录](CHANGELOG.md)
 

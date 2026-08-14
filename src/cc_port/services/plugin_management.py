@@ -18,6 +18,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - py310 fallback
     import tomli as tomllib
 
+from ..core.claude_plugins import ClaudePluginFormatError, inspect_claude_plugin
 from ..core.config import (
     Config,
     PluginProjectConfig,
@@ -254,7 +255,13 @@ def _discover_profile_plugins(
     elif profile.effective_tool_id == "claude-code":
         # CLI output belongs to the process runtime and cannot safely be
         # attributed to a different configured Windows/WSL installation.
-        items = _discover_claude(profile_home, project=project, use_cli=False)
+        items = _discover_claude(
+            profile_home,
+            project=project,
+            use_cli=False,
+            skills_root=profile.skills_path() if project is None else None,
+            user_settings_path=profile.settings_file() if project is None else None,
+        )
     elif profile.effective_tool_id == "opencode":
         items = _discover_opencode(profile_home, project=project)
     else:
@@ -282,12 +289,20 @@ def _discover_configured_content_plugins(
             profile.plugins_dir,
             home=_profile_home(profile, runtime_home=home),
         )
+        if (
+            profile.effective_tool_id == "claude-code"
+            and plugins_root == _profile_home(profile, runtime_home=home) / ".claude" / "plugins"
+        ):
+            # This is Claude's marketplace/cache runtime root, never an owned
+            # source directory.  Installed cache entries are reference metadata.
+            continue
         items = _content_directories(
-                plugins_root,
-                profile.effective_tool_id,
-                "user",
-                manifest_rel,
-            )
+            plugins_root,
+            profile.effective_tool_id,
+            "user",
+            manifest_rel,
+            require_claude_manifest=profile.effective_tool_id == "claude-code",
+        )
         for item in items:
             _bind_plugin_to_profile(item, profile)
         found.extend(items)
@@ -385,13 +400,15 @@ def _discover_claude(
     project: PluginProjectConfig | None = None,
     *,
     use_cli: bool = True,
+    skills_root: Path | None = None,
+    user_settings_path: Path | None = None,
 ) -> list[DiscoveredPlugin]:
     claude_home = home / ".claude"
     scope = "user" if project is None else "project"
     project_root = project.path_value if project else None
     settings_paths: list[tuple[Path, str]] = []
     if project is None:
-        settings_paths.append((claude_home / "settings.json", "user"))
+        settings_paths.append((user_settings_path or claude_home / "settings.json", "user"))
     else:
         settings_paths.extend(
             [
@@ -409,6 +426,10 @@ def _discover_claude(
         if not plugin_id:
             continue
         marketplace = str(item.get("marketplace") or marketplace or "")
+        if marketplace == "skills-dir" or str(item.get("source") or "") == "skills-dir":
+            # The source directory is authoritative and is scanned below.  It
+            # must not be reclassified as a marketplace/cache reference.
+            continue
         item_scope = str(item.get("scope") or scope)
         if item_scope not in PLUGIN_SCOPES:
             item_scope = scope
@@ -454,6 +475,8 @@ def _discover_claude(
             plugin_id, marketplace = _split_qualified(str(qualified))
             if not plugin_id or not marketplace:
                 continue
+            if marketplace == "skills-dir":
+                continue
             version_path, version, description = _installed_cache_entry(
                 cache_root / marketplace / plugin_id,
                 ".claude-plugin/plugin.json",
@@ -493,24 +516,31 @@ def _discover_claude(
                 ".claude-plugin/plugin.json",
                 project,
                 only=project_root,
+                require_claude_manifest=True,
             )
         )
         out.extend(
             _content_directories(
-                project_root / ".claude" / "plugins",
+                project_root / ".claude" / "skills",
                 "claude-code",
                 scope,
                 ".claude-plugin/plugin.json",
                 project,
+                require_claude_manifest=True,
+                enabled_plugins=_enabled_plugins(settings_paths, scope),
+                state_path=_settings_path_for_scope(settings_paths, scope),
             )
         )
     else:
         out.extend(
             _content_directories(
-                claude_home / "plugins",
+                skills_root or claude_home / "skills",
                 "claude-code",
                 scope,
                 ".claude-plugin/plugin.json",
+                require_claude_manifest=True,
+                enabled_plugins=_enabled_plugins(settings_paths, scope),
+                state_path=_settings_path_for_scope(settings_paths, scope),
             )
         )
     return out
@@ -603,6 +633,9 @@ def _content_directories(
     project: PluginProjectConfig | None = None,
     *,
     only: Path | None = None,
+    require_claude_manifest: bool = False,
+    enabled_plugins: dict[str, Any] | None = None,
+    state_path: Path | None = None,
 ) -> list[DiscoveredPlugin]:
     if not root.is_dir():
         return []
@@ -614,10 +647,30 @@ def _content_directories(
         if path.name.lower() == "cache" or path.name.startswith("."):
             continue
         manifest = path / Path(manifest_rel)
-        if not manifest.is_file() or manifest.is_symlink():
-            continue
-        metadata = _read_json(manifest)
-        plugin_id = str(metadata.get("name") or path.name)
+        if platform == "claude-code":
+            try:
+                inspected = inspect_claude_plugin(
+                    path,
+                    require_manifest=require_claude_manifest,
+                )
+            except ClaudePluginFormatError:
+                continue
+            plugin_id = inspected.name
+            observed_version = inspected.version
+            description = inspected.description
+        else:
+            if not manifest.is_file() or manifest.is_symlink():
+                continue
+            metadata = _read_json(manifest)
+            plugin_id = str(metadata.get("name") or path.name)
+            observed_version = str(metadata.get("version") or "")
+            description = str(metadata.get("description") or "")
+        qualified = f"{plugin_id}@skills-dir"
+        enabled = (
+            bool(enabled_plugins.get(qualified, True))
+            if platform == "claude-code" and enabled_plugins is not None
+            else True
+        )
         out.append(
             _plugin(
                 platform=platform,
@@ -625,12 +678,13 @@ def _content_directories(
                 track="content",
                 origin_type="local",
                 scope=scope,
-                enabled=True,
+                enabled=enabled,
                 writable=True,
                 path=path,
+                state_path=state_path,
                 origin_source=path.name,
-                observed_version=str(metadata.get("version") or ""),
-                description=str(metadata.get("description") or ""),
+                observed_version=observed_version,
+                description=description,
                 project=project,
             )
         )
@@ -783,9 +837,17 @@ def _portable_marketplace_source(value: str, fallback: str) -> str:
         return fallback
     parsed = urlparse(text)
     if parsed.scheme in {"http", "https", "ssh", "git"} and parsed.hostname:
-        return normalize_git_identity(text)
+        path = parsed.path.lstrip("/").removesuffix(".git").rstrip("/")
+        if parsed.hostname.lower() == "github.com":
+            return path or fallback
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{parsed.hostname.lower()}{port}/{path}"
     if re.match(r"^(?:[^@]+@)?[^:]+:.+$", text) and "://" not in text:
-        return normalize_git_identity(text)
+        identity = normalize_git_identity(text)
+        if identity.startswith("github.com/"):
+            return identity.removeprefix("github.com/")
+        host, _, path = identity.partition("/")
+        return f"ssh://{host}/{path}" if host and path else fallback
     if re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", text):
         return text.removesuffix(".git")
     return fallback
@@ -829,6 +891,23 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _enabled_plugins(
+    settings_paths: list[tuple[Path, str]],
+    scope: str,
+) -> dict[str, Any]:
+    path = _settings_path_for_scope(settings_paths, scope)
+    settings = _read_json(path) if path is not None else {}
+    enabled = settings.get("enabledPlugins", {}) if isinstance(settings, dict) else {}
+    return enabled if isinstance(enabled, dict) else {}
+
+
+def _settings_path_for_scope(
+    settings_paths: list[tuple[Path, str]],
+    scope: str,
+) -> Path | None:
+    return next((path for path, item_scope in settings_paths if item_scope == scope), None)
 
 
 def _expand_home(value: str, *, home: Path) -> Path:

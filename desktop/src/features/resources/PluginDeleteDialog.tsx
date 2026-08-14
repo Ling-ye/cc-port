@@ -3,12 +3,14 @@ import { useEffect, useState } from "react";
 import { ccPortAction } from "@/api/client";
 import {
   displayError,
+  pluginScopeLabel,
   translateMessage,
   translateMessageList,
   type TFunction,
 } from "@/app/i18n";
 import { useTaskCenter } from "@/app/TaskCenterContext";
 import { Banner } from "@/components/Banner";
+import { platformDisplayName } from "@/components/PlatformIdentity";
 import type { PluginDeletePlan, PluginDeleteResult } from "@/types/cc-port";
 
 export function PluginDeleteDialog({
@@ -115,8 +117,7 @@ export function PluginDeleteDialog({
                   : [...current, instance.id])}
               />
               <span>
-                <strong>{instance.platform} / {instance.scope}</strong>
-                <small>{instance.method}</small>
+                <strong>{platformDisplayName(instance, instance.platform)} / {pluginScopeLabel(instance.scope, t)}</strong>
                 <small>{translateMessage(instance.detail_ref, t, instance.detail)}</small>
               </span>
             </label>

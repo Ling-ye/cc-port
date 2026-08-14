@@ -88,7 +88,7 @@ TOOL_ADAPTERS: tuple[ToolAdapter, ...] = (
         install_mechanisms={
             "skill": "claude_plugin_or_copy",
             "mcp": "json_mcp_servers_patch",
-            "plugin": "claude_plugin_manifest",
+            "plugin": "claude_skills_dir_or_marketplace",
             "instruction": "copy_instruction_file",
             "memory": "copy_auto_memory_directory",
         },
@@ -104,7 +104,11 @@ TOOL_ADAPTERS: tuple[ToolAdapter, ...] = (
         skills_dir="~/.claude/skills",
         mcp_json="~/.claude.json",
         rules_dir="~/.claude/rules",
-        plugins_dir="~/.claude/plugins",
+        # ~/.claude/plugins is Claude's marketplace/cache runtime root, not a
+        # native content-install directory.  Manifest-backed local plugins live
+        # under skills_dir; optional source libraries must be configured
+        # explicitly with a different plugins_dir.
+        plugins_dir="",
         instructions_path="~/.claude/CLAUDE.md",
         memories_dir="~/.claude/projects",
         memory_layout="projects",

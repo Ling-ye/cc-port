@@ -2,7 +2,7 @@
 
 > Safely sync Skills, MCP servers, Rules, Prompts, Plugins, user instructions, and Claude auto memory across Codex, Claude Code, Cursor, Windsurf, and OpenCode through a portable Git resource repository you control.
 
-[中文](README.md) · [Download for Windows](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4) · [Quick start](docs/getting-started.en.md) · [Report an issue](https://github.com/Ling-ye/cc-port/issues)
+[中文](README.md) · [Download for Windows](https://github.com/Ling-ye/cc-port/releases/tag/v0.6.0) · [Quick start](docs/getting-started.en.md) · [Report an issue](https://github.com/Ling-ye/cc-port/issues)
 
 [![CI](https://github.com/Ling-ye/cc-port/actions/workflows/ci.yml/badge.svg)](https://github.com/Ling-ye/cc-port/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -59,6 +59,8 @@ home_dir = '\\wsl.localhost\Ubuntu-24.04\home\example'
 
 Each enabled profile independently scans its `skills_dir`, `mcp_json`, `rules_dir`, `prompts_dir`, `plugins_dir`, `instructions_path`, `memories_dir`, and `settings_path`. `settings_path` points to the tool's native user-level configuration file, such as Claude Code's `settings.json` or Codex's `config.toml`; each profile currently parses exactly that one explicit user-level/native configuration input. CC Port does not automatically merge Claude managed policy, project/local settings that become active after workspace trust, or temporary `--settings` sources, and it does not claim to have derived Claude's complete effective runtime configuration. If one of those higher- or project-scoped sources overrides `autoMemoryDirectory`, configure a separate explicit direct profile/path. A WSL profile can use `home_dir` to expand `~` under that distribution's UNC user directory; Windows and WSL Codex profiles also need distinct `name` values. Regular UNC content can enter a plan, while Linux symlinks inside those directories remain individually blocked as WSL LX links. If a WSL distribution is stopped or its UNC path cannot be reached, the profile is unavailable and writes are blocked; unreachability is never treated as a missing resource or deletion signal. See the [configuration example](config/config.example.toml) for complete profiles.
 
+Claude Code plain Skills and Plugins share `skills_dir`, but they are not the same format. `<name>/SKILL.md` without a manifest is a plain Skill; `<name>/.claude-plugin/plugin.json` is a `<manifest-name>@skills-dir` Plugin, and any `skills/*/SKILL.md` inside it is not rediscovered as a top-level Skill. A Claude Skill's command name comes from its directory, and frontmatter `name` and `description` are not mandatory. A skills-directory Plugin is synced as a regular-file snapshot into the user `skills_dir` or project `.claude/skills`. A Marketplace Plugin syncs only a portable reference and is installed by `claude plugin marketplace add/install` in the exact target profile's runtime. The desktop UI labels skills-directory and Marketplace Plugins separately and edits the Marketplace registration name independently from its portable source. `~/.claude/plugins`, the Plugin cache, and Marketplace checkouts are observation-only and cannot be upload sources. Codex's `.codex-plugin/plugin.json`, TOML state, and installation path remain separate and are never converted into Claude format. See the [Claude Code Plugin and Skill installation contract](docs/specs/claude-plugin-and-skill-installation.md).
+
 The resource repository must be completely separate from the CC Port configuration file, local state and backup directory, legacy install target, and every profile resource target and `settings_path`. Equality or either path containing the other counts as overlap. Configuration writes and asset discovery, planning, and apply fail closed until the conflicting path is moved; machine state and native tool configuration must never enter the Git repository.
 
 Claude Code's user instruction file, `~/.claude/CLAUDE.md`, migrates as an `instruction`, but personal `instruction` and `memory` resources are discovered and migrated only by the configured profile's environment-aware asset inventory. Generic global or directory discovery never exposes a global user instruction or auto memory as an upload candidate; project instructions remain observation-only. The configured user `rules_dir` (normally `~/.claude/rules/`) is scanned recursively for Markdown by profile-aware global-user discovery, but only root-level Markdown files there can currently be migrated directly. A nested user rule is shown as `claude-rule-<relative-path-hash>`, which does not expose the relative path, then remains blocked until the user reorganizes it into an explicit portable rule directory or layout. The hash distinguishes entries; it is not a reversible path encoding. Project `.claude/rules/**/*.md` files have a different scope from user rules. Project rules found by a directory-scope scan stay read-only and blocked because the current model has no project target identity; they cannot be promoted or downloaded into the global user `rules_dir`. Project-level `CLAUDE.md`, `.claude/CLAUDE.md`, and `CLAUDE.local.md` files are likewise not treated as global user instructions. Default auto-memory discovery is limited to `~/.claude/projects/<project-key>/memory/`. If a trusted `settings.json` declares `autoMemoryDirectory`, that value is the final memory directory and must not have another `<project-key>/memory` suffix appended. A memory ownership marker is stored beside the directory, never inside the memory content tree.
@@ -112,12 +114,12 @@ workflow.
 ## Get started in five steps
 
 1. Install [Git for Windows](https://git-scm.com/download/win) and make sure Git Credential Manager is available.
-2. Download `cc-port_0.5.4_windows_x64_setup.exe` from the [v0.5.4 Public Beta release](https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4).
+2. Download `cc-port_0.6.0_windows_x64_setup.exe` from the [v0.6.0 Public Beta release](https://github.com/Ling-ye/cc-port/releases/tag/v0.6.0).
 3. Create an empty private GitHub repository for your AI coding resources.
 4. Start CC Port, paste the repository HTTPS URL into Settings, and verify the connection.
 5. Scan local resources, then choose which items to upload or install from the Resources page.
 
-New Windows builds from this repository include the desktop application, Desktop API sidecar, and standalone `cc-port.exe` CLI/MCP agent. End users do not need Python, Node.js, or Rust. The already-published v0.5.4 installer predates this capability and does not contain the agent; wait for a newer release that includes it. See the [quick-start guide](docs/getting-started.en.md) for setup, AI integration, and uninstall details.
+The v0.6.0 Windows installer includes the desktop application, Desktop API sidecar, and standalone `cc-port.exe` CLI/MCP agent. End users do not need Python, Node.js, or Rust. See the [quick-start guide](docs/getting-started.en.md) for setup, AI integration, and uninstall details.
 
 ## Safety boundaries
 
@@ -209,7 +211,7 @@ the same unrestricted filesystem and process privileges as the human user.
 ## Current limitations
 
 - The Public Beta officially supports Windows 10/11 x64 only.
-- The v0.5.4 installer is unsigned, so Windows SmartScreen may show an unknown-publisher warning.
+- The v0.6.0 installer is unsigned, so Windows SmartScreen may show an unknown-publisher warning.
 - Git for Windows and Git Credential Manager are required on the target computer.
 - The desktop app does not create, delete, or change the visibility of GitHub repositories.
 - Automatic updates are not available yet; download upgrades from Releases.
@@ -221,11 +223,12 @@ For installation, sign-in, or sync failures, see [troubleshooting](docs/troubles
 
 - [Quick start](docs/getting-started.en.md)
 - [Troubleshooting](docs/troubleshooting.en.md)
-- [v0.5.4 release notes](docs/releases/v0.5.4.en.md)
+- [v0.6.0 release notes](docs/releases/v0.6.0.en.md)
 - [Development guide (Chinese)](docs/development.md)
 - [Architecture (Chinese)](docs/architecture.md)
 - [Registry v1 specification (Chinese)](docs/specs/registry-v1.md)
 - [Claude Code instructions, memory, and runtime-environment specification (Chinese)](docs/specs/claude-memory-and-runtime-environments.md)
+- [Claude Code Plugin and Skill installation contract (Chinese)](docs/specs/claude-plugin-and-skill-installation.md)
 - [AI agent discovery, approval, and invocation specification (Chinese)](docs/specs/ai-agent-interface.md)
 - [Desktop packaging and release (Chinese)](docs/packaging-and-deployment.md)
 - [Behavior specifications (Chinese)](docs/specs/)

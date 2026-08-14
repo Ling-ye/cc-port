@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
+from ..core.claude_plugins import inspect_claude_plugin
 from ..core.config import Config
 from ..core.models import Registry, RegistryItem
 from ..core.ownership import (
@@ -390,9 +391,28 @@ def _install_plugin_to_platform(
     force_unmanaged: bool = False,
 ) -> Path | None:
     """Copy a plugin directory to a platform's plugin target."""
+    if entry.plugin is not None and entry.plugin.track == "reference":
+        raise RuntimeError(
+            "Reference plugins require profile-aware asset sync and a native installer."
+        )
+    install_name = (
+        entry.plugin.plugin_id
+        if (
+            entry.plugin is not None
+            and entry.plugin.platform == "claude-code"
+            and platform.effective_tool_id == "claude-code"
+        )
+        else _entry_install_name(entry, platform)
+    )
+    if platform.effective_tool_id == "claude-code":
+        metadata = inspect_claude_plugin(source_path, require_manifest=True)
+        if metadata.name != install_name:
+            raise RuntimeError(
+                "Claude plugin manifest name does not match its install target."
+            )
     target_dir = platform.resolve_install_path(
         "plugin",
-        _entry_install_name(entry, platform),
+        install_name,
     )
     if target_dir is None:
         return None
@@ -810,6 +830,15 @@ def _legacy_resource_binding_problem(entry: RegistryItem) -> str:
         return (
             "Instruction and memory resources require environment-aware asset sync; "
             "legacy sync is disabled for these resource kinds."
+        )
+    if (
+        entry.kind == "plugin"
+        and entry.plugin is not None
+        and entry.plugin.track == "reference"
+    ):
+        return (
+            "Reference plugins require profile-aware asset sync and the platform's "
+            "native installer; legacy content sync is disabled."
         )
     return ""
 

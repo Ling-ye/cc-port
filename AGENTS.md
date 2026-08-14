@@ -42,6 +42,17 @@
 - dedicated-repository 的 `cc-port publish` 和 MCP `publish_local_skill`，以及 legacy `sync`、`check`、安装计划必须拒绝或跳过 `instruction` 与 `memory`。这两类资源只能走 profile-aware asset workflow。
 - MCP 的 `asset_inventory`、`asset_action_plan`/`asset_action_apply`、`asset_batch_plan`/`asset_batch_apply` 必须与桌面端和 CLI 共用 asset 核心；本机发现要求 `scan_local=true`，平台参数是精确 profile id，apply 必须按 operation id 或 `plan_hash` 重新校验本地/远端身份并返回 stale plan，而不是信任调用方提交的资源字段。
 
+## Claude Plugin 与 Skill 约束
+
+- Claude `skills_dir` 下没有 `.claude-plugin/plugin.json` 的 `<name>/SKILL.md` 是普通 Skill；带该 manifest 的目录是 `<manifest-name>@skills-dir` Plugin。发现必须先判 Plugin，且不得把 Plugin 根或内部 `skills/*/SKILL.md` 重复暴露为顶层 Skill。
+- Claude 普通 Skill 的命令名来自目录名，原生 frontmatter 的 `name` 和 `description` 都不是必填；Claude profile 不得套用其他工具的必填字段校验。名为 `synced` 的保留目录属于 Claude 云同步运行时，不得作为普通可移植 Skill 上传。
+- skills-directory Plugin content 只能来自用户/项目 skills 目录或明确配置的自有源码目录；`~/.claude/plugins`、`cache/`、Marketplace checkout、安装记录和 `${CLAUDE_PLUGIN_DATA}` 只读观察，不得上传。
+- Claude Plugin 只有 `plugin.json` 放在 `.claude-plugin/`；其他组件必须位于 Plugin 根。上传和下载必须校验 manifest name、组件路径、JSON/Markdown 结构、链接、秘密、内容指纹和 settings 指纹；脚本、Hook、MCP、LSP、Monitor 和 bin 都是不可信内容，不得在搬运时执行。
+- Claude content Plugin 安装到精确 profile 的用户 `skills_dir/<plugin_id>` 或已映射项目的 `.claude/skills/<plugin_id>`，并对齐 `<plugin_id>@skills-dir` 原生 enabled 状态；Claude 没有 local-only skills-directory 目标，local scope 必须使用 Marketplace reference。
+- Claude Marketplace Plugin 只保存可移植引用，并通过目标 profile 同一 Windows/WSL runtime 的 `claude plugin marketplace add/install` 原生安装；不得自行写入 Plugin cache。CLI、project mapping、远端引用或 settings 状态变化时必须 stale，managed scope 只读。
+- 前端必须按 `platform + track + origin` 显示 Plugin 分发方式：Claude content 显示 skills-directory/`@skills-dir`，Marketplace reference 显示 Marketplace Plugin；Marketplace 名称与可移植来源必须分字段展示和编辑，内部 track、scope、method 枚举不得直接充当用户标签。
+- Claude 的 `.claude-plugin/plugin.json`、JSON `enabledPlugins` 和 Claude CLI 不得用于 Codex；Codex 的 `.codex-plugin/plugin.json`、TOML 状态和原生安装流程也不得用于 Claude。完整合同见 `docs/specs/claude-plugin-and-skill-installation.md`。
+
 ## 本机与资源仓库边界
 
 - Git 资源仓库不得与 CC Port 配置文件、本机 state/backup 根、legacy install target 或任何 profile 的 `skills_dir`、`mcp_json`、`rules_dir`、`prompts_dir`、`plugins_dir`、`instructions_path`、`memories_dir`、`settings_path` 相等或互为父子目录。

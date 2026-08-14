@@ -298,6 +298,8 @@ class AssetResourceWire(StrictWireModel):
     plugin_id: str = ""
     plugin_source_kind: str = ""
     plugin_source_id: str = ""
+    plugin_marketplace: str = ""
+    plugin_marketplace_source: str = ""
     plugin_selector: str = ""
     plugin_observed_version: str = ""
 
@@ -668,18 +670,14 @@ def _project_public_wire_paths(value: Any, *, field_name: str = "") -> Any:
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [
-            _project_public_wire_paths(item, field_name=field_name)
-            for item in value
-        ]
+        return [_project_public_wire_paths(item, field_name=field_name) for item in value]
     return value
 
 
 def _is_absolute_local_path(value: str) -> bool:
     stripped = value.strip()
     return bool(
-        stripped.startswith(("/", "\\", "//", "file://"))
-        or _WINDOWS_ABSOLUTE_PATH.match(stripped)
+        stripped.startswith(("/", "\\", "//", "file://")) or _WINDOWS_ABSOLUTE_PATH.match(stripped)
     )
 
 

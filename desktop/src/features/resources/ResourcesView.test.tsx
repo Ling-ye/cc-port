@@ -604,6 +604,203 @@ describe("ResourcesView unified inventory", () => {
       .not.toBeInTheDocument();
   });
 
+  it("keeps Claude skills-directory and Marketplace labels separate from Codex", () => {
+    const claudeContent = resource({
+      resource_key: "plugin:claude-content",
+      kind: "plugin",
+      name: "claude-content",
+      local_status: "missing",
+      remote_status: "present",
+      status: "remote-only",
+      local_instances: [],
+      plugin_track: "content",
+      plugin_platform: "claude-code",
+      plugin_source_kind: "local",
+    });
+    const claudeMarketplace = resource({
+      resource_key: "plugin:claude-marketplace",
+      kind: "plugin",
+      name: "claude-marketplace",
+      local_status: "missing",
+      remote_status: "present",
+      status: "remote-only",
+      local_instances: [],
+      plugin_track: "reference",
+      plugin_platform: "claude-code",
+      plugin_source_kind: "marketplace",
+    });
+    const codexMarketplace = resource({
+      resource_key: "plugin:codex-marketplace",
+      kind: "plugin",
+      name: "codex-marketplace",
+      local_status: "missing",
+      remote_status: "present",
+      status: "remote-only",
+      local_instances: [],
+      plugin_track: "reference",
+      plugin_platform: "codex",
+      plugin_source_kind: "marketplace",
+    });
+
+    renderView([claudeContent, claudeMarketplace, codexMarketplace]);
+
+    const claudeContentRow = screen.getByRole("checkbox", { name: "claude-content" }).closest("tr");
+    const claudeMarketplaceRow = screen.getByRole("checkbox", { name: "claude-marketplace" }).closest("tr");
+    const codexMarketplaceRow = screen.getByRole("checkbox", { name: "codex-marketplace" }).closest("tr");
+    expect(claudeContentRow).not.toBeNull();
+    expect(claudeMarketplaceRow).not.toBeNull();
+    expect(codexMarketplaceRow).not.toBeNull();
+    expect(within(claudeContentRow!).getByText(/Claude Code · Skills-directory Plugin \(@skills-dir\)/)).toBeVisible();
+    expect(within(claudeMarketplaceRow!).getByText(/Claude Code · Marketplace Plugin/)).toBeVisible();
+    expect(within(codexMarketplaceRow!).getByText(/Codex · Marketplace Plugin/)).toBeVisible();
+    expect(within(codexMarketplaceRow!).queryByText(/@skills-dir/)).not.toBeInTheDocument();
+  });
+
+  it("shows Claude Marketplace name and portable source as separate details", () => {
+    renderView([resource({
+      resource_key: "plugin:claude-marketplace-review-tools",
+      kind: "plugin",
+      name: "review-tools",
+      local_status: "missing",
+      remote_status: "present",
+      status: "remote-only",
+      local_instances: [],
+      plugin_track: "reference",
+      plugin_platform: "claude-code",
+      plugin_id: "review-tools",
+      plugin_source_kind: "marketplace",
+      plugin_source_id: "legacy-team-tools",
+      plugin_marketplace: "team-tools",
+      plugin_marketplace_source: "acme/claude-plugins",
+      plugin_selector: "release/v2",
+    })]);
+
+    const sourceSection = screen.getByRole("heading", { name: "Source and sync" }).closest("section");
+    expect(sourceSection).not.toBeNull();
+    expect(within(sourceSection!).getByText("Claude Code")).toBeVisible();
+    expect(within(sourceSection!).getByText("Marketplace Plugin")).toBeVisible();
+    expect(within(sourceSection!).getByText("team-tools")).toBeVisible();
+    expect(within(sourceSection!).getByText("acme/claude-plugins")).toBeVisible();
+    expect(within(sourceSection!).getByText("release/v2")).toBeVisible();
+    expect(within(sourceSection!).queryByText("legacy-team-tools")).not.toBeInTheDocument();
+  });
+
+  it("submits separate Claude Marketplace name, source, and selector fields", async () => {
+    const user = userEvent.setup();
+    const plugin = resource({
+      resource_key: "plugin:demo",
+      kind: "plugin",
+      status: "local-only",
+      remote_status: "missing",
+      remote: {
+        exists: false,
+        status: "missing",
+        writable: true,
+        read_only: false,
+        commit: "",
+        path: null,
+        description: "",
+      },
+      plugin_track: "content",
+      plugin_platform: "claude-code",
+    });
+    const plan = batchPlan("upload", "blocked");
+    plan.resource_keys = ["plugin:demo"];
+    plan.items[0].resource_key = "plugin:demo";
+    plan.items[0].target_resource_key = "plugin:demo";
+    plan.checked_resources = [{
+      resource_key: "plugin:demo",
+      local_status: "single",
+      remote_status: "missing",
+      status: "local-only",
+    }];
+    vi.mocked(ccPortAction).mockResolvedValue(plan);
+    renderView([plugin]);
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
+    await user.selectOptions(await screen.findByLabelText("First upload classification"), "reference");
+    expect(screen.getByLabelText("Origin type")).toBeDisabled();
+    await user.type(screen.getByLabelText("Marketplace name"), "team-tools");
+    await user.type(screen.getByLabelText("Marketplace source"), "acme/claude-plugins");
+    await user.type(screen.getByLabelText("Version policy / selector"), "release/v2");
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+
+    await waitFor(() => {
+      const planCalls = vi.mocked(ccPortAction).mock.calls
+        .filter(([action]) => action === "asset_batch_plan");
+      expect(planCalls).toHaveLength(2);
+      expect(planCalls[1][1]).toEqual(expect.objectContaining({
+        choices: [expect.objectContaining({
+          reference_origin: {
+            type: "marketplace",
+            marketplace: "team-tools",
+            source: "acme/claude-plugins",
+            selector: "release/v2",
+          },
+        })],
+      }));
+    });
+  });
+
+  it("clears stale Marketplace locators when changing reference origin type", async () => {
+    const user = userEvent.setup();
+    const plugin = resource({
+      resource_key: "plugin:demo",
+      kind: "plugin",
+      status: "local-only",
+      remote_status: "missing",
+      remote: {
+        exists: false,
+        status: "missing",
+        writable: true,
+        read_only: false,
+        commit: "",
+        path: null,
+        description: "",
+      },
+      plugin_track: "content",
+      plugin_platform: "opencode",
+    });
+    const plan = batchPlan("upload", "blocked");
+    plan.resource_keys = ["plugin:demo"];
+    plan.items[0].resource_key = "plugin:demo";
+    plan.items[0].target_resource_key = "plugin:demo";
+    plan.checked_resources = [{
+      resource_key: "plugin:demo",
+      local_status: "single",
+      remote_status: "missing",
+      status: "local-only",
+    }];
+    vi.mocked(ccPortAction).mockResolvedValue(plan);
+    renderView([plugin]);
+
+    await user.click(screen.getByRole("checkbox", { name: "demo" }));
+    await user.click(screen.getByRole("button", { name: "Upload to repository" }));
+    await user.selectOptions(await screen.findByLabelText("First upload classification"), "reference");
+    await user.type(screen.getByLabelText("Marketplace name"), "team-tools");
+    await user.type(screen.getByLabelText("Marketplace source"), "acme/claude-plugins");
+    await user.type(screen.getByLabelText("Version policy / selector"), "release/v2");
+    await user.selectOptions(screen.getByLabelText("Origin type"), "git");
+    await user.type(screen.getByLabelText("Git repository"), "https://github.com/acme/review-tools.git");
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+
+    await waitFor(() => {
+      const planCalls = vi.mocked(ccPortAction).mock.calls
+        .filter(([action]) => action === "asset_batch_plan");
+      expect(planCalls).toHaveLength(2);
+      expect(planCalls[1][1]).toEqual(expect.objectContaining({
+        choices: [expect.objectContaining({
+          reference_origin: {
+            type: "git",
+            repo: "https://github.com/acme/review-tools.git",
+            selector: "release/v2",
+          },
+        })],
+      }));
+    });
+  });
+
   it("shows compact remote and local source status and refreshes only on demand", async () => {
     const user = userEvent.setup();
     const { onRefreshRemote } = renderView();

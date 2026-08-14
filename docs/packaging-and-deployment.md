@@ -1,7 +1,8 @@
 # Windows 桌面打包与发布
 
-本手册适用于当前开发分支的下一次 Windows 发布。已经公开的 `v0.5.4` 产物保持不变，
-不包含新增的 CLI/MCP agent。本文只保留当前可执行的维护者流程；缓存、
+本手册适用于 `v0.6.0` 及后续 Windows 发布。已经公开的 `v0.5.4` 产物保持不变，
+且仍不包含后续新增的 CLI/MCP agent；不得用新构建覆盖。`v0.6.0` 安装包开始同时
+包含桌面程序、Desktop API sidecar 与独立 agent。本文只保留当前可执行的维护者流程；缓存、
 并发、回滚和历史性能实验的完整约束见
 [桌面发布编排规格](specs/desktop-release-orchestration.md)。
 
@@ -143,10 +144,10 @@ release/publish/v<version>/
 
 1. 通过 PR 把版本提交合并到 `main`，确认工作区干净且 CI 全绿。
 2. 在该提交完成构建和安装冒烟。
-3. 使用已经配置好的 SSH 或 GPG 签名创建 annotated tag：
+3. 使用已核对指纹的 SSH 签名密钥创建 annotated tag：
 
    ```powershell
-   git tag -s -a vX.Y.Z -m "CC Port vX.Y.Z"
+   git tag -s -a vX.Y.Z -m "CC Port vX.Y.Z Public Beta"
    git tag -v vX.Y.Z
    git push origin vX.Y.Z
    ```

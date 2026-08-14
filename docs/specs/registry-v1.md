@@ -146,9 +146,18 @@ resources:
       installations:
         - scope: user
           enabled: true
+
+  plugin:review-tools:
+    plugin:
+      platform: claude-code
+      plugin_id: review-tools
+      marketplace: team-tools
+      installations:
+        - scope: user
+          enabled: true
 ```
 
-Overlay 用资源键关联设置。指向不存在资源的设置被忽略但保留，不反向创建 Registry 条目。资源来源和版本只写在 Registry 的 `source` 中；插件 content/reference 轨道由 `path` 或 `source` 推导；观测版本只保存在本机。`instruction` 与 `memory` 的逻辑资源级工具兼容 allowlist 和通用安装别名可以进入 overlay；具体 Windows/WSL profile、用户目录、目标路径以及 `memory_install_names` project slot 映射只属于本机配置与操作计划，不能进入 Registry 或 overlay。
+Overlay 用资源键关联设置。指向不存在资源的设置被忽略但保留，不反向创建 Registry 条目。资源来源和版本只写在 Registry 的 `source` 中；Claude Code Marketplace 的注册名写在插件 overlay 的 `marketplace`，不得用它替代来源定位符。插件 content/reference 轨道由 `path` 或 `source` 推导；观测版本只保存在本机。`instruction` 与 `memory` 的逻辑资源级工具兼容 allowlist 和通用安装别名可以进入 overlay；具体 Windows/WSL profile、用户目录、目标路径以及 `memory_install_names` project slot 映射只属于本机配置与操作计划，不能进入 Registry 或 overlay。
 
 ## 6. 仓库审计
 

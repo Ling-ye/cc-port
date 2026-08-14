@@ -402,6 +402,8 @@ export interface AssetPlatformRow extends PlatformIdentity {
   warning_refs?: UiMessageRef[];
   available_actions: AssetAction[];
   entry?: RegistryItem | null;
+  plugin_marketplace?: string;
+  plugin_marketplace_source?: string;
 }
 
 export interface AssetInventory {
@@ -548,6 +550,8 @@ export interface AssetResourceRow {
   plugin_id?: string;
   plugin_source_kind?: PluginOriginType | "";
   plugin_source_id?: string;
+  plugin_marketplace?: string;
+  plugin_marketplace_source?: string;
   plugin_selector?: string;
   plugin_observed_version?: string;
 }

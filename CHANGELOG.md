@@ -4,6 +4,46 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-14
+
+### Added
+
+- Windows 安装包新增独立的 `cc-port.exe` CLI/MCP agent，并提供 canonical CC Port
+  Skill、严格 JSON CLI、stdio MCP 与桌面 AI 集成引导。
+- 增加绑定精确 profile 与运行环境的 `instruction`、`memory` 资产工作流，支持独立的
+  Windows/WSL Codex 与 Claude Code 实例、Claude 用户指令、用户 rules 和 auto memory。
+- 增加工具中立的 Registry v1、只读仓库审计以及通过桌面或一次性 MCP 审批应用的
+  Registry 修复计划。
+- 区分 Claude Code 普通 Skill、带 `.claude-plugin/plugin.json` 的
+  skills-directory Plugin 与 Marketplace Plugin 引用；Marketplace 引用插件通过
+  Claude CLI 完成来源注册、安装、启停与回读验证。
+- 增加 Claude 插件结构、组件路径、清单字段、自定义路径和 Skill 原生语义的
+  fail-closed 校验，并覆盖真实子进程和临时配置目录的安装回归测试。
+
+### Changed
+
+- Registry 普通加载器改为只接受 v1；可解析的 legacy v7 只能在显示丢弃项和最终 diff
+  后，依据当前实体资源显式重建，旧外部引用和工具专属元数据不会被猜测迁移。
+- 桌面、CLI 与 MCP 的资产操作统一到 profile-aware 核心，平台参数使用稳定 profile id；
+  apply 重新校验 operation、`plan_hash`、本机与远端身份。
+- Windows 安装包现在同时包含桌面程序、Desktop API sidecar 与 CLI/MCP agent。
+- Claude Code 的内容型插件安装到配置的 `skills_dir` 并以
+  `<plugin>@skills-dir` 识别；Marketplace cache 只作为只读观测，不再作为复制安装目标。
+- Marketplace 来源定位保留在 Registry `source`，Claude Marketplace 名称和安装范围
+  保存在 `cc-port.yaml`，安装计划绑定精确 profile、配置目录和来源版本。
+- 桌面端按工具原生语义区分 skills-directory 与 Marketplace Plugin，分别编辑
+  Marketplace 注册名和可移植来源，并隐藏内部 track、scope 与删除 method 枚举。
+- 说明页增加克制的中英文项目仓库与 GitHub Star 支持入口。
+
+### Security
+
+- MCP 与非交互 CLI 的可执行写计划必须由桌面端批准；审批绑定完整 scope 与 plan hash，
+  短时有效、只能消费一次，stale 后不能复用。
+- 资源仓库与配置、状态、备份和全部 profile 原生目标必须分离；配置保存、资产计划和
+  apply 都会重新检查路径边界并 fail closed。
+- Claude 插件上传和下载同时校验插件名、清单、组件边界、内容指纹和精确 profile；
+  Marketplace 来源、版本或本机配置发生变化时拒绝旧计划。
+
 ## [0.5.4] - 2026-07-30
 
 ### Added
@@ -118,7 +158,8 @@
 - 需要外部 Git for Windows 和 Git Credential Manager。
 - 没有自动更新。
 
-[Unreleased]: https://github.com/Ling-ye/cc-port/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/Ling-ye/cc-port/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Ling-ye/cc-port/releases/tag/v0.6.0
 [0.5.4]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.4
 [0.5.3]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.3
 [0.5.2]: https://github.com/Ling-ye/cc-port/releases/tag/v0.5.2

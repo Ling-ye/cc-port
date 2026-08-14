@@ -458,6 +458,7 @@ def _discover_tool_resources(
             registry_path=registry_path_override,
             max_depth=32 if file_kind_hint == "rule" else 4,
             file_kind_hint=file_kind_hint,
+            tool_hint=tool.tool_id,
         ):
             identity = (
                 tool.id,

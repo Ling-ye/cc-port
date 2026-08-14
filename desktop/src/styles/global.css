@@ -2560,6 +2560,7 @@ button {
 }
 
 .asset-resource-name small,
+.asset-batch-choice-card > div:first-child > small,
 .asset-instance-card small,
 .asset-platform-picker small,
 .asset-plan-item small {

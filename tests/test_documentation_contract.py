@@ -65,7 +65,7 @@ def test_english_readme_links_to_the_english_user_path() -> None:
 
     assert "docs/getting-started.en.md" in source
     assert "docs/troubleshooting.en.md" in source
-    assert "docs/releases/v0.5.4.en.md" in source
+    assert "docs/releases/v0.6.0.en.md" in source
 
 
 def test_registry_v1_is_documented_as_a_tool_neutral_manifest() -> None:

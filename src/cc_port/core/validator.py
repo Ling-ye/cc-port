@@ -10,6 +10,7 @@ from typing import Any
 import frontmatter
 import yaml
 
+from .claude_plugins import CLAUDE_PLUGIN_MANIFEST, inspect_claude_plugin
 from .models import ITEM_NAME_RE, ItemKind
 
 # Keep old name for backward compat
@@ -230,6 +231,11 @@ def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None 
             return
         if not resolved.is_dir():
             raise SkillValidationError(f"{path} is not a plugin directory or .js/.ts plugin file.")
+        if (resolved / CLAUDE_PLUGIN_MANIFEST).exists():
+            try:
+                inspect_claude_plugin(resolved, require_manifest=True)
+            except ValueError as exc:
+                raise SkillValidationError(str(exc)) from exc
     elif kind == "instruction":
         validate_instruction_path(path)
     elif kind == "memory":

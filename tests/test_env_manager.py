@@ -316,7 +316,7 @@ def test_plugin_discovery_keeps_same_tool_windows_and_wsl_instances_separate(
         ("claude-wsl-ubuntu", "wsl"),
     ):
         home = tmp_path / name
-        plugin = home / ".claude" / "plugins" / "same-plugin"
+        plugin = home / ".claude" / "skills" / "same-plugin"
         manifest = plugin / ".claude-plugin" / "plugin.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(json.dumps({"name": "same-plugin"}), encoding="utf-8")
@@ -327,7 +327,8 @@ def test_plugin_discovery_keeps_same_tool_windows_and_wsl_instances_separate(
                 environment_kind=environment_kind,
                 environment_name="Ubuntu" if environment_kind == "wsl" else "",
                 home_dir=str(home),
-                plugins_dir="~/.claude/plugins",
+                skills_dir="~/.claude/skills",
+                plugins_dir="",
             )
         )
         expected.add((name, "claude-code", environment_kind, plugin.resolve()))
