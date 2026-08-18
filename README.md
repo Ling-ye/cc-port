@@ -193,17 +193,31 @@ Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
 
 ### 让 AI 自动使用 CC Port
 
-在包含该能力的新构建中，从桌面端“设置 → AI 自动化”按精确 profile 审阅启用计划。批准后，CC Port 只把随包发布的 `cc-port` Skill 安装到该 profile 的 Skill 目录，并在该工具的原生配置中增加本机 `cc-port.exe mcp --stdio` entry；不会删除客户端，也不会改写其他 MCP server。当前 schema v1 只自动引导 Windows 原生 profile；WSL profile 会显式阻断这一“Skill + MCP 注册”步骤，不会把 Windows 进程误报为 WSL 连接成功。现有的 profile-aware WSL 资源扫描和 plan/apply 能力仍保留。
+AI 自动化让 Codex、Claude Code、Cursor 等 AI 工具调用本机 CC Port，帮你扫描资源、比较本地与远端、上传本地资源或把远端资源安装到指定工具。它不是无人值守的后台同步：AI 可以自动读取和生成计划，真正写入前仍由你在 CC Port 桌面端批准。
 
-AI 首选 MCP discovery，并执行 `status → inventory(scan_local=true) → diff → plan → approval → apply → verify`；MCP 不可用时才回退到单 JSON envelope 的非交互 CLI。读和 plan 可自动完成，写计划进入桌面的“待处理 AI 审批”，用户单次批准后才能 apply。审批会过期且只能消费一次；目标变化返回新的 stale plan，旧审批自动失效。完整命令、schema 和安全边界见 [AI Agent 自动发现、审批与调用规格](docs/specs/ai-agent-interface.md)。
+CC Port 不调用大模型，不需要你另外填写 OpenAI、Anthropic 或其他模型 API Key。AI 工具本身需要已经正常登录；私有 GitHub 仓库由 Git Credential Manager 完成登录，第三方 MCP 的真实密钥继续留在本机。
 
-只读盘点和同步建议由外部
+最短使用方式：
+
+1. 打开“设置 → AI 自动化”，为需要使用 CC Port 的 Windows profile 点击“审阅启用计划”，然后“批准并启用”。
+2. 在 AI 对话中输入：`使用 CC Port 扫描所有已配置 profile，只读比较本地和远端，不要修改。`
+3. 决定方向后再输入：`把 codex-windows 中的 skill:example 上传到仓库，只处理这一项，先展示计划。`
+4. 在“设置 → AI 自动化 → 待处理 AI 审批”中核对并批准，再回到对话说：`我已在 CC Port 桌面端批准，请继续执行并重新扫描验证。`
+
+如果不知道 profile id 或资源 key，先让 AI 从最新扫描结果中列出来。尽量使用“上传到仓库”或“安装到某个 profile”明确方向，不要只说含义不确定的“同步”。每次审批只绑定当前 operation、`plan_hash` 和完整范围，会自动过期且只能使用一次；状态变化后必须审阅新计划。
+
+启用时，CC Port 只把内置 `cc-port` Skill 安装到选定 profile，并在该工具的原生配置中注册本机 `cc-port.exe mcp --stdio`；不会删除桌面客户端或改写其他 MCP Server。当前 schema v1 只自动引导 Windows 原生 profile，WSL profile 仍可参与已有的资源扫描和 plan/apply。完整的新手步骤和可复制话术见[快速开始：让 AI 帮你管理资源](docs/getting-started.md#5-让-ai-帮你管理资源ai-自动化)，底层命令、schema 和安全边界见 [AI Agent 自动发现、审批与调用规格](docs/specs/ai-agent-interface.md)。
+
+#### 可选：只读 Advisor
+
+普通用户不需要安装 Advisor。只有希望“先让 AI 汇总全部差异并给出建议、但绝不创建写入计划”的用户，
+才需要外部
 [`cc-port-advisor`](https://github.com/Ling-ye/LingyeAIResources/tree/main/skills/cc-port-advisor)
-Skill 提供。它读取 MCP `asset_reconcile_context`（或严格 JSON CLI fallback），只检查 CC Port 已配置的
-profile 与保存项目，不创建计划、审批或传输；执行仍交回操作型 `cc-port` Skill。完整接口和安全边界见
+Skill。它只检查 CC Port 已配置的 profile 与保存项目，不创建计划、审批或传输。用户决定执行后，
+仍由上面的内置 `cc-port` Skill 重新扫描、生成计划并等待桌面审批。完整接口和安全边界见
 [AI Agent 自动发现、审批与调用规格](docs/specs/ai-agent-interface.md)。
 
-这是应用层审批边界，不是 Windows 上的独立安全主体：AI 宿主必须限制 agent 直接改写 CC Port 本机 state 目录或伪造桌面 sidecar 调用。对与人类用户拥有同等、不受限制文件与进程权限的代码执行者，当前 v1 不声称提供操作系统级“人类在场”证明。
+桌面审批是应用层安全护栏，不是 Windows 上的独立安全主体：AI 宿主仍需限制 agent 直接改写 CC Port 本机 state 目录或伪造桌面 sidecar 调用。对与人类用户拥有同等、不受限制文件与进程权限的代码执行者，当前 v1 不声称提供操作系统级“人类在场”证明。
 
 ## 当前限制
 

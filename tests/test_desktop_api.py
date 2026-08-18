@@ -1317,6 +1317,79 @@ def test_trusted_desktop_parent_requires_exact_frozen_sibling(
     assert desktop_api._trusted_desktop_parent() is True
 
 
+def test_trusted_desktop_parent_accepts_exact_onefile_bootloader_chain(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    sidecar = installed / "cc-port-desktop-api.exe"
+    desktop = installed / "cc-port-desktop.exe"
+    sidecar.write_bytes(b"sidecar")
+    desktop.write_bytes(b"desktop")
+    monkeypatch.setattr(desktop_api.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop_api.sys, "executable", str(sidecar))
+    monkeypatch.setattr(desktop_api.os, "getppid", lambda: 4242)
+    monkeypatch.setattr(desktop_api, "_parent_process_image", lambda: sidecar)
+    monkeypatch.setattr(
+        desktop_api,
+        "_parent_process_image_of",
+        lambda process_id: desktop if process_id == 4242 else None,
+    )
+
+    assert desktop_api._trusted_desktop_parent() is True
+
+
+def test_trusted_desktop_parent_rejects_lookalike_onefile_chain(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    installed = tmp_path / "installed"
+    lookalike_root = tmp_path / "lookalike"
+    installed.mkdir()
+    lookalike_root.mkdir()
+    sidecar = installed / "cc-port-desktop-api.exe"
+    desktop = installed / "cc-port-desktop.exe"
+    lookalike_sidecar = lookalike_root / "cc-port-desktop-api.exe"
+    lookalike_desktop = lookalike_root / "cc-port-desktop.exe"
+    sidecar.write_bytes(b"sidecar")
+    desktop.write_bytes(b"desktop")
+    lookalike_sidecar.write_bytes(b"renamed process")
+    lookalike_desktop.write_bytes(b"renamed desktop")
+    monkeypatch.setattr(desktop_api.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop_api.sys, "executable", str(sidecar))
+    monkeypatch.setattr(desktop_api.os, "getppid", lambda: 4242)
+
+    monkeypatch.setattr(desktop_api, "_parent_process_image", lambda: lookalike_sidecar)
+    monkeypatch.setattr(
+        desktop_api,
+        "_parent_process_image_of",
+        lambda _process_id: desktop,
+    )
+    assert desktop_api._trusted_desktop_parent() is False
+
+    monkeypatch.setattr(desktop_api, "_parent_process_image", lambda: sidecar)
+    monkeypatch.setattr(
+        desktop_api,
+        "_parent_process_image_of",
+        lambda _process_id: lookalike_desktop,
+    )
+    assert desktop_api._trusted_desktop_parent() is False
+
+
+def test_windows_process_helpers_resolve_the_current_native_parent() -> None:
+    if desktop_api.os.name != "nt":
+        pytest.skip("Windows process ancestry helper")
+
+    assert desktop_api._process_parent_id(desktop_api.os.getpid()) == desktop_api.os.getppid()
+    image = desktop_api._windows_process_image(desktop_api.os.getpid())
+    assert image is not None
+    expected = Path(
+        getattr(desktop_api.sys, "_base_executable", desktop_api.sys.executable),
+    )
+    assert image.samefile(expected)
+
+
 def test_source_tree_python_is_never_a_desktop_approval_authority(
     tmp_path: Path,
     monkeypatch,

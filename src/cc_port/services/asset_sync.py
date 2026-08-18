@@ -620,14 +620,17 @@ def build_asset_inventory(
             project_ids=[],
         )
     if snapshot.registry is None:
+        registry_warning_ref = _registry_unavailable_message(snapshot.registry_health)
         snapshot = replace(
             snapshot,
             registry=Registry(),
             warning=(
                 snapshot.warning
+                or registry_warning_ref.fallback
                 or (snapshot.registry_health.message if snapshot.registry_health else "")
                 or "The remote registry is unavailable."
             ),
+            warning_ref=snapshot.warning_ref or registry_warning_ref,
         )
     assert snapshot.registry is not None
     registry_entries = snapshot.registry.items
@@ -5816,13 +5819,11 @@ def _finalize_row_actions(row: AssetPlatformRow, snapshot: RemoteSnapshot) -> No
     }
     remote_ready = snapshot.available and registry_available
     if not registry_available:
+        blocker_ref = _registry_unavailable_message(snapshot.registry_health, blocker=True)
         _append_message(
             row.blockers,
             row.blocker_refs,
-            ui_message(
-                "asset.blocker.registry_unavailable",
-                "The remote registry is unavailable; remote resource actions are blocked.",
-            ),
+            blocker_ref,
         )
     if row.plugin_track == "reference":
         if active and row.remote_exists and remote_ready:
@@ -5862,6 +5863,29 @@ def _finalize_row_actions(row: AssetPlatformRow, snapshot: RemoteSnapshot) -> No
     row.available_actions = list(dict.fromkeys(actions))
     row.blockers = _unique_strings(row.blockers)
     row.warnings = _unique_strings(row.warnings)
+
+
+def _registry_unavailable_message(
+    health: RegistryHealthSummary | None,
+    *,
+    blocker: bool = False,
+) -> UiMessageRef:
+    if health is not None and health.status == "legacy":
+        return ui_message(
+            "asset.blocker.registry_upgrade_required"
+            if blocker
+            else "asset.remote.registry_upgrade_required",
+            "Remote Registry v7 must be upgraded to Registry v1 before remote "
+            "resource operations can continue.",
+        )
+    return ui_message(
+        "asset.blocker.registry_unavailable"
+        if blocker
+        else "asset.remote.registry_unavailable",
+        "The remote registry is unavailable; remote resource actions are blocked."
+        if blocker
+        else "The remote registry is unavailable.",
+    )
 
 
 def _select_plan_row(

@@ -190,6 +190,10 @@ export function ResourcesView({
   const localInstanceCount = resources.reduce((count, item) => count + item.local_instances.length, 0);
   const repoConfigured = Boolean(inventory?.repo_url);
   const inventoryBusy = remoteRefreshBusy || localScanBusy;
+  const registryStatus = inventory?.registry_health?.status;
+  const registryNeedsUpgrade = registryStatus === "legacy";
+  const remoteWarningIsUpgrade = inventory?.remote_warning_ref?.code
+    === "asset.remote.registry_upgrade_required";
   const legacyWriteBlocker = translateMessage(
     inventory?.legacy_write_blocker_ref,
     t,
@@ -208,9 +212,11 @@ export function ResourcesView({
         ? t("add.repositoryRequired")
         : legacyWriteBlocker
           ? legacyWriteBlocker
-          : !inventory.remote_available
-            ? t("add.remoteUnavailable")
-            : "";
+          : registryNeedsUpgrade
+            ? t("registry.upgradeRequiredShort")
+            : !inventory.remote_available
+              ? t("add.remoteUnavailable")
+              : "";
   const selectedResource = resources.find((item) => item.resource_key === selectedKey)
     ?? resources[0];
 
@@ -296,7 +302,9 @@ export function ResourcesView({
               <span className="asset-source-title"><Cloud size={17} />{t("assets.remoteSource")}</span>
               {inventory?.registry_health ? (
                 <span className={`asset-pill asset-source-state state-${registryHealthTone(inventory.registry_health.status)}`}>
-                  {registryHealthLabel(inventory.registry_health.status, t)}
+                  {registryNeedsUpgrade
+                    ? t("registry.status.upgradeRequired")
+                    : registryHealthLabel(inventory.registry_health.status, t)}
                 </span>
               ) : null}
               <span className={`asset-pill asset-source-state state-${repoConfigured ? (inventory?.remote_available ? "online" : "cache") : "unconfigured"}`}>
@@ -311,10 +319,17 @@ export function ResourcesView({
               <div><dt>{t("assets.commit")}</dt><dd>{shortCommit(inventory?.remote_commit)}</dd></div>
               <div><dt>{t("assets.lastChecked")}</dt><dd>{formatTimestamp(remoteCheckedAt, t)}</dd></div>
             </dl>
+            {registryNeedsUpgrade ? (
+              <div className="asset-registry-upgrade-note" role="status">
+                <strong>{t("registry.upgradeTitle")}</strong>
+                <span>{t("registry.upgradeDescription")}</span>
+              </div>
+            ) : null}
             {repoConfigured ? (
               <div className="asset-source-actions">
                 <button className="secondary" type="button" onClick={() => void checkRegistry()} disabled={remoteRefreshBusy || registryBusy}>
-                  <FileDiff size={15} className={registryBusy ? "spin" : undefined} />{t("registry.checkRepository")}
+                  <FileDiff size={15} className={registryBusy ? "spin" : undefined} />
+                  {registryNeedsUpgrade ? t("registry.upgradeAction") : t("registry.checkRepository")}
                 </button>
                 <button className="secondary" type="button" onClick={() => void Promise.resolve(onRefreshRemote())} disabled={remoteRefreshBusy || registryBusy}>
                   <RefreshCcw size={15} className={remoteRefreshBusy ? "spin" : undefined} />{t("assets.refreshRemote")}
@@ -393,7 +408,7 @@ export function ResourcesView({
           </div>
         </section>
 
-        {remoteWarning ? <Banner tone="danger" text={remoteWarning} /> : null}
+        {remoteWarning && !remoteWarningIsUpgrade ? <Banner tone="danger" text={remoteWarning} /> : null}
         {legacyWriteBlocker ? <Banner tone="danger" text={legacyWriteBlocker} /> : null}
 
         <div className="asset-filter-toolbar">
@@ -788,7 +803,7 @@ function RegistryRepairDialog({
           </button>
           {plan.repairable && plan.executable_count > 0 ? (
             <button className="primary" type="button" onClick={() => void applyPlan()} disabled={busy || !canApply}>
-              {t("registry.applyRepair")}
+              {legacy ? t("registry.upgradeAction") : t("registry.applyRepair")}
             </button>
           ) : null}
         </div>

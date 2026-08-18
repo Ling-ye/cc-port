@@ -2673,6 +2673,23 @@ button {
   white-space: nowrap;
 }
 
+.asset-registry-upgrade-note {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid #dfc277;
+  border-radius: 8px;
+  color: #654d12;
+  background: #fff8e6;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.asset-registry-upgrade-note strong {
+  color: #513d0d;
+  font-size: 12px;
+}
+
 .asset-local-summary,
 .asset-source-time span:last-child {
   color: #52606b;

@@ -870,6 +870,90 @@ describe("ResourcesView unified inventory", () => {
     expect(ccPortAction).toHaveBeenCalledWith("registry_repair_plan", { choices: [] });
   });
 
+  it("turns a legacy Registry into one explained upgrade state and recovery action", async () => {
+    const user = userEvent.setup();
+    const fallback = "Remote Registry v7 must be upgraded to Registry v1 before remote resource operations can continue.";
+    const legacyResource = resource({
+      status: "local-only",
+      remote_status: "unavailable",
+      blockers: [fallback],
+      blocker_refs: [{
+        code: "asset.blocker.registry_upgrade_required",
+        fallback,
+        params: {},
+      }],
+      available_actions: [],
+    });
+    vi.mocked(ccPortAction).mockResolvedValue(registryPlan({
+      registry_status: "legacy",
+      legacy_item_count: 4,
+      rebuilt_item_count: 2,
+      dropped_item_count: 2,
+    }));
+    renderView(undefined, {
+      language: "zh",
+      inventory: {
+        ...inventory([legacyResource]),
+        remote_warning: "registry.yaml uses legacy v7 and can be replaced from current content.",
+        remote_warning_ref: {
+          code: "asset.remote.registry_upgrade_required",
+          fallback: "The remote repository uses Registry v7.",
+          params: {},
+        },
+        registry_health: {
+          status: "legacy",
+          checked_commit: "1234567890abcdef",
+          issue_count: 1,
+          repairable_count: 1,
+          blocked_count: 0,
+          message: "registry.yaml uses legacy v7 and can be replaced from current content.",
+        },
+      },
+    });
+
+    expect(screen.getByText("Registry 需要升级")).toBeVisible();
+    expect(screen.getByText("远端 Registry 需要升级")).toBeVisible();
+    expect(screen.getByText(/该仓库仍使用 Registry v7/)).toBeVisible();
+    expect(screen.getByText("远端仓库仍使用 Registry v7；升级到 Registry v1 后即可恢复远端资产操作。")).toBeVisible();
+    expect(screen.queryByText("registry.yaml uses legacy v7 and can be replaced from current content."))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "从 GitHub 收集" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "导入本地目录" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "升级到 Registry v1" }));
+
+    expect(await screen.findByRole("dialog", { name: "Registry 检查与修复" })).toBeVisible();
+    expect(ccPortAction).toHaveBeenCalledWith("registry_repair_plan", { choices: [] });
+  });
+
+  it("keeps a remote refresh failure visible alongside the Registry upgrade state", () => {
+    const data = inventory([resource()]);
+    renderView(undefined, {
+      inventory: {
+        ...data,
+        remote_available: false,
+        remote_warning: "Remote refresh failed; showing a cached snapshot.",
+        remote_warning_ref: {
+          code: "asset.remote.refresh_failed_cached",
+          fallback: "Remote refresh failed; showing a cached snapshot.",
+          params: { cached_at: "now", detail: "TLS failed" },
+        },
+        registry_health: {
+          status: "legacy",
+          checked_commit: data.remote_commit,
+          issue_count: 1,
+          repairable_count: 1,
+          blocked_count: 0,
+          message: "legacy Registry",
+        },
+      },
+    });
+
+    expect(screen.getByText("Remote Registry needs an upgrade")).toBeVisible();
+    expect(screen.getByText("Remote refresh failed. Showing the cached snapshot from now: TLS failed"))
+      .toBeVisible();
+  });
+
   it("uses default safe choices and replaces a stale repair plan before another apply", async () => {
     const user = userEvent.setup();
     const initial = registryPlan();
@@ -964,7 +1048,7 @@ describe("ResourcesView unified inventory", () => {
 
     await user.click(screen.getByRole("button", { name: "Check repository" }));
     const dialog = await screen.findByRole("dialog", { name: "Registry check and repair" });
-    const apply = within(dialog).getByRole("button", { name: "Apply registry repair" });
+    const apply = within(dialog).getByRole("button", { name: "Upgrade to Registry v1" });
     expect(within(dialog).getByText(/Legacy v7 contains 4 item/)).toBeVisible();
     expect(apply).toBeDisabled();
     await user.click(within(dialog).getByRole("checkbox", {

@@ -31,6 +31,7 @@ from cc_port.services.asset_sync import RemoteSnapshot
 from cc_port.services.env_manager import DiscoveredTool, EnvDiscoveryResult
 from cc_port.services.local_path_probe import LocalPathProbe
 from cc_port.services.plugin_management import DiscoveredPlugin
+from cc_port.services.registry_audit import RegistryHealthSummary
 from cc_port.services.resource_discovery import DiscoveredResource
 
 _GIT_RUNTIME = git_ops.discover_git_executable(configured="")
@@ -2192,6 +2193,70 @@ def test_remote_refresh_does_not_reuse_old_registry_after_new_commit_breaks_it(
     assert resource.status == "local-only"
     assert resource.available_actions == []
     assert any("remote registry is unavailable" in item.lower() for item in resource.blockers)
+
+
+def test_legacy_registry_inventory_explains_upgrade_instead_of_generic_unavailability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "snapshot"
+    root.mkdir()
+    (root / "registry.yaml").write_text("version: 7\nitems: []\n", encoding="utf-8")
+    local = tmp_path / "cursor" / "skills" / "local-only"
+    _skill(local, name="local-only", description="Local only", body="local")
+    cfg = _config(tmp_path, repo_url="https://example.test/resources.git")
+    snapshot = RemoteSnapshot(
+        root=root,
+        registry=None,
+        commit="legacy-commit",
+        branch="main",
+        repo_url=cfg.resources.repo_url,
+        registry_health=RegistryHealthSummary(
+            status="legacy",
+            checked_commit="legacy-commit",
+            issue_count=1,
+            repairable_count=1,
+            blocked_count=0,
+            message="registry.yaml uses legacy v7 and can be replaced from current content.",
+        ),
+    )
+    monkeypatch.setattr(
+        asset_sync,
+        "discover_environment",
+        lambda **_kwargs: EnvDiscoveryResult(
+            tools=[],
+            resources=[
+                DiscoveredResource(
+                    id="cursor:skill:local-only",
+                    tool="cursor",
+                    source="configured",
+                    kind="skill",
+                    name_hint="local-only",
+                    path=local,
+                )
+            ],
+            mcp_servers=[],
+        ),
+    )
+
+    inventory = asset_sync.build_asset_inventory(
+        config=cfg,
+        scan_local=True,
+        remote_snapshot=snapshot,
+    )
+
+    assert inventory.remote_available is True
+    assert inventory.registry_health is snapshot.registry_health
+    assert inventory.remote_warning_ref is not None
+    assert inventory.remote_warning_ref.code == "asset.remote.registry_upgrade_required"
+    assert "must be upgraded to Registry v1" in inventory.remote_warning
+    assert len(inventory.resources) == 1
+    resource = inventory.resources[0]
+    assert resource.available_actions == []
+    assert {item.code for item in resource.blocker_refs} == {
+        "asset.blocker.registry_upgrade_required",
+    }
+    assert "must be upgraded to Registry v1" in resource.blockers[0]
 
 
 def test_remote_content_path_rejects_ancestor_symlink_escape(

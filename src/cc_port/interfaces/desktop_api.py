@@ -384,12 +384,6 @@ def _require_trusted_desktop_action(action: str) -> None:
 
 
 def _trusted_desktop_parent() -> bool:
-    image = _parent_process_image()
-    if image is None:
-        return False
-    name = image.name.casefold()
-    if name not in {"cc-port-desktop", "cc-port-desktop.exe"}:
-        return False
     if not getattr(sys, "frozen", False):
         # Source-tree Python processes are never an approval authority. Tests
         # and desktop development must explicitly replace this narrow helper.
@@ -403,10 +397,34 @@ def _trusted_desktop_parent() -> bool:
         return False
     try:
         sidecar = sidecar.resolve(strict=True)
+    except OSError:
+        return False
+    image = _parent_process_image()
+    if _trusted_desktop_image(image, sidecar):
+        return True
+    if image is None or not _same_process_image(image, sidecar):
+        return False
+    # A PyInstaller --onefile sidecar launches a second copy of its own
+    # executable to run Python.  In that production layout the immediate
+    # parent is the exact sidecar binary and the Tauri shell is one level up.
+    # Permit only that single, same-file hop; never walk an arbitrary ancestry.
+    return _trusted_desktop_image(_parent_process_image_of(os.getppid()), sidecar)
+
+
+def _trusted_desktop_image(image: Path | None, sidecar: Path) -> bool:
+    if image is None or image.name.casefold() not in {
+        "cc-port-desktop",
+        "cc-port-desktop.exe",
+    }:
+        return False
+    try:
         image = image.resolve(strict=True)
     except OSError:
         return False
-    return any(_same_process_image(image, candidate) for candidate in _desktop_image_candidates(sidecar))
+    return any(
+        _same_process_image(image, candidate)
+        for candidate in _desktop_image_candidates(sidecar)
+    )
 
 
 def _desktop_image_candidates(sidecar: Path) -> tuple[Path, ...]:
@@ -438,6 +456,93 @@ def _parent_process_image() -> Path | None:
         except OSError:
             return None
 
+    return _windows_process_image(os.getppid())
+
+
+def _parent_process_image_of(process_id: int) -> Path | None:
+    parent_id = _process_parent_id(process_id)
+    if parent_id is None:
+        return None
+    if os.name != "nt":
+        proc_link = Path("/proc") / str(parent_id) / "exe"
+        try:
+            return proc_link.resolve(strict=True)
+        except OSError:
+            return None
+    return _windows_process_image(parent_id)
+
+
+def _process_parent_id(process_id: int) -> int | None:
+    if process_id <= 0:
+        return None
+    if os.name != "nt":
+        try:
+            for line in (Path("/proc") / str(process_id) / "status").read_text(
+                encoding="utf-8",
+            ).splitlines():
+                if line.startswith("PPid:"):
+                    value = int(line.partition(":")[2].strip())
+                    return value if value > 0 else None
+        except (OSError, UnicodeError, ValueError):
+            return None
+        return None
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class ProcessEntry32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        snapshot_processes = 0x00000002
+        invalid_handle = ctypes.c_void_p(-1).value
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ProcessEntry32W),
+        ]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ProcessEntry32W),
+        ]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        snapshot = kernel32.CreateToolhelp32Snapshot(snapshot_processes, 0)
+        if not snapshot or snapshot == invalid_handle:
+            return None
+        try:
+            entry = ProcessEntry32W()
+            entry.dwSize = ctypes.sizeof(entry)
+            if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                return None
+            while True:
+                if int(entry.th32ProcessID) == process_id:
+                    parent_id = int(entry.th32ParentProcessID)
+                    return parent_id if parent_id > 0 else None
+                if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    return None
+        finally:
+            kernel32.CloseHandle(snapshot)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _windows_process_image(process_id: int) -> Path | None:
     try:
         import ctypes
         from ctypes import wintypes
@@ -458,7 +563,7 @@ def _parent_process_image() -> Path | None:
         handle = kernel32.OpenProcess(
             process_query_limited_information,
             False,
-            os.getppid(),
+            process_id,
         )
         if not handle:
             return None

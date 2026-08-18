@@ -198,19 +198,33 @@ All three interfaces share the same Python core. See the [architecture (Chinese)
 
 ### Let an AI use CC Port
 
-In a new build that includes this capability, open **Settings → AI automation** and review an enable plan for an exact profile. After approval, CC Port installs only its packaged `cc-port` Skill into that profile's Skill directory and adds a local `cc-port.exe mcp --stdio` entry to the tool's native configuration. It does not remove the desktop client or rewrite unrelated MCP servers. Schema v1 automatically bootstraps native Windows profiles only. A WSL profile is explicitly blocked at this Skill-plus-MCP registration step instead of treating a Windows process as a verified WSL connection; the existing profile-aware WSL asset inventory and plan/apply workflows remain available.
+AI automation lets Codex, Claude Code, Cursor, and other AI coding tools call the local CC Port service to scan resources, compare local and remote state, upload local resources, or install remote resources into an exact tool profile. It is not unattended background sync: the AI can inspect and prepare a plan automatically, while every write still requires your approval in the CC Port desktop app.
 
-The AI prefers MCP discovery and follows `status → inventory(scan_local=true) → diff → plan → approval → apply → verify`; it uses the single-envelope non-interactive CLI only when MCP is unavailable. Reads and plans can run automatically. A write plan appears under **Pending AI approvals** in the desktop app and cannot apply until the user grants a one-time approval. Approvals expire and can be consumed only once. Any target drift produces a fresh stale plan and invalidates the old authorization. See the [AI agent discovery, approval, and invocation specification (Chinese)](docs/specs/ai-agent-interface.md) for commands, schemas, and security boundaries.
+CC Port does not call a language model, so you do not provide a separate OpenAI, Anthropic, or other model API key. The AI coding tool must already be signed in. Git Credential Manager handles private GitHub repository login, and real secrets used by third-party MCP servers remain machine-local.
 
-Read-only inventory and synchronization advice is provided by the external
+The shortest workflow is:
+
+1. Open **Settings → AI automation**, select **Review enable plan** for the Windows profile that should use CC Port, then approve and enable it.
+2. In the AI chat, enter: `Use CC Port to scan every configured profile and compare local and remote state. Read only; do not modify anything.`
+3. After choosing a direction, enter: `Upload skill:example from codex-windows to the repository. Handle only this item and show the plan first.`
+4. Review and approve it under **Settings → AI automation → Pending AI approvals**, then return to the chat and say: `I approved the plan in the CC Port desktop app. Continue and run a fresh inventory to verify the result.`
+
+If you do not know the profile id or resource key, ask the AI to list them from a fresh inventory. Prefer an explicit direction such as "upload to the repository" or "install into this profile" instead of the ambiguous word "sync." Every approval is bound to the current operation, `plan_hash`, and complete scope, expires automatically, and can be consumed once. State changes require review of a new plan.
+
+During enablement, CC Port installs only its packaged `cc-port` Skill into the selected profile and registers local `cc-port.exe mcp --stdio` in that tool's native configuration. It does not remove the desktop client or rewrite unrelated MCP servers. Schema v1 automatically bootstraps native Windows profiles only; existing WSL inventory and plan/apply workflows remain available. See [Getting started: let an AI manage resources with CC Port](docs/getting-started.en.md#5-let-an-ai-manage-resources-with-cc-port) for the complete beginner workflow and copyable prompts, or the [AI agent discovery, approval, and invocation specification (Chinese)](docs/specs/ai-agent-interface.md) for commands, schemas, and security boundaries.
+
+#### Optional: read-only Advisor
+
+Most users do not need the Advisor. Install the external
 [`cc-port-advisor`](https://github.com/Ling-ye/LingyeAIResources/tree/main/skills/cc-port-advisor)
-Skill. It reads MCP `asset_reconcile_context` (or the strict JSON CLI fallback), covers only
-configured CC Port profiles and saved projects, and never creates a plan, approval, or transfer;
-execution returns to the operational `cc-port` Skill. See the
+Skill only when you want an AI to summarize all differences and recommend next steps without ever
+creating a write plan. It covers only configured CC Port profiles and saved projects and never
+creates a plan, approval, or transfer. When you choose an action, the packaged `cc-port` Skill runs
+a fresh inventory, creates the plan, and waits for desktop approval. See the
 [AI agent interface specification (Chinese)](docs/specs/ai-agent-interface.md) for the complete
 contract and security boundaries.
 
-This is an application-level approval boundary, not a separate Windows security
+Desktop approval is an application-level safety boundary, not a separate Windows security
 principal. The AI host must prevent the agent from directly modifying CC Port's
 local state or impersonating the desktop-sidecar channel. Version 1 does not
 claim an operating-system-level proof of human presence against code that has
