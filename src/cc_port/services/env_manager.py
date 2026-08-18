@@ -833,6 +833,21 @@ def _claude_auto_memory_override(
             path_problem,
             False,
         )
+    wsl_runtime_root = _wsl_unc_runtime_root(candidate, profile=profile)
+    if wsl_runtime_root is not None:
+        runtime_probe = probe_local_path(wsl_runtime_root)
+        if (
+            runtime_probe.path_kind != "regular"
+            or not runtime_probe.ready
+            or runtime_probe.content_path is None
+            or not runtime_probe.content_path.is_dir()
+        ):
+            return (
+                None,
+                "The configured WSL runtime cannot be accessed; automatic memory "
+                "migration is blocked.",
+                False,
+            )
     return candidate, "", True
 
 
@@ -915,6 +930,22 @@ def _claude_memory_override_path(
         "Claude autoMemoryDirectory uses an absolute path from another runtime; "
         "configure a path accessible to this environment before migrating memory.",
     )
+
+
+def _wsl_unc_runtime_root(path: Path, *, profile: PlatformProfile) -> Path | None:
+    """Return the matching WSL UNC share root when it must be reachable from Windows."""
+    if not _host_is_windows() or profile.environment_kind != "wsl":
+        return None
+    normalized = str(path).replace("/", "\\")
+    match = re.match(
+        r"^\\\\(wsl\.localhost|wsl\$)\\([^\\]+)(?:\\|$)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    distro = profile.environment_name.strip()
+    if match is None or not distro or match.group(2).casefold() != distro.casefold():
+        return None
+    return Path(f"\\\\{match.group(1)}\\{match.group(2)}")
 
 
 def _host_is_windows() -> bool:
@@ -1176,7 +1207,10 @@ def _unsafe_path_component_problem(
         probe = probe_local_path(component)
         if probe.health == "missing":
             continue
-        if probe.is_link or not probe.ready:
+        if probe.is_link:
+            link_kind = "symbolic link" if probe.path_kind == "symlink" else probe.path_kind
+            return probe.problem or f"Unsafe {link_kind} path component: {component}"
+        if not probe.ready:
             return probe.problem or f"Unsafe path component: {component}"
     return ""
 

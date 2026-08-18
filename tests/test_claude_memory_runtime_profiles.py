@@ -326,10 +326,11 @@ def test_auto_memory_directory_is_used_as_the_direct_memory_directory(
         json.dumps({"autoMemoryDirectory": str(configured_memory)}),
         encoding="utf-8",
     )
+    profile_name = "claude-windows" if os.name == "nt" else "claude-wsl-test"
     profile = _claude_profile(
-        name="claude-windows",
+        name=profile_name,
         root=claude_root,
-        environment_kind="windows",
+        environment_kind="windows" if os.name == "nt" else "wsl",
     )
 
     result = env_manager.discover_environment(
@@ -340,7 +341,7 @@ def test_auto_memory_directory_is_used_as_the_direct_memory_directory(
     assert result.tools[0].memory_layout == "direct"
     assert result.tools[0].memories_path == configured_memory.resolve()
     expected_name = "claude-memory-" + hashlib.sha256(
-        f"claude-windows\0{os.path.normcase(str(configured_memory.resolve()))}".encode()
+        f"{profile_name}\0{os.path.normcase(str(configured_memory.resolve()))}".encode()
     ).hexdigest()[:12]
     assert [(resource.kind, resource.name_hint, resource.path) for resource in result.resources] == [
         ("memory", expected_name, configured_memory.resolve())
