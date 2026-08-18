@@ -5631,7 +5631,13 @@ def _local_target_ancestor_problem(target: Path) -> str:
         probe = probe_local_path(component)
         if probe.health == "missing":
             continue
-        if probe.is_link or not probe.ready:
+        if probe.is_link:
+            link_kind = "symbolic link" if probe.path_kind == "symlink" else probe.path_kind
+            return probe.problem or (
+                f"The local target ancestor is a {link_kind} and cannot be used safely: "
+                f"{component}"
+            )
+        if not probe.ready:
             return probe.problem or f"The local target ancestor cannot be used safely: {component}"
     return ""
 
