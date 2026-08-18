@@ -7,10 +7,15 @@ from pathlib import Path
 import pytest
 from fastmcp.tools import ToolResult
 
+from cc_port.agent.contracts import AssetReconcileContextWire
 from cc_port.interfaces import mcp_server
 from cc_port.services.approval import (
     approve_approval_request,
     load_approval_request,
+)
+from cc_port.services.asset_reconcile import (
+    AssetReconcileInvalidRequest,
+    AssetReconcileStaleContext,
 )
 from cc_port.services.asset_sync import (
     AssetActionPlan,
@@ -30,6 +35,7 @@ def test_mcp_registers_structured_profile_aware_asset_tools() -> None:
 
     expected = {
         "asset_inventory",
+        "asset_reconcile_context",
         "asset_action_plan",
         "asset_action_apply",
         "asset_batch_plan",
@@ -53,6 +59,152 @@ def test_mcp_registers_structured_profile_aware_asset_tools() -> None:
         "plan_hash",
     } <= tools["asset_batch_apply"].parameters["properties"].keys()
     assert all(tools[name].output_schema is not None for name in expected)
+
+
+def _empty_reconcile_context() -> AssetReconcileContextWire:
+    return AssetReconcileContextWire.model_validate(
+        {
+            "context_schema_version": 1,
+            "context_id": "a" * 64,
+            "generated_at": "2026-08-17T00:00:00Z",
+            "completeness": "complete",
+            "scope": {
+                "mode": "configured-enabled",
+                "arbitrary_filesystem_scan": False,
+                "includes_saved_projects": True,
+                "saved_project_count": 0,
+                "scanned_saved_project_count": 0,
+                "unavailable_saved_project_count": 0,
+                "include_same": False,
+            },
+            "remote": {
+                "configured": False,
+                "freshness": "unavailable",
+                "available": False,
+                "branch": "",
+                "commit": "",
+                "registry_status": "unavailable",
+                "issues": [],
+            },
+            "coverage": [],
+            "summary": {
+                "logical_resource_count": 0,
+                "comparison_count": 0,
+                "profile_count": 0,
+                "kind_counts": {},
+                "status_counts": {},
+                "same_count": 0,
+                "local_only_count": 0,
+                "remote_only_count": 0,
+                "review_count": 0,
+                "blocked_count": 0,
+            },
+            "page": {
+                "offset": 0,
+                "page_size": 100,
+                "returned": 0,
+                "total": 0,
+                "has_more": False,
+                "next_cursor": "",
+            },
+            "resources": [],
+        }
+    )
+
+
+def test_mcp_reconcile_context_is_read_only_and_forwards_strict_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = object()
+    captured: dict[str, object] = {}
+
+    def fake_reconcile(**kwargs: object) -> AssetReconcileContextWire:
+        captured.update(kwargs)
+        return _empty_reconcile_context()
+
+    monkeypatch.setattr(mcp_server, "load_config", lambda: config)
+    monkeypatch.setattr(
+        mcp_server,
+        "build_asset_reconcile_context",
+        fake_reconcile,
+    )
+
+    result = mcp_server.asset_reconcile_context(
+        context_schema_version=1,
+        cursor="",
+        page_size=100,
+        include_same=False,
+    )
+    called = asyncio.run(
+        mcp_server.mcp.call_tool(
+            "asset_reconcile_context",
+            {
+                "context_schema_version": 1,
+                "cursor": "",
+                "page_size": 100,
+                "include_same": False,
+            },
+        )
+    )
+
+    assert captured == {
+        "config": config,
+        "context_schema_version": 1,
+        "cursor": "",
+        "page_size": 100,
+        "include_same": False,
+    }
+    assert result.ok is True
+    assert result.status == "ready"
+    assert result.data == _empty_reconcile_context()
+    assert called.structured_content == result.model_dump(mode="json")
+    tool = {
+        item.name: item for item in asyncio.run(mcp_server.mcp.list_tools())
+    }["asset_reconcile_context"]
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.idempotentHint is True
+    assert tool.annotations.openWorldHint is True
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status", "expected_code"),
+    [
+        (
+            AssetReconcileInvalidRequest(r"Invalid cursor at C:\Users\Alice\private"),
+            "invalid-request",
+            "asset_reconcile_context_invalid",
+        ),
+        (
+            AssetReconcileStaleContext(r"Changed at C:\Users\Alice\private"),
+            "stale-context",
+            "asset_reconcile_context_stale",
+        ),
+    ],
+)
+def test_mcp_reconcile_context_returns_safe_structured_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_status: str,
+    expected_code: str,
+) -> None:
+    monkeypatch.setattr(mcp_server, "load_config", object)
+    monkeypatch.setattr(
+        mcp_server,
+        "build_asset_reconcile_context",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    result = mcp_server.asset_reconcile_context(cursor="opaque")
+
+    assert result.ok is False
+    assert result.status == expected_status
+    assert result.error is not None
+    assert result.error.code == expected_code
+    encoded = json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
+    assert "Alice" not in encoded
+    assert "${PRIVATE_PATH}" in encoded
 
 
 def test_mcp_asset_inventory_forwards_scope_and_preserves_profile_identity(

@@ -69,6 +69,7 @@ SAFE_NONCOMPLETION_STATUSES = frozenset(
         "needs-action",
         "needs-confirmation",
         "partial",
+        "stale-context",
         "stale-plan",
     }
 )
@@ -315,6 +316,223 @@ class AssetInventoryWire(StrictWireModel):
     legacy_write_blocker: str
     resources: list[AssetResourceWire]
     registry_health: RegistryHealthWire | None = None
+
+
+class AssetReconcileIssueWire(StrictWireModel):
+    """One privacy-safe reason attached to a reconciliation fact."""
+
+    code: str = Field(min_length=1)
+    severity: Literal["warning", "blocker"]
+    scope: Literal["scan", "comparison", "upload", "download", "manifest", "diff"]
+    message: str = Field(min_length=1, max_length=512)
+
+
+class AssetManifestEntryWire(StrictWireModel):
+    relative_path: str = Field(min_length=1)
+    size_bytes: int = Field(ge=0)
+    sha256: str = ""
+    content_kind: Literal["text", "binary", "unknown"] = "unknown"
+    hash_status: Literal[
+        "available",
+        "withheld-secret",
+        "unreadable",
+        "unsupported",
+    ]
+
+
+class AssetManifestWire(StrictWireModel):
+    mode: Literal["files", "normalized-config", "reference-metadata", "none"]
+    complete: bool
+    entry_count: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+    entries_truncated: bool
+    tree_sha256: str = ""
+    entries: list[AssetManifestEntryWire] = Field(default_factory=list)
+
+
+class AssetReconcileActionCheckWire(StrictWireModel):
+    action: Literal["upload", "download"]
+    state: Literal["not-applicable", "eligible", "needs-confirmation", "blocked"]
+    required_confirmations: list[
+        Literal["overwrite-unmanaged", "confirm-link-target"]
+    ] = Field(default_factory=list)
+    issues: list[AssetReconcileIssueWire] = Field(default_factory=list)
+
+
+class AssetReconcileBaselineWire(StrictWireModel):
+    status: Literal["unknown"] = "unknown"
+    reason_code: Literal["baseline.not-recorded"] = "baseline.not-recorded"
+
+
+class AssetReconcileComparisonWire(StrictWireModel):
+    profile_id: str = Field(min_length=1)
+    local_instance_id: str = ""
+    comparison_status: Literal[
+        "remote-only",
+        "local-only",
+        "same",
+        "content-different",
+        "metadata-only",
+        "read-only-reference",
+        "target-conflict",
+        "uncomparable",
+    ]
+    metadata_differences: list[str] = Field(default_factory=list)
+    diff_available: bool
+    action_checks: list[AssetReconcileActionCheckWire]
+    baseline: AssetReconcileBaselineWire = Field(default_factory=AssetReconcileBaselineWire)
+    issues: list[AssetReconcileIssueWire] = Field(default_factory=list)
+
+
+class AssetReconcileLocalInstanceWire(StrictWireModel):
+    local_instance_id: str = Field(min_length=1)
+    profile_id: str = Field(min_length=1)
+    tool_id: str
+    environment_kind: str
+    environment_name: str
+    display_name: str
+    description: str = Field(default="", max_length=512)
+    origin: Literal[
+        "expected-target",
+        "discovered-local",
+        "plugin-expected",
+        "plugin-discovered",
+    ]
+    ownership: Literal["managed", "unmanaged", "unknown", "missing"]
+    variant_group: str = ""
+    path_kind: str
+    link_health: str
+    link_target_trusted: bool
+    status: Literal[
+        "remote-only",
+        "local-only",
+        "same",
+        "content-different",
+        "metadata-only",
+        "read-only-reference",
+        "target-conflict",
+        "uncomparable",
+    ]
+    manifest: AssetManifestWire
+    issues: list[AssetReconcileIssueWire] = Field(default_factory=list)
+
+
+class AssetReconcileRemoteWire(StrictWireModel):
+    exists: bool
+    status: Literal["unavailable", "read-only", "present", "missing"]
+    writable: bool
+    read_only: bool
+    commit: str
+    description: str = Field(default="", max_length=512)
+    manifest: AssetManifestWire
+
+
+class AssetReconcilePluginWire(StrictWireModel):
+    track: str = ""
+    platform: str = ""
+    plugin_id: str = ""
+
+
+class AssetReconcileResourceWire(StrictWireModel):
+    resource_key: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    resource_status: Literal[
+        "remote-only",
+        "local-only",
+        "same",
+        "content-different",
+        "metadata-only",
+        "read-only-reference",
+        "target-conflict",
+        "uncomparable",
+    ]
+    local_multiplicity: Literal[
+        "unknown",
+        "missing",
+        "single",
+        "identical-copies",
+        "variants",
+    ]
+    remote: AssetReconcileRemoteWire
+    local_instances: list[AssetReconcileLocalInstanceWire]
+    comparisons: list[AssetReconcileComparisonWire]
+    plugin: AssetReconcilePluginWire | None = None
+    issues: list[AssetReconcileIssueWire] = Field(default_factory=list)
+    issues_truncated: bool = False
+
+
+class AssetReconcileScopeWire(StrictWireModel):
+    mode: Literal["configured-enabled"] = "configured-enabled"
+    arbitrary_filesystem_scan: Literal[False] = False
+    includes_saved_projects: Literal[True] = True
+    saved_project_count: int = Field(ge=0)
+    scanned_saved_project_count: int = Field(ge=0)
+    unavailable_saved_project_count: int = Field(ge=0)
+    include_same: bool
+
+
+class AssetReconcileRemoteContextWire(StrictWireModel):
+    configured: bool
+    freshness: Literal["fresh", "cached", "local-fallback", "unavailable"]
+    available: bool
+    branch: str
+    commit: str
+    registry_status: Literal[
+        "healthy",
+        "issues",
+        "legacy",
+        "missing",
+        "invalid",
+        "unavailable",
+    ]
+    issues: list[AssetReconcileIssueWire] = Field(default_factory=list)
+
+
+class AssetReconcileProfileCoverageWire(StrictWireModel):
+    profile_id: str = Field(min_length=1)
+    tool_id: str
+    environment_kind: str
+    environment_name: str
+    display_name: str
+    configuration_state: Literal["enabled", "disabled"]
+    scan_state: Literal["complete", "partial", "unavailable", "not-scanned-disabled"]
+    issues: list[AssetReconcileIssueWire] = Field(default_factory=list)
+
+
+class AssetReconcileSummaryWire(StrictWireModel):
+    logical_resource_count: int = Field(ge=0)
+    comparison_count: int = Field(ge=0)
+    profile_count: int = Field(ge=0)
+    kind_counts: dict[str, int]
+    status_counts: dict[str, int]
+    same_count: int = Field(ge=0)
+    local_only_count: int = Field(ge=0)
+    remote_only_count: int = Field(ge=0)
+    review_count: int = Field(ge=0)
+    blocked_count: int = Field(ge=0)
+
+
+class AssetReconcilePageWire(StrictWireModel):
+    offset: int = Field(ge=0)
+    page_size: int = Field(ge=1, le=200)
+    returned: int = Field(ge=0)
+    total: int = Field(ge=0)
+    has_more: bool
+    next_cursor: str = ""
+
+
+class AssetReconcileContextWire(StrictWireModel):
+    context_schema_version: Literal[1] = 1
+    context_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generated_at: str
+    completeness: Literal["complete", "partial", "blocked"]
+    scope: AssetReconcileScopeWire
+    remote: AssetReconcileRemoteContextWire
+    coverage: list[AssetReconcileProfileCoverageWire]
+    summary: AssetReconcileSummaryWire
+    page: AssetReconcilePageWire
+    resources: list[AssetReconcileResourceWire]
 
 
 class AssetDiffFileWire(StrictWireModel):

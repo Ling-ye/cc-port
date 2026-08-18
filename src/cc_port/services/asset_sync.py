@@ -79,7 +79,7 @@ from .claude_plugin_installer import (
     marketplace_install_ready,
     set_marketplace_plugin_enabled,
 )
-from .env_manager import EnvDiscoveryResult, discover_environment
+from .env_manager import EnvDiscoveryResult, _profile_scan_available, discover_environment
 from .install_planner import copy_resource_tree
 from .local_path_probe import (
     LocalPathProbe,
@@ -93,7 +93,12 @@ from .local_transaction import (
     resource_hash_path,
 )
 from .mcp_installer import inject_mcp_server, list_mcp_servers
-from .plugin_management import plugin_resource_name
+from .plugin_management import (
+    PLUGIN_PLATFORMS,
+    PluginProjectScanScope,
+    plugin_project_scan_scope,
+    plugin_resource_name,
+)
 from .registry_audit import RegistryHealthSummary, audit_registry_root
 from .resource_commit import commit_resource_changes_unlocked
 from .resource_repo import ensure_structure, resource_root
@@ -567,12 +572,17 @@ def build_asset_inventory(
     remote_snapshot: RemoteSnapshot | None = None,
     scan_global: bool = True,
     project_ids: list[str] | None = None,
+    cleanup_expired_plans: bool = True,
+    enabled_profiles_only: bool = False,
 ) -> AssetInventory:
     """Build logical resources plus internal platform comparison rows without writes."""
     cfg = config or load_config()
     _assert_private_asset_boundaries(cfg)
+    if enabled_profiles_only:
+        cfg = _configured_inventory_scan_config(cfg)
     git_ops.configure_git_executable(cfg.git.executable)
-    _cleanup_expired_asset_plans(cfg)
+    if cleanup_expired_plans:
+        _cleanup_expired_asset_plans(cfg)
     discovery: EnvDiscoveryResult | None = None
     if scan_local and remote_snapshot is None:
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="cc-port-inventory") as executor:
@@ -586,6 +596,7 @@ def build_asset_inventory(
                 cfg,
                 scan_global=scan_global,
                 project_ids=project_ids,
+                configured_profiles_only=enabled_profiles_only,
             )
             snapshot = remote_future.result()
             discovery = local_future.result()
@@ -596,6 +607,7 @@ def build_asset_inventory(
                 cfg,
                 scan_global=scan_global,
                 project_ids=project_ids,
+                configured_profiles_only=enabled_profiles_only,
             )
     if discovery is None:
         # Even a remote-only inventory must resolve adapter settings that alter
@@ -626,6 +638,12 @@ def build_asset_inventory(
     for entry in known_entries:
         _hydrate_remote_metadata(snapshot.root, entry)
     contexts = _platform_contexts(cfg, discovery)
+    if enabled_profiles_only:
+        contexts = {
+            name: context
+            for name, context in contexts.items()
+            if context.configured and context.profile.enabled
+        }
     reference_commits: dict[tuple[str, str], str] = {}
     rows: list[AssetPlatformRow] = []
     seen_local_paths: set[tuple[str, str, str, str]] = set()
@@ -721,6 +739,7 @@ def build_asset_content_diff(
     local_instance_id: str,
     *,
     config: Config | None = None,
+    enabled_profiles_only: bool = False,
 ) -> AssetContentDiff:
     """Build a bounded, read-only remote-to-local content diff on demand."""
     cfg = config or load_config()
@@ -730,6 +749,8 @@ def build_asset_content_diff(
         scan_local=True,
         refresh_remote=False,
         remote_snapshot=snapshot,
+        cleanup_expired_plans=False,
+        enabled_profiles_only=enabled_profiles_only,
     )
     matching_rows = [row for row in inventory.rows if row.resource_key == resource_key]
     if not matching_rows:
@@ -875,39 +896,62 @@ def _asset_diff_collect_files(
     *,
     include_excluded: bool = False,
 ) -> tuple[dict[str, _AssetDiffBlob], bool]:
-    if root.is_symlink():
-        raise ValueError("Symbolic-link content cannot be compared safely.")
+    root_probe = probe_local_path(root)
+    if (
+        not root_probe.ready
+        or root_probe.content_path is None
+        or root_probe.path_kind != "regular"
+    ):
+        raise ValueError("Link, reparse-point, or unreadable content cannot be compared safely.")
+    root = root_probe.content_path
     if root.is_file():
         blob = _asset_diff_read_file(root)
         return {root.name: blob}, blob.truncated
 
     files: dict[str, _AssetDiffBlob] = {}
     truncated = False
-    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+    walk_errors: list[OSError] = []
+    for directory, dirnames, filenames in os.walk(
+        root,
+        followlinks=False,
+        onerror=walk_errors.append,
+    ):
         current = Path(directory)
-        dirnames[:] = sorted(
-            name
-            for name in dirnames
-            if not (current / name).is_symlink()
-            and (
-                include_excluded
-                or not is_resource_path_excluded((current / name).relative_to(root))
-            )
-        )
+        safe_directories: list[str] = []
+        for name in sorted(dirnames):
+            candidate = current / name
+            relative = candidate.relative_to(root)
+            probe = probe_local_path(candidate)
+            if (
+                probe.path_kind != "regular"
+                or not probe.ready
+                or probe.content_path is None
+            ):
+                raise ValueError("Nested link or reparse-point content cannot be compared safely.")
+            if include_excluded or not is_resource_path_excluded(relative):
+                safe_directories.append(name)
+        dirnames[:] = safe_directories
         for name in sorted(filenames):
             item = current / name
             relative = item.relative_to(root)
+            probe = probe_local_path(item)
             if (
-                not item.is_file()
-                or item.is_symlink()
+                probe.path_kind != "regular"
+                or not probe.ready
+                or probe.content_path is None
+                or not probe.content_path.is_file()
                 or (not include_excluded and is_resource_path_excluded(relative))
             ):
-                continue
+                if not include_excluded and is_resource_path_excluded(relative):
+                    continue
+                raise ValueError("Nested link or unreadable content cannot be compared safely.")
             if len(files) >= ASSET_DIFF_MAX_FILES:
                 return files, True
-            blob = _asset_diff_read_file(item)
+            blob = _asset_diff_read_file(probe.content_path)
             files[relative.as_posix()] = blob
             truncated = truncated or blob.truncated
+    if walk_errors:
+        raise ValueError("The resource tree cannot be read safely.")
     return files, truncated
 
 
@@ -982,13 +1026,22 @@ def _discover_inventory_environment(
     *,
     scan_global: bool,
     project_ids: list[str] | None,
+    configured_profiles_only: bool = False,
 ) -> EnvDiscoveryResult:
     if (
-        cfg.plugin_projects
+        configured_profiles_only
+        or cfg.plugin_projects
         or not scan_global
         or project_ids is not None
         or _requires_configured_resource_discovery(cfg)
     ):
+        if configured_profiles_only:
+            return discover_environment(
+                config=cfg,
+                scan_global=scan_global,
+                project_ids=project_ids,
+                configured_profiles_only=True,
+            )
         return discover_environment(
             config=cfg,
             scan_global=scan_global,
@@ -997,6 +1050,38 @@ def _discover_inventory_environment(
     # Preserve the public zero-argument discovery seam used by existing
     # integrations while configured scan filters remain opt-in.
     return discover_environment()
+
+
+def _configured_inventory_scan_config(cfg: Config) -> Config:
+    """Remove unsafe or unreachable saved projects from configured-only reads."""
+
+    project_scope = _configured_plugin_project_scan_scope(cfg)
+    if project_scope.scanned_count == len(cfg.plugin_projects):
+        return cfg
+    return replace(cfg, plugin_projects=list(project_scope.projects))
+
+
+def _configured_plugin_project_scan_scope(cfg: Config) -> PluginProjectScanScope:
+    """Return safe saved projects reachable through an enabled runtime."""
+
+    runtime_available = False
+    for profile in cfg.platforms.profiles:
+        if not profile.enabled or profile.effective_tool_id not in PLUGIN_PLATFORMS:
+            continue
+        try:
+            available, _problem = _profile_scan_available(
+                profile,
+                runtime_home=Path.home(),
+            )
+        except Exception:  # fail closed for an adapter-specific environment probe
+            available = False
+        if available:
+            runtime_available = True
+            break
+    return plugin_project_scan_scope(
+        cfg,
+        runtime_available=runtime_available,
+    )
 
 
 def _requires_configured_resource_discovery(cfg: Config) -> bool:

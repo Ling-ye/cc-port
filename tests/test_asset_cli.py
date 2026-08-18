@@ -7,6 +7,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
+from cc_port.agent.contracts import AssetReconcileContextWire
 from cc_port.core.config import Config
 from cc_port.core.models import RegistryItem
 from cc_port.core.platforms import PlatformProfile, PlatformsConfig
@@ -19,6 +20,10 @@ from cc_port.services.ai_integration import (
     AiIntegrationVerification,
 )
 from cc_port.services.approval import ApprovalRequest, approve_approval_request
+from cc_port.services.asset_reconcile import (
+    AssetReconcileInvalidRequest,
+    AssetReconcileStaleContext,
+)
 from cc_port.services.asset_sync import (
     AssetActionPlan,
     AssetActionResult,
@@ -31,6 +36,61 @@ from cc_port.services.asset_sync import (
 from cc_port.services.resource_repo import ResourceRepoInfo
 
 runner = CliRunner()
+
+
+def _empty_asset_reconcile_context(
+    *,
+    page_size: int = 100,
+    include_same: bool = False,
+) -> AssetReconcileContextWire:
+    return AssetReconcileContextWire.model_validate(
+        {
+            "context_schema_version": 1,
+            "context_id": "a" * 64,
+            "generated_at": "2026-08-17T00:00:00Z",
+            "completeness": "complete",
+            "scope": {
+                "mode": "configured-enabled",
+                "arbitrary_filesystem_scan": False,
+                "includes_saved_projects": True,
+                "saved_project_count": 0,
+                "scanned_saved_project_count": 0,
+                "unavailable_saved_project_count": 0,
+                "include_same": include_same,
+            },
+            "remote": {
+                "configured": False,
+                "freshness": "unavailable",
+                "available": False,
+                "branch": "",
+                "commit": "",
+                "registry_status": "unavailable",
+                "issues": [],
+            },
+            "coverage": [],
+            "summary": {
+                "logical_resource_count": 0,
+                "comparison_count": 0,
+                "profile_count": 0,
+                "kind_counts": {},
+                "status_counts": {},
+                "same_count": 0,
+                "local_only_count": 0,
+                "remote_only_count": 0,
+                "review_count": 0,
+                "blocked_count": 0,
+            },
+            "page": {
+                "offset": 0,
+                "page_size": page_size,
+                "returned": 0,
+                "total": 0,
+                "has_more": False,
+                "next_cursor": "",
+            },
+            "resources": [],
+        }
+    )
 
 
 def _integration_target(*, actions: list[str] | None = None) -> AiIntegrationTarget:
@@ -85,6 +145,139 @@ def _approval(status: str = "pending") -> ApprovalRequest:
         created_at="2026-08-11T00:00:00+00:00",
         expires_at="2026-08-11T01:00:00+00:00",
     )
+
+
+def test_asset_reconcile_cli_forwards_strict_request_and_prints_one_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = object()
+    captured: dict[str, object] = {}
+
+    def fake_reconcile(**kwargs: object) -> AssetReconcileContextWire:
+        captured.update(kwargs)
+        return _empty_asset_reconcile_context(page_size=200, include_same=True)
+
+    monkeypatch.setattr(cli, "_load", lambda: config)
+    monkeypatch.setattr(cli, "build_asset_reconcile_context", fake_reconcile)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--non-interactive",
+            "asset",
+            "reconcile",
+            "--context-schema-version",
+            "1",
+            "--page-size",
+            "200",
+            "--include-same",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["contract_version"] == 1
+    assert payload["ok"] is True
+    assert payload["status"] == "ready"
+    assert payload["data"]["context_schema_version"] == 1
+    assert payload["data"]["page"]["page_size"] == 200
+    assert payload["data"]["scope"]["include_same"] is True
+    assert captured == {
+        "config": config,
+        "context_schema_version": 1,
+        "cursor": "",
+        "page_size": 200,
+        "include_same": True,
+    }
+    assert "\x1b[" not in result.stdout
+    document, end = json.JSONDecoder().raw_decode(result.stdout)
+    assert document == payload
+    assert result.stdout[end:].strip() == ""
+
+
+def test_asset_reconcile_cli_rejects_non_decimal_page_size_with_one_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "build_asset_reconcile_context",
+        lambda **_kwargs: pytest.fail("invalid CLI input must fail before the service"),
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--non-interactive",
+            "asset",
+            "reconcile",
+            "--page-size",
+            "abc",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["contract_version"] == 1
+    assert payload["ok"] is False
+    assert payload["status"] == "invalid-request"
+    assert payload["data"] is None
+    assert payload["error"]["code"] == "asset_reconcile_context_invalid"
+    assert payload["error"]["message"] == "page_size must be an ASCII decimal integer."
+    assert "\x1b[" not in result.stdout
+    document, end = json.JSONDecoder().raw_decode(result.stdout)
+    assert document == payload
+    assert result.stdout[end:].strip() == ""
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_exit", "expected_status", "expected_code"),
+    [
+        (
+            AssetReconcileInvalidRequest(r"Invalid cursor at C:\Users\Alice\private"),
+            2,
+            "invalid-request",
+            "asset_reconcile_context_invalid",
+        ),
+        (
+            AssetReconcileStaleContext(r"Changed at C:\Users\Alice\private"),
+            3,
+            "stale-context",
+            "asset_reconcile_context_stale",
+        ),
+    ],
+)
+def test_asset_reconcile_cli_returns_stable_safe_failure_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit: int,
+    expected_status: str,
+    expected_code: str,
+) -> None:
+    monkeypatch.setattr(cli, "_load", Config)
+    monkeypatch.setattr(
+        cli,
+        "build_asset_reconcile_context",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    result = runner.invoke(
+        cli.app,
+        ["--non-interactive", "asset", "reconcile", "--cursor", "opaque", "--json"],
+    )
+
+    assert result.exit_code == expected_exit
+    payload = json.loads(result.stdout)
+    assert payload["contract_version"] == 1
+    assert payload["ok"] is False
+    assert payload["status"] == expected_status
+    assert payload["error"]["code"] == expected_code
+    assert "Alice" not in result.stdout
+    assert "${PRIVATE_PATH}" in result.stdout
+    document, end = json.JSONDecoder().raw_decode(result.stdout)
+    assert document == payload
+    assert result.stdout[end:].strip() == ""
 
 
 def test_collect_cli_forwards_portable_mcp_config(monkeypatch) -> None:
@@ -274,11 +467,17 @@ def test_asset_cli_list_plan_and_apply(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_asset_cli_diff_uses_machine_envelope(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "_load", Config)
-    monkeypatch.setattr(
-        cli,
-        "build_asset_content_diff",
-        lambda resource_key, local_instance_id, **_kwargs: AssetContentDiff(
+    config = object()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "_load", lambda: config)
+
+    def fake_diff(
+        resource_key: str,
+        local_instance_id: str,
+        **kwargs: object,
+    ) -> AssetContentDiff:
+        captured.update(kwargs)
+        return AssetContentDiff(
             resource_key=resource_key,
             local_instance_id=local_instance_id,
             platform="codex.win",
@@ -294,7 +493,12 @@ def test_asset_cli_diff_uses_machine_envelope(monkeypatch) -> None:
             deleted_files=0,
             modified_files=1,
             binary_files=0,
-        ),
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "build_asset_content_diff",
+        fake_diff,
     )
 
     result = runner.invoke(
@@ -319,6 +523,7 @@ def test_asset_cli_diff_uses_machine_envelope(monkeypatch) -> None:
     assert payload["data"]["modified_files"] == 1
     assert "ghp_1234567890abcdef" not in result.stdout
     assert "${SECRET_VALUE}" in result.stdout
+    assert captured == {"config": config, "enabled_profiles_only": True}
 
 
 def test_non_interactive_asset_apply_never_approves_pending_request(

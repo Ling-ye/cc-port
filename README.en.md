@@ -202,6 +202,14 @@ In a new build that includes this capability, open **Settings → AI automation*
 
 The AI prefers MCP discovery and follows `status → inventory(scan_local=true) → diff → plan → approval → apply → verify`; it uses the single-envelope non-interactive CLI only when MCP is unavailable. Reads and plans can run automatically. A write plan appears under **Pending AI approvals** in the desktop app and cannot apply until the user grants a one-time approval. Approvals expire and can be consumed only once. Any target drift produces a fresh stale plan and invalidates the old authorization. See the [AI agent discovery, approval, and invocation specification (Chinese)](docs/specs/ai-agent-interface.md) for commands, schemas, and security boundaries.
 
+Read-only inventory and synchronization advice is provided by the external
+[`cc-port-advisor`](https://github.com/Ling-ye/LingyeAIResources/tree/main/skills/cc-port-advisor)
+Skill. It reads MCP `asset_reconcile_context` (or the strict JSON CLI fallback), covers only
+configured CC Port profiles and saved projects, and never creates a plan, approval, or transfer;
+execution returns to the operational `cc-port` Skill. See the
+[AI agent interface specification (Chinese)](docs/specs/ai-agent-interface.md) for the complete
+contract and security boundaries.
+
 This is an application-level approval boundary, not a separate Windows security
 principal. The AI host must prevent the agent from directly modifying CC Port's
 local state or impersonating the desktop-sidecar channel. Version 1 does not

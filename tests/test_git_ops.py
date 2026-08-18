@@ -9,6 +9,24 @@ import pytest
 from cc_port.infrastructure import git_ops
 
 
+def test_internal_git_run_never_inherits_protocol_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_subprocess_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_ops, "_git_executable", lambda: "git")
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_subprocess_run)
+
+    git_ops._run(["status"], cwd=tmp_path)
+
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
 def test_remote_branches_parses_default_and_named_branches(monkeypatch) -> None:
     output = "\n".join(
         [

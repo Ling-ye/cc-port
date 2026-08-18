@@ -197,6 +197,12 @@ Cursor 预设把 Prompt `<name>` 安装为全局自定义命令
 
 AI 首选 MCP discovery，并执行 `status → inventory(scan_local=true) → diff → plan → approval → apply → verify`；MCP 不可用时才回退到单 JSON envelope 的非交互 CLI。读和 plan 可自动完成，写计划进入桌面的“待处理 AI 审批”，用户单次批准后才能 apply。审批会过期且只能消费一次；目标变化返回新的 stale plan，旧审批自动失效。完整命令、schema 和安全边界见 [AI Agent 自动发现、审批与调用规格](docs/specs/ai-agent-interface.md)。
 
+只读盘点和同步建议由外部
+[`cc-port-advisor`](https://github.com/Ling-ye/LingyeAIResources/tree/main/skills/cc-port-advisor)
+Skill 提供。它读取 MCP `asset_reconcile_context`（或严格 JSON CLI fallback），只检查 CC Port 已配置的
+profile 与保存项目，不创建计划、审批或传输；执行仍交回操作型 `cc-port` Skill。完整接口和安全边界见
+[AI Agent 自动发现、审批与调用规格](docs/specs/ai-agent-interface.md)。
+
 这是应用层审批边界，不是 Windows 上的独立安全主体：AI 宿主必须限制 agent 直接改写 CC Port 本机 state 目录或伪造桌面 sidecar 调用。对与人类用户拥有同等、不受限制文件与进程权限的代码执行者，当前 v1 不声称提供操作系统级“人类在场”证明。
 
 ## 当前限制

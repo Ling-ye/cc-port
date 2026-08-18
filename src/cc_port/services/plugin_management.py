@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from ..core.config import (
 )
 from ..core.platforms import PlatformProfile
 from ..infrastructure import git_ops
+from .local_path_probe import probe_local_path
 from .publisher import _slug
 
 PLUGIN_PLATFORMS = {"codex", "claude-code", "opencode"}
@@ -87,6 +89,19 @@ class PluginProjectSummary:
     subdir: str
     portable: bool
     exists: bool
+
+
+@dataclass(frozen=True)
+class PluginProjectScanScope:
+    """Saved projects that are safe and in scope for one discovery pass."""
+
+    projects: tuple[PluginProjectConfig, ...]
+    total_count: int
+    unavailable_count: int
+
+    @property
+    def scanned_count(self) -> int:
+        return len(self.projects)
 
 
 def normalize_git_identity(value: str) -> str:
@@ -190,25 +205,76 @@ def plugin_resource_name(platform: str, origin_type: str, source_id: str) -> str
     return f"{raw[:55].rstrip('-')}-{digest}"
 
 
+def plugin_project_scan_scope(
+    config: Config,
+    *,
+    project_ids: list[str] | None = None,
+    runtime_available: bool = True,
+) -> PluginProjectScanScope:
+    """Select saved project roots without following links or reparse points.
+
+    This is shared by discovery and the reconciliation projection so a project
+    excluded from the read-only context cannot be scanned later by its diff
+    request.  ``runtime_available`` is false when configured-only discovery has
+    no reachable compatible profile; in that case every selected project is
+    reported unavailable and none is probed by an adapter.
+    """
+
+    selected = list(config.plugin_projects)
+    if project_ids is not None:
+        allowed = set(project_ids)
+        selected = [item for item in selected if item.id in allowed]
+    total_count = len(selected)
+    if not runtime_available:
+        return PluginProjectScanScope(
+            projects=(),
+            total_count=total_count,
+            unavailable_count=total_count,
+        )
+
+    safe_projects: list[PluginProjectConfig] = []
+    for project in selected:
+        probe = probe_local_path(project.path_value)
+        if (
+            not probe.ready
+            or probe.content_path is None
+            or probe.path_kind != "regular"
+            or not probe.content_path.is_dir()
+        ):
+            continue
+        try:
+            with os.scandir(probe.content_path) as entries:
+                next(entries, None)
+        except OSError:
+            continue
+        safe_projects.append(project)
+    return PluginProjectScanScope(
+        projects=tuple(safe_projects),
+        total_count=total_count,
+        unavailable_count=total_count - len(safe_projects),
+    )
+
+
 def discover_plugins(
     config: Config,
     *,
     home: Path | None = None,
     scan_global: bool = True,
     project_ids: list[str] | None = None,
+    configured_profiles_only: bool = False,
 ) -> list[DiscoveredPlugin]:
     effective_home = home or Path.home()
-    selected = config.plugin_projects
-    if project_ids is not None:
-        allowed = set(project_ids)
-        selected = [item for item in selected if item.id in allowed]
-
     found: list[DiscoveredPlugin] = []
     runtime_profiles = [
         profile
         for profile in config.platforms.enabled()
         if profile.effective_tool_id in PLUGIN_PLATFORMS
     ]
+    project_scope = plugin_project_scan_scope(
+        config,
+        project_ids=project_ids,
+        runtime_available=bool(runtime_profiles) or not configured_profiles_only,
+    )
     if scan_global:
         if runtime_profiles:
             for profile in runtime_profiles:
@@ -218,15 +284,12 @@ def discover_plugins(
                         runtime_home=effective_home,
                     )
                 )
-        else:
+        elif not configured_profiles_only:
             found.extend(_discover_codex(effective_home))
             found.extend(_discover_claude(effective_home))
             found.extend(_discover_opencode(effective_home))
         found.extend(_discover_configured_content_plugins(config, home=effective_home))
-    for project in selected:
-        root = project.path_value
-        if not root.is_dir():
-            continue
+    for project in project_scope.projects:
         if runtime_profiles:
             for profile in runtime_profiles:
                 found.extend(
@@ -236,7 +299,7 @@ def discover_plugins(
                         project=project,
                     )
                 )
-        else:
+        elif not configured_profiles_only:
             found.extend(_discover_codex(effective_home, project=project))
             found.extend(_discover_claude(effective_home, project=project))
             found.extend(_discover_opencode(effective_home, project=project))

@@ -41,6 +41,7 @@ CORE_TOOLS = {
     "cc_port_status",
     "cc_port_doctor",
     "asset_inventory",
+    "asset_reconcile_context",
     "asset_content_diff",
     "asset_action_plan",
     "asset_action_apply",
@@ -342,7 +343,7 @@ def test_diff_registry_and_operation_tools_reuse_services(
     assert captured["diff"] == (
         "memory:demo",
         "claude:memory:demo",
-        {"config": config},
+        {"config": config, "enabled_profiles_only": True},
     )
     assert planned.data.plan_hash == repair_hash
     approval = load_approval_request(planned.data.approval_id)

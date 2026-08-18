@@ -75,6 +75,11 @@ from ..services.approval import (
     invalidate_approval_request,
     load_approval_request,
 )
+from ..services.asset_reconcile import (
+    AssetReconcileInvalidRequest,
+    AssetReconcileStaleContext,
+    build_asset_reconcile_context,
+)
 from ..services.asset_sync import (
     AssetBatchChoice,
     add_plugin_reference,
@@ -1746,6 +1751,107 @@ def cmd_asset_list(
         console.print(f"[red]Remote writes blocked:[/red] {inventory.legacy_write_blocker}")
 
 
+@asset_app.command("reconcile")
+def cmd_asset_reconcile(
+    context_schema_version: str = typer.Option(
+        "1",
+        "--context-schema-version",
+        help="Structured reconciliation context schema version.",
+    ),
+    cursor: str = typer.Option("", "--cursor", help="Opaque continuation cursor."),
+    page_size: str = typer.Option(
+        "100",
+        "--page-size",
+        help="Resources per page (1-200).",
+    ),
+    include_same: bool = typer.Option(
+        False,
+        "--include-same",
+        help="Include resources whose local and remote content already match.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Build fresh read-only local/remote context for an advisor agent."""
+
+    try:
+        if (
+            not context_schema_version
+            or len(context_schema_version) > 10
+            or not context_schema_version.isascii()
+            or not context_schema_version.isdecimal()
+        ):
+            raise AssetReconcileInvalidRequest(
+                "context_schema_version must be an ASCII decimal integer."
+            )
+        if (
+            not page_size
+            or len(page_size) > 10
+            or not page_size.isascii()
+            or not page_size.isdecimal()
+        ):
+            raise AssetReconcileInvalidRequest("page_size must be an ASCII decimal integer.")
+        context = build_asset_reconcile_context(
+            config=_load(),
+            context_schema_version=int(context_schema_version),
+            cursor=cursor,
+            page_size=int(page_size),
+            include_same=include_same,
+        )
+    except AssetReconcileInvalidRequest as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_reconcile_context_invalid",
+            message=str(exc),
+            status="invalid-request",
+            exit_code=WIRE_EXIT_INVALID_REQUEST,
+        )
+    except AssetReconcileStaleContext as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_reconcile_context_stale",
+            message=str(exc),
+            status="stale-context",
+            exit_code=WIRE_EXIT_SAFE_NONCOMPLETION,
+        )
+    except Exception as exc:
+        _exit_wire_error(
+            json_output=json_output,
+            code="asset_reconcile_context_failed",
+            message=f"Asset reconciliation failed: {exc}",
+        )
+
+    if json_output:
+        _print_wire_success(context, status="ready")
+        return
+
+    table = Table(title="CC Port asset reconciliation")
+    table.add_column("Resource", style="bold")
+    table.add_column("Status")
+    table.add_column("Comparisons")
+    table.add_column("Blocked")
+    for resource in context.resources:
+        table.add_row(
+            resource.resource_key,
+            resource.resource_status,
+            str(len(resource.comparisons)),
+            "yes"
+            if any(
+                check.state == "blocked"
+                for comparison in resource.comparisons
+                for check in comparison.action_checks
+            )
+            else "no",
+        )
+    console.print(table)
+    console.print(
+        f"Context {context.context_id[:12]}: "
+        f"{context.page.returned}/{context.page.total} resources, "
+        f"completeness={context.completeness}"
+    )
+    if context.page.has_more:
+        console.print("More resources are available; rerun with --cursor and the returned token.")
+
+
 @asset_app.command("diff")
 def cmd_asset_diff(
     resource_key: str = typer.Option(..., "--resource", "-r", help="Logical resource key."),
@@ -1763,6 +1869,7 @@ def cmd_asset_diff(
             resource_key,
             local_instance_id,
             config=_load(),
+            enabled_profiles_only=_NON_INTERACTIVE,
         )
     except Exception as exc:
         _exit_wire_error(

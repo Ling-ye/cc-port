@@ -27,6 +27,7 @@ from ..agent.contracts import (
     AssetBatchResultWire,
     AssetContentDiffWire,
     AssetInventoryWire,
+    AssetReconcileContextWire,
     DoctorCheckWire,
     DoctorReportWire,
     OperationDetailWire,
@@ -63,6 +64,11 @@ from ..services.approval import (
     invalidate_approval_request,
     load_approval_request,
 )
+from ..services.asset_reconcile import (
+    AssetReconcileInvalidRequest,
+    AssetReconcileStaleContext,
+    build_asset_reconcile_context,
+)
 from ..services.asset_sync import (
     AssetActionPlan,
     AssetBatchChoice,
@@ -89,7 +95,8 @@ from ..services.resource_manager import resource_install_plan
 
 _SERVER_INSTRUCTIONS = """\
 Use the safe CC Port workflow for automation: call cc_port_status, then
-asset_inventory with scan_local=true. Inspect asset_content_diff when content
+asset_reconcile_context for read-only advice or asset_inventory with
+scan_local=true for an operation. Inspect asset_content_diff when content
 differs, create an asset_action_plan or asset_batch_plan, review blockers and
 warnings, and only then call the matching apply tool with the unchanged
 operation_id, plan_hash, and approval_id after the desktop marks that exact
@@ -145,6 +152,7 @@ _RECOMMENDED_TOOLS = [
     "cc_port_status",
     "cc_port_doctor",
     "asset_inventory",
+    "asset_reconcile_context",
     "asset_content_diff",
     "asset_action_plan",
     "asset_action_apply",
@@ -847,6 +855,51 @@ def asset_inventory(
 
 
 @mcp.tool(
+    title="Build read-only asset reconciliation context",
+    annotations=_READ_REMOTE,
+    meta={"cc_port": {"preferred": True, "phase": "advise"}},
+)
+@_tool_boundary("asset_reconcile_context", retryable=True)
+def asset_reconcile_context(
+    context_schema_version: Literal[1] = 1,
+    cursor: str = "",
+    page_size: Annotated[int, Field(ge=1, le=200)] = 100,
+    include_same: bool = False,
+) -> WireEnvelope[AssetReconcileContextWire]:
+    """Return privacy-minimized local/remote facts for AI-assisted advice.
+
+    The first page always performs a fresh remote refresh and scans every
+    enabled configured profile plus saved projects. Continuation pages repeat
+    that scan and fail with ``stale-context`` if any bound fact changed. This
+    tool never creates a plan, approval, operation, or write transaction.
+    """
+
+    try:
+        value = build_asset_reconcile_context(
+            config=load_config(),
+            context_schema_version=context_schema_version,
+            cursor=cursor,
+            page_size=page_size,
+            include_same=include_same,
+        )
+    except AssetReconcileInvalidRequest as exc:
+        message = to_public_wire_value(redact_secret_text(str(exc)))
+        return wire_failure(
+            "asset_reconcile_context_invalid",
+            message if isinstance(message, str) else "The reconciliation request is invalid.",
+            status="invalid-request",
+        )
+    except AssetReconcileStaleContext as exc:
+        message = to_public_wire_value(redact_secret_text(str(exc)))
+        return wire_failure(
+            "asset_reconcile_context_stale",
+            message if isinstance(message, str) else "The reconciliation context is stale.",
+            status="stale-context",
+        )
+    return wire_success(value, status="ready")
+
+
+@mcp.tool(
     title="Compare remote and one local asset instance",
     annotations=_READ_LOCAL,
     meta={"cc_port": {"preferred": True, "phase": "inspect"}},
@@ -861,6 +914,7 @@ def asset_content_diff(
         resource_key,
         local_instance_id,
         config=load_config(),
+        enabled_profiles_only=True,
     )
     data = AssetContentDiffWire.model_validate(to_public_wire_value(value))
     return wire_success(data, status="ready")

@@ -334,6 +334,7 @@ def _run_git_inspection(executable: str, args: list[str]) -> subprocess.Complete
         [executable, *args],
         check=False,
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         timeout=5,
         env={**os.environ, **_NO_PROMPT_ENV},
@@ -491,11 +492,14 @@ def _run(
     if extra_env:
         env.update(extra_env)
     try:
+        # MCP stdio owns the parent process stdin as a long-lived protocol
+        # pipe. Git operations are non-interactive and must never inherit it.
         return subprocess.run(
             [_git_executable(), *args],
             cwd=str(cwd) if cwd else None,
             check=check,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             errors="replace",
             env=env,
@@ -1141,6 +1145,7 @@ def _run_remote_branch_query(
         ],
         check=False,
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         timeout=timeout,
         env=env,
@@ -1213,6 +1218,7 @@ def probe_remote_binding(
                 ],
                 check=False,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 timeout=write_timeout,
                 env=env,
@@ -1351,6 +1357,7 @@ def probe_remote(
         result = subprocess.run(
             [_git_executable(), "ls-remote", "--exit-code", url, ref],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=timeout,
             env=env,
@@ -1372,6 +1379,7 @@ def _probe_remote_commit(
     executable = _git_executable()
     run_options = {
         "capture_output": True,
+        "stdin": subprocess.DEVNULL,
         "text": True,
         "timeout": timeout,
         "env": env,

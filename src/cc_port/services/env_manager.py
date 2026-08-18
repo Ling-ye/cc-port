@@ -115,6 +115,7 @@ def discover_environment(
     config: Config | None = None,
     scan_global: bool = True,
     project_ids: list[str] | None = None,
+    configured_profiles_only: bool = False,
 ) -> EnvDiscoveryResult:
     """Discover local tools, logical resource candidates, and MCP entries without writing."""
     effective_home = home or Path.home()
@@ -174,6 +175,7 @@ def discover_environment(
         home=effective_home,
         scan_global=scan_global,
         project_ids=project_ids,
+        configured_profiles_only=configured_profiles_only,
     )
     profiles_by_name = {profile.name: profile for profile in profiles}
     for plugin in plugins:
@@ -684,9 +686,12 @@ def _discover_mcp_servers(
             if identity in seen:
                 continue
             seen.add(identity)
+            identity_hash = hashlib.sha256(
+                "\0".join(identity).encode("utf-8")
+            ).hexdigest()[:24]
             servers.append(
                 DiscoveredMcpServer(
-                    id=f"{tool.id}:{path}:{name}",
+                    id=f"{tool.id}:mcp:{identity_hash}",
                     tool=tool.id,
                     name=normalized_name,
                     config_path=path,
