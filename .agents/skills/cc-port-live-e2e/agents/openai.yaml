@@ -1,0 +1,4 @@
+interface:
+  display_name: "CC Port Live E2E"
+  short_description: "Validate packaged GitHub sync and native remaining scope"
+  default_prompt: "Use $cc-port-live-e2e to validate the CC Port package against private GitHub and run the separate native remaining-scope checks."

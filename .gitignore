@@ -195,6 +195,11 @@ cython_debug/
 # CC Port private resource data lives in a separate private repository.
 registry.yaml
 skills/
+!.agents/skills/
+!.agents/skills/cc-port-live-e2e/
+!.agents/skills/cc-port-live-e2e/**
+.agents/skills/cc-port-live-e2e/scripts/__pycache__/
+.agents/skills/cc-port-live-e2e/scripts/*.py[cod]
 rules/
 prompts/
 mcp/
