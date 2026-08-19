@@ -7,6 +7,7 @@ the shape of Claude's entire local state directory:
 * https://code.claude.com/docs/en/settings
 * https://code.claude.com/docs/en/installation
 * https://developers.openai.com/codex/guides/agents-md/
+* https://learn.chatgpt.com/docs/customization/memories
 
 In particular, ``autoMemoryDirectory`` names the memory directory itself,
 while the default layout stores one memory directory below each project key.
@@ -446,6 +447,106 @@ def test_codex_global_agents_override_takes_priority(tmp_path: Path) -> None:
         )
     ]
     assert all(resource.path != base.resolve() for resource in result.resources)
+
+
+def test_codex_local_memory_is_discovered_without_private_git_history(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    memories = home / ".codex" / "memories"
+    git_dir = memories / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (memories / "MEMORY.md").write_text("# Durable entries\n", encoding="utf-8")
+    (memories / "memory_summary.md").write_text("# Summary\n", encoding="utf-8")
+    profile = PlatformProfile(
+        name="codex-windows",
+        tool_id="codex",
+        environment_kind="windows",
+        home_dir=str(home),
+        memories_dir="~/.codex/memories",
+        memory_layout="direct",
+    )
+
+    result = env_manager.discover_environment(
+        home=tmp_path / "unused",
+        config=_config(profile),
+    )
+
+    assert result.tools[0].memories_path == memories.resolve()
+    assert result.tools[0].memory_layout == "direct"
+    memory = next(resource for resource in result.resources if resource.kind == "memory")
+    assert memory.name_hint == "codex-memory"
+    assert memory.path == memories.resolve()
+    assert memory.status == "ready"
+    assert not memory.blockers
+    assert not any("first 200 lines" in warning for warning in memory.warnings)
+    validate_item(memories, "memory", source_tool_id="codex")
+    with pytest.raises(SkillValidationError, match="only Markdown memory files"):
+        validate_item(memories, "memory")
+
+
+def test_claude_agents_compatibility_file_is_visible_but_not_mislabelled_native(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text(
+        "@AGENTS.md\n\n# Claude-specific guidance\n",
+        encoding="utf-8",
+    )
+    agents = claude / "AGENTS.md"
+    agents.write_text("# Shared guidance\n", encoding="utf-8")
+    profile = PlatformProfile(
+        name="claude-windows",
+        tool_id="claude-code",
+        environment_kind="windows",
+        home_dir=str(home),
+        instructions_path="~/.claude/CLAUDE.md",
+    )
+
+    result = env_manager.discover_environment(
+        home=tmp_path / "unused",
+        config=_config(profile),
+    )
+
+    companion = next(resource for resource in result.resources if resource.path == agents.resolve())
+    assert companion.kind == "instruction"
+    assert companion.name_hint == "claude-agents-compatibility"
+    assert companion.tool_id == "claude-code"
+    assert companion.status == "blocked"
+    assert "does not load AGENTS.md directly" in " ".join(companion.blockers)
+    assert "compatibility dependency" in " ".join(companion.warnings)
+
+
+def test_configured_claude_agents_path_is_blocked_as_compatibility_not_native(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    agents = claude / "AGENTS.md"
+    agents.write_text("# Shared guidance\n", encoding="utf-8")
+    profile = PlatformProfile(
+        name="claude-windows",
+        tool_id="claude-code",
+        environment_kind="windows",
+        home_dir=str(home),
+        instructions_path="~/.claude/AGENTS.md",
+    )
+
+    result = env_manager.discover_environment(
+        home=tmp_path / "unused",
+        config=_config(profile),
+    )
+
+    assert len(result.resources) == 1
+    companion = result.resources[0]
+    assert companion.path == agents.resolve()
+    assert companion.name_hint == "claude-agents-compatibility"
+    assert companion.status == "blocked"
+    assert "does not load AGENTS.md directly" in " ".join(companion.blockers)
 
 
 def test_empty_codex_global_override_falls_back_to_agents(tmp_path: Path) -> None:

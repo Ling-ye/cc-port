@@ -155,14 +155,14 @@ Instruction 与 Memory 的“扫描与登记”仅指已配置 profile 的 envir
 
 | 类型 | Codex | Claude Code | 跨工具规则 |
 | --- | --- | --- | --- |
-| Instruction | 用户级 `AGENTS.override.md` 或 `AGENTS.md` | 用户级 `~/.claude/CLAUDE.md` | 只写回来源工具语义，不在两种格式间自动转换 |
-| Memory | 不支持 Claude auto memory 契约 | 默认 project memory 或 `autoMemoryDirectory` 指定的最终目录 | 只安装到 Claude Code profile，不改名为 Codex 指令 |
+| Instruction | 用户级 `AGENTS.override.md` 或 `AGENTS.md` | 用户级 `~/.claude/CLAUDE.md`；同目录 `AGENTS.md` 仅作为显式 `@AGENTS.md` 导入的受阻兼容依赖显示 | 只写回来源工具语义，不在两种格式间自动转换 |
+| Memory | `~/.codex/memories` direct memory；根级私有 `.git` 不迁移 | 默认 project memory 或 `autoMemoryDirectory` 指定的最终目录 | 绑定单一来源工具，不跨工具安装或改名为指令 |
 
 ### AI coding 工具
 
 | 工具 | 状态 | 默认可写资源 |
 | --- | --- | --- |
-| Codex | 稳定 | Skill、Instruction |
+| Codex | 稳定 | Skill、Instruction、Memory |
 | Claude Code | 稳定 | Skill、MCP、Rule、Plugin、Instruction、Memory |
 | Cursor | 稳定 | Skill、MCP、Prompt |
 | Windsurf | 实验性 | Skill、MCP |

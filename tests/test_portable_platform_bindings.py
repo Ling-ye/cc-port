@@ -63,12 +63,14 @@ def test_portable_binding_matrix_is_consistent_across_public_interfaces(
         "claude-code"
     ]
     assert normalize("skill", ["private-runtime"]) == ["configured-custom-tool"]
-    assert normalize("memory", []) == ["claude-code"]
+    assert normalize("memory", ["codex-wsl"]) == ["codex"]
 
     with pytest.raises(ValueError, match="exactly one portable source tool"):
         normalize("instruction", ["claude-windows", "codex-wsl"])
-    with pytest.raises(ValueError, match="only be bound to Claude Code"):
-        normalize("memory", ["codex-wsl"])
+    with pytest.raises(ValueError, match="explicit portable tool binding"):
+        normalize("memory", [])
+    with pytest.raises(ValueError, match="exactly one supported source tool"):
+        normalize("memory", ["claude-windows", "codex-wsl"])
     with pytest.raises(ValueError, match="Unknown platform"):
         normalize("skill", ["claude-wsl-typo"])
 

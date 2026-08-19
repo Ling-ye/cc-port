@@ -871,6 +871,29 @@ def test_manifest_prunes_nested_reparse_content_and_fails_closed(
     assert "ghp_1234567890abcdef" not in encoded
 
 
+def test_codex_memory_manifest_excludes_only_root_private_git(tmp_path: Path) -> None:
+    root = tmp_path / "memory"
+    private_git = root / ".git"
+    topic_git = root / "topic" / ".git"
+    private_git.mkdir(parents=True)
+    topic_git.mkdir(parents=True)
+    (root / "MEMORY.md").write_text("# Memory\n", encoding="utf-8")
+    (private_git / "HEAD").write_text("private history\n", encoding="utf-8")
+    (topic_git / "notes.md").write_text("# Topic\n", encoding="utf-8")
+
+    manifest, issues = asset_reconcile._manifest_from_path(
+        root,
+        include_excluded=True,
+        exclude_codex_memory_git=True,
+    )
+
+    assert not issues
+    assert [entry.relative_path for entry in manifest.entries] == [
+        "MEMORY.md",
+        "topic/.git/notes.md",
+    ]
+
+
 def test_reconcile_cursor_is_stable_then_fails_closed_after_snapshot_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

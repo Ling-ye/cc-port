@@ -156,14 +156,14 @@ For Instruction and Memory, “Discover and register” means the configured pro
 
 | Type | Codex | Claude Code | Cross-tool rule |
 | --- | --- | --- | --- |
-| Instruction | User-level `AGENTS.override.md` or `AGENTS.md` | User-level `~/.claude/CLAUDE.md` | Write only with the source tool's native semantics; never auto-convert between formats |
-| Memory | Does not support the Claude auto-memory contract | Default project memory or the final directory named by `autoMemoryDirectory` | Install only to Claude Code profiles; never rename it into a Codex instruction |
+| Instruction | User-level `AGENTS.override.md` or `AGENTS.md` | User-level `~/.claude/CLAUDE.md`; a sibling `AGENTS.md` is shown only as a blocked compatibility dependency for an explicit `@AGENTS.md` import | Write only with the source tool's native semantics; never auto-convert between formats |
+| Memory | Direct `~/.codex/memories` store; root private `.git` history is not transferred | Default project memory or the final directory named by `autoMemoryDirectory` | Bind to one source tool; never install across tools or rename memory into an instruction |
 
 ### AI coding tools
 
 | Tool | Status | Default writable resources |
 | --- | --- | --- |
-| Codex | Stable | Skill, Instruction |
+| Codex | Stable | Skill, Instruction, Memory |
 | Claude Code | Stable | Skill, MCP, Rule, Plugin, Instruction, Memory |
 | Cursor | Stable | Skill, MCP, Prompt |
 | Windsurf | Experimental | Skill, MCP |

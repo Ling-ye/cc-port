@@ -3960,8 +3960,29 @@ def test_instruction_and_memory_uploads_store_portable_payloads_and_tool_binding
     memory_row = source_rows["memory"]
     memory_plan = source_plans["memory"]
     memory_row.tool_id = "codex"
+    codex_git = memory / ".git"
+    codex_git.mkdir()
+    (codex_git / "HEAD").write_text("private-history\n", encoding="utf-8")
+    memory_plan.target_resource_key = "memory:codex-memory"
+    assert asset_sync._mutate_remote_asset(
+        rejected_remote,
+        rejected_registry,
+        memory_plan,
+        memory_row,
+    ) is True
+    codex_entry = load_registry(rejected_remote / "registry.yaml").get(
+        "codex-memory",
+        "memory",
+    )
+    assert codex_entry is not None and codex_entry.platforms == ["codex"]
+    assert not (rejected_remote / "memories" / "codex-memory" / ".git").exists()
+
+    memory_row.tool_id = "cursor"
     memory_plan.target_resource_key = "memory:rejected-memory"
-    with pytest.raises(asset_sync.AssetSyncError, match="only originate from Claude Code"):
+    with pytest.raises(
+        asset_sync.AssetSyncError,
+        match="only originate from Claude Code or Codex",
+    ):
         asset_sync._mutate_remote_asset(
             rejected_remote,
             rejected_registry,
@@ -3969,7 +3990,6 @@ def test_instruction_and_memory_uploads_store_portable_payloads_and_tool_binding
             memory_row,
         )
     assert not (rejected_remote / "memories" / "rejected-memory").exists()
-    assert load_registry(rejected_remote / "registry.yaml").items == []
 
     linked_remote = tmp_path / "linked-remote"
     linked_remote.mkdir()
@@ -3990,6 +4010,59 @@ def test_instruction_and_memory_uploads_store_portable_payloads_and_tool_binding
             instruction_row,
         )
     assert not (outside / "escaped-instruction").exists()
+
+
+def test_codex_memory_copy_excludes_and_preserves_private_git_history(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "codex-memory"
+    source_git = source / ".git"
+    source_git.mkdir(parents=True)
+    (source / "MEMORY.md").write_text("# New memory\n", encoding="utf-8")
+    (source / "memory_summary.md").write_text("# Summary\n", encoding="utf-8")
+    (source_git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    before = asset_sync._asset_resource_fingerprint(
+        source,
+        "memory",
+        source_tool_id="codex",
+    )
+    (source_git / "HEAD").write_text("ref: refs/heads/other\n", encoding="utf-8")
+    assert asset_sync._asset_resource_fingerprint(
+        source,
+        "memory",
+        source_tool_id="codex",
+    ) == before
+
+    portable = tmp_path / "portable-memory"
+    asset_sync._copy_asset_content(
+        source,
+        portable,
+        "memory",
+        source_tool_id="codex",
+    )
+    assert not (portable / ".git").exists()
+    assert (portable / "MEMORY.md").read_text(encoding="utf-8") == "# New memory\n"
+
+    target = tmp_path / "target-memory"
+    target_git = target / ".git"
+    target_git.mkdir(parents=True)
+    (target / "MEMORY.md").write_text("# Old memory\n", encoding="utf-8")
+    (target_git / "HEAD").write_text("target-history\n", encoding="utf-8")
+    asset_sync._copy_asset_content(
+        portable,
+        target,
+        "memory",
+        source_tool_id="codex",
+        preserve_codex_git=True,
+    )
+    assert (target / "MEMORY.md").read_text(encoding="utf-8") == "# New memory\n"
+    assert (target / ".git" / "HEAD").read_text(encoding="utf-8") == "target-history\n"
+    assert asset_sync._asset_resource_fingerprint(
+        target,
+        "memory",
+        source_tool_id="codex",
+    ) == before
 
 
 def test_memory_secret_scan_includes_cache_like_topic_directories(

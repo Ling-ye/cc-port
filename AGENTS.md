@@ -30,6 +30,7 @@
 - Windows 原生安装和每个 WSL 发行版必须建成独立 profile；Codex 与 Claude Code 均不得因 `tool_id` 相同而在发现、批量选择、上传或下载目标中相互覆盖。`home_dir` 用于把该 profile 的 `~` 展开到正确的 Windows 用户目录或 WSL UNC 用户目录。
 - WSL 发行版未运行或 UNC 不可达时必须标记该 profile 为 unavailable 并阻断写入；不得把不可达实例推断为资源 missing、删除请求或空目录。
 - `instruction` 与 `memory` 是独立已知资源类型，`rule` 继续表示规则文件或目录。Claude `CLAUDE.md` 与 Codex `AGENTS.md` 只按各自工具的原生语义安装，不得自动互译；Claude memory 不得安装为 Codex 指令。
+- Claude Code 不原生加载 `AGENTS.md`。配置的用户级 `CLAUDE.md` 同目录存在 `AGENTS.md`，或 `instructions_path` 显式指向 `AGENTS.md` 时，可把后者识别为 compatibility dependency 并检查同目录 `CLAUDE.md` 是否用 `@AGENTS.md` 显式导入，但不得把它标为原生 Claude 指令或提供独立上传/安装；复合导入安装具备可验证合同前保持阻断。项目级 `AGENTS.md` 继续按项目作用域只读观察，不得提升为用户全局指令。
 - Claude 用户指令只识别配置的 `instructions_path`；项目级 `CLAUDE.md`、`.claude/CLAUDE.md` 和 `CLAUDE.local.md` 不得当作用户全局指令。默认 memory 布局只扫描 `projects/*/memory/` 且目录根必须有普通 UTF-8 `MEMORY.md`。
 - 个人 `instruction` 与 `memory` 只允许 profile-aware、environment-aware asset inventory 和 plan/apply workflow 发现、上传或下载；通用 global/directory discover 不得把全局用户指令或 auto memory 暴露为可上传候选。directory-scope 项目指令继续只读展示。
 - Claude 用户 rules 只从配置的用户 `rules_dir` 参与全局用户扫描，并必须递归发现全部普通 Markdown；当前仅该目录根级文件可直接迁移。嵌套项用 `claude-rule-<relative-path-hash>` 生成不含相对路径明文的唯一候选名后保持阻断，必须先整理为明确可移植的 rule 目录或布局；候选哈希只用于区分，不得解释为可还原路径。项目 `.claude/rules/**/*.md` 与用户 rules 作用域不同；当前没有 project target identity，directory-scope 项目规则必须只读和阻断，不得提升或下载到用户全局 `rules_dir`。
@@ -38,6 +39,7 @@
 - projects memory 的远端逻辑名不得用于猜测本地 Claude project slot；每个 profile 必须以本机 `memory_install_names` 显式映射到 `projects/` 下确切 slot。Win/WSL 的不同 slot 不得按路径或内容自动聚合；用户可以为两边选择同一远端逻辑名，再分别映射。目标不存在且缺映射时阻断下载；direct 布局不需要映射。slot 明文和映射不得进入 Registry 或 `cc-port.yaml`。
 - `~/.claude.json` 只能用于脱敏 MCP 投影，Claude `settings.json` 与 Codex `config.toml` 只能用于原生路径和能力识别；不得整体迁移这些文件，也不得迁移认证、token、API key、session、聊天历史、file-history、plans、todos、日志、遥测、plugin cache 或精确 memory 目录之外的运行时 cache。
 - memory 是精确 Markdown 目录快照；`build/`、`cache/`、`tmp/` 等合法 topic 目录不得套用其他资源的通用排除规则。上传计划和应用阶段都必须扫描树内全部 Markdown 的疑似秘密，命中时整体阻断且不得回显值。
+- Codex memory 使用精确 profile 的 `memories_dir`，默认 direct 布局为 `~/.codex/memories`，并以来源工具 `codex` 独立绑定。根级 `.git` 是 Codex 私有历史状态，不属于可移植 payload、内容指纹或秘密扫描；上传必须排除它，下载不得用远端内容删除或替换目标已有的安全普通 `.git` 目录。除该精确根级 `.git` 外仍只接受普通 UTF-8 Markdown 树并要求根级普通 `MEMORY.md`。
 - instruction 的所有权 marker 放在目标文件旁；memory 的 marker 必须放在 memory 目录旁，不得写入内容树。只有已绑定到同一 `kind:name` 的多 profile 实例才可按指纹折叠为 identical copies 或保留为 variants；不同 project slot 不得仅凭内容相同自动合并。
 - dedicated-repository 的 `cc-port publish` 和 MCP `publish_local_skill`，以及 legacy `sync`、`check`、安装计划必须拒绝或跳过 `instruction` 与 `memory`。这两类资源只能走 profile-aware asset workflow。
 - MCP 的 `asset_inventory`、`asset_action_plan`/`asset_action_apply`、`asset_batch_plan`/`asset_batch_apply` 必须与桌面端和 CLI 共用 asset 核心；本机发现要求 `scan_local=true`，平台参数是精确 profile id，apply 必须按 operation id 或 `plan_hash` 重新校验本地/远端身份并返回 stale plan，而不是信任调用方提交的资源字段。

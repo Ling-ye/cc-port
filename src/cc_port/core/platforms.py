@@ -17,7 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .models import ITEM_NAME_RE, SAFE_INSTALL_SEGMENT_RE, ItemKind
+from .models import (
+    ITEM_NAME_RE,
+    MEMORY_SOURCE_TOOL_IDS,
+    SAFE_INSTALL_SEGMENT_RE,
+    ItemKind,
+)
 from .tool_adapters import TOOL_ADAPTERS
 
 PORTABLE_TOOL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -141,7 +146,9 @@ class PlatformProfile:
         """Apply kind-specific safety policy before matching a runtime profile."""
         if kind == "instruction" and not platforms:
             return False
-        if kind == "memory" and self.effective_tool_id != "claude-code":
+        if kind == "memory" and (
+            not platforms or self.effective_tool_id not in MEMORY_SOURCE_TOOL_IDS
+        ):
             return False
         return self.supports_resource_platforms(platforms)
 
@@ -461,9 +468,15 @@ def resolve_portable_resource_platforms(
             )
     if kind == "memory":
         if not portable:
-            portable = ["claude-code"]
-        if portable != ["claude-code"]:
-            raise ValueError("Memory resources can only be bound to Claude Code.")
+            raise ValueError(
+                "Memory uploads require an explicit portable tool binding. "
+                "Use a configured profile id or 'claude-code' or 'codex'."
+            )
+        if len(portable) != 1 or portable[0] not in MEMORY_SOURCE_TOOL_IDS:
+            raise ValueError(
+                "Memory resources must be bound to exactly one supported source tool: "
+                "Claude Code or Codex."
+            )
     return portable
 
 

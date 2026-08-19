@@ -487,7 +487,7 @@ def test_legacy_sync_skips_instruction_without_explicit_tool_binding(
     assert not target.exists()
 
 
-def test_memory_is_never_supported_by_non_claude_profile(tmp_path: Path) -> None:
+def test_codex_memory_requires_an_explicit_codex_binding(tmp_path: Path) -> None:
     profile = PlatformProfile(
         name="codex-custom",
         tool_id="codex",
@@ -511,7 +511,8 @@ def test_memory_is_never_supported_by_non_claude_profile(tmp_path: Path) -> None
         registry_root=tmp_path / "resources",
     )
 
-    assert profile.supports_resource("memory", ["codex"]) is False
+    assert profile.supports_resource("memory", ["codex"]) is True
+    assert profile.supports_resource("memory", []) is False
     assert plan.targets == []
 
 

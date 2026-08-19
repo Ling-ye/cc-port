@@ -74,9 +74,11 @@ Run every resource write through this sequence without skipping stages:
 
 - Use profile-aware asset inventory/plan/apply for all seven resource kinds. Do not route
   `instruction` or `memory` through legacy publish, sync, check, or generic discovery workflows.
-- Keep Codex instructions, Claude instructions, and Claude memories in their native semantics. Do
-  not translate `AGENTS.md` into `CLAUDE.md`, install memory as instruction, or guess a Claude
-  project-memory slot.
+- Keep Codex instructions, Codex memories, Claude instructions, and Claude memories in their
+  native semantics. Claude Code does not load `AGENTS.md` directly: treat a sibling file only as a
+  blocked dependency of an explicit `@AGENTS.md` import until compound installation is supported.
+  Do not translate `AGENTS.md` into `CLAUDE.md`, install memory as instruction, move memory across
+  tools, transfer Codex memory's root `.git`, or guess a Claude project-memory slot.
 - Never pass tokens, credentials, session data, absolute private paths, usernames, or resource
   content through arguments unless the documented schema explicitly requires the non-secret value.
 - Never inspect or edit CC Port's private state, approval files, ownership records, transaction

@@ -284,8 +284,12 @@ def test_memory_registry_item_install_name_is_rejected_before_upsert() -> None:
             ["claude-code", "codex"],
             "exactly one portable source tool",
         ),
-        ("memory:project-memory", [], "only to Claude Code"),
-        ("memory:project-memory", ["codex"], "only to Claude Code"),
+        ("memory:project-memory", [], "exactly one supported source tool"),
+        (
+            "memory:project-memory",
+            ["claude-code", "codex"],
+            "exactly one supported source tool",
+        ),
     ],
 )
 def test_remote_overlay_cannot_bypass_personal_resource_tool_binding(
@@ -304,6 +308,24 @@ def test_remote_overlay_cannot_bypass_personal_resource_tool_binding(
                 },
             }
         )
+
+
+@pytest.mark.parametrize("source_tool_id", ["claude-code", "codex"])
+def test_remote_overlay_accepts_one_supported_memory_source_tool(
+    source_tool_id: str,
+) -> None:
+    settings = CcPortSettings.model_validate(
+        {
+            "version": 1,
+            "resources": {
+                "memory:project-memory": {
+                    "platforms": [source_tool_id],
+                }
+            },
+        }
+    )
+
+    assert settings.resources["memory:project-memory"].platforms == [source_tool_id]
 
 
 @pytest.mark.parametrize(

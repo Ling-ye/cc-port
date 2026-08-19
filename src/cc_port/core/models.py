@@ -24,6 +24,9 @@ ItemKind = Literal[
     "instruction",
     "memory",
 ]
+
+MEMORY_SOURCE_TOOL_IDS = frozenset({"claude-code", "codex"})
+
 ItemLifecycle = Literal["active", "removed"]
 RemovedEffect = Literal["", "index_only", "local_files_deleted", "remote_repo_deleted"]
 PluginTrack = Literal["content", "reference"]
@@ -654,9 +657,13 @@ class CcPortSettings(BaseModel):
                     "Memory install names are machine-local and cannot be stored "
                     "in cc-port.yaml; configure platform memory_install_names instead."
                 )
-            if resource_key.kind == "memory" and settings.platforms != ["claude-code"]:
+            if resource_key.kind == "memory" and (
+                len(settings.platforms) != 1
+                or settings.platforms[0] not in MEMORY_SOURCE_TOOL_IDS
+            ):
                 raise ValueError(
-                    "Memory resources in cc-port.yaml must be bound only to Claude Code."
+                    "Memory resources in cc-port.yaml must be bound to exactly one "
+                    "supported source tool: Claude Code or Codex."
                 )
         return self
 

@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Codex profile 现在把 `~/.codex/memories` 识别为 direct `memory` 资产；上传、内容指纹
+  和对账排除根级私有 `.git` 历史，下载更新 Markdown 内容时保留目标已有的安全 Git
+  历史目录。
+- Claude Code profile 会把同目录或显式配置的 `AGENTS.md` 显示为受阻兼容依赖，并检查
+  `CLAUDE.md` 的 `@AGENTS.md` 导入；不会把该文件误标为 Claude 原生指令或直接迁移。
+
 ## [0.6.0] - 2026-08-18
 
 ### Added

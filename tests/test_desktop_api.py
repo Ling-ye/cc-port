@@ -200,17 +200,15 @@ def test_portable_resource_platforms_never_persist_local_profile_ids() -> None:
         "instruction",
         ["claude-windows", "claude-code"],
     ) == ["claude-code"]
-    assert desktop_api._portable_resource_platforms(cfg, "memory", []) == [
-        "claude-code"
-    ]
+    assert desktop_api._portable_resource_platforms(
+        cfg,
+        "memory",
+        ["codex-wsl-ubuntu"],
+    ) == ["codex"]
     with pytest.raises(ValueError, match="explicit portable tool binding"):
         desktop_api._portable_resource_platforms(cfg, "instruction", [])
-    with pytest.raises(ValueError, match="only be bound to Claude Code"):
-        desktop_api._portable_resource_platforms(
-            cfg,
-            "memory",
-            ["codex-wsl-ubuntu"],
-        )
+    with pytest.raises(ValueError, match="explicit portable tool binding"):
+        desktop_api._portable_resource_platforms(cfg, "memory", [])
     with pytest.raises(ValueError, match="exactly one portable source tool"):
         desktop_api._portable_resource_platforms(
             cfg,

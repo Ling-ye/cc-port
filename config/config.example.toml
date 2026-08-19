@@ -86,6 +86,8 @@ rules_dir = ""
 prompts_dir = ""
 plugins_dir = "~/.codex/plugins"
 instructions_path = "~/.codex/AGENTS.md"
+memories_dir = "~/.codex/memories"
+memory_layout = "direct"
 settings_path = "~/.codex/config.toml"
 
 [platforms.codex-wsl-ubuntu]
@@ -101,6 +103,8 @@ rules_dir = ""
 prompts_dir = ""
 plugins_dir = "~/.codex/plugins"
 instructions_path = "~/.codex/AGENTS.md"
+memories_dir = "~/.codex/memories"
+memory_layout = "direct"
 settings_path = "~/.codex/config.toml"
 
 [platforms.claude-windows]

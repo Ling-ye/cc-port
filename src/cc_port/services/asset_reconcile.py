@@ -37,6 +37,7 @@ from ..agent.contracts import (
     wire_canonical_hash,
 )
 from ..core.config import Config, load_config
+from ..core.models import MEMORY_SOURCE_TOOL_IDS
 from ..core.resource_files import is_resource_path_excluded
 from ..core.secret_scan import find_secret_text, redact_secret_text
 from ..core.secrets import sanitize_mcp_config_for_storage
@@ -688,11 +689,15 @@ def _action_check(
                 fallback="The local source tool identity is unavailable.",
             )
         )
-    if action == "upload" and row.kind == "memory" and row.tool_id != "claude-code":
+    if (
+        action == "upload"
+        and row.kind == "memory"
+        and row.tool_id not in MEMORY_SOURCE_TOOL_IDS
+    ):
         hard_refs.append(
             UiMessageRef(
                 code="asset.blocker.memory_source_tool_invalid",
-                fallback="Memory resources can only originate from Claude Code.",
+                fallback="Memory resources can only originate from Claude Code or Codex.",
             )
         )
 
@@ -798,13 +803,20 @@ def _manifest_for_side(
         source = payload
     if source is None:
         return _empty_manifest("none", complete=True), []
-    return _manifest_from_path(source, include_excluded=row.kind == "memory")
+    return _manifest_from_path(
+        source,
+        include_excluded=row.kind == "memory",
+        exclude_codex_memory_git=(
+            side == "local" and row.kind == "memory" and row.tool_id == "codex"
+        ),
+    )
 
 
 def _manifest_from_path(
     root: Path,
     *,
     include_excluded: bool = False,
+    exclude_codex_memory_git: bool = False,
 ) -> tuple[AssetManifestWire, list[AssetReconcileIssueWire]]:
     root_probe = probe_local_path(root)
     if root_probe.health == "missing":
@@ -844,6 +856,8 @@ def _manifest_from_path(
             for name in sorted(dirnames):
                 item = current / name
                 relative = item.relative_to(root)
+                if exclude_codex_memory_git and current == root and name == ".git":
+                    continue
                 item_probe = probe_local_path(item)
                 if (
                     not item_probe.ready

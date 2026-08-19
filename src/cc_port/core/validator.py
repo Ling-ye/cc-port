@@ -179,8 +179,14 @@ def validate_instruction_path(instruction_path: Path) -> None:
         ) from exc
 
 
-def validate_memory_path(memory_path: Path) -> None:
-    """Validate one exact Claude Code auto-memory directory."""
+def validate_memory_path(memory_path: Path, *, source_tool_id: str = "") -> None:
+    """Validate one portable memory tree or a supported tool's live memory root.
+
+    Codex maintains private Git history at the root of its generated memory store.
+    That metadata is validated separately by the asset workflow and is never part of
+    the portable memory payload, so this content validator skips only that exact
+    root-level ``.git`` subtree for a Codex source.
+    """
     memory_path = memory_path.expanduser().absolute()
     if memory_path.is_symlink() or not memory_path.is_dir():
         raise SkillValidationError(f"{memory_path} must be an auto-memory directory.")
@@ -190,6 +196,13 @@ def validate_memory_path(memory_path: Path) -> None:
             f"{memory_path} must contain a regular MEMORY.md entrypoint."
         )
     for path in memory_path.rglob("*"):
+        relative = path.relative_to(memory_path)
+        if source_tool_id == "codex" and relative.parts[0] == ".git":
+            if len(relative.parts) == 1 and (path.is_symlink() or not path.is_dir()):
+                raise SkillValidationError(
+                    f"{memory_path} has unsafe Codex memory history metadata."
+                )
+            continue
         if path.is_symlink():
             raise SkillValidationError(
                 f"{memory_path} may not contain symbolic links."
@@ -212,7 +225,13 @@ def validate_memory_path(memory_path: Path) -> None:
             ) from exc
 
 
-def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None = None) -> None:
+def validate_item(
+    path: Path,
+    kind: ItemKind,
+    mcp_config: dict[str, Any] | None = None,
+    *,
+    source_tool_id: str = "",
+) -> None:
     """Dispatch validation based on item kind."""
     if kind == "skill":
         parse_skill(path)
@@ -239,4 +258,4 @@ def validate_item(path: Path, kind: ItemKind, mcp_config: dict[str, Any] | None 
     elif kind == "instruction":
         validate_instruction_path(path)
     elif kind == "memory":
-        validate_memory_path(path)
+        validate_memory_path(path, source_tool_id=source_tool_id)

@@ -150,6 +150,7 @@ def discover_exact_resource(
     name_hint: str,
     source: str = "configured",
     warnings: list[str] | None = None,
+    source_tool_id: str = "",
 ) -> DiscoveredResource | None:
     """Discover one explicitly scoped file/directory without scanning its parents."""
     logical = Path(path).expanduser().absolute()
@@ -170,13 +171,13 @@ def discover_exact_resource(
     content_path = probe.content_path
     validation_error = ""
     try:
-        validate_item(content_path, kind)
+        validate_item(content_path, kind, source_tool_id=source_tool_id)
     except Exception as exc:  # noqa: BLE001 - discovery surfaces validation as a warning
         validation_error = str(exc)
         validation_warnings = list(warnings or [])
     else:
         validation_warnings = list(warnings or [])
-    if kind == "memory" and content_path.is_dir():
+    if kind == "memory" and content_path.is_dir() and source_tool_id == "claude-code":
         validation_warnings.extend(_memory_entrypoint_warnings(content_path))
     resource = _resource(
         path=logical,

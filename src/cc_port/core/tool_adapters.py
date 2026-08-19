@@ -63,10 +63,11 @@ TOOL_ADAPTERS: tuple[ToolAdapter, ...] = (
         id="codex",
         name="Codex",
         stability="stable",
-        supports_kinds=("skill", "instruction"),
+        supports_kinds=("skill", "instruction", "memory"),
         install_mechanisms={
             "skill": "copy_skills_dir",
             "instruction": "copy_instruction_file",
+            "memory": "copy_local_memory_directory",
         },
         signals=(
             ToolSignal("known_skills_dir", "~/.codex/skills"),
@@ -78,6 +79,8 @@ TOOL_ADAPTERS: tuple[ToolAdapter, ...] = (
         skills_dir="~/.codex/skills",
         plugins_dir="~/.codex/plugins",
         instructions_path="~/.codex/AGENTS.md",
+        memories_dir="~/.codex/memories",
+        memory_layout="direct",
         settings_path="~/.codex/config.toml",
     ),
     ToolAdapter(

@@ -267,25 +267,25 @@ def _discover_profile_tool(profile: PlatformProfile, *, home: Path) -> Discovere
             memory_layout = "direct"
         if override_warning:
             warnings.append(override_warning)
+    if memories_path is not None:
         memory_root_present = False
-        if memories_path is not None:
-            ancestor_problem = _unsafe_path_component_problem(
-                memories_path,
-                include_leaf=True,
+        ancestor_problem = _unsafe_path_component_problem(
+            memories_path,
+            include_leaf=True,
+        )
+        if ancestor_problem:
+            memory_blocker = (
+                "Memory path cannot be accessed safely because it has an unsafe "
+                f"ancestor; automatic memory migration is blocked: {ancestor_problem}"
             )
-            if ancestor_problem:
-                memory_blocker = (
-                    "Claude memory path cannot be accessed safely because it has an "
-                    f"unsafe ancestor; automatic memory migration is blocked: {ancestor_problem}"
-                )
-                warnings.append(memory_blocker)
-                memories_path = None
+            warnings.append(memory_blocker)
+            memories_path = None
         if memories_path is not None:
             try:
                 memory_root_present = memories_path.exists() or memories_path.is_symlink()
             except OSError:
                 memory_blocker = (
-                    "Claude memory root cannot be accessed from this runtime; "
+                    "Memory root cannot be accessed from this runtime; "
                     "automatic memory migration is blocked."
                 )
                 warnings.append(memory_blocker)
@@ -294,7 +294,7 @@ def _discover_profile_tool(profile: PlatformProfile, *, home: Path) -> Discovere
             memory_probe = probe_local_path(memories_path)
             if memory_probe.is_link or not memory_probe.ready:
                 memory_blocker = (
-                    "Claude memory root uses a link or cannot be read safely; "
+                    "Memory root uses a link or cannot be read safely; "
                     "automatic memory migration is blocked."
                 )
                 warnings.append(memory_blocker)
@@ -408,7 +408,7 @@ def _unavailable_profile_tool(
         environment_name=profile.environment_name,
         display_name=profile.effective_display_name,
         warnings=[problem],
-        memory_blocker=problem if profile.effective_tool_id == "claude-code" else "",
+        memory_blocker=problem if profile.memories_dir else "",
         memory_layout=profile.memory_layout,
         memory_install_names=dict(profile.memory_install_names),
     )
@@ -592,34 +592,90 @@ def _discover_tool_resources(
                 tool.instruction_path,
                 include_leaf=False,
             )
-            instruction = (
-                _blocked_scoped_resource(
-                    tool,
-                    tool.instruction_path,
-                    kind="instruction",
-                    name_hint=f"{tool.tool_id}-user-instructions",
-                    problem=(
-                        "Instruction path has a linked or unreadable ancestor and was not followed: "
-                        + ancestor_problem
-                    ),
-                )
-                if ancestor_problem
-                else discover_exact_resource(
-                    tool.instruction_path,
-                    tool=tool.id,
-                    kind="instruction",
-                    name_hint=f"{tool.tool_id}-user-instructions",
-                    warnings=_instruction_import_warnings(tool.instruction_path),
-                )
-                if _instruction_is_discoverable(
-                    tool.instruction_path,
-                    tool_id=tool.tool_id,
-                )
-                else None
+            configured_claude_agents = (
+                tool.tool_id == "claude-code"
+                and tool.instruction_path.name.casefold() == "agents.md"
             )
+            instruction = None
+            if not configured_claude_agents:
+                instruction = (
+                    _blocked_scoped_resource(
+                        tool,
+                        tool.instruction_path,
+                        kind="instruction",
+                        name_hint=f"{tool.tool_id}-user-instructions",
+                        problem=(
+                            "Instruction path has a linked or unreadable ancestor and was not followed: "
+                            + ancestor_problem
+                        ),
+                    )
+                    if ancestor_problem
+                    else discover_exact_resource(
+                        tool.instruction_path,
+                        tool=tool.id,
+                        kind="instruction",
+                        name_hint=f"{tool.tool_id}-user-instructions",
+                        warnings=_instruction_import_warnings(tool.instruction_path),
+                    )
+                    if _instruction_is_discoverable(
+                        tool.instruction_path,
+                        tool_id=tool.tool_id,
+                    )
+                    else None
+                )
             if instruction is not None:
                 _append_exact_resource(resources, seen, instruction, tool)
-        if tool.tool_id != "claude-code" or tool.memories_path is None:
+            claude_agents_path: Path | None = None
+            claude_instruction_path: Path | None = None
+            if configured_claude_agents:
+                claude_agents_path = tool.instruction_path
+                claude_instruction_path = tool.instruction_path.with_name("CLAUDE.md")
+            elif (
+                tool.tool_id == "claude-code"
+                and tool.instruction_path.name.casefold() == "claude.md"
+            ):
+                claude_agents_path = tool.instruction_path.with_name("AGENTS.md")
+                claude_instruction_path = tool.instruction_path
+            if claude_agents_path is not None and claude_instruction_path is not None:
+                companion_resource = discover_exact_resource(
+                    claude_agents_path,
+                    tool=tool.id,
+                    kind="instruction",
+                    name_hint="claude-agents-compatibility",
+                    source_tool_id="claude-code",
+                )
+                if companion_resource is not None:
+                    companion_resource.blockers.append(
+                        "Claude Code does not load AGENTS.md directly. Keep it behind "
+                        "an explicit @AGENTS.md import in CLAUDE.md; compound imported "
+                        "instruction installation is not yet writable by CC Port."
+                    )
+                    if _claude_instruction_imports_agents(claude_instruction_path):
+                        companion_resource.warnings.append(
+                            "This AGENTS.md is referenced by the configured Claude user "
+                            "CLAUDE.md and is shown as a compatibility dependency."
+                        )
+                    companion_resource.status = "blocked"
+                    _append_exact_resource(resources, seen, companion_resource, tool)
+        if tool.memories_path is None:
+            continue
+        if tool.tool_id == "codex":
+            if tool.memory_layout != "direct":
+                tool.warnings.append(
+                    "Codex memory requires the direct memory layout; discovery was blocked."
+                )
+                continue
+            memory = discover_exact_resource(
+                tool.memories_path,
+                tool=tool.id,
+                kind="memory",
+                name_hint="codex-memory",
+                source_tool_id="codex",
+            )
+            if memory is not None:
+                _append_exact_resource(resources, seen, memory, tool)
+            continue
+        if tool.tool_id != "claude-code":
             continue
         if tool.memory_layout == "direct":
             memory = discover_exact_resource(
@@ -627,6 +683,7 @@ def _discover_tool_resources(
                 tool=tool.id,
                 kind="memory",
                 name_hint=_portable_direct_memory_name(tool, tool.memories_path),
+                source_tool_id="claude-code",
             )
             if memory is not None:
                 _append_exact_resource(resources, seen, memory, tool)
@@ -656,6 +713,7 @@ def _discover_tool_resources(
                 tool=tool.id,
                 kind="memory",
                 name_hint=name_hint,
+                source_tool_id="claude-code",
             )
             if memory is not None:
                 memory.install_name_hint = project.name
@@ -1121,6 +1179,26 @@ def _instruction_import_warnings(path: Path) -> list[str]:
                 "Instruction imports are not followed or bundled; migrate referenced files separately."
             ]
     return []
+
+
+def _claude_instruction_imports_agents(path: Path) -> bool:
+    """Return whether one regular Claude instruction imports sibling AGENTS.md."""
+    if not path.is_file() or path.is_symlink():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    in_fence = False
+    pattern = re.compile(r"^\s*@(?:\./)?AGENTS\.md\s*$", re.IGNORECASE)
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if not in_fence and pattern.fullmatch(line):
+            return True
+    return False
 
 
 def _read_mcp_servers(path: Path) -> dict[str, Any]:

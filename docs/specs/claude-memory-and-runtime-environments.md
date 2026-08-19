@@ -1,10 +1,11 @@
-# Claude Code 指令、记忆与多运行环境规格
+# Codex / Claude Code 指令、记忆与多运行环境规格
 
 ## 目标
 
-CC Port 必须识别 Claude Code 的用户指令、用户规则和 auto memory，并迁移当前安装模型
-能够无损恢复的部分，同时把同一台电脑上的 Windows 原生安装与 WSL 安装视为两个独立
-运行环境。Codex、Claude Code 等工具继续使用各自的原生文件语义，不做隐式格式转换。
+CC Port 必须识别 Codex 与 Claude Code 的用户指令和 memory，以及 Claude Code 用户规则，
+并迁移当前安装模型能够无损恢复的部分，同时把同一台电脑上的 Windows 原生安装与 WSL
+安装视为两个独立运行环境。Codex、Claude Code 等工具继续使用各自的原生文件语义，不做
+隐式格式转换。
 
 本规格依据以下官方资料：
 
@@ -12,7 +13,8 @@ CC Port 必须识别 Claude Code 的用户指令、用户规则和 auto memory�
 - [Claude Code settings](https://code.claude.com/docs/en/settings)
 - [Claude Code installation](https://code.claude.com/docs/en/installation)
 - [Claude Code sessions](https://code.claude.com/docs/en/sessions)
-- [Codex AGENTS.md](https://developers.openai.com/codex/guides/agents-md)
+- [Codex AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+- [Codex memory](https://learn.chatgpt.com/docs/customization/memories)
 - [Codex configuration](https://developers.openai.com/codex/config-basic)
 - [Codex on Windows and WSL](https://developers.openai.com/codex/app/windows)
 
@@ -22,6 +24,11 @@ CC Port 必须识别 Claude Code 的用户指令、用户规则和 auto memory�
 
 - 用户指令位于 `~/.claude/CLAUDE.md`；用户规则位于
   `~/.claude/rules/**/*.md`，规则目录递归发现 Markdown 文件。
+- Claude Code 不原生读取 `AGENTS.md`。官方兼容方式是在 `CLAUDE.md` 中使用
+  `@AGENTS.md` 导入（Windows 上优先使用导入而非符号链接）。因此，与配置的用户级
+  `CLAUDE.md` 同目录的 `AGENTS.md`，或被 `instructions_path` 显式配置的 `AGENTS.md`，
+  只作为受阻的 compatibility dependency 显示；在 CC Port 能够原子安装并验证复合
+  导入关系前，不得独立上传或安装，更不得标为原生 Claude 指令。
 - 项目规则位于项目 `.claude/rules/**/*.md`，其作用域和目标身份不同于用户
   `~/.claude/rules/**/*.md`，不得把项目规则当作用户全局规则安装。
 - 项目指令位于项目根的 `CLAUDE.md`、`.claude/CLAUDE.md`，本地项目指令位于
@@ -41,11 +48,18 @@ CC Port 必须识别 Claude Code 的用户指令、用户规则和 auto memory�
 
 - 用户级指令为 Codex home 下的 `AGENTS.override.md` 或 `AGENTS.md`；项目指令按 Git
   根到当前目录的层级发现。
+- Codex 的本地 memory store 默认位于 `~/.codex/memories/`。`config.toml` 中
+  `[features].memories` 控制能力开关，`[memories].generate_memories` 与
+  `[memories].use_memories` 分别控制生成和使用。该目录是 direct memory 资产来源，
+  与 ChatGPT 网页端 memory 分离。
 - 用户配置位于 `~/.codex/config.toml`；Windows 原生 Codex 与 WSL 内的 Codex 默认
   使用不同 home。用户可以显式共享 `CODEX_HOME`，但 CC Port 不得根据相似路径推断
   两者已经共享。
-- Codex 没有与 Claude Code auto memory 相同的可移植目录契约。Claude memory 不得
-  自动改名或安装为 Codex 指令。
+- Codex memory 根级 `.git` 是工具私有历史状态，不属于可移植 memory payload。上传、
+  内容指纹和秘密扫描必须忽略该精确根级 `.git`；下载更新 memory Markdown 时必须保留
+  目标已有的安全普通 `.git` 目录。其他路径继续按精确 Markdown memory 树校验。
+- Claude memory 与 Codex memory 必须分别绑定来源工具，不得跨工具安装，也不得自动
+  改名或安装为指令。
 
 ## 资源模型
 
@@ -54,7 +68,7 @@ CC Port 必须识别 Claude Code 的用户指令、用户规则和 auto memory�
 | kind | 内容 | 远端默认目录 | 安装语义 |
 | --- | --- | --- | --- |
 | `instruction` | 一个工具原生的用户指令 Markdown 文件 | `instructions/<name>/` | 写入该 profile 的固定 instruction 文件 |
-| `memory` | 一个精确的 Claude Code memory 目录 | `memories/<name>/` | 写入默认 project slot 或显式 direct memory 目录 |
+| `memory` | 一个精确的工具原生 Markdown memory 目录 | `memories/<name>/` | 写入来源工具的 direct memory 目录，或 Claude 默认 project slot |
 
 `rule` 继续表示规则文件或规则目录。Claude Code 的 `~/.claude/rules/` 不得与
 `CLAUDE.md` 合并，因为二者的加载顺序、作用域和目标路径不同。
@@ -66,7 +80,7 @@ CC Port 必须识别 Claude Code 的用户指令、用户规则和 auto memory�
   Registry。
 - 工具兼容性和安装别名继续存放在可选 `cc-port.yaml`。`instruction` 和 `memory`
   首次从本地上传时必须写入来源工具 allowlist；Claude 指令只能回到 Claude Code，
-  Codex 指令只能回到 Codex。
+  Codex 指令只能回到 Codex；两种 memory 也只能回到各自来源工具。
 - `cc-port.yaml` 一旦存在就必须是普通非链接文件，并完整通过 YAML 与 portable overlay
   语义校验。损坏、非法工具绑定、本机 memory slot/install alias 或未知非法字段必须使
   Registry-backed 远端动作 fail closed；不得把无效 overlay 当成空配置继续上传或下载，
@@ -274,6 +288,12 @@ CC Port 只通过配置路径和普通文件系统 API 读取上述目标，不�
   由配置 profile 的 asset inventory 发现；根级 rule、instruction 和 memory 可上传、从
   远端恢复并通过内容指纹验证。通用 global/directory discover 不产生个人 instruction 或
   memory 上传候选。
+- Codex `~/.codex/memories` 作为一个 direct memory 候选发现；候选名称固定且不泄露
+  本机路径。上传快照不包含根级 `.git`，下载更新保留目标安全的私有 `.git`，其余
+  Markdown 文件逐字节参与内容指纹和疑似秘密扫描。
+- 与配置的 Claude 用户 `CLAUDE.md` 同目录的 `AGENTS.md` 可被发现为受阻 compatibility
+  dependency，并标示是否检测到 `@AGENTS.md` 或 `@./AGENTS.md` 导入；它不是独立可写的
+  Claude instruction。项目级 `AGENTS.md` 继续保持项目作用域只读观察。
 - 嵌套 Claude rule 使用唯一候选名显示并保持阻断，整理为明确可移植布局前不能上传；
   `claude-rule-<relative-path-hash>` 不会被当作路径还原信息。
 - directory-scope 项目 `.claude/rules/**/*.md` 保持只读和阻断，不会进入用户全局
@@ -287,7 +307,8 @@ CC Port 只通过配置路径和普通文件系统 API 读取上述目标，不�
 - `cc-port publish` 与 MCP dedicated-repository 发布对 `instruction`、`memory` 返回拒绝，
   legacy sync/check/install 同样不处理它们；桌面、CLI 和 MCP 的 profile-aware asset
   plan/apply 仍可处理，并继续校验 operation id 或 `plan_hash`。
-- Claude instruction 不会出现在 Codex 下载目标中，Claude memory 对 Codex 始终不支持。
+- Claude instruction 不会出现在 Codex 下载目标中；Claude memory 与 Codex memory
+  互不作为对方的安装目标。
 - Windows 与 WSL 的 MCP、Skill、Plugin、Instruction 和 Memory 都以 profile id 参与
   计划，不再因相同 tool id 相互覆盖。
 - Registry 中不出现本机路径、环境身份、project slot 明文或 `memory_install_names`；

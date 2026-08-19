@@ -38,6 +38,7 @@ from ..core.config import (
 )
 from ..core.models import (
     ITEM_NAME_RE,
+    MEMORY_SOURCE_TOOL_IDS,
     ItemKind,
     PluginInstallation,
     PluginOrigin,
@@ -1617,8 +1618,10 @@ def build_asset_action_plan(
             blockers.append(
                 "The local source tool identity is unavailable; portable tool binding cannot be inferred safely."
             )
-        if kind == "memory" and row.tool_id and row.tool_id != "claude-code":
-            blockers.append("Memory resources can only originate from Claude Code.")
+        if kind == "memory" and row.tool_id not in MEMORY_SOURCE_TOOL_IDS:
+            blockers.append(
+                "Memory resources can only originate from Claude Code or Codex."
+            )
     elif action == "copy-to-local":
         _extend_messages(
             blockers,
@@ -1683,8 +1686,10 @@ def build_asset_action_plan(
             blockers.append(
                 "The local source tool identity is unavailable; portable tool binding cannot be inferred safely."
             )
-        if kind == "memory" and row.tool_id and row.tool_id != "claude-code":
-            blockers.append("Memory resources can only originate from Claude Code.")
+        if kind == "memory" and row.tool_id not in MEMORY_SOURCE_TOOL_IDS:
+            blockers.append(
+                "Memory resources can only originate from Claude Code or Codex."
+            )
         target_entry = registry.get(normalized_new_name, kind) if normalized_new_name else None
         remote_target_exists = target_entry is not None
         remote_target_fingerprint = (
@@ -4803,7 +4808,11 @@ def _discovered_rows(
             else None
         )
         local_fingerprint = (
-            _safe_local_resource_fingerprint(local_content_path, candidate.kind)
+            _safe_local_resource_fingerprint(
+                local_content_path,
+                candidate.kind,
+                source_tool_id=candidate.tool_id,
+            )
             if local_content_path is not None and not candidate.blockers
             else ""
         )
@@ -5482,7 +5491,11 @@ def _expected_local_state(
             for item in resource_tree_issues(probe.content_path)
         ]
     fingerprint = (
-        _safe_local_resource_fingerprint(probe.content_path, entry.kind)
+        _safe_local_resource_fingerprint(
+            probe.content_path,
+            entry.kind,
+            source_tool_id=_memory_source_tool_id(entry),
+        )
         if probe.ready and probe.content_path is not None and not tree_blockers
         else ""
     )
@@ -5507,15 +5520,37 @@ def _expected_local_state(
 def _safe_local_resource_fingerprint(
     path: Path,
     kind: ItemKind | None = None,
+    *,
+    source_tool_id: str = "",
 ) -> str:
     try:
-        return _asset_resource_fingerprint(path, kind)
+        return _asset_resource_fingerprint(
+            path,
+            kind,
+            source_tool_id=source_tool_id,
+        )
     except (OSError, RuntimeError):
         return ""
 
 
-def _asset_resource_fingerprint(path: Path, kind: ItemKind | None) -> str:
-    """Hash every validated memory Markdown entry, including cache-like names."""
+def _memory_source_tool_id(entry: RegistryItem | None) -> str:
+    if (
+        entry is not None
+        and entry.kind == "memory"
+        and len(entry.platforms) == 1
+        and entry.platforms[0] in MEMORY_SOURCE_TOOL_IDS
+    ):
+        return entry.platforms[0]
+    return ""
+
+
+def _asset_resource_fingerprint(
+    path: Path,
+    kind: ItemKind | None,
+    *,
+    source_tool_id: str = "",
+) -> str:
+    """Hash portable memory content, excluding Codex's private root Git history."""
     if kind != "memory":
         return resource_hash_path(path)
     if not path.exists() or path.is_symlink() or not path.is_dir():
@@ -5524,6 +5559,12 @@ def _asset_resource_fingerprint(path: Path, kind: ItemKind | None) -> str:
     digest.update(b"resource-dir\0")
     for item in sorted(path.rglob("*"), key=lambda value: value.as_posix()):
         relative = item.relative_to(path)
+        if (
+            source_tool_id == "codex"
+            and relative.parts
+            and relative.parts[0] == ".git"
+        ):
+            continue
         if item.is_symlink():
             raise OSError(f"Memory contains a symbolic link: {relative}")
         digest.update(relative.as_posix().encode("utf-8", errors="surrogateescape"))
@@ -5565,7 +5606,11 @@ def _entry_content_fingerprint(entry: RegistryItem | None, path: Path | None) ->
                 }
             )
         return ""
-    return _asset_resource_fingerprint(path, entry.kind)
+    return _asset_resource_fingerprint(
+        path,
+        entry.kind,
+        source_tool_id=_memory_source_tool_id(entry),
+    )
 
 
 def _remote_asset_fingerprint(root: Path, entry: RegistryItem | None) -> str:
@@ -6193,7 +6238,11 @@ def _copy_local_target_state(
     else:
         exists = target.exists() or target.is_symlink()
         fingerprint = (
-            _asset_resource_fingerprint(target, row.kind)
+            _asset_resource_fingerprint(
+                target,
+                row.kind,
+                source_tool_id=row.tool_id,
+            )
             if exists and not target.is_symlink()
             else ""
         )
@@ -6367,6 +6416,7 @@ def _apply_local_asset_action(
         target,
         install_name,
         plan.target_resource_key,
+        source_tool_id=_memory_source_tool_id(entry),
     )
     if (
         current_exists != plan.target_exists
@@ -6459,7 +6509,17 @@ def _apply_local_asset_action(
             if entry.kind == "skill" and profile.effective_tool_id == "claude-code":
                 inspect_claude_skill(source)
             verification_source = _installable_asset_source(source, target, entry.kind)
-            _copy_asset_content(source, target, entry.kind)
+            source_tool_id = _memory_source_tool_id(entry)
+            if entry.kind == "memory":
+                _copy_asset_content(
+                    source,
+                    target,
+                    entry.kind,
+                    source_tool_id=source_tool_id,
+                    preserve_codex_git=source_tool_id == "codex",
+                )
+            else:
+                _copy_asset_content(source, target, entry.kind)
             if marker is not None and marker.is_symlink():
                 raise AssetSyncError("The resource ownership sidecar became a symbolic link.")
             written_marker = write_managed_marker(
@@ -6477,7 +6537,12 @@ def _apply_local_asset_action(
             if _asset_resource_fingerprint(
                 verification_source,
                 entry.kind,
-            ) != _asset_resource_fingerprint(target, entry.kind):
+                source_tool_id=source_tool_id,
+            ) != _asset_resource_fingerprint(
+                target,
+                entry.kind,
+                source_tool_id=source_tool_id,
+            ):
                 raise AssetSyncError("Downloaded asset verification failed.")
         record = transaction.complete(
             message=f"Applied {plan.action} for {plan.target_resource_key}."
@@ -7587,12 +7652,20 @@ def _validate_remote_batch_source(row: AssetPlatformRow, kind: ItemKind) -> None
     if kind == "skill" and row.tool_id == "claude-code":
         inspect_claude_skill(source)
     else:
-        validate_item(source, kind)
+        validate_item(source, kind, source_tool_id=row.tool_id)
     candidates = [source] if source.is_file() else sorted(source.rglob("*"))
     for candidate in candidates:
         if not candidate.is_file() or candidate.is_symlink():
             continue
         relative = candidate.name if source.is_file() else candidate.relative_to(source)
+        if (
+            kind == "memory"
+            and row.tool_id == "codex"
+            and isinstance(relative, Path)
+            and relative.parts
+            and relative.parts[0] == ".git"
+        ):
+            continue
         if kind != "memory" and is_resource_path_excluded(Path(relative)):
             continue
         try:
@@ -7690,8 +7763,10 @@ def _mutate_remote_asset(
             source_tool_id = validate_portable_tool_id(raw_source_tool_id)
         except ValueError as exc:
             raise AssetSyncError(str(exc)) from exc
-        if target_key.kind == "memory" and source_tool_id != "claude-code":
-            raise AssetSyncError("Memory resources can only originate from Claude Code.")
+        if target_key.kind == "memory" and source_tool_id not in MEMORY_SOURCE_TOOL_IDS:
+            raise AssetSyncError(
+                "Memory resources can only originate from Claude Code or Codex."
+            )
     local_path = source_row.local_content_path or source_row.local_path
     local_mcp_config = (
         _read_mcp_server(local_path, source_row.install_name) if target_key.kind == "mcp" else None
@@ -7704,7 +7779,11 @@ def _mutate_remote_asset(
     elif target_key.kind == "skill" and source_row.tool_id == "claude-code":
         inspect_claude_skill(local_path)
     else:
-        validate_item(local_path, target_key.kind)
+        validate_item(
+            local_path,
+            target_key.kind,
+            source_tool_id=source_tool_id,
+        )
 
     if existing is not None and not _is_private_repo_asset(existing):
         raise _StaleAssetTarget(
@@ -7741,8 +7820,14 @@ def _mutate_remote_asset(
             logical_path=source_row.local_path,
             expected_fingerprint=plan.local_source_fingerprint,
             kind=target_key.kind,
+            source_tool_id=source_tool_id,
         ) as snapshot_path:
-            _copy_asset_content(snapshot_path, destination, target_key.kind)
+            _copy_asset_content(
+                snapshot_path,
+                destination,
+                target_key.kind,
+                source_tool_id=source_tool_id,
+            )
 
     derived = _derive_metadata(
         target_key.kind,
@@ -7921,6 +8006,8 @@ def _current_target_assertion(
     target: Path,
     install_name: str,
     resource_key: str,
+    *,
+    source_tool_id: str = "",
 ) -> tuple[bool, str, bool]:
     if kind == "mcp":
         config = _read_mcp_server(target, install_name)
@@ -7936,7 +8023,13 @@ def _current_target_assertion(
         return exists, fingerprint, managed
     exists = target.exists() or target.is_symlink()
     fingerprint = (
-        _asset_resource_fingerprint(target, kind) if exists and not target.is_symlink() else ""
+        _asset_resource_fingerprint(
+            target,
+            kind,
+            source_tool_id=source_tool_id,
+        )
+        if exists and not target.is_symlink()
+        else ""
     )
     managed = (
         is_cc_port_managed(
@@ -7950,15 +8043,56 @@ def _current_target_assertion(
     return exists, fingerprint, managed
 
 
-def _copy_asset_content(source: Path, destination: Path, kind: ItemKind) -> None:
+def _copy_asset_content(
+    source: Path,
+    destination: Path,
+    kind: ItemKind,
+    *,
+    source_tool_id: str = "",
+    preserve_codex_git: bool = False,
+) -> None:
     if destination.is_symlink():
         _remove_asset_path(destination)
     if kind == "memory":
-        validate_item(source, "memory")
-        if destination.exists() or destination.is_symlink():
-            _remove_asset_path(destination)
+        validate_item(source, "memory", source_tool_id=source_tool_id)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, destination, symlinks=False)
+        temporary_root = Path(
+            tempfile.mkdtemp(
+                prefix=f".{destination.name}.cc-port-memory-",
+                dir=destination.parent,
+            )
+        )
+        staged = temporary_root / "payload"
+        try:
+            _copy_memory_payload(
+                source,
+                staged,
+                source_tool_id=source_tool_id,
+            )
+            existing_git = destination / ".git"
+            existing_git_present = existing_git.exists() or existing_git.is_symlink()
+            if preserve_codex_git and existing_git_present:
+                if (
+                    not destination.is_dir()
+                    or destination.is_symlink()
+                    or not existing_git.is_dir()
+                    or existing_git.is_symlink()
+                ):
+                    raise AssetSyncError(
+                        "Codex memory Git history is not a regular local directory; "
+                        "replacing it is blocked."
+                    )
+                git_issues = resource_tree_issues(existing_git)
+                if git_issues:
+                    raise AssetSyncError(
+                        "Codex memory Git history contains unsafe linked or unreadable entries."
+                    )
+                shutil.copytree(existing_git, staged / ".git", symlinks=False)
+            if destination.exists() or destination.is_symlink():
+                _remove_asset_path(destination)
+            os.replace(staged, destination)
+        finally:
+            shutil.rmtree(temporary_root, ignore_errors=True)
         return
     if kind == "prompt" and _is_file_prompt_target(destination):
         payload = _installable_asset_source(source, destination, kind)
@@ -7990,6 +8124,7 @@ def _ordinary_upload_snapshot(
     logical_path: Path,
     expected_fingerprint: str,
     kind: ItemKind = "skill",
+    source_tool_id: str = "",
 ) -> Iterator[Path]:
     issues = resource_tree_issues(source)
     if issues:
@@ -7997,7 +8132,11 @@ def _ordinary_upload_snapshot(
             "stale-local-source",
             "The local source now contains nested links or unreadable entries.",
         )
-    if _safe_local_resource_fingerprint(source, kind) != expected_fingerprint:
+    if _safe_local_resource_fingerprint(
+        source,
+        kind,
+        source_tool_id=source_tool_id,
+    ) != expected_fingerprint:
         raise _StaleAssetTarget(
             "stale-local-source",
             "The local source changed after planning.",
@@ -8008,8 +8147,12 @@ def _ordinary_upload_snapshot(
     ) as temporary:
         snapshot_path = Path(temporary) / (logical_path.name or "resource")
         if kind == "memory":
-            validate_item(source, "memory")
-            shutil.copytree(source, snapshot_path, symlinks=False)
+            validate_item(source, "memory", source_tool_id=source_tool_id)
+            _copy_memory_payload(
+                source,
+                snapshot_path,
+                source_tool_id=source_tool_id,
+            )
         else:
             copy_resource_tree(source, snapshot_path)
         if resource_tree_issues(source):
@@ -8017,12 +8160,39 @@ def _ordinary_upload_snapshot(
                 "stale-local-source",
                 "The local source changed while its upload snapshot was created.",
             )
-        if _safe_local_resource_fingerprint(source, kind) != expected_fingerprint:
+        if _safe_local_resource_fingerprint(
+            source,
+            kind,
+            source_tool_id=source_tool_id,
+        ) != expected_fingerprint:
             raise _StaleAssetTarget(
                 "stale-local-source",
                 "The local source changed while its upload snapshot was created.",
             )
         yield snapshot_path
+
+
+def _copy_memory_payload(
+    source: Path,
+    destination: Path,
+    *,
+    source_tool_id: str,
+) -> None:
+    source_root = source.absolute()
+
+    def ignore_private_state(directory: str, names: list[str]) -> set[str]:
+        if source_tool_id != "codex":
+            return set()
+        if Path(directory).absolute() == source_root and ".git" in names:
+            return {".git"}
+        return set()
+
+    shutil.copytree(
+        source,
+        destination,
+        symlinks=False,
+        ignore=ignore_private_state,
+    )
 
 
 def _installable_asset_source(source: Path, destination: Path, kind: ItemKind) -> Path:
